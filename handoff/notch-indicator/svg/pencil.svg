@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 18" width="112" height="72" role="img" aria-label="pencil indicator">
+  <defs><linearGradient id="paint" x1="0" y1="0" x2="28" y2="18" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#fafafa"/><stop offset="0.5" stop-color="#d5d6d8"/><stop offset="1" stop-color="#8a8d92"/></linearGradient></defs>
+  <rect transform="translate(14.000 9.000) rotate(-35.523) translate(-8.500 -1.400)" width="17.000" height="2.800" rx="1.400" fill="url(#paint)" opacity="1.000"/>
+  <rect transform="translate(14.500 8.450) rotate(-35.523) translate(-6.000 -0.350)" width="12.000" height="0.700" rx="0.350" fill="url(#paint)" opacity="0.700"/>
+  <rect transform="translate(7.200 13.800) rotate(-35.523) translate(-1.600 -1.400)" width="3.200" height="2.800" rx="0.700" fill="url(#paint)" opacity="1.000"/>
+  <rect transform="translate(21.000 4.200) rotate(-35.523) translate(-1.700 -1.400)" width="3.400" height="2.800" rx="0.450" fill="url(#paint)" opacity="1.000"/>
+  <rect transform="translate(19.000 14.800) rotate(-0.000) translate(-4.500 -0.550)" width="9.000" height="1.100" rx="0.550" fill="url(#paint)" opacity="0.350"/>
+</svg>

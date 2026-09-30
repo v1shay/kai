@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kai listening → thinking motion</title>
+<style>
+  *{box-sizing:border-box} body{margin:0;min-height:100vh;display:grid;place-items:center;background:#08090b;color:#f5f7fb;font:14px -apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif}
+  main{width:min(760px,calc(100vw - 32px));padding:28px;border:1px solid #20242c;border-radius:28px;background:linear-gradient(145deg,#11141a,#0b0d11);box-shadow:0 32px 90px #000a}
+  header{display:flex;align-items:center;justify-content:space-between;gap:20px}.eyebrow{color:#848b98;font-size:11px;font-weight:700;letter-spacing:.15em;text-transform:uppercase}h1{font-size:23px;margin:5px 0 0}.state{padding:7px 11px;border:1px solid #303640;border-radius:999px;color:#c8ced8;background:#171a20}
+  .stage{position:relative;height:330px;margin:24px 0;display:grid;place-items:center;overflow:hidden;border-radius:22px;background:radial-gradient(circle at 50% 46%,#18202d 0,#0b0e13 48%,#08090c 75%)}
+  .stage:after{content:"";position:absolute;inset:auto 18% 54px;height:1px;background:linear-gradient(90deg,transparent,#293241,transparent)}
+  svg{width:360px;max-width:85%;overflow:visible}.bar{filter:url(#glow)}
+  .meter{position:absolute;left:22px;right:22px;bottom:18px;height:3px;border-radius:4px;background:#20242b;overflow:hidden}.meter i{display:block;width:0;height:100%;background:linear-gradient(90deg,#718fff,#b7e9ff);transition:width 80ms linear}
+  .controls{display:flex;flex-wrap:wrap;gap:10px}button{appearance:none;border:1px solid #333945;border-radius:12px;padding:11px 15px;background:#171b22;color:#eef1f6;font:inherit;font-weight:600;cursor:pointer}button:hover{background:#20252e}button.primary{color:#081019;border-color:#9cdcf5;background:#aee8ff}button.primary:hover{background:#c6efff}button:disabled{opacity:.42;cursor:default}
+  .note{margin:16px 2px 0;color:#777f8d;font-size:12px;line-height:1.5}
+</style>
+<main>
+  <header><div><div class="eyebrow">Standalone SVG motion study</div><h1>Listening → Thinking</h1></div><div class="state" id="state">Demo listening</div></header>
+  <section class="stage">
+    <svg viewBox="0 0 360 220" role="img" aria-label="Four animated voice bars">
+      <defs>
+        <linearGradient id="silver" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#fafafa"/><stop offset=".48" stop-color="#d5d6d8"/><stop offset="1" stop-color="#8a8d92"/>
+        </linearGradient>
+        <filter id="glow" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+      </defs>
+      <g fill="url(#silver)">
+        <rect class="bar" x="96"  y="90" width="22" height="40" rx="11"/>
+        <rect class="bar" x="144" y="90" width="22" height="40" rx="11"/>
+        <rect class="bar" x="192" y="90" width="22" height="40" rx="11"/>
+        <rect class="bar" x="240" y="90" width="22" height="40" rx="11"/>
+      </g>
+    </svg>
+    <div class="meter"><i id="meter"></i></div>
+  </section>
+  <div class="controls">
+    <button class="primary" id="mic">Use microphone</button>
+    <button id="think">Blend into thinking</button>
+    <button id="demo">Replay automatic demo</button>
+  </div>
+  <p class="note">Microphone audio stays in this page and is never recorded or uploaded. Speak while listening, then press “Blend into thinking” to inspect the live handoff.</p>
+</main>
+<script>
+const bars=[...document.querySelectorAll('.bar')],state=document.querySelector('#state'),meter=document.querySelector('#meter'),centers=[107,155,203,251];
+const minH=20,maxH=112,centerY=110; let shape=[40,40,40,40].map(h=>({h,w:22,y:0,a:1})),mode='demo',started=performance.now(),transition=null,stream,ctx,analyser,bins;
+const clamp=(v,a=0,b=1)=>Math.max(a,Math.min(b,v)), smooth=t=>t*t*(3-2*t);
+function setBars(next,dt){next.forEach((target,i)=>{let current=shape[i],rate=target.h>current.h?17:9,k=1-Math.exp(-dt*rate);for(let key of ['h','w','y','a'])current[key]+=(target[key]-current[key])*k;bars[i].setAttribute('x',centers[i]-current.w/2);bars[i].setAttribute('y',centerY+current.y-current.h/2);bars[i].setAttribute('width',current.w);bars[i].setAttribute('height',current.h);bars[i].setAttribute('rx',current.w/2);bars[i].style.opacity=current.a})}
+function speech(t){let syllable=Math.max(0,Math.sin(t*7.4))*Math.max(0,Math.sin(t*2.05+.5));return .10+.78*syllable+.11*Math.sin(t*13.1)**2}
+function listenTargets(t){
+  if(mode==='mic'&&analyser){analyser.getByteFrequencyData(bins);let ranges=[[2,7],[7,15],[15,28],[28,52]];return ranges.map(([a,b],i)=>{let sum=0;for(let j=a;j<b;j++)sum+=bins[j];let level=sum/(b-a)/255,h=minH+(maxH-minH)*clamp(Math.pow(level*1.85,.78))*(.91+i*.03);return {h,w:22,y:0,a:1}})}
+  let amp=speech(t);return [0,1,2,3].map(i=>({h:minH+(maxH-minH)*clamp(amp*(.58+i*.045+.28*Math.sin(t*(10.7+i*.73)+i*1.37)**2)),w:22,y:0,a:1}));
+}
+function thinkTargets(t){let base=[16,19,22,25];return base.map((size,i)=>{let pulse=smooth(.5+.5*Math.sin(t*4.5-i*.9));let s=size+1.4*pulse;return {h:s,w:s,y:-2.5*pulse,a:.42+.58*pulse}})}
+function blendToThinking(){if(mode==='thinking'||mode==='transition')return;transition={at:performance.now(),from:shape.map(v=>({...v}))};mode='transition';state.textContent='Listening → Thinking dots'}
+function frame(now){let dt=Math.min(.04,(now-(frame.last||now))/1000),t=(now-started)/1000;frame.last=now;let target;
+  if(mode==='thinking')target=thinkTargets(now/1000);
+  else if(mode==='transition'){let p=clamp((now-transition.at)/900),e=smooth(p),thinking=thinkTargets(now/1000);target=transition.from.map((from,i)=>Object.fromEntries(['h','w','y','a'].map(k=>[k,from[k]+(thinking[i][k]-from[k])*e])));if(p===1){mode='thinking';state.textContent='Thinking · animated dots'}}
+  else {target=listenTargets(t);if(mode==='demo'&&t>4.4)blendToThinking()}
+  setBars(target,dt);let mean=shape.reduce((sum,v)=>sum+v.h,0)/4;meter.style.width=`${clamp((mean-minH)/(maxH-minH))*100}%`;requestAnimationFrame(frame)
+}
+async function useMic(){try{stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}});ctx=new AudioContext;analyser=ctx.createAnalyser();analyser.fftSize=256;analyser.smoothingTimeConstant=.25;bins=new Uint8Array(analyser.frequencyBinCount);ctx.createMediaStreamSource(stream).connect(analyser);mode='mic';started=performance.now();state.textContent='Listening · microphone';document.querySelector('#mic').textContent='Microphone active'}catch(e){state.textContent='Microphone unavailable · demo active'}}
+function replay(){mode='demo';transition=null;started=performance.now();state.textContent='Demo listening'}
+document.querySelector('#mic').onclick=useMic;document.querySelector('#think').onclick=blendToThinking;document.querySelector('#demo').onclick=replay;requestAnimationFrame(frame);
+</script>
+</html>

@@ -1,0 +1,294 @@
+{
+  "entries": [
+    {
+      "kind": "installed_custom",
+      "name": "77",
+      "id": "77",
+      "displayName": "77",
+      "spritesheet": "installed_custom/77/spritesheet.webp",
+      "origin": "/Users/vishayagarwal/.codex/pets/77",
+      "sha256": "e8b0623f6c6262741495c54a8088cbd3b9f0184455353d4cd145c933e0f29bb9"
+    },
+    {
+      "kind": "installed_custom",
+      "name": "agumon-2",
+      "id": "agumon",
+      "displayName": "Agumon",
+      "spritesheet": "installed_custom/agumon-2/spritesheet.webp",
+      "origin": "/Users/vishayagarwal/.codex/pets/agumon-2",
+      "sha256": "d7ef90913a1f25e617fb402805ed7822b46f2d7c3c1a5b9f148de405aa6c34c9"
+    },
+    {
+      "kind": "installed_custom",
+      "name": "aqua-wisp",
+      "id": "aqua-wisp",
+      "displayName": "Aqua Wisp",
+      "spritesheet": "installed_custom/aqua-wisp/spritesheet.webp",
+      "origin": "/Users/vishayagarwal/.codex/pets/aqua-wisp",
+      "sha256": "e0095143f76abcfec38425b3f833a09ef72398ce27938156409f297de001fa27"
+    },
+    {
+      "kind": "installed_custom",
+      "name": "kabi",
+      "id": "kabi",
+      "displayName": "卡比兽",
+      "spritesheet": "installed_custom/kabi/spritesheet.webp",
+      "origin": "/Users/vishayagarwal/.codex/pets/kabi",
+      "sha256": "49185cdaf8b776955d39ac716c8fdb9febd474171a2d76146406da2652ccd275"
+    },
+    {
+      "kind": "installed_custom",
+      "name": "ultronite",
+      "id": "ultronite",
+      "displayName": "Ultronite",
+      "spritesheet": "installed_custom/ultronite/spritesheet.webp",
+      "origin": "/Users/vishayagarwal/.codex/pets/ultronite",
+      "sha256": "c489a30bd7d648aa0057821a00ec0ad41b5b189aac2621f5ae6b8a69f7c834b0"
+    },
+    {
+      "kind": "installed_custom",
+      "name": "winter-curry-dog",
+      "id": "winter-curry-dog",
+      "displayName": "咖喱狗",
+      "spritesheet": "installed_custom/winter-curry-dog/spritesheet.webp",
+      "origin": "/Users/vishayagarwal/.codex/pets/winter-curry-dog",
+      "sha256": "03a635c891799ddb1765d3b9202aeae4572bb4bfaa91cfecd15b7e8c863bd52c"
+    },
+    {
+      "kind": "zip_pet",
+      "name": "zip",
+      "id": "tiko",
+      "displayName": "Tiko",
+      "spritesheet": "zip_pets/zip/spritesheet.webp",
+      "origin": "/Users/vishayagarwal/Downloads/zip.zip",
+      "sha256": "c9f2934b62c746b5b11b451410ae3449a3e425de186343ce57db313838cb5518"
+    },
+    {
+      "kind": "zip_pet",
+      "name": "zip (1)",
+      "id": "nezukocoder",
+      "displayName": "NezukoCoder",
+      "spritesheet": "zip_pets/zip (1)/spritesheet.webp",
+      "origin": "/Users/vishayagarwal/Downloads/zip (1).zip",
+      "sha256": "25e5d9952591238e3238f237928aa4168c4ac124458b67a32278c191dc1707ff"
+    },
+    {
+      "kind": "zip_pet",
+      "name": "zip (2)",
+      "id": "savage-codex-hacker",
+      "displayName": "Savage Codex Hacker",
+      "spritesheet": "zip_pets/zip (2)/spritesheet.webp",
+      "origin": "/Users/vishayagarwal/Downloads/zip (2).zip",
+      "sha256": "51df3a96fd22751a5b2ce0e5486667492f145adea6c84800f61ceb5d7387859a"
+    },
+    {
+      "kind": "zip_pet",
+      "name": "zip (3)",
+      "id": "ghost",
+      "displayName": "Ghost",
+      "spritesheet": "zip_pets/zip (3)/spritesheet.webp",
+      "origin": "/Users/vishayagarwal/Downloads/zip (3).zip",
+      "sha256": "f150d794d1c33caabca0d32d213904efaac86afb215fa33f6fcee7ab444f9602"
+    },
+    {
+      "kind": "zip_pet",
+      "name": "zip (6)",
+      "id": "tiko",
+      "displayName": "Tiko",
+      "spritesheet": "zip_pets/zip (6)/spritesheet.webp",
+      "origin": "/Users/vishayagarwal/Downloads/zip (6).zip",
+      "sha256": "c9f2934b62c746b5b11b451410ae3449a3e425de186343ce57db313838cb5518",
+      "duplicateOf": "zip_pets/zip/spritesheet.webp"
+    },
+    {
+      "kind": "zip_pet",
+      "name": "zip (7)",
+      "id": "kabi",
+      "displayName": "卡比兽",
+      "spritesheet": "zip_pets/zip (7)/spritesheet.webp",
+      "origin": "/Users/vishayagarwal/Downloads/zip (7).zip",
+      "sha256": "49185cdaf8b776955d39ac716c8fdb9febd474171a2d76146406da2652ccd275",
+      "duplicateOf": "installed_custom/kabi/spritesheet.webp"
+    },
+    {
+      "kind": "zip_pet",
+      "name": "zip (8)",
+      "id": "macintosh",
+      "displayName": "Macintosh",
+      "spritesheet": "zip_pets/zip (8)/spritesheet.webp",
+      "origin": "/Users/vishayagarwal/Downloads/zip (8).zip",
+      "sha256": "9e6d1bda2c619a1a3147971db07f3ba7c1a286fc8bb437e06a349c08d380754b"
+    },
+    {
+      "kind": "zip_pet",
+      "name": "zip (9)",
+      "id": "lil-finder",
+      "displayName": "Lil Finder",
+      "spritesheet": "zip_pets/zip (9)/spritesheet.webp",
+      "origin": "/Users/vishayagarwal/Downloads/zip (9).zip",
+      "sha256": "3e9ac99f8445a9593777773cc09b773b83c529ce07ae2e8012c388c3fe299d0c"
+    },
+    {
+      "kind": "zip_pet",
+      "name": "zip (10)",
+      "id": "crt-pal",
+      "displayName": "CRT Pal",
+      "spritesheet": "zip_pets/zip (10)/spritesheet.webp",
+      "origin": "/Users/vishayagarwal/Downloads/zip (10).zip",
+      "sha256": "3bc52027678ecd45ac21ccb82f76ad271ad4dd8fa046b69dfb7e8986928931a9"
+    },
+    {
+      "kind": "codex_built_in",
+      "name": "bsod",
+      "id": "bsod",
+      "displayName": "Bsod",
+      "spritesheet": "codex_built_in/bsod/spritesheet.webp",
+      "origin": "/Applications/ChatGPT.app/Contents/Resources/app.asar:/webview/assets/bsod-spritesheet-v5-cc54136ce042.webp",
+      "sha256": "b55c717298786dc56622c287d707d60e526fd7b32b39a60346871d6c6516b26d"
+    },
+    {
+      "kind": "codex_built_in",
+      "name": "codex",
+      "id": "codex",
+      "displayName": "Codex",
+      "spritesheet": "codex_built_in/codex/spritesheet.webp",
+      "origin": "/Applications/ChatGPT.app/Contents/Resources/app.asar:/webview/assets/codex-spritesheet-v6-51045ae208c0.webp",
+      "sha256": "ac2990f24d55372411cebdc66a726e1fcbf5e80ec95378e2d25a6241abbedf88"
+    },
+    {
+      "kind": "codex_built_in",
+      "name": "dewey",
+      "id": "dewey",
+      "displayName": "Dewey",
+      "spritesheet": "codex_built_in/dewey/spritesheet.webp",
+      "origin": "/Applications/ChatGPT.app/Contents/Resources/app.asar:/webview/assets/dewey-spritesheet-v5-f5285016f310.webp",
+      "sha256": "f2be8f576ab9d6cf287dd3518f86670e98d0270a83d41015d1018ab3aef791be"
+    },
+    {
+      "kind": "codex_built_in",
+      "name": "fireball",
+      "id": "fireball",
+      "displayName": "Fireball",
+      "spritesheet": "codex_built_in/fireball/spritesheet.webp",
+      "origin": "/Applications/ChatGPT.app/Contents/Resources/app.asar:/webview/assets/fireball-spritesheet-v5-9c2a4146d3f9.webp",
+      "sha256": "c1447dba809eb642e58aa213da5920eb27764e0f1df34a5651db091a1f79cbf3"
+    },
+    {
+      "kind": "codex_built_in",
+      "name": "hoots",
+      "id": "hoots",
+      "displayName": "Hoots",
+      "spritesheet": "codex_built_in/hoots/spritesheet.webp",
+      "origin": "/Applications/ChatGPT.app/Contents/Resources/app.asar:/webview/assets/hoots-spritesheet-v8-21cacd193ace.webp",
+      "sha256": "62539958eb6ab2b23c6cb640c6ca9516a42a75e785203eee3eeff4d9c4581456"
+    },
+    {
+      "kind": "codex_built_in",
+      "name": "null-signal",
+      "id": "null-signal",
+      "displayName": "Null Signal",
+      "spritesheet": "codex_built_in/null-signal/spritesheet.webp",
+      "origin": "/Applications/ChatGPT.app/Contents/Resources/app.asar:/webview/assets/null-signal-spritesheet-v7-1e7dbf89200f.webp",
+      "sha256": "a816f7488c187ffe8b7f5d58319deb6cfa591f98c219ef06cbaf10d1f9f330db"
+    },
+    {
+      "kind": "codex_built_in",
+      "name": "rocky",
+      "id": "rocky",
+      "displayName": "Rocky",
+      "spritesheet": "codex_built_in/rocky/spritesheet.webp",
+      "origin": "/Applications/ChatGPT.app/Contents/Resources/app.asar:/webview/assets/rocky-spritesheet-v5-97b5d14cdd54.webp",
+      "sha256": "81970d728fb0a024385298c47dd9128ee18e9eb9d1db84ccacd42edea9f3bd6a"
+    },
+    {
+      "kind": "codex_built_in",
+      "name": "seedy",
+      "id": "seedy",
+      "displayName": "Seedy",
+      "spritesheet": "codex_built_in/seedy/spritesheet.webp",
+      "origin": "/Applications/ChatGPT.app/Contents/Resources/app.asar:/webview/assets/seedy-spritesheet-v10-0f6f906a2aec.webp",
+      "sha256": "4cc6c9f4bc61882379472dfa7fa91ca128b90933b0ae3cda9fff3da91dc6d1f8"
+    },
+    {
+      "kind": "codex_built_in",
+      "name": "stacky",
+      "id": "stacky",
+      "displayName": "Stacky",
+      "spritesheet": "codex_built_in/stacky/spritesheet.webp",
+      "origin": "/Applications/ChatGPT.app/Contents/Resources/app.asar:/webview/assets/stacky-spritesheet-v6-18d0359c82af.webp",
+      "sha256": "7e1afd29221d3ac0de0bd7a528e9b49170910742e634cd666fa7ad16d7b2e7d2"
+    },
+    {
+      "kind": "zip_pet",
+      "name": "blau",
+      "id": "blau",
+      "displayName": "Blau",
+      "spritesheet": "zip_pets/blau/spritesheet.webp",
+      "sha256": "a5546d4d747f5792e35a06ee8b31edafada64613ebf576330fb55dbfe2e1a4b1",
+      "origin": "/Users/vishayagarwal/Downloads/blau.zip"
+    },
+    {
+      "kind": "zip_pet",
+      "name": "haaland",
+      "id": "haaland",
+      "displayName": "Haaland",
+      "spritesheet": "zip_pets/haaland/spritesheet.webp",
+      "sha256": "832a95eb67893b9c2d7d6fdd5ecae37de968d000854a7cdb69f4036542b352b3",
+      "origin": "/Users/vishayagarwal/Downloads/haaland.zip"
+    },
+    {
+      "kind": "zip_pet",
+      "name": "invincible",
+      "id": "invincible",
+      "displayName": "Invincible",
+      "spritesheet": "zip_pets/invincible/spritesheet.webp",
+      "sha256": "7608a91474027465f38b74869fad7def18d3549a704ca52d1f2036059af2658d",
+      "origin": "/Users/vishayagarwal/Downloads/invincible.zip"
+    },
+    {
+      "kind": "zip_pet",
+      "name": "killua",
+      "id": "killua",
+      "displayName": "Killua",
+      "spritesheet": "zip_pets/killua/spritesheet.webp",
+      "sha256": "06cb2b8717af63b20e8e585949712d0488fa9490413248d3e84979e7be3daa86",
+      "origin": "/Users/vishayagarwal/Downloads/killua.zip"
+    },
+    {
+      "kind": "zip_pet",
+      "name": "lawliet",
+      "id": "lawliet",
+      "displayName": "L Lawliet",
+      "spritesheet": "zip_pets/lawliet/spritesheet.webp",
+      "sha256": "697663cad4f3da4cd10c01ab4aa978978e386ac2a230cea2a0b96071c2b7d6d9",
+      "origin": "/Users/vishayagarwal/Downloads/lawliet.zip"
+    },
+    {
+      "kind": "zip_pet",
+      "name": "noir-webling",
+      "id": "noir-webling",
+      "displayName": "Noir Webling",
+      "spritesheet": "zip_pets/noir-webling/spritesheet.webp",
+      "sha256": "9539f8e528f683e037b5b5771248c84e0d736d83c71e205478dfe1d763d90cb6",
+      "origin": "/Users/vishayagarwal/Downloads/noir-webling.zip"
+    },
+    {
+      "kind": "zip_pet",
+      "name": "patrick-star",
+      "id": "patrick-star",
+      "displayName": "Patrick Star",
+      "spritesheet": "zip_pets/patrick-star/spritesheet.webp",
+      "sha256": "a0244020e2113bb706bbd2d535f0bf95f1d66bbb625a12090e2c2071b1300293",
+      "origin": "/Users/vishayagarwal/Downloads/patrick-star.zip"
+    },
+    {
+      "kind": "zip_pet",
+      "name": "peter",
+      "id": "peter",
+      "displayName": "Peter",
+      "spritesheet": "zip_pets/peter/spritesheet.webp",
+      "sha256": "cc0aa294d16d82120759ee44f658dee6a0ced731206519075d35afbeb04ac827",
+      "origin": "/Users/vishayagarwal/Downloads/peter.zip"
+    }
+  ]
+}

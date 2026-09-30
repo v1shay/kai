@@ -1,0 +1,3996 @@
+{
+  "formatVersion": 1,
+  "colorSpace": "sRGB",
+  "profileByPetID": {
+    "77": {
+      "displayName": "77",
+      "palette": {
+        "shadow": "#161318",
+        "primary": "#847A6D",
+        "secondary": "#F4EBDA",
+        "accent": "#A96A2D",
+        "highlight": "#F4EBDA",
+        "foreground": "#FFFFFF"
+      },
+      "gradients": {
+        "ambient": {
+          "angleDegrees": 90,
+          "cycleDurationMs": 3200,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#161318"
+            },
+            {
+              "location": 0.5,
+              "color": "#847A6D"
+            },
+            {
+              "location": 1.0,
+              "color": "#A96A2D"
+            }
+          ]
+        },
+        "thinking": {
+          "angleDegrees": 115,
+          "cycleDurationMs": 1500,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#847A6D"
+            },
+            {
+              "location": 0.333,
+              "color": "#A96A2D"
+            },
+            {
+              "location": 0.667,
+              "color": "#F4EBDA"
+            },
+            {
+              "location": 1.0,
+              "color": "#847A6D"
+            }
+          ]
+        },
+        "working": {
+          "angleDegrees": 0,
+          "cycleDurationMs": 1100,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#161318"
+            },
+            {
+              "location": 0.333,
+              "color": "#847A6D"
+            },
+            {
+              "location": 0.667,
+              "color": "#F4EBDA"
+            },
+            {
+              "location": 1.0,
+              "color": "#A96A2D"
+            }
+          ]
+        },
+        "success": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#161318"
+            },
+            {
+              "location": 0.5,
+              "color": "#A96A2D"
+            },
+            {
+              "location": 1.0,
+              "color": "#F4EBDA"
+            }
+          ]
+        },
+        "warning": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#161318"
+            },
+            {
+              "location": 0.333,
+              "color": "#F4EBDA"
+            },
+            {
+              "location": 0.667,
+              "color": "#A96A2D"
+            },
+            {
+              "location": 1.0,
+              "color": "#F4EBDA"
+            }
+          ]
+        },
+        "error": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#161318"
+            },
+            {
+              "location": 0.5,
+              "color": "#F4EBDA"
+            },
+            {
+              "location": 1.0,
+              "color": "#A96A2D"
+            }
+          ]
+        }
+      }
+    },
+    "agumon": {
+      "displayName": "Agumon",
+      "palette": {
+        "shadow": "#090404",
+        "primary": "#FCD502",
+        "secondary": "#FCD502",
+        "accent": "#EC9601",
+        "highlight": "#F4F2F0",
+        "foreground": "#000000"
+      },
+      "gradients": {
+        "ambient": {
+          "angleDegrees": 90,
+          "cycleDurationMs": 3200,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#090404"
+            },
+            {
+              "location": 0.5,
+              "color": "#FCD502"
+            },
+            {
+              "location": 1.0,
+              "color": "#EC9601"
+            }
+          ]
+        },
+        "thinking": {
+          "angleDegrees": 115,
+          "cycleDurationMs": 1500,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#FCD502"
+            },
+            {
+              "location": 0.333,
+              "color": "#EC9601"
+            },
+            {
+              "location": 0.667,
+              "color": "#F4F2F0"
+            },
+            {
+              "location": 1.0,
+              "color": "#FCD502"
+            }
+          ]
+        },
+        "working": {
+          "angleDegrees": 0,
+          "cycleDurationMs": 1100,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#090404"
+            },
+            {
+              "location": 0.333,
+              "color": "#FCD502"
+            },
+            {
+              "location": 0.667,
+              "color": "#FCD502"
+            },
+            {
+              "location": 1.0,
+              "color": "#EC9601"
+            }
+          ]
+        },
+        "success": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#090404"
+            },
+            {
+              "location": 0.5,
+              "color": "#EC9601"
+            },
+            {
+              "location": 1.0,
+              "color": "#F4F2F0"
+            }
+          ]
+        },
+        "warning": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#090404"
+            },
+            {
+              "location": 0.333,
+              "color": "#FCD502"
+            },
+            {
+              "location": 0.667,
+              "color": "#EC9601"
+            },
+            {
+              "location": 1.0,
+              "color": "#F4F2F0"
+            }
+          ]
+        },
+        "error": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#090404"
+            },
+            {
+              "location": 0.5,
+              "color": "#FCD502"
+            },
+            {
+              "location": 1.0,
+              "color": "#EC9601"
+            }
+          ]
+        }
+      }
+    },
+    "aqua-wisp": {
+      "displayName": "Aqua Wisp",
+      "palette": {
+        "shadow": "#0B0914",
+        "primary": "#60DEE0",
+        "secondary": "#0690B3",
+        "accent": "#22C8D2",
+        "highlight": "#DFF9F3",
+        "foreground": "#000000"
+      },
+      "gradients": {
+        "ambient": {
+          "angleDegrees": 90,
+          "cycleDurationMs": 3200,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0B0914"
+            },
+            {
+              "location": 0.5,
+              "color": "#60DEE0"
+            },
+            {
+              "location": 1.0,
+              "color": "#22C8D2"
+            }
+          ]
+        },
+        "thinking": {
+          "angleDegrees": 115,
+          "cycleDurationMs": 1500,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#60DEE0"
+            },
+            {
+              "location": 0.333,
+              "color": "#22C8D2"
+            },
+            {
+              "location": 0.667,
+              "color": "#DFF9F3"
+            },
+            {
+              "location": 1.0,
+              "color": "#60DEE0"
+            }
+          ]
+        },
+        "working": {
+          "angleDegrees": 0,
+          "cycleDurationMs": 1100,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0B0914"
+            },
+            {
+              "location": 0.333,
+              "color": "#60DEE0"
+            },
+            {
+              "location": 0.667,
+              "color": "#0690B3"
+            },
+            {
+              "location": 1.0,
+              "color": "#22C8D2"
+            }
+          ]
+        },
+        "success": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0B0914"
+            },
+            {
+              "location": 0.5,
+              "color": "#22C8D2"
+            },
+            {
+              "location": 1.0,
+              "color": "#DFF9F3"
+            }
+          ]
+        },
+        "warning": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0B0914"
+            },
+            {
+              "location": 0.333,
+              "color": "#0690B3"
+            },
+            {
+              "location": 0.667,
+              "color": "#22C8D2"
+            },
+            {
+              "location": 1.0,
+              "color": "#DFF9F3"
+            }
+          ]
+        },
+        "error": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0B0914"
+            },
+            {
+              "location": 0.5,
+              "color": "#0690B3"
+            },
+            {
+              "location": 1.0,
+              "color": "#22C8D2"
+            }
+          ]
+        }
+      }
+    },
+    "kabi": {
+      "displayName": "卡比兽",
+      "palette": {
+        "shadow": "#0E252C",
+        "primary": "#347884",
+        "secondary": "#F3E6D1",
+        "accent": "#28535F",
+        "highlight": "#F3E6D1",
+        "foreground": "#FFFFFF"
+      },
+      "gradients": {
+        "ambient": {
+          "angleDegrees": 90,
+          "cycleDurationMs": 3200,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0E252C"
+            },
+            {
+              "location": 0.5,
+              "color": "#347884"
+            },
+            {
+              "location": 1.0,
+              "color": "#28535F"
+            }
+          ]
+        },
+        "thinking": {
+          "angleDegrees": 115,
+          "cycleDurationMs": 1500,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#347884"
+            },
+            {
+              "location": 0.333,
+              "color": "#28535F"
+            },
+            {
+              "location": 0.667,
+              "color": "#F3E6D1"
+            },
+            {
+              "location": 1.0,
+              "color": "#347884"
+            }
+          ]
+        },
+        "working": {
+          "angleDegrees": 0,
+          "cycleDurationMs": 1100,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0E252C"
+            },
+            {
+              "location": 0.333,
+              "color": "#347884"
+            },
+            {
+              "location": 0.667,
+              "color": "#F3E6D1"
+            },
+            {
+              "location": 1.0,
+              "color": "#28535F"
+            }
+          ]
+        },
+        "success": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0E252C"
+            },
+            {
+              "location": 0.5,
+              "color": "#28535F"
+            },
+            {
+              "location": 1.0,
+              "color": "#F3E6D1"
+            }
+          ]
+        },
+        "warning": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0E252C"
+            },
+            {
+              "location": 0.333,
+              "color": "#F3E6D1"
+            },
+            {
+              "location": 0.667,
+              "color": "#28535F"
+            },
+            {
+              "location": 1.0,
+              "color": "#F3E6D1"
+            }
+          ]
+        },
+        "error": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0E252C"
+            },
+            {
+              "location": 0.5,
+              "color": "#F3E6D1"
+            },
+            {
+              "location": 1.0,
+              "color": "#28535F"
+            }
+          ]
+        }
+      }
+    },
+    "ultronite": {
+      "displayName": "Ultronite",
+      "palette": {
+        "shadow": "#16130F",
+        "primary": "#53504C",
+        "secondary": "#DFDFDE",
+        "accent": "#928E8C",
+        "highlight": "#DFDFDE",
+        "foreground": "#FFFFFF"
+      },
+      "gradients": {
+        "ambient": {
+          "angleDegrees": 90,
+          "cycleDurationMs": 3200,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#16130F"
+            },
+            {
+              "location": 0.5,
+              "color": "#53504C"
+            },
+            {
+              "location": 1.0,
+              "color": "#928E8C"
+            }
+          ]
+        },
+        "thinking": {
+          "angleDegrees": 115,
+          "cycleDurationMs": 1500,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#53504C"
+            },
+            {
+              "location": 0.333,
+              "color": "#928E8C"
+            },
+            {
+              "location": 0.667,
+              "color": "#DFDFDE"
+            },
+            {
+              "location": 1.0,
+              "color": "#53504C"
+            }
+          ]
+        },
+        "working": {
+          "angleDegrees": 0,
+          "cycleDurationMs": 1100,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#16130F"
+            },
+            {
+              "location": 0.333,
+              "color": "#53504C"
+            },
+            {
+              "location": 0.667,
+              "color": "#DFDFDE"
+            },
+            {
+              "location": 1.0,
+              "color": "#928E8C"
+            }
+          ]
+        },
+        "success": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#16130F"
+            },
+            {
+              "location": 0.5,
+              "color": "#928E8C"
+            },
+            {
+              "location": 1.0,
+              "color": "#DFDFDE"
+            }
+          ]
+        },
+        "warning": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#16130F"
+            },
+            {
+              "location": 0.333,
+              "color": "#DFDFDE"
+            },
+            {
+              "location": 0.667,
+              "color": "#928E8C"
+            },
+            {
+              "location": 1.0,
+              "color": "#DFDFDE"
+            }
+          ]
+        },
+        "error": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#16130F"
+            },
+            {
+              "location": 0.5,
+              "color": "#DFDFDE"
+            },
+            {
+              "location": 1.0,
+              "color": "#928E8C"
+            }
+          ]
+        }
+      }
+    },
+    "winter-curry-dog": {
+      "displayName": "咖喱狗",
+      "palette": {
+        "shadow": "#0E0B0A",
+        "primary": "#FDFDFD",
+        "secondary": "#0E0B0A",
+        "accent": "#FB6691",
+        "highlight": "#FDFDFD",
+        "foreground": "#000000"
+      },
+      "gradients": {
+        "ambient": {
+          "angleDegrees": 90,
+          "cycleDurationMs": 3200,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0E0B0A"
+            },
+            {
+              "location": 0.5,
+              "color": "#FDFDFD"
+            },
+            {
+              "location": 1.0,
+              "color": "#FB6691"
+            }
+          ]
+        },
+        "thinking": {
+          "angleDegrees": 115,
+          "cycleDurationMs": 1500,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#FDFDFD"
+            },
+            {
+              "location": 0.333,
+              "color": "#FB6691"
+            },
+            {
+              "location": 0.667,
+              "color": "#FDFDFD"
+            },
+            {
+              "location": 1.0,
+              "color": "#FDFDFD"
+            }
+          ]
+        },
+        "working": {
+          "angleDegrees": 0,
+          "cycleDurationMs": 1100,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0E0B0A"
+            },
+            {
+              "location": 0.333,
+              "color": "#FDFDFD"
+            },
+            {
+              "location": 0.667,
+              "color": "#0E0B0A"
+            },
+            {
+              "location": 1.0,
+              "color": "#FB6691"
+            }
+          ]
+        },
+        "success": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0E0B0A"
+            },
+            {
+              "location": 0.5,
+              "color": "#FB6691"
+            },
+            {
+              "location": 1.0,
+              "color": "#FDFDFD"
+            }
+          ]
+        },
+        "warning": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0E0B0A"
+            },
+            {
+              "location": 0.333,
+              "color": "#0E0B0A"
+            },
+            {
+              "location": 0.667,
+              "color": "#FB6691"
+            },
+            {
+              "location": 1.0,
+              "color": "#FDFDFD"
+            }
+          ]
+        },
+        "error": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0E0B0A"
+            },
+            {
+              "location": 0.5,
+              "color": "#0E0B0A"
+            },
+            {
+              "location": 1.0,
+              "color": "#FB6691"
+            }
+          ]
+        }
+      }
+    },
+    "tiko": {
+      "displayName": "Tiko",
+      "palette": {
+        "shadow": "#0A0809",
+        "primary": "#EE9D1F",
+        "secondary": "#0A0809",
+        "accent": "#E7AC52",
+        "highlight": "#B6BCA1",
+        "foreground": "#FFFFFF"
+      },
+      "gradients": {
+        "ambient": {
+          "angleDegrees": 90,
+          "cycleDurationMs": 3200,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0A0809"
+            },
+            {
+              "location": 0.5,
+              "color": "#EE9D1F"
+            },
+            {
+              "location": 1.0,
+              "color": "#E7AC52"
+            }
+          ]
+        },
+        "thinking": {
+          "angleDegrees": 115,
+          "cycleDurationMs": 1500,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#EE9D1F"
+            },
+            {
+              "location": 0.333,
+              "color": "#E7AC52"
+            },
+            {
+              "location": 0.667,
+              "color": "#B6BCA1"
+            },
+            {
+              "location": 1.0,
+              "color": "#EE9D1F"
+            }
+          ]
+        },
+        "working": {
+          "angleDegrees": 0,
+          "cycleDurationMs": 1100,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0A0809"
+            },
+            {
+              "location": 0.333,
+              "color": "#EE9D1F"
+            },
+            {
+              "location": 0.667,
+              "color": "#0A0809"
+            },
+            {
+              "location": 1.0,
+              "color": "#E7AC52"
+            }
+          ]
+        },
+        "success": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0A0809"
+            },
+            {
+              "location": 0.5,
+              "color": "#E7AC52"
+            },
+            {
+              "location": 1.0,
+              "color": "#B6BCA1"
+            }
+          ]
+        },
+        "warning": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0A0809"
+            },
+            {
+              "location": 0.333,
+              "color": "#0A0809"
+            },
+            {
+              "location": 0.667,
+              "color": "#E7AC52"
+            },
+            {
+              "location": 1.0,
+              "color": "#B6BCA1"
+            }
+          ]
+        },
+        "error": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0A0809"
+            },
+            {
+              "location": 0.5,
+              "color": "#0A0809"
+            },
+            {
+              "location": 1.0,
+              "color": "#E7AC52"
+            }
+          ]
+        }
+      }
+    },
+    "nezukocoder": {
+      "displayName": "NezukoCoder",
+      "palette": {
+        "shadow": "#0D0909",
+        "primary": "#0D0909",
+        "secondary": "#FCE3CC",
+        "accent": "#B85133",
+        "highlight": "#FCE3CC",
+        "foreground": "#FFFFFF"
+      },
+      "gradients": {
+        "ambient": {
+          "angleDegrees": 90,
+          "cycleDurationMs": 3200,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0D0909"
+            },
+            {
+              "location": 0.5,
+              "color": "#0D0909"
+            },
+            {
+              "location": 1.0,
+              "color": "#B85133"
+            }
+          ]
+        },
+        "thinking": {
+          "angleDegrees": 115,
+          "cycleDurationMs": 1500,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0D0909"
+            },
+            {
+              "location": 0.333,
+              "color": "#B85133"
+            },
+            {
+              "location": 0.667,
+              "color": "#FCE3CC"
+            },
+            {
+              "location": 1.0,
+              "color": "#0D0909"
+            }
+          ]
+        },
+        "working": {
+          "angleDegrees": 0,
+          "cycleDurationMs": 1100,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0D0909"
+            },
+            {
+              "location": 0.333,
+              "color": "#0D0909"
+            },
+            {
+              "location": 0.667,
+              "color": "#FCE3CC"
+            },
+            {
+              "location": 1.0,
+              "color": "#B85133"
+            }
+          ]
+        },
+        "success": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0D0909"
+            },
+            {
+              "location": 0.5,
+              "color": "#B85133"
+            },
+            {
+              "location": 1.0,
+              "color": "#FCE3CC"
+            }
+          ]
+        },
+        "warning": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0D0909"
+            },
+            {
+              "location": 0.333,
+              "color": "#FCE3CC"
+            },
+            {
+              "location": 0.667,
+              "color": "#B85133"
+            },
+            {
+              "location": 1.0,
+              "color": "#FCE3CC"
+            }
+          ]
+        },
+        "error": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0D0909"
+            },
+            {
+              "location": 0.5,
+              "color": "#FCE3CC"
+            },
+            {
+              "location": 1.0,
+              "color": "#B85133"
+            }
+          ]
+        }
+      }
+    },
+    "savage-codex-hacker": {
+      "displayName": "Savage Codex Hacker",
+      "palette": {
+        "shadow": "#050405",
+        "primary": "#6E83F2",
+        "secondary": "#050405",
+        "accent": "#5165E0",
+        "highlight": "#F2F3F8",
+        "foreground": "#FFFFFF"
+      },
+      "gradients": {
+        "ambient": {
+          "angleDegrees": 90,
+          "cycleDurationMs": 3200,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#050405"
+            },
+            {
+              "location": 0.5,
+              "color": "#6E83F2"
+            },
+            {
+              "location": 1.0,
+              "color": "#5165E0"
+            }
+          ]
+        },
+        "thinking": {
+          "angleDegrees": 115,
+          "cycleDurationMs": 1500,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#6E83F2"
+            },
+            {
+              "location": 0.333,
+              "color": "#5165E0"
+            },
+            {
+              "location": 0.667,
+              "color": "#F2F3F8"
+            },
+            {
+              "location": 1.0,
+              "color": "#6E83F2"
+            }
+          ]
+        },
+        "working": {
+          "angleDegrees": 0,
+          "cycleDurationMs": 1100,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#050405"
+            },
+            {
+              "location": 0.333,
+              "color": "#6E83F2"
+            },
+            {
+              "location": 0.667,
+              "color": "#050405"
+            },
+            {
+              "location": 1.0,
+              "color": "#5165E0"
+            }
+          ]
+        },
+        "success": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#050405"
+            },
+            {
+              "location": 0.5,
+              "color": "#5165E0"
+            },
+            {
+              "location": 1.0,
+              "color": "#F2F3F8"
+            }
+          ]
+        },
+        "warning": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#050405"
+            },
+            {
+              "location": 0.333,
+              "color": "#050405"
+            },
+            {
+              "location": 0.667,
+              "color": "#5165E0"
+            },
+            {
+              "location": 1.0,
+              "color": "#F2F3F8"
+            }
+          ]
+        },
+        "error": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#050405"
+            },
+            {
+              "location": 0.5,
+              "color": "#050405"
+            },
+            {
+              "location": 1.0,
+              "color": "#5165E0"
+            }
+          ]
+        }
+      }
+    },
+    "ghost": {
+      "displayName": "Ghost",
+      "palette": {
+        "shadow": "#0B0617",
+        "primary": "#FDFDFD",
+        "secondary": "#160C27",
+        "accent": "#6961A4",
+        "highlight": "#FDFDFD",
+        "foreground": "#FFFFFF"
+      },
+      "gradients": {
+        "ambient": {
+          "angleDegrees": 90,
+          "cycleDurationMs": 3200,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0B0617"
+            },
+            {
+              "location": 0.5,
+              "color": "#FDFDFD"
+            },
+            {
+              "location": 1.0,
+              "color": "#6961A4"
+            }
+          ]
+        },
+        "thinking": {
+          "angleDegrees": 115,
+          "cycleDurationMs": 1500,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#FDFDFD"
+            },
+            {
+              "location": 0.333,
+              "color": "#6961A4"
+            },
+            {
+              "location": 0.667,
+              "color": "#FDFDFD"
+            },
+            {
+              "location": 1.0,
+              "color": "#FDFDFD"
+            }
+          ]
+        },
+        "working": {
+          "angleDegrees": 0,
+          "cycleDurationMs": 1100,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0B0617"
+            },
+            {
+              "location": 0.333,
+              "color": "#FDFDFD"
+            },
+            {
+              "location": 0.667,
+              "color": "#160C27"
+            },
+            {
+              "location": 1.0,
+              "color": "#6961A4"
+            }
+          ]
+        },
+        "success": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0B0617"
+            },
+            {
+              "location": 0.5,
+              "color": "#6961A4"
+            },
+            {
+              "location": 1.0,
+              "color": "#FDFDFD"
+            }
+          ]
+        },
+        "warning": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0B0617"
+            },
+            {
+              "location": 0.333,
+              "color": "#160C27"
+            },
+            {
+              "location": 0.667,
+              "color": "#6961A4"
+            },
+            {
+              "location": 1.0,
+              "color": "#FDFDFD"
+            }
+          ]
+        },
+        "error": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0B0617"
+            },
+            {
+              "location": 0.5,
+              "color": "#160C27"
+            },
+            {
+              "location": 1.0,
+              "color": "#6961A4"
+            }
+          ]
+        }
+      }
+    },
+    "macintosh": {
+      "displayName": "Macintosh",
+      "palette": {
+        "shadow": "#080407",
+        "primary": "#E3D8C8",
+        "secondary": "#080407",
+        "accent": "#C7BCF3",
+        "highlight": "#E7E0E5",
+        "foreground": "#000000"
+      },
+      "gradients": {
+        "ambient": {
+          "angleDegrees": 90,
+          "cycleDurationMs": 3200,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#080407"
+            },
+            {
+              "location": 0.5,
+              "color": "#E3D8C8"
+            },
+            {
+              "location": 1.0,
+              "color": "#C7BCF3"
+            }
+          ]
+        },
+        "thinking": {
+          "angleDegrees": 115,
+          "cycleDurationMs": 1500,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#E3D8C8"
+            },
+            {
+              "location": 0.333,
+              "color": "#C7BCF3"
+            },
+            {
+              "location": 0.667,
+              "color": "#E7E0E5"
+            },
+            {
+              "location": 1.0,
+              "color": "#E3D8C8"
+            }
+          ]
+        },
+        "working": {
+          "angleDegrees": 0,
+          "cycleDurationMs": 1100,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#080407"
+            },
+            {
+              "location": 0.333,
+              "color": "#E3D8C8"
+            },
+            {
+              "location": 0.667,
+              "color": "#080407"
+            },
+            {
+              "location": 1.0,
+              "color": "#C7BCF3"
+            }
+          ]
+        },
+        "success": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#080407"
+            },
+            {
+              "location": 0.5,
+              "color": "#C7BCF3"
+            },
+            {
+              "location": 1.0,
+              "color": "#E7E0E5"
+            }
+          ]
+        },
+        "warning": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#080407"
+            },
+            {
+              "location": 0.333,
+              "color": "#080407"
+            },
+            {
+              "location": 0.667,
+              "color": "#C7BCF3"
+            },
+            {
+              "location": 1.0,
+              "color": "#E7E0E5"
+            }
+          ]
+        },
+        "error": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#080407"
+            },
+            {
+              "location": 0.5,
+              "color": "#080407"
+            },
+            {
+              "location": 1.0,
+              "color": "#C7BCF3"
+            }
+          ]
+        }
+      }
+    },
+    "lil-finder": {
+      "displayName": "Lil Finder",
+      "palette": {
+        "shadow": "#060406",
+        "primary": "#1AAAF1",
+        "secondary": "#1AAAF1",
+        "accent": "#138ECC",
+        "highlight": "#FDFCFC",
+        "foreground": "#FFFFFF"
+      },
+      "gradients": {
+        "ambient": {
+          "angleDegrees": 90,
+          "cycleDurationMs": 3200,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#060406"
+            },
+            {
+              "location": 0.5,
+              "color": "#1AAAF1"
+            },
+            {
+              "location": 1.0,
+              "color": "#138ECC"
+            }
+          ]
+        },
+        "thinking": {
+          "angleDegrees": 115,
+          "cycleDurationMs": 1500,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#1AAAF1"
+            },
+            {
+              "location": 0.333,
+              "color": "#138ECC"
+            },
+            {
+              "location": 0.667,
+              "color": "#FDFCFC"
+            },
+            {
+              "location": 1.0,
+              "color": "#1AAAF1"
+            }
+          ]
+        },
+        "working": {
+          "angleDegrees": 0,
+          "cycleDurationMs": 1100,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#060406"
+            },
+            {
+              "location": 0.333,
+              "color": "#1AAAF1"
+            },
+            {
+              "location": 0.667,
+              "color": "#1AAAF1"
+            },
+            {
+              "location": 1.0,
+              "color": "#138ECC"
+            }
+          ]
+        },
+        "success": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#060406"
+            },
+            {
+              "location": 0.5,
+              "color": "#138ECC"
+            },
+            {
+              "location": 1.0,
+              "color": "#FDFCFC"
+            }
+          ]
+        },
+        "warning": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#060406"
+            },
+            {
+              "location": 0.333,
+              "color": "#1AAAF1"
+            },
+            {
+              "location": 0.667,
+              "color": "#138ECC"
+            },
+            {
+              "location": 1.0,
+              "color": "#FDFCFC"
+            }
+          ]
+        },
+        "error": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#060406"
+            },
+            {
+              "location": 0.5,
+              "color": "#1AAAF1"
+            },
+            {
+              "location": 1.0,
+              "color": "#138ECC"
+            }
+          ]
+        }
+      }
+    },
+    "crt-pal": {
+      "displayName": "CRT Pal",
+      "palette": {
+        "shadow": "#121211",
+        "primary": "#201F1E",
+        "secondary": "#FBFBFA",
+        "accent": "#D4E2BB",
+        "highlight": "#FBFBFA",
+        "foreground": "#FFFFFF"
+      },
+      "gradients": {
+        "ambient": {
+          "angleDegrees": 90,
+          "cycleDurationMs": 3200,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#121211"
+            },
+            {
+              "location": 0.5,
+              "color": "#201F1E"
+            },
+            {
+              "location": 1.0,
+              "color": "#D4E2BB"
+            }
+          ]
+        },
+        "thinking": {
+          "angleDegrees": 115,
+          "cycleDurationMs": 1500,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#201F1E"
+            },
+            {
+              "location": 0.333,
+              "color": "#D4E2BB"
+            },
+            {
+              "location": 0.667,
+              "color": "#FBFBFA"
+            },
+            {
+              "location": 1.0,
+              "color": "#201F1E"
+            }
+          ]
+        },
+        "working": {
+          "angleDegrees": 0,
+          "cycleDurationMs": 1100,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#121211"
+            },
+            {
+              "location": 0.333,
+              "color": "#201F1E"
+            },
+            {
+              "location": 0.667,
+              "color": "#FBFBFA"
+            },
+            {
+              "location": 1.0,
+              "color": "#D4E2BB"
+            }
+          ]
+        },
+        "success": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#121211"
+            },
+            {
+              "location": 0.5,
+              "color": "#D4E2BB"
+            },
+            {
+              "location": 1.0,
+              "color": "#FBFBFA"
+            }
+          ]
+        },
+        "warning": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#121211"
+            },
+            {
+              "location": 0.333,
+              "color": "#FBFBFA"
+            },
+            {
+              "location": 0.667,
+              "color": "#D4E2BB"
+            },
+            {
+              "location": 1.0,
+              "color": "#FBFBFA"
+            }
+          ]
+        },
+        "error": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#121211"
+            },
+            {
+              "location": 0.5,
+              "color": "#FBFBFA"
+            },
+            {
+              "location": 1.0,
+              "color": "#D4E2BB"
+            }
+          ]
+        }
+      }
+    },
+    "bsod": {
+      "displayName": "Bsod",
+      "palette": {
+        "shadow": "#141A25",
+        "primary": "#0189FD",
+        "secondary": "#0189FD",
+        "accent": "#2AA4F8",
+        "highlight": "#F9FAF9",
+        "foreground": "#FFFFFF"
+      },
+      "gradients": {
+        "ambient": {
+          "angleDegrees": 90,
+          "cycleDurationMs": 3200,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#141A25"
+            },
+            {
+              "location": 0.5,
+              "color": "#0189FD"
+            },
+            {
+              "location": 1.0,
+              "color": "#2AA4F8"
+            }
+          ]
+        },
+        "thinking": {
+          "angleDegrees": 115,
+          "cycleDurationMs": 1500,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0189FD"
+            },
+            {
+              "location": 0.333,
+              "color": "#2AA4F8"
+            },
+            {
+              "location": 0.667,
+              "color": "#F9FAF9"
+            },
+            {
+              "location": 1.0,
+              "color": "#0189FD"
+            }
+          ]
+        },
+        "working": {
+          "angleDegrees": 0,
+          "cycleDurationMs": 1100,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#141A25"
+            },
+            {
+              "location": 0.333,
+              "color": "#0189FD"
+            },
+            {
+              "location": 0.667,
+              "color": "#0189FD"
+            },
+            {
+              "location": 1.0,
+              "color": "#2AA4F8"
+            }
+          ]
+        },
+        "success": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#141A25"
+            },
+            {
+              "location": 0.5,
+              "color": "#2AA4F8"
+            },
+            {
+              "location": 1.0,
+              "color": "#F9FAF9"
+            }
+          ]
+        },
+        "warning": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#141A25"
+            },
+            {
+              "location": 0.333,
+              "color": "#0189FD"
+            },
+            {
+              "location": 0.667,
+              "color": "#2AA4F8"
+            },
+            {
+              "location": 1.0,
+              "color": "#F9FAF9"
+            }
+          ]
+        },
+        "error": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#141A25"
+            },
+            {
+              "location": 0.5,
+              "color": "#0189FD"
+            },
+            {
+              "location": 1.0,
+              "color": "#2AA4F8"
+            }
+          ]
+        }
+      }
+    },
+    "codex": {
+      "displayName": "Codex",
+      "palette": {
+        "shadow": "#091020",
+        "primary": "#6C99F9",
+        "secondary": "#232D66",
+        "accent": "#4D75EF",
+        "highlight": "#9BC9FB",
+        "foreground": "#FFFFFF"
+      },
+      "gradients": {
+        "ambient": {
+          "angleDegrees": 90,
+          "cycleDurationMs": 3200,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#091020"
+            },
+            {
+              "location": 0.5,
+              "color": "#6C99F9"
+            },
+            {
+              "location": 1.0,
+              "color": "#4D75EF"
+            }
+          ]
+        },
+        "thinking": {
+          "angleDegrees": 115,
+          "cycleDurationMs": 1500,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#6C99F9"
+            },
+            {
+              "location": 0.333,
+              "color": "#4D75EF"
+            },
+            {
+              "location": 0.667,
+              "color": "#9BC9FB"
+            },
+            {
+              "location": 1.0,
+              "color": "#6C99F9"
+            }
+          ]
+        },
+        "working": {
+          "angleDegrees": 0,
+          "cycleDurationMs": 1100,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#091020"
+            },
+            {
+              "location": 0.333,
+              "color": "#6C99F9"
+            },
+            {
+              "location": 0.667,
+              "color": "#232D66"
+            },
+            {
+              "location": 1.0,
+              "color": "#4D75EF"
+            }
+          ]
+        },
+        "success": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#091020"
+            },
+            {
+              "location": 0.5,
+              "color": "#4D75EF"
+            },
+            {
+              "location": 1.0,
+              "color": "#9BC9FB"
+            }
+          ]
+        },
+        "warning": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#091020"
+            },
+            {
+              "location": 0.333,
+              "color": "#232D66"
+            },
+            {
+              "location": 0.667,
+              "color": "#4D75EF"
+            },
+            {
+              "location": 1.0,
+              "color": "#9BC9FB"
+            }
+          ]
+        },
+        "error": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#091020"
+            },
+            {
+              "location": 0.5,
+              "color": "#232D66"
+            },
+            {
+              "location": 1.0,
+              "color": "#4D75EF"
+            }
+          ]
+        }
+      }
+    },
+    "dewey": {
+      "displayName": "Dewey",
+      "palette": {
+        "shadow": "#05182E",
+        "primary": "#2AA8E8",
+        "secondary": "#59D0FC",
+        "accent": "#59D0FC",
+        "highlight": "#F8FDFD",
+        "foreground": "#FFFFFF"
+      },
+      "gradients": {
+        "ambient": {
+          "angleDegrees": 90,
+          "cycleDurationMs": 3200,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#05182E"
+            },
+            {
+              "location": 0.5,
+              "color": "#2AA8E8"
+            },
+            {
+              "location": 1.0,
+              "color": "#59D0FC"
+            }
+          ]
+        },
+        "thinking": {
+          "angleDegrees": 115,
+          "cycleDurationMs": 1500,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#2AA8E8"
+            },
+            {
+              "location": 0.333,
+              "color": "#59D0FC"
+            },
+            {
+              "location": 0.667,
+              "color": "#F8FDFD"
+            },
+            {
+              "location": 1.0,
+              "color": "#2AA8E8"
+            }
+          ]
+        },
+        "working": {
+          "angleDegrees": 0,
+          "cycleDurationMs": 1100,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#05182E"
+            },
+            {
+              "location": 0.333,
+              "color": "#2AA8E8"
+            },
+            {
+              "location": 0.667,
+              "color": "#59D0FC"
+            },
+            {
+              "location": 1.0,
+              "color": "#59D0FC"
+            }
+          ]
+        },
+        "success": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#05182E"
+            },
+            {
+              "location": 0.5,
+              "color": "#59D0FC"
+            },
+            {
+              "location": 1.0,
+              "color": "#F8FDFD"
+            }
+          ]
+        },
+        "warning": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#05182E"
+            },
+            {
+              "location": 0.333,
+              "color": "#59D0FC"
+            },
+            {
+              "location": 0.667,
+              "color": "#59D0FC"
+            },
+            {
+              "location": 1.0,
+              "color": "#F8FDFD"
+            }
+          ]
+        },
+        "error": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#05182E"
+            },
+            {
+              "location": 0.5,
+              "color": "#59D0FC"
+            },
+            {
+              "location": 1.0,
+              "color": "#59D0FC"
+            }
+          ]
+        }
+      }
+    },
+    "fireball": {
+      "displayName": "Fireball",
+      "palette": {
+        "shadow": "#080504",
+        "primary": "#FEE2BA",
+        "secondary": "#E52904",
+        "accent": "#FA910B",
+        "highlight": "#FEE2BA",
+        "foreground": "#000000"
+      },
+      "gradients": {
+        "ambient": {
+          "angleDegrees": 90,
+          "cycleDurationMs": 3200,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#080504"
+            },
+            {
+              "location": 0.5,
+              "color": "#FEE2BA"
+            },
+            {
+              "location": 1.0,
+              "color": "#FA910B"
+            }
+          ]
+        },
+        "thinking": {
+          "angleDegrees": 115,
+          "cycleDurationMs": 1500,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#FEE2BA"
+            },
+            {
+              "location": 0.333,
+              "color": "#FA910B"
+            },
+            {
+              "location": 0.667,
+              "color": "#FEE2BA"
+            },
+            {
+              "location": 1.0,
+              "color": "#FEE2BA"
+            }
+          ]
+        },
+        "working": {
+          "angleDegrees": 0,
+          "cycleDurationMs": 1100,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#080504"
+            },
+            {
+              "location": 0.333,
+              "color": "#FEE2BA"
+            },
+            {
+              "location": 0.667,
+              "color": "#E52904"
+            },
+            {
+              "location": 1.0,
+              "color": "#FA910B"
+            }
+          ]
+        },
+        "success": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#080504"
+            },
+            {
+              "location": 0.5,
+              "color": "#FA910B"
+            },
+            {
+              "location": 1.0,
+              "color": "#FEE2BA"
+            }
+          ]
+        },
+        "warning": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#080504"
+            },
+            {
+              "location": 0.333,
+              "color": "#E52904"
+            },
+            {
+              "location": 0.667,
+              "color": "#FA910B"
+            },
+            {
+              "location": 1.0,
+              "color": "#FEE2BA"
+            }
+          ]
+        },
+        "error": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#080504"
+            },
+            {
+              "location": 0.5,
+              "color": "#E52904"
+            },
+            {
+              "location": 1.0,
+              "color": "#FA910B"
+            }
+          ]
+        }
+      }
+    },
+    "hoots": {
+      "displayName": "Hoots",
+      "palette": {
+        "shadow": "#250B05",
+        "primary": "#EE6F01",
+        "secondary": "#FD8302",
+        "accent": "#EF9727",
+        "highlight": "#FDE3B8",
+        "foreground": "#FFFFFF"
+      },
+      "gradients": {
+        "ambient": {
+          "angleDegrees": 90,
+          "cycleDurationMs": 3200,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#250B05"
+            },
+            {
+              "location": 0.5,
+              "color": "#EE6F01"
+            },
+            {
+              "location": 1.0,
+              "color": "#EF9727"
+            }
+          ]
+        },
+        "thinking": {
+          "angleDegrees": 115,
+          "cycleDurationMs": 1500,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#EE6F01"
+            },
+            {
+              "location": 0.333,
+              "color": "#EF9727"
+            },
+            {
+              "location": 0.667,
+              "color": "#FDE3B8"
+            },
+            {
+              "location": 1.0,
+              "color": "#EE6F01"
+            }
+          ]
+        },
+        "working": {
+          "angleDegrees": 0,
+          "cycleDurationMs": 1100,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#250B05"
+            },
+            {
+              "location": 0.333,
+              "color": "#EE6F01"
+            },
+            {
+              "location": 0.667,
+              "color": "#FD8302"
+            },
+            {
+              "location": 1.0,
+              "color": "#EF9727"
+            }
+          ]
+        },
+        "success": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#250B05"
+            },
+            {
+              "location": 0.5,
+              "color": "#EF9727"
+            },
+            {
+              "location": 1.0,
+              "color": "#FDE3B8"
+            }
+          ]
+        },
+        "warning": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#250B05"
+            },
+            {
+              "location": 0.333,
+              "color": "#FD8302"
+            },
+            {
+              "location": 0.667,
+              "color": "#EF9727"
+            },
+            {
+              "location": 1.0,
+              "color": "#FDE3B8"
+            }
+          ]
+        },
+        "error": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#250B05"
+            },
+            {
+              "location": 0.5,
+              "color": "#FD8302"
+            },
+            {
+              "location": 1.0,
+              "color": "#EF9727"
+            }
+          ]
+        }
+      }
+    },
+    "null-signal": {
+      "displayName": "Null Signal",
+      "palette": {
+        "shadow": "#0C0B0D",
+        "primary": "#0C0B0D",
+        "secondary": "#EE4132",
+        "accent": "#EE4132",
+        "highlight": "#EE4132",
+        "foreground": "#FFFFFF"
+      },
+      "gradients": {
+        "ambient": {
+          "angleDegrees": 90,
+          "cycleDurationMs": 3200,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0C0B0D"
+            },
+            {
+              "location": 0.5,
+              "color": "#0C0B0D"
+            },
+            {
+              "location": 1.0,
+              "color": "#EE4132"
+            }
+          ]
+        },
+        "thinking": {
+          "angleDegrees": 115,
+          "cycleDurationMs": 1500,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0C0B0D"
+            },
+            {
+              "location": 0.333,
+              "color": "#EE4132"
+            },
+            {
+              "location": 0.667,
+              "color": "#EE4132"
+            },
+            {
+              "location": 1.0,
+              "color": "#0C0B0D"
+            }
+          ]
+        },
+        "working": {
+          "angleDegrees": 0,
+          "cycleDurationMs": 1100,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0C0B0D"
+            },
+            {
+              "location": 0.333,
+              "color": "#0C0B0D"
+            },
+            {
+              "location": 0.667,
+              "color": "#EE4132"
+            },
+            {
+              "location": 1.0,
+              "color": "#EE4132"
+            }
+          ]
+        },
+        "success": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0C0B0D"
+            },
+            {
+              "location": 0.5,
+              "color": "#EE4132"
+            },
+            {
+              "location": 1.0,
+              "color": "#EE4132"
+            }
+          ]
+        },
+        "warning": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0C0B0D"
+            },
+            {
+              "location": 0.333,
+              "color": "#EE4132"
+            },
+            {
+              "location": 0.667,
+              "color": "#EE4132"
+            },
+            {
+              "location": 1.0,
+              "color": "#EE4132"
+            }
+          ]
+        },
+        "error": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0C0B0D"
+            },
+            {
+              "location": 0.5,
+              "color": "#EE4132"
+            },
+            {
+              "location": 1.0,
+              "color": "#EE4132"
+            }
+          ]
+        }
+      }
+    },
+    "rocky": {
+      "displayName": "Rocky",
+      "palette": {
+        "shadow": "#0D0C0F",
+        "primary": "#E4CFB8",
+        "secondary": "#0D0C0F",
+        "accent": "#A68D6D",
+        "highlight": "#E4CFB8",
+        "foreground": "#FFFFFF"
+      },
+      "gradients": {
+        "ambient": {
+          "angleDegrees": 90,
+          "cycleDurationMs": 3200,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0D0C0F"
+            },
+            {
+              "location": 0.5,
+              "color": "#E4CFB8"
+            },
+            {
+              "location": 1.0,
+              "color": "#A68D6D"
+            }
+          ]
+        },
+        "thinking": {
+          "angleDegrees": 115,
+          "cycleDurationMs": 1500,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#E4CFB8"
+            },
+            {
+              "location": 0.333,
+              "color": "#A68D6D"
+            },
+            {
+              "location": 0.667,
+              "color": "#E4CFB8"
+            },
+            {
+              "location": 1.0,
+              "color": "#E4CFB8"
+            }
+          ]
+        },
+        "working": {
+          "angleDegrees": 0,
+          "cycleDurationMs": 1100,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0D0C0F"
+            },
+            {
+              "location": 0.333,
+              "color": "#E4CFB8"
+            },
+            {
+              "location": 0.667,
+              "color": "#0D0C0F"
+            },
+            {
+              "location": 1.0,
+              "color": "#A68D6D"
+            }
+          ]
+        },
+        "success": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0D0C0F"
+            },
+            {
+              "location": 0.5,
+              "color": "#A68D6D"
+            },
+            {
+              "location": 1.0,
+              "color": "#E4CFB8"
+            }
+          ]
+        },
+        "warning": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0D0C0F"
+            },
+            {
+              "location": 0.333,
+              "color": "#0D0C0F"
+            },
+            {
+              "location": 0.667,
+              "color": "#A68D6D"
+            },
+            {
+              "location": 1.0,
+              "color": "#E4CFB8"
+            }
+          ]
+        },
+        "error": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0D0C0F"
+            },
+            {
+              "location": 0.5,
+              "color": "#0D0C0F"
+            },
+            {
+              "location": 1.0,
+              "color": "#A68D6D"
+            }
+          ]
+        }
+      }
+    },
+    "seedy": {
+      "displayName": "Seedy",
+      "palette": {
+        "shadow": "#33271E",
+        "primary": "#F5E4C4",
+        "secondary": "#4C311D",
+        "accent": "#B6CC4E",
+        "highlight": "#F3E5CB",
+        "foreground": "#000000"
+      },
+      "gradients": {
+        "ambient": {
+          "angleDegrees": 90,
+          "cycleDurationMs": 3200,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#33271E"
+            },
+            {
+              "location": 0.5,
+              "color": "#F5E4C4"
+            },
+            {
+              "location": 1.0,
+              "color": "#B6CC4E"
+            }
+          ]
+        },
+        "thinking": {
+          "angleDegrees": 115,
+          "cycleDurationMs": 1500,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#F5E4C4"
+            },
+            {
+              "location": 0.333,
+              "color": "#B6CC4E"
+            },
+            {
+              "location": 0.667,
+              "color": "#F3E5CB"
+            },
+            {
+              "location": 1.0,
+              "color": "#F5E4C4"
+            }
+          ]
+        },
+        "working": {
+          "angleDegrees": 0,
+          "cycleDurationMs": 1100,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#33271E"
+            },
+            {
+              "location": 0.333,
+              "color": "#F5E4C4"
+            },
+            {
+              "location": 0.667,
+              "color": "#4C311D"
+            },
+            {
+              "location": 1.0,
+              "color": "#B6CC4E"
+            }
+          ]
+        },
+        "success": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#33271E"
+            },
+            {
+              "location": 0.5,
+              "color": "#B6CC4E"
+            },
+            {
+              "location": 1.0,
+              "color": "#F3E5CB"
+            }
+          ]
+        },
+        "warning": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#33271E"
+            },
+            {
+              "location": 0.333,
+              "color": "#4C311D"
+            },
+            {
+              "location": 0.667,
+              "color": "#B6CC4E"
+            },
+            {
+              "location": 1.0,
+              "color": "#F3E5CB"
+            }
+          ]
+        },
+        "error": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#33271E"
+            },
+            {
+              "location": 0.5,
+              "color": "#4C311D"
+            },
+            {
+              "location": 1.0,
+              "color": "#B6CC4E"
+            }
+          ]
+        }
+      }
+    },
+    "stacky": {
+      "displayName": "Stacky",
+      "palette": {
+        "shadow": "#0C0A10",
+        "primary": "#2D2838",
+        "secondary": "#A195B0",
+        "accent": "#625D7B",
+        "highlight": "#A195B0",
+        "foreground": "#FFFFFF"
+      },
+      "gradients": {
+        "ambient": {
+          "angleDegrees": 90,
+          "cycleDurationMs": 3200,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0C0A10"
+            },
+            {
+              "location": 0.5,
+              "color": "#2D2838"
+            },
+            {
+              "location": 1.0,
+              "color": "#625D7B"
+            }
+          ]
+        },
+        "thinking": {
+          "angleDegrees": 115,
+          "cycleDurationMs": 1500,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#2D2838"
+            },
+            {
+              "location": 0.333,
+              "color": "#625D7B"
+            },
+            {
+              "location": 0.667,
+              "color": "#A195B0"
+            },
+            {
+              "location": 1.0,
+              "color": "#2D2838"
+            }
+          ]
+        },
+        "working": {
+          "angleDegrees": 0,
+          "cycleDurationMs": 1100,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0C0A10"
+            },
+            {
+              "location": 0.333,
+              "color": "#2D2838"
+            },
+            {
+              "location": 0.667,
+              "color": "#A195B0"
+            },
+            {
+              "location": 1.0,
+              "color": "#625D7B"
+            }
+          ]
+        },
+        "success": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0C0A10"
+            },
+            {
+              "location": 0.5,
+              "color": "#625D7B"
+            },
+            {
+              "location": 1.0,
+              "color": "#A195B0"
+            }
+          ]
+        },
+        "warning": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0C0A10"
+            },
+            {
+              "location": 0.333,
+              "color": "#A195B0"
+            },
+            {
+              "location": 0.667,
+              "color": "#625D7B"
+            },
+            {
+              "location": 1.0,
+              "color": "#A195B0"
+            }
+          ]
+        },
+        "error": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0C0A10"
+            },
+            {
+              "location": 0.5,
+              "color": "#A195B0"
+            },
+            {
+              "location": 1.0,
+              "color": "#625D7B"
+            }
+          ]
+        }
+      }
+    },
+    "blau": {
+      "displayName": "Blau",
+      "palette": {
+        "shadow": "#0B0606",
+        "primary": "#FCCA91",
+        "secondary": "#0B0606",
+        "accent": "#E3995C",
+        "highlight": "#E8DFCD",
+        "foreground": "#000000"
+      },
+      "gradients": {
+        "ambient": {
+          "angleDegrees": 90,
+          "cycleDurationMs": 3200,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0B0606"
+            },
+            {
+              "location": 0.5,
+              "color": "#FCCA91"
+            },
+            {
+              "location": 1.0,
+              "color": "#E3995C"
+            }
+          ]
+        },
+        "thinking": {
+          "angleDegrees": 115,
+          "cycleDurationMs": 1500,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#FCCA91"
+            },
+            {
+              "location": 0.333,
+              "color": "#E3995C"
+            },
+            {
+              "location": 0.667,
+              "color": "#E8DFCD"
+            },
+            {
+              "location": 1.0,
+              "color": "#FCCA91"
+            }
+          ]
+        },
+        "working": {
+          "angleDegrees": 0,
+          "cycleDurationMs": 1100,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0B0606"
+            },
+            {
+              "location": 0.333,
+              "color": "#FCCA91"
+            },
+            {
+              "location": 0.667,
+              "color": "#0B0606"
+            },
+            {
+              "location": 1.0,
+              "color": "#E3995C"
+            }
+          ]
+        },
+        "success": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0B0606"
+            },
+            {
+              "location": 0.5,
+              "color": "#E3995C"
+            },
+            {
+              "location": 1.0,
+              "color": "#E8DFCD"
+            }
+          ]
+        },
+        "warning": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0B0606"
+            },
+            {
+              "location": 0.333,
+              "color": "#0B0606"
+            },
+            {
+              "location": 0.667,
+              "color": "#E3995C"
+            },
+            {
+              "location": 1.0,
+              "color": "#E8DFCD"
+            }
+          ]
+        },
+        "error": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0B0606"
+            },
+            {
+              "location": 0.5,
+              "color": "#0B0606"
+            },
+            {
+              "location": 1.0,
+              "color": "#E3995C"
+            }
+          ]
+        }
+      }
+    },
+    "haaland": {
+      "displayName": "Haaland",
+      "palette": {
+        "shadow": "#0E1410",
+        "primary": "#FBD0A3",
+        "secondary": "#0E1410",
+        "accent": "#64B6EC",
+        "highlight": "#EEF1F2",
+        "foreground": "#000000"
+      },
+      "gradients": {
+        "ambient": {
+          "angleDegrees": 90,
+          "cycleDurationMs": 3200,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0E1410"
+            },
+            {
+              "location": 0.5,
+              "color": "#FBD0A3"
+            },
+            {
+              "location": 1.0,
+              "color": "#64B6EC"
+            }
+          ]
+        },
+        "thinking": {
+          "angleDegrees": 115,
+          "cycleDurationMs": 1500,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#FBD0A3"
+            },
+            {
+              "location": 0.333,
+              "color": "#64B6EC"
+            },
+            {
+              "location": 0.667,
+              "color": "#EEF1F2"
+            },
+            {
+              "location": 1.0,
+              "color": "#FBD0A3"
+            }
+          ]
+        },
+        "working": {
+          "angleDegrees": 0,
+          "cycleDurationMs": 1100,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0E1410"
+            },
+            {
+              "location": 0.333,
+              "color": "#FBD0A3"
+            },
+            {
+              "location": 0.667,
+              "color": "#0E1410"
+            },
+            {
+              "location": 1.0,
+              "color": "#64B6EC"
+            }
+          ]
+        },
+        "success": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0E1410"
+            },
+            {
+              "location": 0.5,
+              "color": "#64B6EC"
+            },
+            {
+              "location": 1.0,
+              "color": "#EEF1F2"
+            }
+          ]
+        },
+        "warning": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0E1410"
+            },
+            {
+              "location": 0.333,
+              "color": "#0E1410"
+            },
+            {
+              "location": 0.667,
+              "color": "#64B6EC"
+            },
+            {
+              "location": 1.0,
+              "color": "#EEF1F2"
+            }
+          ]
+        },
+        "error": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0E1410"
+            },
+            {
+              "location": 0.5,
+              "color": "#0E1410"
+            },
+            {
+              "location": 1.0,
+              "color": "#64B6EC"
+            }
+          ]
+        }
+      }
+    },
+    "invincible": {
+      "displayName": "Invincible",
+      "palette": {
+        "shadow": "#0C090A",
+        "primary": "#FADF0D",
+        "secondary": "#0374E4",
+        "accent": "#0374E4",
+        "highlight": "#DEDBD7",
+        "foreground": "#FFFFFF"
+      },
+      "gradients": {
+        "ambient": {
+          "angleDegrees": 90,
+          "cycleDurationMs": 3200,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0C090A"
+            },
+            {
+              "location": 0.5,
+              "color": "#FADF0D"
+            },
+            {
+              "location": 1.0,
+              "color": "#0374E4"
+            }
+          ]
+        },
+        "thinking": {
+          "angleDegrees": 115,
+          "cycleDurationMs": 1500,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#FADF0D"
+            },
+            {
+              "location": 0.333,
+              "color": "#0374E4"
+            },
+            {
+              "location": 0.667,
+              "color": "#DEDBD7"
+            },
+            {
+              "location": 1.0,
+              "color": "#FADF0D"
+            }
+          ]
+        },
+        "working": {
+          "angleDegrees": 0,
+          "cycleDurationMs": 1100,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0C090A"
+            },
+            {
+              "location": 0.333,
+              "color": "#FADF0D"
+            },
+            {
+              "location": 0.667,
+              "color": "#0374E4"
+            },
+            {
+              "location": 1.0,
+              "color": "#0374E4"
+            }
+          ]
+        },
+        "success": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0C090A"
+            },
+            {
+              "location": 0.5,
+              "color": "#0374E4"
+            },
+            {
+              "location": 1.0,
+              "color": "#DEDBD7"
+            }
+          ]
+        },
+        "warning": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0C090A"
+            },
+            {
+              "location": 0.333,
+              "color": "#0374E4"
+            },
+            {
+              "location": 0.667,
+              "color": "#0374E4"
+            },
+            {
+              "location": 1.0,
+              "color": "#DEDBD7"
+            }
+          ]
+        },
+        "error": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0C090A"
+            },
+            {
+              "location": 0.5,
+              "color": "#0374E4"
+            },
+            {
+              "location": 1.0,
+              "color": "#0374E4"
+            }
+          ]
+        }
+      }
+    },
+    "killua": {
+      "displayName": "Killua",
+      "palette": {
+        "shadow": "#080409",
+        "primary": "#F4F3F2",
+        "secondary": "#080409",
+        "accent": "#434A95",
+        "highlight": "#F4F3F2",
+        "foreground": "#FFFFFF"
+      },
+      "gradients": {
+        "ambient": {
+          "angleDegrees": 90,
+          "cycleDurationMs": 3200,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#080409"
+            },
+            {
+              "location": 0.5,
+              "color": "#F4F3F2"
+            },
+            {
+              "location": 1.0,
+              "color": "#434A95"
+            }
+          ]
+        },
+        "thinking": {
+          "angleDegrees": 115,
+          "cycleDurationMs": 1500,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#F4F3F2"
+            },
+            {
+              "location": 0.333,
+              "color": "#434A95"
+            },
+            {
+              "location": 0.667,
+              "color": "#F4F3F2"
+            },
+            {
+              "location": 1.0,
+              "color": "#F4F3F2"
+            }
+          ]
+        },
+        "working": {
+          "angleDegrees": 0,
+          "cycleDurationMs": 1100,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#080409"
+            },
+            {
+              "location": 0.333,
+              "color": "#F4F3F2"
+            },
+            {
+              "location": 0.667,
+              "color": "#080409"
+            },
+            {
+              "location": 1.0,
+              "color": "#434A95"
+            }
+          ]
+        },
+        "success": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#080409"
+            },
+            {
+              "location": 0.5,
+              "color": "#434A95"
+            },
+            {
+              "location": 1.0,
+              "color": "#F4F3F2"
+            }
+          ]
+        },
+        "warning": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#080409"
+            },
+            {
+              "location": 0.333,
+              "color": "#080409"
+            },
+            {
+              "location": 0.667,
+              "color": "#434A95"
+            },
+            {
+              "location": 1.0,
+              "color": "#F4F3F2"
+            }
+          ]
+        },
+        "error": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#080409"
+            },
+            {
+              "location": 0.5,
+              "color": "#080409"
+            },
+            {
+              "location": 1.0,
+              "color": "#434A95"
+            }
+          ]
+        }
+      }
+    },
+    "lawliet": {
+      "displayName": "L Lawliet",
+      "palette": {
+        "shadow": "#0E0C0D",
+        "primary": "#323131",
+        "secondary": "#FCEBCD",
+        "accent": "#B25134",
+        "highlight": "#FCEBCD",
+        "foreground": "#FFFFFF"
+      },
+      "gradients": {
+        "ambient": {
+          "angleDegrees": 90,
+          "cycleDurationMs": 3200,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0E0C0D"
+            },
+            {
+              "location": 0.5,
+              "color": "#323131"
+            },
+            {
+              "location": 1.0,
+              "color": "#B25134"
+            }
+          ]
+        },
+        "thinking": {
+          "angleDegrees": 115,
+          "cycleDurationMs": 1500,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#323131"
+            },
+            {
+              "location": 0.333,
+              "color": "#B25134"
+            },
+            {
+              "location": 0.667,
+              "color": "#FCEBCD"
+            },
+            {
+              "location": 1.0,
+              "color": "#323131"
+            }
+          ]
+        },
+        "working": {
+          "angleDegrees": 0,
+          "cycleDurationMs": 1100,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0E0C0D"
+            },
+            {
+              "location": 0.333,
+              "color": "#323131"
+            },
+            {
+              "location": 0.667,
+              "color": "#FCEBCD"
+            },
+            {
+              "location": 1.0,
+              "color": "#B25134"
+            }
+          ]
+        },
+        "success": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0E0C0D"
+            },
+            {
+              "location": 0.5,
+              "color": "#B25134"
+            },
+            {
+              "location": 1.0,
+              "color": "#FCEBCD"
+            }
+          ]
+        },
+        "warning": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0E0C0D"
+            },
+            {
+              "location": 0.333,
+              "color": "#FCEBCD"
+            },
+            {
+              "location": 0.667,
+              "color": "#B25134"
+            },
+            {
+              "location": 1.0,
+              "color": "#FCEBCD"
+            }
+          ]
+        },
+        "error": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0E0C0D"
+            },
+            {
+              "location": 0.5,
+              "color": "#FCEBCD"
+            },
+            {
+              "location": 1.0,
+              "color": "#B25134"
+            }
+          ]
+        }
+      }
+    },
+    "noir-webling": {
+      "displayName": "Noir Webling",
+      "palette": {
+        "shadow": "#0F0D0D",
+        "primary": "#0F0D0D",
+        "secondary": "#F8F7F7",
+        "accent": "#2D2B2B",
+        "highlight": "#F8F7F7",
+        "foreground": "#FFFFFF"
+      },
+      "gradients": {
+        "ambient": {
+          "angleDegrees": 90,
+          "cycleDurationMs": 3200,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0F0D0D"
+            },
+            {
+              "location": 0.5,
+              "color": "#0F0D0D"
+            },
+            {
+              "location": 1.0,
+              "color": "#2D2B2B"
+            }
+          ]
+        },
+        "thinking": {
+          "angleDegrees": 115,
+          "cycleDurationMs": 1500,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0F0D0D"
+            },
+            {
+              "location": 0.333,
+              "color": "#2D2B2B"
+            },
+            {
+              "location": 0.667,
+              "color": "#F8F7F7"
+            },
+            {
+              "location": 1.0,
+              "color": "#0F0D0D"
+            }
+          ]
+        },
+        "working": {
+          "angleDegrees": 0,
+          "cycleDurationMs": 1100,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0F0D0D"
+            },
+            {
+              "location": 0.333,
+              "color": "#0F0D0D"
+            },
+            {
+              "location": 0.667,
+              "color": "#F8F7F7"
+            },
+            {
+              "location": 1.0,
+              "color": "#2D2B2B"
+            }
+          ]
+        },
+        "success": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0F0D0D"
+            },
+            {
+              "location": 0.5,
+              "color": "#2D2B2B"
+            },
+            {
+              "location": 1.0,
+              "color": "#F8F7F7"
+            }
+          ]
+        },
+        "warning": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0F0D0D"
+            },
+            {
+              "location": 0.333,
+              "color": "#F8F7F7"
+            },
+            {
+              "location": 0.667,
+              "color": "#2D2B2B"
+            },
+            {
+              "location": 1.0,
+              "color": "#F8F7F7"
+            }
+          ]
+        },
+        "error": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#0F0D0D"
+            },
+            {
+              "location": 0.5,
+              "color": "#F8F7F7"
+            },
+            {
+              "location": 1.0,
+              "color": "#2D2B2B"
+            }
+          ]
+        }
+      }
+    },
+    "patrick-star": {
+      "displayName": "Patrick Star",
+      "palette": {
+        "shadow": "#080506",
+        "primary": "#F8978A",
+        "secondary": "#080506",
+        "accent": "#E97169",
+        "highlight": "#F9F6F5",
+        "foreground": "#FFFFFF"
+      },
+      "gradients": {
+        "ambient": {
+          "angleDegrees": 90,
+          "cycleDurationMs": 3200,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#080506"
+            },
+            {
+              "location": 0.5,
+              "color": "#F8978A"
+            },
+            {
+              "location": 1.0,
+              "color": "#E97169"
+            }
+          ]
+        },
+        "thinking": {
+          "angleDegrees": 115,
+          "cycleDurationMs": 1500,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#F8978A"
+            },
+            {
+              "location": 0.333,
+              "color": "#E97169"
+            },
+            {
+              "location": 0.667,
+              "color": "#F9F6F5"
+            },
+            {
+              "location": 1.0,
+              "color": "#F8978A"
+            }
+          ]
+        },
+        "working": {
+          "angleDegrees": 0,
+          "cycleDurationMs": 1100,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#080506"
+            },
+            {
+              "location": 0.333,
+              "color": "#F8978A"
+            },
+            {
+              "location": 0.667,
+              "color": "#080506"
+            },
+            {
+              "location": 1.0,
+              "color": "#E97169"
+            }
+          ]
+        },
+        "success": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#080506"
+            },
+            {
+              "location": 0.5,
+              "color": "#E97169"
+            },
+            {
+              "location": 1.0,
+              "color": "#F9F6F5"
+            }
+          ]
+        },
+        "warning": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#080506"
+            },
+            {
+              "location": 0.333,
+              "color": "#080506"
+            },
+            {
+              "location": 0.667,
+              "color": "#E97169"
+            },
+            {
+              "location": 1.0,
+              "color": "#F9F6F5"
+            }
+          ]
+        },
+        "error": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#080506"
+            },
+            {
+              "location": 0.5,
+              "color": "#080506"
+            },
+            {
+              "location": 1.0,
+              "color": "#E97169"
+            }
+          ]
+        }
+      }
+    },
+    "peter": {
+      "displayName": "Peter",
+      "palette": {
+        "shadow": "#080505",
+        "primary": "#FCC593",
+        "secondary": "#8B3802",
+        "accent": "#D9A94F",
+        "highlight": "#FCFCFB",
+        "foreground": "#000000"
+      },
+      "gradients": {
+        "ambient": {
+          "angleDegrees": 90,
+          "cycleDurationMs": 3200,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#080505"
+            },
+            {
+              "location": 0.5,
+              "color": "#FCC593"
+            },
+            {
+              "location": 1.0,
+              "color": "#D9A94F"
+            }
+          ]
+        },
+        "thinking": {
+          "angleDegrees": 115,
+          "cycleDurationMs": 1500,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#FCC593"
+            },
+            {
+              "location": 0.333,
+              "color": "#D9A94F"
+            },
+            {
+              "location": 0.667,
+              "color": "#FCFCFB"
+            },
+            {
+              "location": 1.0,
+              "color": "#FCC593"
+            }
+          ]
+        },
+        "working": {
+          "angleDegrees": 0,
+          "cycleDurationMs": 1100,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#080505"
+            },
+            {
+              "location": 0.333,
+              "color": "#FCC593"
+            },
+            {
+              "location": 0.667,
+              "color": "#8B3802"
+            },
+            {
+              "location": 1.0,
+              "color": "#D9A94F"
+            }
+          ]
+        },
+        "success": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#080505"
+            },
+            {
+              "location": 0.5,
+              "color": "#D9A94F"
+            },
+            {
+              "location": 1.0,
+              "color": "#FCFCFB"
+            }
+          ]
+        },
+        "warning": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#080505"
+            },
+            {
+              "location": 0.333,
+              "color": "#8B3802"
+            },
+            {
+              "location": 0.667,
+              "color": "#D9A94F"
+            },
+            {
+              "location": 1.0,
+              "color": "#FCFCFB"
+            }
+          ]
+        },
+        "error": {
+          "angleDegrees": 25,
+          "cycleDurationMs": 900,
+          "stops": [
+            {
+              "location": 0.0,
+              "color": "#080505"
+            },
+            {
+              "location": 0.5,
+              "color": "#8B3802"
+            },
+            {
+              "location": 1.0,
+              "color": "#D9A94F"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

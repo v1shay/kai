@@ -1,0 +1,76 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 610 >>
+stream
+q
+0.11 0.23 0.40 rg
+0 680 612 112 re f
+Q
+BT
+/F1 30 Tf
+1 1 1 rg
+54 730 Td
+(Test PDF) Tj
+ET
+BT
+/F1 12 Tf
+0.82 0.89 0.98 rg
+54 706 Td
+(A simple document for preview, download, and print testing.) Tj
+ET
+0.12 0.56 0.75 rg
+54 626 504 3 re f
+BT
+/F1 15 Tf
+0.12 0.18 0.26 rg
+54 588 Td
+(Hello, PDF!) Tj
+ET
+BT
+/F1 11 Tf
+0.25 0.30 0.38 rg
+54 555 Td
+(This page confirms that text, color, and layout render correctly.) Tj
+0 -22 Td
+(Page size: US Letter  |  Pages: 1  |  Created: September 26, 2026) Tj
+ET
+0.86 0.89 0.93 rg
+54 78 504 1 re f
+BT
+/F1 9 Tf
+0.42 0.47 0.54 rg
+54 58 Td
+(Sample test document  |  Page 1 of 1) Tj
+ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+6 0 obj
+<< /Title (Test PDF) /Author (Codex) /Creator (Codex) >>
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000121 00000 n 
+0000000247 00000 n 
+0000000907 00000 n 
+0000000977 00000 n 
+trailer
+<< /Size 7 /Root 1 0 R /Info 6 0 R >>
+startxref
+1049
+%%EOF

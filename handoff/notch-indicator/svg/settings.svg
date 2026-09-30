@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 18" width="112" height="72" role="img" aria-label="settings indicator">
+  <defs><linearGradient id="paint" x1="0" y1="0" x2="28" y2="18" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#fafafa"/><stop offset="0.5" stop-color="#d5d6d8"/><stop offset="1" stop-color="#8a8d92"/></linearGradient></defs>
+  <ellipse transform="translate(14.000 9.000) rotate(-0.000) translate(-3.500 -3.500)" cx="3.500" cy="3.500" rx="2.750" ry="2.750" fill="none" stroke="url(#paint)" stroke-width="1.500" stroke-linecap="round" stroke-linejoin="round" opacity="1.000"/>
+  <rect transform="translate(21.300 9.000) rotate(-0.000) translate(-2.200 -0.850)" width="4.400" height="1.700" rx="0.850" fill="url(#paint)" opacity="1.000"/>
+  <rect transform="translate(17.650 2.678) rotate(-60.000) translate(-2.200 -0.850)" width="4.400" height="1.700" rx="0.850" fill="url(#paint)" opacity="1.000"/>
+  <rect transform="translate(10.350 2.678) rotate(-120.000) translate(-2.200 -0.850)" width="4.400" height="1.700" rx="0.850" fill="url(#paint)" opacity="1.000"/>
+  <rect transform="translate(6.700 9.000) rotate(-180.000) translate(-2.200 -0.850)" width="4.400" height="1.700" rx="0.850" fill="url(#paint)" opacity="1.000"/>
+  <rect transform="translate(10.350 15.322) rotate(-240.000) translate(-2.200 -0.850)" width="4.400" height="1.700" rx="0.850" fill="url(#paint)" opacity="1.000"/>
+  <rect transform="translate(17.650 15.322) rotate(-300.000) translate(-2.200 -0.850)" width="4.400" height="1.700" rx="0.850" fill="url(#paint)" opacity="1.000"/>
+</svg>

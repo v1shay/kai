@@ -1,0 +1,6 @@
+{
+  "id": "ghost",
+  "displayName": "Ghost",
+  "description": "A tiny retro pixel ghost companion.",
+  "spritesheetPath": "spritesheet.webp"
+}

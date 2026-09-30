@@ -1,0 +1,156 @@
+{
+  "checkedDistinctPets": 30,
+  "allPass": true,
+  "checks": [
+    {
+      "spritesheet": "installed_custom/77/spritesheet.webp",
+      "format": "8x9",
+      "issues": []
+    },
+    {
+      "spritesheet": "installed_custom/agumon-2/spritesheet.webp",
+      "format": "8x9",
+      "issues": []
+    },
+    {
+      "spritesheet": "installed_custom/aqua-wisp/spritesheet.webp",
+      "format": "8x9",
+      "issues": []
+    },
+    {
+      "spritesheet": "installed_custom/kabi/spritesheet.webp",
+      "format": "8x9",
+      "issues": []
+    },
+    {
+      "spritesheet": "installed_custom/ultronite/spritesheet.webp",
+      "format": "8x11",
+      "issues": []
+    },
+    {
+      "spritesheet": "installed_custom/winter-curry-dog/spritesheet.webp",
+      "format": "8x9",
+      "issues": []
+    },
+    {
+      "spritesheet": "zip_pets/zip/spritesheet.webp",
+      "format": "8x9",
+      "issues": []
+    },
+    {
+      "spritesheet": "zip_pets/zip (1)/spritesheet.webp",
+      "format": "8x9",
+      "issues": []
+    },
+    {
+      "spritesheet": "zip_pets/zip (2)/spritesheet.webp",
+      "format": "8x9",
+      "issues": []
+    },
+    {
+      "spritesheet": "zip_pets/zip (3)/spritesheet.webp",
+      "format": "8x9",
+      "issues": []
+    },
+    {
+      "spritesheet": "zip_pets/zip (8)/spritesheet.webp",
+      "format": "8x9",
+      "issues": []
+    },
+    {
+      "spritesheet": "zip_pets/zip (9)/spritesheet.webp",
+      "format": "8x9",
+      "issues": []
+    },
+    {
+      "spritesheet": "zip_pets/zip (10)/spritesheet.webp",
+      "format": "8x9",
+      "issues": []
+    },
+    {
+      "spritesheet": "codex_built_in/bsod/spritesheet.webp",
+      "format": "8x11",
+      "issues": []
+    },
+    {
+      "spritesheet": "codex_built_in/codex/spritesheet.webp",
+      "format": "8x11",
+      "issues": []
+    },
+    {
+      "spritesheet": "codex_built_in/dewey/spritesheet.webp",
+      "format": "8x11",
+      "issues": []
+    },
+    {
+      "spritesheet": "codex_built_in/fireball/spritesheet.webp",
+      "format": "8x11",
+      "issues": []
+    },
+    {
+      "spritesheet": "codex_built_in/hoots/spritesheet.webp",
+      "format": "8x11",
+      "issues": []
+    },
+    {
+      "spritesheet": "codex_built_in/null-signal/spritesheet.webp",
+      "format": "8x11",
+      "issues": []
+    },
+    {
+      "spritesheet": "codex_built_in/rocky/spritesheet.webp",
+      "format": "8x11",
+      "issues": []
+    },
+    {
+      "spritesheet": "codex_built_in/seedy/spritesheet.webp",
+      "format": "8x11",
+      "issues": []
+    },
+    {
+      "spritesheet": "codex_built_in/stacky/spritesheet.webp",
+      "format": "8x11",
+      "issues": []
+    },
+    {
+      "spritesheet": "zip_pets/blau/spritesheet.webp",
+      "format": "8x9",
+      "issues": []
+    },
+    {
+      "spritesheet": "zip_pets/haaland/spritesheet.webp",
+      "format": "8x9",
+      "issues": []
+    },
+    {
+      "spritesheet": "zip_pets/invincible/spritesheet.webp",
+      "format": "8x9",
+      "issues": []
+    },
+    {
+      "spritesheet": "zip_pets/killua/spritesheet.webp",
+      "format": "8x9",
+      "issues": []
+    },
+    {
+      "spritesheet": "zip_pets/lawliet/spritesheet.webp",
+      "format": "8x9",
+      "issues": []
+    },
+    {
+      "spritesheet": "zip_pets/noir-webling/spritesheet.webp",
+      "format": "8x9",
+      "issues": []
+    },
+    {
+      "spritesheet": "zip_pets/patrick-star/spritesheet.webp",
+      "format": "8x9",
+      "issues": []
+    },
+    {
+      "spritesheet": "zip_pets/peter/spritesheet.webp",
+      "format": "8x9",
+      "issues": []
+    }
+  ]
+}

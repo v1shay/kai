@@ -1,0 +1,21 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><link rel="stylesheet" href="katex.min.css">
+<style>
+html, body { margin: 0; padding: 0; background: #000; overflow: hidden; }
+#math { display: inline-block; padding: 2px 3px; white-space: nowrap; font-size: 12px; line-height: 1.35; }
+#math.display { font-size: 12px; }
+</style><script src="katex.min.js"></script></head>
+<body><div id="math"></div><script>
+function renderMath(tex, display, color) {
+  const target = document.getElementById('math');
+  target.className = display ? 'display' : '';
+  target.style.color = color;
+  katex.render(tex, target, {displayMode: display, throwOnError: true,
+    trust: false, maxSize: 8, maxExpand: 1000, output: 'html'});
+  return mathSize();
+}
+function mathSize() {
+  const rect = document.getElementById('math').getBoundingClientRect();
+  return {width: Math.ceil(rect.width), height: Math.ceil(rect.height)};
+}
+</script></body></html>

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 18" width="112" height="72" role="img" aria-label="waiting indicator">
+  <defs><linearGradient id="paint" x1="0" y1="0" x2="28" y2="18" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#fafafa"/><stop offset="0.5" stop-color="#d5d6d8"/><stop offset="1" stop-color="#8a8d92"/></linearGradient></defs>
+  <rect transform="translate(14.000 2.000) rotate(-0.000) translate(-8.500 -0.750)" width="17.000" height="1.500" rx="0.750" fill="url(#paint)" opacity="1.000"/>
+  <rect transform="translate(14.000 16.000) rotate(-0.000) translate(-8.500 -0.750)" width="17.000" height="1.500" rx="0.750" fill="url(#paint)" opacity="1.000"/>
+  <g transform="translate(10.000 9.000) rotate(-0.000) translate(-3.500 -6.500)" opacity="1.000"><path transform="translate(0 13.000) scale(1 -1)" d="M 0 13.000 C 0.560 10.140, 6.440 8.060, 7.000 6.500 C 6.440 4.940, 0.560 2.860, 0 0" fill="none" stroke="url(#paint)" stroke-width="1.450" stroke-linecap="round" stroke-linejoin="round"/></g>
+  <g transform="translate(18.000 9.000) rotate(-0.000) translate(-3.500 -6.500)" opacity="1.000"><path transform="translate(0 13.000) scale(1 -1)" d="M 7.000 13.000 C 6.440 10.140, 0.560 8.060, 0 6.500 C 0.560 4.940, 6.440 2.860, 7.000 0" fill="none" stroke="url(#paint)" stroke-width="1.450" stroke-linecap="round" stroke-linejoin="round"/></g>
+  <rect transform="translate(14.000 7.000) rotate(-0.000) translate(-1.000 -1.000)" width="2.000" height="2.000" rx="1.000" fill="url(#paint)" opacity="1.000"/>
+  <rect transform="translate(14.000 14.000) rotate(-0.000) translate(-4.000 -0.750)" width="8.000" height="1.500" rx="0.750" fill="url(#paint)" opacity="1.000"/>
+</svg>
