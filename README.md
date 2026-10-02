@@ -1,10 +1,16 @@
 <div align = "center">
 
-https://github.com/user-attachments/assets/26f9bb05-a47e-40ee-a19f-410a1ee89721
+<p align="center">
+  <video src="https://github.com/user-attachments/assets/edd3a4d6-ef99-4bbe-8780-9a0e0c8b51ae" width="850" controls></video>
+</p>
 
-https://github.com/user-attachments/assets/ee597c1f-4ab5-4488-82f9-0f3c60db89e7
+<p align="center">
+  <video src="https://github.com/user-attachments/assets/2dee9871-5334-4355-ae9b-2ce6bab71b39" width="700" controls></video>
+</p>
 
-https://github.com/user-attachments/assets/2dee9871-5334-4355-ae9b-2ce6bab71b39
+<p align="center">
+  <video src="https://github.com/user-attachments/assets/ee597c1f-4ab5-4488-82f9-0f3c60db89e7" width="700" controls></video>
+</p>
 
 </div>
 
