@@ -130,7 +130,9 @@ private final class NotchView:ImageDropView {
     private var speakResponses=false,compactOnSend=false,youtubeMedia=false,spotifyMedia=false
     private var voiceMenu=NSMenu(),speechItem:NSMenuItem!,compactSendItem:NSMenuItem!,youtubeItem:NSMenuItem!,spotifyItem:NSMenuItem!,featureStatusItem:NSMenuItem!
     private var mediaState:MediaNowPlaying?,mediaImage:NSImage?,mediaProfile:PetGradientProfile?,mediaVisible=false,artworkTask:URLSessionDataTask?
-    private let mediaArtwork=CALayer()
+    private let mediaArtwork=CALayer(),visualTransition=NotchVisualTransition()
+    private var mediaReleaseWork:DispatchWorkItem?
+    private var mediaSize:CGFloat=32,mediaSizeSlider:NSSlider?,loadedMediaKey:String?,presentedMediaKey:String?
     private let mathRenderer=MathRenderer()
     private var renderMath=true,soundsEnabled=true,petMenuRows=[String:PetMenuRow]()
     private var mathRefreshWork:DispatchWorkItem?
@@ -172,6 +174,7 @@ private final class NotchView:ImageDropView {
         experimentalWebMode=UserDefaults.standard.bool(forKey:"experimentalWebMode")
         renderMath=UserDefaults.standard.object(forKey:"renderMath") as? Bool ?? true
         soundsEnabled=UserDefaults.standard.object(forKey:"soundsEnabled") as? Bool ?? true;sounds.enabled=soundsEnabled
+        if let size=UserDefaults.standard.object(forKey:"mediaSize") as? Double,size.isFinite{mediaSize=CGFloat(size)}
         speakResponses=UserDefaults.standard.bool(forKey:"speakResponses")
         compactOnSend=UserDefaults.standard.bool(forKey:"compactOnSend")
         youtubeMedia=UserDefaults.standard.bool(forKey:"youtubeMedia")
@@ -220,7 +223,7 @@ private final class NotchView:ImageDropView {
         DistributedNotificationCenter.default().addObserver(self,selector:#selector(codexPreview(_:)),name:NSNotification.Name("com.kai.codex.preview"),object:nil)
     }
 
-    func applicationWillTerminate(_ notification:Notification){speech.stop();media.stop();artworkTask?.cancel();bridge.stop();attachmentFiles.forEach{try? FileManager.default.removeItem(at:$0)}}
+    func applicationWillTerminate(_ notification:Notification){mediaReleaseWork?.cancel();speech.stop();media.stop();artworkTask?.cancel();bridge.stop();attachmentFiles.forEach{try? FileManager.default.removeItem(at:$0)}}
     @objc private func codexPreview(_ note:Notification){guard let path=note.userInfo?["path"] as? String else{return};pinned=true;setOpen(true,mini:true);miniUI.previewFile(URL(fileURLWithPath:(path as NSString).expandingTildeInPath))}
 
     private func buildMenu() {
@@ -284,6 +287,10 @@ private final class NotchView:ImageDropView {
         compactSendItem=menu.addItem(withTitle:"compact immediately on send",action:#selector(toggleCompactSend),keyEquivalent:"")
         youtubeItem=menu.addItem(withTitle:"YouTube when idle (Webby, Dia, Chrome)",action:#selector(toggleYouTube),keyEquivalent:"")
         spotifyItem=menu.addItem(withTitle:"Spotify when idle",action:#selector(toggleSpotify),keyEquivalent:"")
+        let mediaSizeView=NSView(frame:NSRect(x:0,y:0,width:180,height:40))
+        let mediaSizeLabel=NSTextField(labelWithString:"media thumbnail size"),mediaSlider=NSSlider(value:Double(mediaSize),minValue:16,maxValue:38,target:self,action:#selector(changeMediaSize(_:)))
+        mediaSizeLabel.frame=NSRect(x:14,y:22,width:150,height:14);mediaSlider.frame=NSRect(x:12,y:2,width:155,height:20);mediaSlider.isContinuous=true;mediaSizeSlider=mediaSlider
+        mediaSizeView.addSubview(mediaSizeLabel);mediaSizeView.addSubview(mediaSlider);let mediaSizeItem=NSMenuItem();mediaSizeItem.view=mediaSizeView;menu.addItem(mediaSizeItem)
         menu.addItem(withTitle:"allow media permissions…",action:#selector(mediaPermissions),keyEquivalent:"")
         featureStatusItem=menu.addItem(withTitle:"Local speech and media are optional",action:nil,keyEquivalent:"");featureStatusItem.isEnabled=false
         for item in menu.items where item.action != nil && item.target == nil {item.target=self}
@@ -328,7 +335,7 @@ private final class NotchView:ImageDropView {
         let expanded = notchWidth + 160, kaiLeft = (canvasWidth - expanded) / 2
         let scale = screen.backingScaleFactor, topBandY = canvasHeight-notchHeight
         func px(_ value: CGFloat) -> CGFloat { round(value * scale) / scale }
-        layoutPet();mediaArtwork.frame=sprite.frame
+        layoutPet();layoutMediaArtwork(animated:false);mediaSizeSlider?.maxValue=Double(max(16,notchHeight-3))
         let physicalRight = (canvasWidth + notchWidth) / 2, kaiRight = (canvasWidth + expanded) / 2
         let iconCenter=(physicalRight+kaiRight)/2
         indicator.layer.frame = CGRect(x:px(iconCenter-(miniOpen && !miniListening ? 34:14)),y:px(topBandY+(notchHeight-18)/2),width:28,height:18)
@@ -522,24 +529,33 @@ private final class NotchView:ImageDropView {
         featureStatusItem.title="Enable Accessibility, Screen Recording, and Spotify Automation; then restart Kai"
     }
     private func receiveMedia(_ state:MediaNowPlaying?){
+        guard let state else{
+            guard mediaState != nil,mediaReleaseWork == nil else{return}
+            let work=DispatchWorkItem{[weak self] in guard let self else{return};self.mediaReleaseWork=nil;self.artworkTask?.cancel();self.mediaState=nil;self.mediaImage=nil;self.mediaProfile=nil;self.loadedMediaKey=nil;self.dismissMedia()}
+            mediaReleaseWork=work;DispatchQueue.main.asyncAfter(deadline:.now()+1.1,execute:work);return
+        }
+        mediaReleaseWork?.cancel();mediaReleaseWork=nil
         if mediaState == state{refreshMedia();return}
-        artworkTask?.cancel();mediaState=state;mediaImage=nil;mediaProfile=nil
-        guard let state else{dismissMedia();return}
+        artworkTask?.cancel();mediaState=state
         guard let url=URL(string:state.artwork),url.scheme == "https" else{return}
         artworkTask=URLSession.shared.dataTask(with:url){[weak self] data,_,_ in
-            DispatchQueue.main.async{ [weak self] in guard let self,self.mediaState == state,let data,let image=NSImage(data:data) else{return};self.mediaImage=image;self.mediaProfile=MediaNowPlaying.profile(image);self.refreshMedia()}
+            DispatchQueue.main.async{ [weak self] in guard let self,self.mediaState == state else{return};guard let data,let image=NSImage(data:data) else{self.mediaImage=nil;self.mediaProfile=nil;self.loadedMediaKey=nil;self.dismissMedia();return};self.mediaImage=image;self.mediaProfile=MediaNowPlaying.profile(image);self.loadedMediaKey=state.application+":"+state.identity+":"+state.artwork;self.refreshMedia()}
         };artworkTask?.resume();refreshMedia()
     }
     private func refreshMedia(){
         let busy=miniOpen || dictating || miniListening || compactWhileWorking || experimentalWebMode || sendingPrompt != nil || latestState?.activeTurnId != nil || latestState?.approval == true || !(latestState?.activeTasks.isEmpty ?? true)
         guard !busy,mediaState != nil,let image=mediaImage else{if mediaVisible{dismissMedia()};return}
-        if !mediaVisible {mediaVisible=true;setOpen(true,mini:false);playToken += 1;sprite.isHidden=true;mediaArtwork.isHidden=false;mediaArtwork.frame=sprite.frame;indicator.setExternalLevels([0,0,0,0]);indicator.startListening(useMicrophone:false);media.capture(true)}
+        let entering = !mediaVisible
+        if entering {mediaVisible=true;setOpen(true,mini:false);playToken += 1;visualTransition.reveal(sprite,visible:false);layoutMediaArtwork(animated:false);indicator.setExternalLevels([0,0,0,0]);indicator.startListening(useMicrophone:false)}
         media.capture(true)
-        mediaArtwork.contents=image.cgImage(forProposedRect:nil,context:nil,hints:nil)
-        if let profile=mediaProfile{indicator.setProfile(profile,wave:false)}
+        if entering || presentedMediaKey != loadedMediaKey {
+            presentedMediaKey=loadedMediaKey
+            if let cgImage=image.cgImage(forProposedRect:nil,context:nil,hints:nil){visualTransition.artwork(cgImage,on:mediaArtwork)}
+            if let profile=mediaProfile{indicator.setProfile(profile,wave:true)}
+        }
     }
     private func dismissMedia(closeNotch:Bool=true){
-        guard mediaVisible else{return};mediaVisible=false;currentScene="";media.capture(false);mediaArtwork.isHidden=true;sprite.isHidden=false;mediaArtwork.contents=nil;play();if let state=latestState{showActivity(state.activity)};if closeNotch && !miniOpen && !compactWhileWorking{setOpen(false)}
+        guard mediaVisible else{return};mediaVisible=false;currentScene="";media.capture(false);presentedMediaKey=nil;visualTransition.hideArtwork(mediaArtwork);sprite.isHidden=false;visualTransition.reveal(sprite,visible:true);play();if let state=latestState{showActivity(state.activity)};if closeNotch && !miniOpen && !compactWhileWorking{setOpen(false)}
     }
     private func syncTaskPet(_ state:KaiState){
         let ids=Set(state.activeTasks.map(\.id)),pets=catalog.pets.map(\.id)
@@ -750,6 +766,14 @@ private final class NotchView:ImageDropView {
     private func handleImageDrop(_ images:[NSImage]){guard !images.isEmpty,ProcessInfo.processInfo.systemUptime-lastImageDrop>0.35 else{return};lastImageDrop=ProcessInfo.processInfo.systemUptime;approachImages.removeAll();approachActive=false;miniUI.addImages(images);if miniOpen{return};sounds.playScene("success");indicator.showScene("success");imageExpandWork?.cancel();let work=DispatchWorkItem{[weak self] in guard let self,self.open,!self.miniOpen else{return};self.setOpen(true,mini:true)};imageExpandWork=work;DispatchQueue.main.asyncAfter(deadline:.now()+0.72,execute:work)}
     private func globalDrag(_ event:NSEvent){guard !experimentalWebMode,let screen=NSScreen.screens.first(where:{$0.auxiliaryTopLeftArea != nil && $0.auxiliaryTopRightArea != nil}) else{return};let p=NSEvent.mouseLocation,nearNotch=abs(p.x-screen.frame.midX)<notchWidth/2+45 && p.y>screen.frame.maxY-notchHeight-70;if event.type == .leftMouseDragged,nearNotch{let images=draggedImages(NSPasteboard(name:.drag));guard !images.isEmpty else{return};approachImages=images;if !approachActive{approachActive=true;handleImageEntered()}}else if event.type == .leftMouseUp{defer{approachActive=false;approachImages.removeAll()};if approachActive,nearNotch,!approachImages.isEmpty{handleImageDrop(approachImages)}}}
 
+    @objc private func changeMediaSize(_ slider:NSSlider){mediaSize=CGFloat(slider.doubleValue);UserDefaults.standard.set(Double(mediaSize),forKey:"mediaSize");layoutMediaArtwork(animated:true)}
+    private func layoutMediaArtwork(animated:Bool){
+        guard let screen=NSScreen.screens.first(where:{$0.auxiliaryTopLeftArea != nil}) else{return}
+        let expanded=notchWidth+160,physicalLeft=(canvasWidth-notchWidth)/2,kaiLeft=(canvasWidth-expanded)/2
+        let center=CGPoint(x:(physicalLeft+kaiLeft)/2,y:canvasHeight-notchHeight/2)
+        let frame=NotchVisualTransition.artworkFrame(size:mediaSize,notchHeight:notchHeight,center:center,scale:screen.backingScaleFactor)
+        visualTransition.resize(mediaArtwork,to:frame,animated:animated)
+    }
     private func layoutPet() {
         guard let screen=NSScreen.screens.first(where:{$0.auxiliaryTopLeftArea != nil}) else{return};let expanded=notchWidth+160,physicalLeft=(canvasWidth-notchWidth)/2,kaiLeft=(canvasWidth-expanded)/2,scale=screen.backingScaleFactor,topBandY=canvasHeight-notchHeight,h=min(36,notchHeight-3)*petScale,w=h*192/208
         func px(_ v:CGFloat)->CGFloat{round(v*scale)/scale};CATransaction.begin();CATransaction.setDisableActions(true);sprite.frame=CGRect(x:px((physicalLeft+kaiLeft)/2-w/2),y:px(topBandY+(notchHeight-h)/2),width:px(w),height:px(h));CATransaction.commit()

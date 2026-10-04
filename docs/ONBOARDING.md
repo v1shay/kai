@@ -163,6 +163,10 @@ The **海** menu includes these settings, all off by default:
   through browser accessibility controls. The page must expose its video URL
   and a Pause control; background tabs and localized controls may not expose
   these. **Spotify when idle** reads Spotify's playback state and artwork.
+- **media thumbnail size** adjusts the cover independently of **pet size** and
+  remembers your choice. Artwork crossfades and gradient sweeps blend status
+  changes; rapid switches cancel older transitions, and Reduce Motion uses
+  shorter fades.
 - When media is playing and Kai is idle, the compact notch shows the artwork,
   artwork-derived gradients, and the listening waveform. The waveform measures
   the speaker output mix, excluding Kai's own audio. It does not use the

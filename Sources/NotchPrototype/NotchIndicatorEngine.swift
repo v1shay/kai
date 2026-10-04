@@ -48,6 +48,7 @@ struct GradientStop: Decodable { let location: Double, color: String }
     private var lastTick = ProcessInfo.processInfo.systemUptime, themeToken = 0, sceneToken = 0
     private var cycleToken = 0, currentSceneID: String?
     private var themeKind: ThemeKind = .ambient
+    private var paletteTransitionLayers=[CALayer]()
     private var fileLoading=false
     private var showLeftAccent = false, showRightAccent = true
     private(set) var mode: Mode = .off
@@ -99,8 +100,8 @@ struct GradientStop: Decodable { let location: Double, color: String }
     func setProfile(_ newProfile: PetGradientProfile, wave: Bool) {
         profile = newProfile
         let recipe = recipe(for:newProfile, kind:themeKind)
-        if wave { waveTo(recipe, highlight:newProfile.palette.highlight, duration:0.52) }
-        else { commit(recipe, to:base); commit(recipe,to:fileBase); commitAccent(recipe) }
+        if wave && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion { waveTo(recipe, highlight:newProfile.palette.highlight, duration:0.52) }
+        else { themeToken += 1;paletteTransitionLayers.forEach{$0.removeFromSuperlayer()};paletteTransitionLayers.removeAll();commit(recipe, to:base); commit(recipe,to:fileBase); commitAccent(recipe) }
         configureShine(newProfile.palette.highlight, duration: mode == .thinking ? 1.4 : 2.1)
     }
 
@@ -358,6 +359,7 @@ struct GradientStop: Decodable { let location: Double, color: String }
     }
 
     private func waveTo(_ recipe: GradientRecipe, highlight: String, duration: Double) {
+        paletteTransitionLayers.forEach{$0.removeFromSuperlayer()};paletteTransitionLayers.removeAll()
         themeToken += 1; let token = themeToken; waveAccentTo(recipe,duration:duration,token:token)
         let incoming = CAGradientLayer(), reveal = CAGradientLayer(), edge = CAGradientLayer(), fileIncoming=CAGradientLayer(), fileReveal=CAGradientLayer(), fileEdge=CAGradientLayer()
         incoming.frame = content.bounds; commit(recipe, to: incoming)
@@ -368,6 +370,7 @@ struct GradientStop: Decodable { let location: Double, color: String }
         edge.colors = [NSColor.clear.cgColor,color(highlight,0.9),NSColor.clear.cgColor]; edge.locations = [-0.15,0,0.15]; content.insertSublayer(edge, above: incoming)
         fileIncoming.frame=fileLayer.bounds; commit(recipe,to:fileIncoming); fileReveal.frame=fileLayer.bounds; fileReveal.startPoint=reveal.startPoint; fileReveal.endPoint=reveal.endPoint; fileReveal.colors=reveal.colors; fileReveal.locations=reveal.locations; fileIncoming.mask=fileReveal; fileLayer.insertSublayer(fileIncoming,above:fileBase)
         fileEdge.frame=fileLayer.bounds; fileEdge.startPoint=edge.startPoint; fileEdge.endPoint=edge.endPoint; fileEdge.colors=edge.colors; fileEdge.locations=edge.locations; fileLayer.insertSublayer(fileEdge,above:fileIncoming)
+        paletteTransitionLayers=[incoming,edge,fileIncoming,fileEdge]
         let wipe = CABasicAnimation(keyPath: "locations"); wipe.fromValue = reveal.locations; wipe.toValue = [1,1.1,1.25,1.4]; wipe.duration = duration; wipe.timingFunction = CAMediaTimingFunction(controlPoints: 0.18,0.72,0.24,1)
         let streak = CABasicAnimation(keyPath: "locations"); streak.fromValue = edge.locations; streak.toValue = [0.85,1,1.15]; streak.duration = duration; streak.timingFunction = wipe.timingFunction
         reveal.locations=[1,1.1,1.25,1.4]; edge.locations=[0.85,1,1.15]; fileReveal.locations=reveal.locations; fileEdge.locations=edge.locations
