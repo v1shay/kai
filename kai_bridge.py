@@ -89,6 +89,11 @@ def snapshot(app: Kai, include_files: bool = True,
                            "mathEnabled": getattr(line, "math_enabled", True)} for line in lines],
             })
     state = {
+        "canGoBack": bool(app.navigation_back),
+        "canGoForward": bool(app.navigation_forward),
+        "models": app.models,
+        "selectedModel": app.selected_model,
+        "reasoningEffort": app.reasoning_effort,
         "project": str(app.project),
         "projects": [{"path": str(path), "name": path.name or str(path)} for path in app.project_paths],
         "chats": [{"id": row.get("id") or "", "name": row.get("name") or row.get("preview") or "Untitled",
@@ -125,7 +130,27 @@ def snapshot(app: Kai, include_files: bool = True,
 
 def apply(app: Kai, request: dict[str, Any]) -> None:
     action = request.get("action")
-    if action == "project":
+    if action == "settings":
+        model = next((m for m in app.models if m["model"] == request.get("model")), None)
+        if model is None:
+            raise ValueError("Model is not available from Codex")
+        effort = request.get("effort", app.reasoning_effort)
+        supported = [e["reasoningEffort"] for e in model["supportedReasoningEfforts"]]
+        if effort not in supported:
+            effort = model["defaultReasoningEffort"]
+        app.selected_model = model["model"]
+        app.reasoning_effort = effort
+        app.dirty = True
+    elif action == "context":
+        if request.get("threadId") != app.thread_id:
+            raise ValueError("Context belongs to a different chat")
+        app.context_text = str(request.get("text", ""))[:12000]
+        paths = [Path(path).resolve(strict=True) for path in request.get("paths", [])]
+        if any(not image_file(path) for path in paths):
+            raise ValueError("Context must be a supported image")
+        app.context_images = paths
+        app.dirty = True
+    elif action == "project":
         app.refresh_threads()
         path = Path(request["path"]).resolve()
         if path not in app.project_paths:
@@ -134,8 +159,22 @@ def apply(app: Kai, request: dict[str, Any]) -> None:
         app.file_tree_entries.clear()
         app.file_visible_entries.clear()
         app.file_collapsed.clear()
+    elif action == "navigate":
+        source = app.navigation_back if request.get("direction") == "back" else app.navigation_forward
+        destination = app.navigation_forward if request.get("direction") == "back" else app.navigation_back
+        if source:
+            target = source[-1]
+            previous = app.thread_id
+            app.select_thread(target)
+            source.pop()
+            if previous:
+                destination.append(previous)
     elif action == "chat":
+        previous = app.thread_id
         app.select_thread(app._find_thread(request["id"]))
+        if previous and previous != app.thread_id:
+            app.navigation_back.append(previous)
+            app.navigation_forward.clear()
     elif action == "new":
         app.new_chat(projectless=True)
     elif action == "new_project":
@@ -206,6 +245,20 @@ def main() -> int:
     rpc = AppServer(args.codex)
     try:
         app = Kai(rpc, args.cwd, service_name="kai_notch")
+        try:
+            cursor = None
+            while True:
+                result = rpc.call("model/list", {"cursor": cursor})
+                app.models.extend(m for m in result.get("data", []) if not m.get("hidden"))
+                cursor = result.get("nextCursor")
+                if not cursor:
+                    break
+            default = next((m for m in app.models if m.get("isDefault")), next(iter(app.models), None))
+            if default:
+                app.selected_model = default["model"]
+                app.reasoning_effort = default["defaultReasoningEffort"]
+        except Exception as error:
+            app.notice = "Model discovery unavailable: " + str(error)
         parent_pid = os.getppid()
         previous = ""
         previous_files: tuple[tuple[str, bool], ...] | None = None

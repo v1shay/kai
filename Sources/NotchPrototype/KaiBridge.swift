@@ -14,7 +14,14 @@ struct KaiMessage: Decodable { let id: String; let kind: String; let lines: [Kai
 struct KaiFile: Decodable { let path: String; let name: String; let depth: Int; let directory: Bool; let collapsed: Bool }
 struct KaiActivity: Decodable { let scene: String; let text: String }
 struct KaiActiveTask: Decodable { let id: String; let name: String; let scene: String; let text: String }
+struct KaiReasoningOption: Decodable { let reasoningEffort: String }
+struct KaiModel: Decodable { let model: String; let displayName: String; let supportedReasoningEfforts: [KaiReasoningOption] }
 struct KaiState: Decodable {
+    let canGoBack: Bool?
+    let canGoForward: Bool?
+    let models: [KaiModel]?
+    let selectedModel: String?
+    let reasoningEffort: String?
     let project: String
     let projects: [KaiProject]
     let chats: [KaiChat]

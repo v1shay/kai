@@ -146,8 +146,12 @@ private final class NotchView:ImageDropView {
     private var assistantPalette=[NSColor]()
     private var petScale: CGFloat = 1
     private var accentSide = "right"
-    private enum DictationTrigger {case command,function}
+    private enum DictationTrigger {case command,function,option}
     private var open = false, miniOpen = false, pinned = false, commandDown = false, optionDown = false, controlDown = false, functionDown = false,petGalleryVisible=false
+    private var optionWork: DispatchWorkItem?
+    private var pendingContext: ApplicationContext?
+    private var contextRequestID: String?
+    private var contextLightweight = false
     private var dictationTrigger:DictationTrigger?
     private var experimentalWebMode=false
     private var modeBeforeExperimental=(open:false,mini:false,pinned:false)
@@ -199,6 +203,9 @@ private final class NotchView:ImageDropView {
         miniUI.onNew={ [weak self] in guard let self else{return};self.bridge.send("new",["requestId":self.miniUI.pendingRequestID ?? ""]) }
         miniUI.onNewInProject={ [weak self] in guard let self else{return};self.bridge.send("new_project",["requestId":self.miniUI.pendingRequestID ?? ""]) }
         miniUI.onFolder={ [weak self] path in guard let self else{return};self.bridge.send("folder",["path":path,"requestId":self.miniUI.pendingRequestID ?? ""]) }
+        miniUI.onSettings={ [weak self] model, effort in self?.bridge.send("settings",["model":model,"effort":effort]) }
+        miniUI.onNavigate={ [weak self] direction in guard let self else{return};self.bridge.send("navigate",["direction":direction,"requestId":self.miniUI.pendingRequestID ?? ""]) }
+        miniUI.onContextMode={ [weak self] lightweight in self?.contextLightweight=lightweight }
         miniUI.onSend={ [weak self] in self?.sendPrompt() }
         miniUI.onApprove={ [weak self] in self?.answerApproval("approve") }
         miniUI.onReject={ [weak self] in self?.answerApproval("reject") }
@@ -207,7 +214,7 @@ private final class NotchView:ImageDropView {
         miniUI.onFilesVisibleChanged={ [weak self] visible in self?.indicator.setFileOpen(visible) }
         miniUI.onImagesChanged={ [weak self] images in self?.queueImages(images) }
         bridge.onState={ [weak self] state in self?.receive(state) }
-        bridge.onError={ [weak self] error in guard let self else{return};self.sounds.playScene("failure");self.sendingPrompt=nil;self.pendingFilesRequestID=nil;self.indicator.setFileLoading(false);self.miniUI.cancelPending();self.miniUI.setCodexMessage(error);self.syncMotion(force:true) }
+        bridge.onError={ [weak self] error in guard let self else{return};self.sounds.playScene("failure");self.contextRequestID=nil;self.pendingContext=nil;self.sendingPrompt=nil;self.pendingFilesRequestID=nil;self.indicator.setFileLoading(false);self.miniUI.cancelPending();self.miniUI.setCodexMessage(error);self.syncMotion(force:true) }
         speech.onModels={ [weak self] models in self?.updateVoiceMenu(models) }
         speech.onStatus={ [weak self] status in self?.featureStatusItem.title=status }
         media.onStatus={ [weak self] status in self?.featureStatusItem.title=status }
@@ -293,6 +300,7 @@ private final class NotchView:ImageDropView {
         mediaSizeLabel.frame=NSRect(x:14,y:22,width:150,height:14);mediaSlider.frame=NSRect(x:12,y:2,width:155,height:20);mediaSlider.isContinuous=true;mediaSizeSlider=mediaSlider
         mediaSizeView.addSubview(mediaSizeLabel);mediaSizeView.addSubview(mediaSlider);let mediaSizeItem=NSMenuItem();mediaSizeItem.view=mediaSizeView;menu.addItem(mediaSizeItem)
         menu.addItem(withTitle:"allow media permissions…",action:#selector(mediaPermissions),keyEquivalent:"")
+        let contextItem=menu.addItem(withTitle:"Prefer lightweight Option context",action:#selector(toggleContextMode(_:)),keyEquivalent:"");contextItem.target=self;contextItem.state=contextLightweight ? .on:.off
         featureStatusItem=menu.addItem(withTitle:"Local speech and media are optional",action:nil,keyEquivalent:"");featureStatusItem.isEnabled=false
         for item in menu.items where item.action != nil && item.target == nil {item.target=self}
         updateFeatureChecks()
@@ -370,6 +378,19 @@ private final class NotchView:ImageDropView {
         let down = event.modifierFlags.contains(.command), option = event.modifierFlags.contains(.option), control = event.modifierFlags.contains(.control),function=event.modifierFlags.contains(.function)
         let miniChord = option && control, wasMiniChord = optionDown && controlDown
         defer { commandDown = down; optionDown = option; controlDown = control;functionDown=function }
+        if control || down || function || !option {optionWork?.cancel();optionWork=nil}
+        if option && !optionDown && !control && !down && !function && !dictating {
+            let context=ApplicationContext.capture(lightweight:contextLightweight)
+            if let path=context.imagePath {attachmentFiles.append(URL(fileURLWithPath:path))}
+            let work=DispatchWorkItem { [weak self] in
+                guard let self,self.optionDown,!self.controlDown,!self.commandDown,!self.functionDown else{return}
+                self.pendingContext=context
+                let id=UUID().uuidString;self.contextRequestID=id
+                self.setPrompt("");self.miniUI.clearImages();self.bridge.send("new",["requestId":id])
+                self.pinned=true;self.setOpen(true);self.beginDictation(trigger:.option)
+            }
+            optionWork=work;DispatchQueue.main.asyncAfter(deadline:.now()+0.2,execute:work)
+        } else if !option, dictating, dictationTrigger == .option {finishDictation()}
         let now = ProcessInfo.processInfo.systemUptime
         if control && !controlDown {
             if open && now-lastControlTap < 0.36 { lastControlTap=0; holdWork?.cancel(); closeNotch(); return }
@@ -460,7 +481,7 @@ private final class NotchView:ImageDropView {
     func controlTextDidChange(_ obj:Notification){miniUI.setComposerHasText(!(composerField?.stringValue.isEmpty ?? true));syncMotion(force:true)}
     func control(_ control:NSControl,textView:NSTextView,doCommandBy selector:Selector)->Bool{if selector == #selector(NSResponder.insertNewline(_:)){sendPrompt();return true};return false}
 
-    private func sendPrompt(){guard sendingPrompt == nil else{return};let prompt=(composerField?.stringValue ?? "").trimmingCharacters(in:.whitespacesAndNewlines);guard !prompt.isEmpty || queuedImageCount>0 else{return};sendingPrompt=prompt;setMotion("running-left",replay:true);speech.cancelAudio();bridge.send("send",["text":prompt]);if compactOnSend{hidePetGallery(restore:false);autoCompact=false;compactWhileWorking=true;compactThreadID=latestState?.threadId;compactStartHistoryCount=latestState?.history.count ?? 0;pinned=true;setOpen(true,mini:false)}}
+    private func sendPrompt(){guard sendingPrompt == nil, contextRequestID == nil else{return};let prompt=(composerField?.stringValue ?? "").trimmingCharacters(in:.whitespacesAndNewlines);guard !prompt.isEmpty || queuedImageCount>0 else{return};sendingPrompt=prompt;setMotion("running-left",replay:true);speech.cancelAudio();bridge.send("send",["text":prompt]);if compactOnSend{hidePetGallery(restore:false);autoCompact=false;compactWhileWorking=true;compactThreadID=latestState?.threadId;compactStartHistoryCount=latestState?.history.count ?? 0;pinned=true;setOpen(true,mini:false)}}
     private func answerApproval(_ action:String){if action == "interrupt"{speech.cancelAudio()};var fields:[String:Any]=["requestId":miniUI.pendingRequestID ?? ""];if let id=latestState?.approvalThreadId{fields["threadId"]=id};bridge.send(action,fields)}
 
     private func queueImages(_ images:[NSImage]){
@@ -472,6 +493,13 @@ private final class NotchView:ImageDropView {
     private func receive(_ state:KaiState){
         defer{refreshMedia()}
         let previous=latestState,previousNotice=previous?.notice;latestState=state
+        if let requestID=contextRequestID,state.completedRequestId == requestID {
+            contextRequestID=nil
+            if let context=pendingContext,let threadID=state.threadId,state.notice.hasPrefix("New task") {
+                bridge.send("context",["threadId":threadID,"text":context.text,"paths":context.imagePath.map{[$0]} ?? []])
+            }
+            pendingContext=nil
+        }
         if mediaVisible && MediaCompanion.codexNeedsNotch(state) {
             dismissMedia(closeNotch:false)
             if !miniOpen {autoCompact=true;compactWhileWorking=true;compactThreadID=nil;setOpen(true,mini:false)}
@@ -508,6 +536,7 @@ private final class NotchView:ImageDropView {
         speechItem?.state=speakResponses ? .on:.off;compactSendItem?.state=compactOnSend ? .on:.off
         youtubeItem?.state=youtubeMedia ? .on:.off;spotifyItem?.state=spotifyMedia ? .on:.off
     }
+    @objc private func toggleContextMode(_ item:NSMenuItem){contextLightweight.toggle();miniUI.setContextMode(contextLightweight);item.state=contextLightweight ? .on:.off}
     @objc private func toggleSpeech(){speakResponses.toggle();UserDefaults.standard.set(speakResponses,forKey:"speakResponses");speech.configure(enabled:speakResponses,model:speech.selectedModel);updateFeatureChecks()}
     @objc private func toggleCompactSend(){compactOnSend.toggle();UserDefaults.standard.set(compactOnSend,forKey:"compactOnSend");updateFeatureChecks()}
     @objc private func stopSpeaking(){speech.cancelAudio()}

@@ -166,6 +166,13 @@ private final class AttachmentLayer:CALayer {
 
 @MainActor final class MiniAppInterface {
     let layer=CALayer()
+    var onSettings: ((String,String)->Void)?
+    var onNavigate: ((String)->Void)?
+    var onContextMode: ((Bool)->Void)?
+    private var modelState: KaiState?
+    private var lightweightContext=false
+    private let settingsBar=CALayer()
+    private var settingsHits=[(CGRect,String)]()
     var composerFrameChanged:((CGRect,Bool)->Void)?
     var conversationFrameChanged:((CGRect)->Void)?
     var onFilesVisibleChanged:((Bool)->Void)?
@@ -185,7 +192,7 @@ private final class AttachmentLayer:CALayer {
         configure(projectNewRow,"+ in project",7,.white.withAlphaComponent(0.58));left.addSublayer(projectNewRow)
         configure(standaloneTitle,"CHATS",7,.white.withAlphaComponent(0.42),.medium);left.addSublayer(standaloneTitle)
         configure(activeTitle,"ACTIVE",7,.white.withAlphaComponent(0.42),.medium);activeTitle.opacity=0;left.addSublayer(activeTitle)
-        configure(message,"Choose a project and chat",9,.white.withAlphaComponent(0.68),.medium);main.addSublayer(message);configure(closeButton,"×",12,.white.withAlphaComponent(0.65));closeButton.alignmentMode = .center;main.addSublayer(closeButton);main.addSublayer(actionBar)
+        configure(message,"Choose a project and chat",9,.white.withAlphaComponent(0.68),.medium);main.addSublayer(message);configure(closeButton,"×",12,.white.withAlphaComponent(0.65));closeButton.alignmentMode = .center;main.addSublayer(closeButton);main.addSublayer(actionBar);main.addSublayer(settingsBar)
         input.cornerRadius=14; input.borderWidth=0.75; input.masksToBounds=true; layer.addSublayer(input);imageStrip.masksToBounds=true;layer.addSublayer(imageStrip)
         input.addSublayer(label("type or hold",8,.white.withAlphaComponent(0.46))); command.cornerRadius=6; command.borderWidth=0.7; command.addSublayer(label("command",7.4,.white.withAlphaComponent(0.74),.medium)); input.addSublayer(command); input.addSublayer(label("to speak",8,.white.withAlphaComponent(0.46)))
         send.type = .radial;send.startPoint=CGPoint(x:0.5,y:0.5);send.endPoint=CGPoint(x:1,y:0.5);send.locations=[0,0.52,1];send.cornerRadius=13; send.borderWidth=0.8; send.masksToBounds=true; input.addSublayer(send)
@@ -247,17 +254,23 @@ private final class AttachmentLayer:CALayer {
         let target=CGRect(x:x,y:0,width:max(0,layer.bounds.width-x-rightInset),height:layer.bounds.height)
         setFrame(preview,CGRect(x:layer.bounds.width-previewWidth-4,y:31,width:previewWidth,height:layer.bounds.height-39),animated:animated)
         setFrame(main,target,animated:animated); let w=target.width,h=target.height
-        message.frame=CGRect(x:5,y:h-18,width:max(0,w-26),height:12);closeButton.frame=CGRect(x:max(0,w-20),y:h-21,width:16,height:18);layoutPathHits();actionBar.frame=CGRect(x:5,y:h-37,width:max(0,w-10),height:13);layoutActions()
+        message.frame=CGRect(x:5,y:h-18,width:max(0,w-26),height:12);closeButton.frame=CGRect(x:max(0,w-20),y:h-21,width:16,height:18);layoutPathHits();actionBar.frame=CGRect(x:5,y:h-37,width:max(0,w-10),height:13);layoutActions();settingsBar.frame=CGRect(x:5,y:h-53,width:max(0,w-10),height:13);layoutSettings()
         let minX=projectIntrudesComposer && !projectsCollapsed && !previewOpen ? left.frame.maxX+9:18,maxX=paired ? fileX-4:(previewOpen ? layer.bounds.width-leftWidth-8:(filesOpen ? layer.bounds.width-drawerWidth-9:layer.bounds.width-18)),composerW=min(260,max(70,maxX-minX)),idealX=(minX+maxX-composerW)/2,inputX=min(max(idealX,minX),maxX-composerW),composerFrame=CGRect(x:inputX,y:0,width:composerW,height:28);setFrame(input,composerFrame,animated:animated);composerFrameChanged?(composerFrame,animated);setFrame(imageStrip,CGRect(x:inputX+8,y:34,width:max(0,composerW-16),height:32),animated:animated);layoutImages();let texts=input.sublayers?.compactMap{$0 as? CATextLayer} ?? []
         if composerW < 200 { texts.first?.string="hold";texts.first?.frame=CGRect(x:11,y:8,width:22,height:11);command.frame=CGRect(x:36,y:5,width:47,height:18);if texts.count>1{texts[1].string=""} }
         else { texts.first?.string="type or hold";texts.first?.frame=CGRect(x:11,y:8,width:55,height:11);command.frame=CGRect(x:68,y:5,width:47,height:18);if texts.count>1{texts[1].string="to speak";texts[1].frame=CGRect(x:120,y:8,width:43,height:11)} }
         command.sublayers?.first?.frame=CGRect(x:4,y:4,width:39,height:10)
         setFrame(send,CGRect(x:composerW-27,y:1,width:26,height:26),animated:animated);sendShade.frame=send.bounds;sendGlass.frame=send.bounds;let p=CGMutablePath();p.move(to:CGPoint(x:9,y:14.5));p.addLine(to:CGPoint(x:13,y:18.5));p.addLine(to:CGPoint(x:17,y:14.5));p.move(to:CGPoint(x:13,y:18.5));p.addLine(to:CGPoint(x:13,y:7.5));arrow.path=p;arrow.frame=send.bounds
         let conversationBottom:CGFloat=(imageStrip.sublayers?.isEmpty == false) ? 68:32
-        conversationFrameChanged?(CGRect(x:target.minX+2,y:conversationBottom,width:max(0,target.width-4),height:max(0,h-40-conversationBottom)))
+        conversationFrameChanged?(CGRect(x:target.minX+2,y:conversationBottom,width:max(0,target.width-4),height:max(0,h-56-conversationBottom)))
     }
 
     func handleClick(_ point:CGPoint)->Bool {
+        let settingsPoint=CGPoint(x:point.x-main.frame.minX-settingsBar.frame.minX,y:point.y-main.frame.minY-settingsBar.frame.minY)
+        if let hit=settingsHits.first(where:{$0.0.contains(settingsPoint)}) {
+            if hit.1 == "context" {lightweightContext.toggle();onContextMode?(lightweightContext);layoutSettings()}
+            else {showSettingsMenu(hit.1)}
+            return true
+        }
         let closePoint=CGPoint(x:point.x-main.frame.minX,y:point.y-main.frame.minY)
         if closeButton.frame.insetBy(dx:-3,dy:-2).contains(closePoint){onClose?();return true}
         if !previewOpen,projectToggle.frame.contains(point){toggleProjects();return true}
@@ -268,7 +281,7 @@ private final class AttachmentLayer:CALayer {
         let actionPoint=CGPoint(x:point.x-main.frame.minX-actionBar.frame.minX,y:point.y-main.frame.minY-actionBar.frame.minY)
         if let action=actionHits.first(where:{$0.0.contains(actionPoint)}) {
             beginPending(action.0.offsetBy(dx:main.frame.minX+actionBar.frame.minX,dy:main.frame.minY+actionBar.frame.minY))
-            switch action.1 { case "new":onNew?();case "approve":onApprove?();case "reject":onReject?();case "interrupt":onInterrupt?();default:cancelPending() };return true
+            switch action.1 { case "back":onNavigate?("back");case "forward":onNavigate?("forward");case "new":onNew?();case "approve":onApprove?();case "reject":onReject?();case "interrupt":onInterrupt?();default:cancelPending() };return true
         }
         let attachmentPoint=CGPoint(x:point.x-imageStrip.frame.minX,y:point.y-imageStrip.frame.minY)
         if imageStrip.frame.contains(point),let preview=((hoveredAttachment?.frame.contains(attachmentPoint) == true ? hoveredAttachment:nil) ?? imageStrip.sublayers?.compactMap{$0 as? AttachmentLayer}.reversed().first{$0.frame.contains(attachmentPoint)}) { let local=CGPoint(x:attachmentPoint.x-preview.frame.minX,y:attachmentPoint.y-preview.frame.minY);if preview.closeContains(local){remove(preview)};return true }
@@ -305,6 +318,7 @@ private final class AttachmentLayer:CALayer {
 
     func setCodexMessage(_ text:String){let font=NSFont.systemFont(ofSize:8),result=NSMutableAttributedString(string:text,attributes:[.font:font,.foregroundColor:NSColor.white.withAlphaComponent(0.62)]),pattern=#"(?:file://)?(?:/Users/|Users/|~/)[^\s\]\[\)\(>,]+"#;pathHits.removeAll();if let regex=try? NSRegularExpression(pattern:pattern){for match in regex.matches(in:text,range:NSRange(text.startIndex...,in:text)){result.addAttributes([.font:NSFont.systemFont(ofSize:8,weight:.bold),.underlineStyle:NSUnderlineStyle.single.rawValue,.foregroundColor:NSColor.white.withAlphaComponent(0.9)],range:match.range)}};message.string=result;layoutPathHits()}
     func setState(_ state:KaiState){
+        modelState=state
         selectedProject=state.project;selectedThread=state.threadId;approvalNeeded=state.approval;turnActive=state.activeTurnId != nil
         if projects.map(\.path) != state.projects.map(\.path){projectRows.forEach{$0.0.removeFromSuperlayer()};projectRows.removeAll();projects=state.projects;for project in projects{let row=CALayer(),folder=FileGlyphLayer(size:CGSize(width:16,height:13)),title=label(project.name,8,.white.withAlphaComponent(0.72));row.addSublayer(folder);row.addSublayer(title);folder.frame=CGRect(x:0,y:1,width:16,height:13);title.frame=CGRect(x:19,y:2,width:leftWidth-30,height:11);left.addSublayer(row);projectRows.append((row,project.path))}}
         if chats.map(\.id) != state.chats.map(\.id) || chats.map(\.name) != state.chats.map(\.name){chatRows.forEach{$0.0.removeFromSuperlayer()};chatRows.removeAll();chats=state.chats;for chat in chats{let row=ChatRowLayer(chat.name);left.addSublayer(row);chatRows.append((row,chat.id))}}
@@ -332,8 +346,45 @@ private final class AttachmentLayer:CALayer {
         message.truncationMode = .middle
         layoutProjects(animated:false);layoutMain(animated:false)
     }
+    func setContextMode(_ lightweight:Bool){lightweightContext=lightweight;layoutSettings()}
+    private func layoutSettings() {
+        settingsBar.sublayers?.forEach{$0.removeFromSuperlayer()};settingsHits.removeAll()
+        guard let state=modelState else{return}
+        let model=state.models?.first{$0.model == state.selectedModel}
+        let name=model?.displayName ?? state.selectedModel ?? "Models unavailable"
+        let effort=state.reasoningEffort ?? "Effort"
+        var x:CGFloat=0
+        for (id,text) in [("model",name),("effort",effort),("context",lightweightContext ? "Context: light":"Context: screen")] {
+            let width=min(id == "model" ? 100: id == "effort" ? 48:80, min(CGFloat(text.count)*4.5+9,max(0,settingsBar.bounds.width-x)))
+            guard width>16 else{break}
+            let mask=label(text,7.5,.white,.medium);mask.frame=CGRect(x:0,y:1,width:width,height:11)
+            let gradient=CAGradientLayer();gradient.frame=CGRect(x:x,y:0,width:width,height:13);gradient.startPoint=CGPoint(x:0,y:0);gradient.endPoint=CGPoint(x:1,y:1);gradient.mask=mask
+            let lower=name.lowercased()
+            let colors:[NSColor]=lower.contains("astra") ? [.systemPurple,.systemBlue,.systemPink]:lower.contains("luna") ? [.gray,.white,.lightGray]:lower.contains("terra") ? [.systemBlue,.systemGreen,.systemTeal]:lower.contains("sol") ? [.systemYellow,.systemOrange,.systemRed]:[.systemTeal,.systemBlue,.systemPurple]
+            let levels=["none","minimal","low","medium","high","xhigh","max","ultra"]
+            let intensity=CGFloat(levels.firstIndex(of:effort) ?? 3)/7
+            gradient.colors=(id == "effort" ? [NSColor.white.withAlphaComponent(0.45+intensity*0.55),NSColor.systemPurple.withAlphaComponent(0.4+intensity*0.6),NSColor.systemPink.withAlphaComponent(0.4+intensity*0.6)]:colors).map(\.cgColor)
+            settingsBar.addSublayer(gradient);settingsHits.append((gradient.frame,id));x+=width+6
+        }
+    }
+    private func showSettingsMenu(_ kind:String) {
+        guard let state=modelState,let models=state.models else{return}
+        let menu=NSMenu()
+        if kind == "model" {
+            for model in models {
+                let item=menu.addItem(withTitle:model.displayName,action:#selector(selectSetting(_:)),keyEquivalent:"");item.target=self;item.representedObject=[model.model,state.reasoningEffort ?? ""];item.state=model.model == state.selectedModel ? .on:.off
+            }
+        } else if let model=models.first(where:{$0.model == state.selectedModel}) {
+            for effort in model.supportedReasoningEfforts {
+                let item=menu.addItem(withTitle:effort.reasoningEffort,action:#selector(selectSetting(_:)),keyEquivalent:"");item.target=self;item.representedObject=[model.model,effort.reasoningEffort];item.state=effort.reasoningEffort == state.reasoningEffort ? .on:.off
+            }
+        }
+        menu.popUp(positioning:nil,at:NSEvent.mouseLocation,in:nil)
+    }
+    @objc private func selectSetting(_ item:NSMenuItem) {guard let values=item.representedObject as? [String],values.count == 2 else{return};onSettings?(values[0],values[1])}
+
     private func layoutActions(){actionBar.sublayers?.forEach{$0.removeFromSuperlayer()};actionHits.removeAll();var x:CGFloat=0
-        let actions:[(String,String)]=(approvalNeeded ? [("approve","Approve"),("reject","Reject")]:[])+(turnActive ? [("interrupt","Stop")]:[])+[("new","+ New")]
+        let actions:[(String,String)]=((modelState?.canGoBack == true ? [("back","‹")]:[])+(modelState?.canGoForward == true ? [("forward","›")]:[]))+(approvalNeeded ? [("approve","Approve"),("reject","Reject")]:[])+(turnActive ? [("interrupt","Stop")]:[])+[("new","+ New")]
         for (id,title) in actions {let width=CGFloat(title.count)*5+10;if x+width>actionBar.bounds.width{break};let item=label(title,7.5,.white.withAlphaComponent(0.74),.medium);item.frame=CGRect(x:x+4,y:1,width:width-8,height:11);actionBar.addSublayer(item);actionHits.append((CGRect(x:x,y:0,width:width,height:13),id));x+=width+3}
     }
     func previewFile(_ url:URL){openPreview(url)}
