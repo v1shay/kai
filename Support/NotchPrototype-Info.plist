@@ -18,6 +18,8 @@
     <string>1</string>
     <key>LSUIElement</key>
     <true/>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Kai reads Spotify playback status and artwork for its optional idle media display.</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>Kai uses the microphone for voice dictation and its listening animation.</string>
     <key>NSSpeechRecognitionUsageDescription</key>

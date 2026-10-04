@@ -10,7 +10,7 @@ struct KaiLine: Decodable {
         self.text = text; self.style = style; self.mathEnabled = mathEnabled
     }
 }
-struct KaiMessage: Decodable { let id: String; let kind: String; let lines: [KaiLine] }
+struct KaiMessage: Decodable { let id: String; let kind: String; let lines: [KaiLine]; let speechText: String? }
 struct KaiFile: Decodable { let path: String; let name: String; let depth: Int; let directory: Bool; let collapsed: Bool }
 struct KaiActivity: Decodable { let scene: String; let text: String }
 struct KaiActiveTask: Decodable { let id: String; let name: String; let scene: String; let text: String }

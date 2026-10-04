@@ -14,6 +14,8 @@ from kai_cli import execute, snapshot, wait_for_turn
 from kai_bridge import (activity as bridge_activity, apply as bridge_apply,
                         remaining_limit_percent, snapshot as bridge_snapshot)
 from kai_activity import SessionActivityMonitor
+from kai_dot import DotActivityMonitor, DotEventStore
+from kai_dot_mcp import result as dot_mcp_result
 
 
 class FakeServer:
@@ -66,6 +68,40 @@ class FakeServer:
 
 
 class KaiTests(unittest.TestCase):
+    def test_dot_mcp_events_drive_and_finish_a_kai_task(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "dot.jsonl"
+            store, monitor = DotEventStore(path), DotActivityMonitor(path, final_hold=0)
+            response = dot_mcp_result({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+                "name": "kai_activity", "arguments": {"session_id": "research-1", "title": "Research",
+                "state": "search", "detail": "Checking sources"}}}, store)
+            self.assertEqual(response["result"]["structuredContent"]["scene"], "search")
+            active = monitor.poll()["activeTasks"]
+            self.assertEqual((active[0]["id"], active[0]["scene"], active[0]["text"]),
+                             ("dot:research-1", "search", "Checking sources"))
+            dot_mcp_result({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
+                "name": "kai_complete", "arguments": {"session_id": "research-1", "outcome": "success"}}}, store)
+            self.assertEqual(monitor.poll()["activeTasks"], [])
+
+    def test_dot_mcp_lists_only_explicit_status_tools(self):
+        with tempfile.TemporaryDirectory() as directory:
+            response = dot_mcp_result({"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+                                      DotEventStore(Path(directory) / "events.jsonl"))
+            self.assertEqual([tool["name"] for tool in response["result"]["tools"]],
+                             ["kai_activity", "kai_complete"])
+
+    def test_dot_monitor_waits_for_a_complete_json_line(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "events.jsonl"
+            event = json.dumps({"version": 1, "source": "dot", "sessionId": "one", "title": "One",
+                                "scene": "thinking", "text": "Working"})
+            path.write_text(event[:20])
+            monitor = DotActivityMonitor(path)
+            self.assertEqual(monitor.poll()["activeTasks"], [])
+            with path.open("a") as stream:
+                stream.write(event[20:] + "\n")
+            self.assertEqual(monitor.poll()["activeTasks"][0]["id"], "dot:one")
+
     def test_codex_binary_skips_broken_path_launcher(self):
         with tempfile.TemporaryDirectory() as directory:
             broken = Path(directory) / 'broken-codex'

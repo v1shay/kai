@@ -110,29 +110,34 @@ private final class ComposerField:NSTextField {
 }
 
 private final class NotchView:ImageDropView {
-    var click:((CGPoint)->Void)?
+    var click:((CGPoint,Int)->Void)?
     var scroll:((CGPoint,CGFloat)->Void)?
     var hover:((CGPoint?)->Void)?
     var compactHitRect:CGRect?
     override func hitTest(_ point:NSPoint)->NSView?{if let compactHitRect,!compactHitRect.contains(convert(point,from:superview)){return nil};return super.hitTest(point)}
     override func updateTrackingAreas(){super.updateTrackingAreas();trackingAreas.forEach(removeTrackingArea);addTrackingArea(NSTrackingArea(rect:bounds,options:[.mouseMoved,.mouseEnteredAndExited,.activeAlways],owner:self))}
-    override func mouseDown(with event:NSEvent) { click?(event.locationInWindow) }
+    override func mouseDown(with event:NSEvent) { click?(event.locationInWindow,event.clickCount) }
     override func scrollWheel(with event:NSEvent) { scroll?(event.locationInWindow,event.scrollingDeltaY) }
     override func mouseMoved(with event:NSEvent){hover?(event.locationInWindow)}
     override func mouseExited(with event:NSEvent){hover?(nil)}
 }
 
 @MainActor final class KaiPetApp: NSObject, NSApplicationDelegate, NSTextFieldDelegate, NSTextViewDelegate {
-    private let mask = CAShapeLayer(), notchContent = CALayer(), sprite = CALayer(), indicator = NotchIndicatorEngine(), miniUI = MiniAppInterface(), dictation=DictationController(), bridge=KaiBridge(),sounds=KaiSoundEngine()
+    private let mask = CAShapeLayer(), notchContent = CALayer(), sprite = CALayer(), indicator = NotchIndicatorEngine(), miniUI = MiniAppInterface(), petGallery=PetGallery(), dictation=DictationController(), bridge=KaiBridge(),sounds=KaiSoundEngine()
     private var panel: NSPanel!, dropPanel:NSPanel!, composerField:ComposerField!, status: NSStatusItem!, catalog: Catalog!, gradientCatalog: GradientCatalog!
     private var browserView:WKWebView?, experimentalModeItem:NSMenuItem!, mathModeItem:NSMenuItem!,soundsItem:NSMenuItem!
+    private let speech=SpeechPlayback(),media=MediaCompanion()
+    private var speakResponses=false,compactOnSend=false,youtubeMedia=false,spotifyMedia=false
+    private var voiceMenu=NSMenu(),speechItem:NSMenuItem!,compactSendItem:NSMenuItem!,youtubeItem:NSMenuItem!,spotifyItem:NSMenuItem!,featureStatusItem:NSMenuItem!
+    private var mediaState:MediaNowPlaying?,mediaImage:NSImage?,mediaProfile:PetGradientProfile?,mediaVisible=false,artworkTask:URLSessionDataTask?
+    private let mediaArtwork=CALayer()
     private let mathRenderer=MathRenderer()
     private var renderMath=true,soundsEnabled=true,petMenuRows=[String:PetMenuRow]()
     private var mathRefreshWork:DispatchWorkItem?
     private var conversationScroll:NSScrollView!,conversationText:NSTextView!,latestState:KaiState?,renderedThreadID:String?,renderedBlocks=[String](),renderedRanges=[NSRange](),currentScene="",sendingPrompt:String?,attachmentFiles=[URL](),queuedImageCount=0
     private var motionItems = [String: NSMenuItem](), indicatorItems = [String: NSMenuItem](), accentItems = [String: NSMenuItem]()
     private var localMonitor: Any?, globalMonitor: Any?, dragMonitor:Any?, showItem: NSMenuItem!
-    private var morphWork = [DispatchWorkItem]()
+    private var morphWork = [DispatchWorkItem](),petClickWork:DispatchWorkItem?
     private var petID = "codex", userPetID = "codex", renderedPetID = "", motionID = "idle", indicatorID = "demo", frame = 0, playToken = 0
     private var taskPets=[String:String](),activeTaskIDs=Set<String>(),focusedTaskID:String?,autoCompact=false
     private var loadedSpritePetID:String?,loadedSprite:CGImage?
@@ -140,7 +145,7 @@ private final class NotchView:ImageDropView {
     private var petScale: CGFloat = 1
     private var accentSide = "right"
     private enum DictationTrigger {case command,function}
-    private var open = false, miniOpen = false, pinned = false, commandDown = false, optionDown = false, controlDown = false, functionDown = false
+    private var open = false, miniOpen = false, pinned = false, commandDown = false, optionDown = false, controlDown = false, functionDown = false,petGalleryVisible=false
     private var dictationTrigger:DictationTrigger?
     private var experimentalWebMode=false
     private var modeBeforeExperimental=(open:false,mini:false,pinned:false)
@@ -167,12 +172,23 @@ private final class NotchView:ImageDropView {
         experimentalWebMode=UserDefaults.standard.bool(forKey:"experimentalWebMode")
         renderMath=UserDefaults.standard.object(forKey:"renderMath") as? Bool ?? true
         soundsEnabled=UserDefaults.standard.object(forKey:"soundsEnabled") as? Bool ?? true;sounds.enabled=soundsEnabled
+        speakResponses=UserDefaults.standard.bool(forKey:"speakResponses")
+        compactOnSend=UserDefaults.standard.bool(forKey:"compactOnSend")
+        youtubeMedia=UserDefaults.standard.bool(forKey:"youtubeMedia")
+        spotifyMedia=UserDefaults.standard.bool(forKey:"spotifyMedia")
         accentSide = UserDefaults.standard.string(forKey: "accentSide") ?? "right"
         catalog = try! JSONDecoder().decode(Catalog.self,
             from: Data(contentsOf: assetRoot.appendingPathComponent("animation_catalog.json")))
         gradientCatalog = try! JSONDecoder().decode(GradientCatalog.self,
             from: Data(contentsOf: assetRoot.appendingPathComponent("gradient_profiles.json")))
         precondition(Set(catalog.pets.map(\.id)) == Set(gradientCatalog.profileByPetID.keys), "Every pet must have exactly one gradient profile")
+        petGallery.configure(catalog.pets.map{pet in
+            var motions=catalog.stateAnimations;pet.animationOverrides?.forEach{motions[$0.key]=$0.value}
+            let galleryMotions=motions.mapValues{PetGalleryMotion(row:$0.row,columns:$0.columns,durationsMs:$0.durationsMs,loop:$0.loop)}
+            let stops=gradientCatalog.profileByPetID[pet.id]?.gradients.ambient.stops ?? []
+            let colors=stops.map{stop -> CGColor in let value=UInt64(stop.color.dropFirst(),radix:16) ?? 0;return NSColor(srgbRed:CGFloat((value>>16)&255)/255,green:CGFloat((value>>8)&255)/255,blue:CGFloat(value&255)/255,alpha:0.9).cgColor}
+            return PetGallerySpec(id:pet.id,spritesheet:pet.spritesheet,rows:pet.grid.rows,motions:galleryMotions,colors:colors)
+        },at:assetRoot)
         dictation.onText={ [weak self] text in guard let self,self.dictating else{return};self.setPrompt(self.dictationPrefix+text) };dictation.onLevels={ [weak self] levels in self?.indicator.setExternalLevels(levels) }
         buildMenu(); applyAccentSide(); placePanel(); play(); indicator.hide()
         miniUI.onProject={ [weak self] path in guard let self else{return};self.bridge.send("project",["path":path,"requestId":self.miniUI.pendingRequestID ?? ""]) }
@@ -189,6 +205,12 @@ private final class NotchView:ImageDropView {
         miniUI.onImagesChanged={ [weak self] images in self?.queueImages(images) }
         bridge.onState={ [weak self] state in self?.receive(state) }
         bridge.onError={ [weak self] error in guard let self else{return};self.sounds.playScene("failure");self.sendingPrompt=nil;self.pendingFilesRequestID=nil;self.indicator.setFileLoading(false);self.miniUI.cancelPending();self.miniUI.setCodexMessage(error);self.syncMotion(force:true) }
+        speech.onModels={ [weak self] models in self?.updateVoiceMenu(models) }
+        speech.onStatus={ [weak self] status in self?.featureStatusItem.title=status }
+        media.onStatus={ [weak self] status in self?.featureStatusItem.title=status }
+        media.onChange={ [weak self] state in self?.receiveMedia(state) }
+        media.onLevels={ [weak self] values in guard let self,self.mediaVisible else{return};self.indicator.setExternalLevels(values) }
+        speech.discover();media.configure(youtube:youtubeMedia,spotify:spotifyMedia)
         bridge.start()
         localMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] e in self?.flags(e); return e }
         globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] e in self?.flags(e) }
@@ -198,7 +220,7 @@ private final class NotchView:ImageDropView {
         DistributedNotificationCenter.default().addObserver(self,selector:#selector(codexPreview(_:)),name:NSNotification.Name("com.kai.codex.preview"),object:nil)
     }
 
-    func applicationWillTerminate(_ notification:Notification){bridge.stop();attachmentFiles.forEach{try? FileManager.default.removeItem(at:$0)}}
+    func applicationWillTerminate(_ notification:Notification){speech.stop();media.stop();artworkTask?.cancel();bridge.stop();attachmentFiles.forEach{try? FileManager.default.removeItem(at:$0)}}
     @objc private func codexPreview(_ note:Notification){guard let path=note.userInfo?["path"] as? String else{return};pinned=true;setOpen(true,mini:true);miniUI.previewFile(URL(fileURLWithPath:(path as NSString).expandingTildeInPath))}
 
     private func buildMenu() {
@@ -254,6 +276,18 @@ private final class NotchView:ImageDropView {
             item.target = self; item.representedObject = id; accentItems[id] = item
         }
         accentRoot.submenu = accentMenu; menu.addItem(accentRoot); menu.addItem(.separator())
+        menu.addItem(.separator())
+        speechItem=menu.addItem(withTitle:"speak Codex responses",action:#selector(toggleSpeech),keyEquivalent:"")
+        let voices=NSMenuItem(title:"local ONNX voice",action:nil,keyEquivalent:"");voices.submenu=voiceMenu;menu.addItem(voices)
+        menu.addItem(withTitle:"rescan local voices",action:#selector(rescanVoices),keyEquivalent:"")
+        menu.addItem(withTitle:"stop speaking",action:#selector(stopSpeaking),keyEquivalent:"")
+        compactSendItem=menu.addItem(withTitle:"compact immediately on send",action:#selector(toggleCompactSend),keyEquivalent:"")
+        youtubeItem=menu.addItem(withTitle:"YouTube when idle (Webby, Dia, Chrome)",action:#selector(toggleYouTube),keyEquivalent:"")
+        spotifyItem=menu.addItem(withTitle:"Spotify when idle",action:#selector(toggleSpotify),keyEquivalent:"")
+        menu.addItem(withTitle:"allow media permissions…",action:#selector(mediaPermissions),keyEquivalent:"")
+        featureStatusItem=menu.addItem(withTitle:"Local speech and media are optional",action:nil,keyEquivalent:"");featureStatusItem.isEnabled=false
+        for item in menu.items where item.action != nil && item.target == nil {item.target=self}
+        updateFeatureChecks()
         let quit = menu.addItem(withTitle: "quit kai pet", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         quit.target = NSApp; status.menu = menu; refreshChecks()
     }
@@ -271,7 +305,7 @@ private final class NotchView:ImageDropView {
             panel = NotchPanel(contentRect: rect, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
             panel.backgroundColor = .clear; panel.isOpaque = false; panel.hasShadow = false; panel.ignoresMouseEvents = true
             panel.level = .statusBar; panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
-            let host=NotchView(frame:CGRect(origin:.zero,size:rect.size));host.click={ [weak self] point in self?.handleClick(point) };host.scroll={ [weak self] point,delta in self?.handleScroll(point,delta) };host.hover={ [weak self] point in self?.handleHover(point) };host.dragEntered={ [weak self] in guard self?.experimentalWebMode != true else{return};self?.handleImageEntered() };host.imageDropped={ [weak self] images in guard self?.experimentalWebMode != true else{return};self?.handleImageDrop(images) };panel.contentView=host;host.wantsLayer=true;panel.acceptsMouseMovedEvents=true
+            let host=NotchView(frame:CGRect(origin:.zero,size:rect.size));host.click={ [weak self] point,count in self?.handleClick(point,count:count) };host.scroll={ [weak self] point,delta in self?.handleScroll(point,delta) };host.hover={ [weak self] point in self?.handleHover(point) };host.dragEntered={ [weak self] in guard self?.experimentalWebMode != true else{return};self?.handleImageEntered() };host.imageDropped={ [weak self] images in guard self?.experimentalWebMode != true else{return};self?.handleImageDrop(images) };panel.contentView=host;host.wantsLayer=true;panel.acceptsMouseMovedEvents=true
             composerField=ComposerField();composerField.isBordered=false;composerField.drawsBackground=false;composerField.focusRingType = .none;composerField.font=NSFont.systemFont(ofSize:10);composerField.textColor=NSColor.white.withAlphaComponent(0.88);composerField.delegate=self;composerField.isHidden=true;composerField.imagesEntered={ [weak self] in self?.handleImageEntered() };composerField.imagesDropped={ [weak self] images in self?.handleImageDrop(images) };host.addSubview(composerField)
             miniUI.composerFrameChanged={ [weak self] frame,animated in self?.layoutComposer(frame,animated:animated) }
             let scroll=NSScrollView(),text=NSTextView()
@@ -281,20 +315,20 @@ private final class NotchView:ImageDropView {
             mathRenderer.onImageReady={ [weak self] in self?.scheduleMathRefresh() }
             if renderMath { mathRenderer.install(in:host,below:scroll) }
             miniUI.conversationFrameChanged={ [weak self] frame in self?.layoutConversation(frame) }
-            let root = panel.contentView!.layer!; root.backgroundColor = NSColor.black.cgColor; root.mask = mask; root.addSublayer(miniUI.layer); root.addSublayer(notchContent)
-            sprite.contentsGravity = .resizeAspect; sprite.magnificationFilter = .nearest; notchContent.addSublayer(indicator.leftAccentLayer); notchContent.addSublayer(indicator.accentLayer); notchContent.addSublayer(sprite); notchContent.addSublayer(indicator.layer); notchContent.addSublayer(indicator.fileLayer)
+            let root = panel.contentView!.layer!; root.backgroundColor = NSColor.black.cgColor; root.mask = mask; root.addSublayer(miniUI.layer);root.addSublayer(petGallery.layer);root.addSublayer(notchContent)
+            sprite.contentsGravity = .resizeAspect; sprite.magnificationFilter = .nearest; notchContent.addSublayer(indicator.leftAccentLayer); notchContent.addSublayer(indicator.accentLayer); notchContent.addSublayer(sprite);mediaArtwork.cornerRadius=7;mediaArtwork.masksToBounds=true;mediaArtwork.contentsGravity = .resizeAspectFill;mediaArtwork.isHidden=true;notchContent.addSublayer(mediaArtwork); notchContent.addSublayer(indicator.layer); notchContent.addSublayer(indicator.fileLayer)
         }
         panel.setFrame(rect, display: true); mask.frame = CGRect(origin: .zero, size: rect.size); notchContent.frame = mask.frame
         // The camera cutout itself has no drawable/event surface.  Keep a slim live
         // strip directly under it so a drag aimed at the notch can enter the app.
         let dropReach:CGFloat=36
         let dropRect=NSRect(x:center-notchWidth/2,y:screen.frame.maxY-notchHeight-dropReach,width:notchWidth,height:notchHeight+dropReach)
-        if dropPanel == nil { dropPanel=NSPanel(contentRect:dropRect,styleMask:[.borderless,.nonactivatingPanel],backing:.buffered,defer:false);dropPanel.backgroundColor = .clear;dropPanel.isOpaque=false;dropPanel.level = .popUpMenu;dropPanel.collectionBehavior=[.canJoinAllSpaces,.fullScreenAuxiliary,.stationary];let drop=NotchView(frame:NSRect(origin:.zero,size:dropRect.size));drop.autoresizingMask=[.width,.height];drop.click={ [weak self] _ in guard let self,self.compactWhileWorking else{return};self.compactWhileWorking=false;self.compactThreadID=nil;self.pinned=true;self.setOpen(true,mini:true) };drop.dragEntered={ [weak self] in self?.handleImageEntered() };drop.imageDropped={ [weak self] images in self?.handleImageDrop(images) };dropPanel.contentView=drop }
+        if dropPanel == nil { dropPanel=NSPanel(contentRect:dropRect,styleMask:[.borderless,.nonactivatingPanel],backing:.buffered,defer:false);dropPanel.backgroundColor = .clear;dropPanel.isOpaque=false;dropPanel.level = .popUpMenu;dropPanel.collectionBehavior=[.canJoinAllSpaces,.fullScreenAuxiliary,.stationary];let drop=NotchView(frame:NSRect(origin:.zero,size:dropRect.size));drop.autoresizingMask=[.width,.height];drop.click={ [weak self] _,_ in guard let self,self.compactWhileWorking else{return};self.compactWhileWorking=false;self.compactThreadID=nil;self.pinned=true;self.setOpen(true,mini:true) };drop.dragEntered={ [weak self] in self?.handleImageEntered() };drop.imageDropped={ [weak self] images in self?.handleImageDrop(images) };dropPanel.contentView=drop }
         dropPanel.setFrame(dropRect,display:true);(miniOpen || experimentalWebMode) ? dropPanel.orderOut(nil):dropPanel.orderFrontRegardless()
         let expanded = notchWidth + 160, kaiLeft = (canvasWidth - expanded) / 2
         let scale = screen.backingScaleFactor, topBandY = canvasHeight-notchHeight
         func px(_ value: CGFloat) -> CGFloat { round(value * scale) / scale }
-        layoutPet()
+        layoutPet();mediaArtwork.frame=sprite.frame
         let physicalRight = (canvasWidth + notchWidth) / 2, kaiRight = (canvasWidth + expanded) / 2
         let iconCenter=(physicalRight+kaiRight)/2
         indicator.layer.frame = CGRect(x:px(iconCenter-(miniOpen && !miniListening ? 34:14)),y:px(topBandY+(notchHeight-18)/2),width:28,height:18)
@@ -304,6 +338,7 @@ private final class NotchView:ImageDropView {
         indicator.leftAccentLayer.frame = CGRect(x:px(kaiLeft),y:px(accentY),width:glowWidth,height:glowHeight)
         indicator.accentLayer.frame = CGRect(x:px(kaiRight-glowWidth),y:px(accentY),width:glowWidth,height:glowHeight); indicator.layout(); indicator.setAccentExpanded(miniOpen,duration:0)
         miniUI.layout(in:CGRect(x:px(kaiLeft+8),y:8,width:px(expanded-16),height:px(topBandY-16)))
+        petGallery.layer.frame=miniUI.layer.frame;petGallery.layout(in:petGallery.layer.bounds,selected:petID)
         if experimentalWebMode{ensureBrowser()};browserView?.frame=CGRect(x:px(kaiLeft),y:0,width:px(expanded),height:canvasHeight)
         CATransaction.begin(); CATransaction.setDisableActions(true)
         mask.path = path(width:(open || experimentalWebMode) ? expanded:notchWidth, height:(open || experimentalWebMode) ? ((miniOpen || experimentalWebMode) ? canvasHeight:notchHeight):notchHeight)
@@ -367,7 +402,9 @@ private final class NotchView:ImageDropView {
 
     private func setOpen(_ desired: Bool, mini: Bool = false) {
         if desired && mini {autoCompact=false}
+        if mediaVisible && (mini || compactWhileWorking || dictating || experimentalWebMode){dismissMedia()}
         guard panel != nil, desired != open || (desired && mini != miniOpen) || presentedCompact != compactWhileWorking else { return }
+        if petGalleryVisible && (!desired || !mini){hidePetGallery(restore:false)}
         let wasOpen=open,wasMini=miniOpen; open = desired; miniOpen = desired && mini;presentedCompact=compactWhileWorking;if desired && !wasOpen{play()}else if !desired{playToken += 1}; panel.ignoresMouseEvents = !miniOpen && !compactWhileWorking;(panel.contentView as? NotchView)?.compactHitRect=compactWhileWorking && !miniOpen ? CGRect(x:(canvasWidth-notchWidth-160)/2,y:canvasHeight-notchHeight,width:notchWidth+160,height:notchHeight):nil;composerField?.isHidden = !miniOpen;conversationScroll?.isHidden = !miniOpen;miniOpen ? dropPanel?.orderOut(nil):dropPanel?.orderFrontRegardless();refreshChecks()
         let destination = path(width:notchWidth+(desired ? 160:0),height:desired ? (mini ? canvasHeight:notchHeight):notchHeight), animation = CABasicAnimation(keyPath:"path")
         animation.fromValue = mask.presentation()?.path ?? mask.path; animation.toValue = destination
@@ -384,18 +421,30 @@ private final class NotchView:ImageDropView {
         } }
     }
 
-    private func handleClick(_ point:CGPoint) {
+    private func handleClick(_ point:CGPoint,count:Int) {
         if compactWhileWorking && !miniOpen {autoCompact=false;compactWhileWorking=false;pinned=true;setOpen(true,mini:true);return}
         guard miniOpen else{return}
-        if (sprite.presentation()?.frame ?? sprite.frame).insetBy(dx:-4,dy:-3).contains(point) {randomizePet();return}
+        if (sprite.presentation()?.frame ?? sprite.frame).insetBy(dx:-4,dy:-3).contains(point) {
+            if count >= 2 {petClickWork?.cancel();petClickWork=nil;petGalleryVisible ? hidePetGallery():showPetGallery()}
+            else if !petGalleryVisible {petClickWork?.cancel();let work=DispatchWorkItem{[weak self] in self?.randomizePet()};petClickWork=work;DispatchQueue.main.asyncAfter(deadline:.now()+0.22,execute:work)}
+            return
+        }
+        if petGalleryVisible {
+            let frame=petGallery.layer.frame,local=CGPoint(x:point.x-frame.minX,y:point.y-frame.minY)
+            if frame.contains(point),let id=petGallery.pet(at:local){usePet(id);hidePetGallery()}
+            return
+        }
         if !miniListening,(indicator.fileLayer.presentation()?.frame ?? indicator.fileLayer.frame).contains(point) { miniUI.toggleFiles();if miniUI.isFilesOpen{let requestID=UUID().uuidString;pendingFilesRequestID=requestID;indicator.setFileLoading(true);bridge.send("files",["requestId":requestID])}else{pendingFilesRequestID=nil;indicator.setFileLoading(false)};return }
         if (indicator.layer.presentation()?.frame ?? indicator.layer.frame).contains(point) { closeNotch();return }
         let frame=miniUI.layer.frame, local=CGPoint(x:point.x-frame.minX,y:point.y-frame.minY)
         if frame.contains(point) { _=miniUI.handleClick(local) }
     }
 
-    private func handleHover(_ point:CGPoint?) { guard miniOpen,let point else{miniUI.handleHover(nil);return};let frame=miniUI.layer.frame;miniUI.handleHover(frame.contains(point) ? CGPoint(x:point.x-frame.minX,y:point.y-frame.minY):nil) }
+    private func handleHover(_ point:CGPoint?) {guard miniOpen else{return};if petGalleryVisible{let frame=petGallery.layer.frame;petGallery.hover(at:point.flatMap{frame.contains($0) ? CGPoint(x:$0.x-frame.minX,y:$0.y-frame.minY):nil});miniUI.handleHover(nil);return};guard let point else{miniUI.handleHover(nil);return};let frame=miniUI.layer.frame;miniUI.handleHover(frame.contains(point) ? CGPoint(x:point.x-frame.minX,y:point.y-frame.minY):nil) }
     private func handleScroll(_ point:CGPoint,_ delta:CGFloat){guard miniOpen else{return};let frame=miniUI.layer.frame;if frame.contains(point){miniUI.scroll(delta,at:CGPoint(x:point.x-frame.minX,y:point.y-frame.minY))}}
+
+    private func showPetGallery(){guard miniOpen else{return};petGalleryVisible=true;miniUI.setVisible(false,duration:0.3);composerField?.isHidden=true;conversationScroll?.isHidden=true;petGallery.layout(in:petGallery.layer.bounds,selected:petID);petGallery.show(selected:petID,motion:motionID)}
+    private func hidePetGallery(restore:Bool=true){guard petGalleryVisible else{return};petGalleryVisible=false;petGallery.hide();if restore{miniUI.setVisible(miniOpen,duration:0.32);composerField?.isHidden = !miniOpen;conversationScroll?.isHidden = !miniOpen}}
 
     private func layoutComposer(_ frame:CGRect,animated:Bool){guard let field=composerField else{return};let root=miniUI.layer.frame,h:CGFloat=18,target=CGRect(x:root.minX+frame.minX+10,y:root.minY+frame.midY-h/2-2.25,width:max(20,frame.width-49),height:h);if animated{NSAnimationContext.runAnimationGroup{context in context.duration=0.42;context.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.7,0.25,1);field.animator().frame=target}}else{field.frame=target}}
     private func layoutConversation(_ frame:CGRect){guard let scroll=conversationScroll else{return};let root=miniUI.layer.frame;scroll.frame=CGRect(x:root.minX+frame.minX,y:root.minY+frame.minY,width:frame.width,height:frame.height)}
@@ -403,8 +452,8 @@ private final class NotchView:ImageDropView {
     func controlTextDidChange(_ obj:Notification){miniUI.setComposerHasText(!(composerField?.stringValue.isEmpty ?? true));syncMotion(force:true)}
     func control(_ control:NSControl,textView:NSTextView,doCommandBy selector:Selector)->Bool{if selector == #selector(NSResponder.insertNewline(_:)){sendPrompt();return true};return false}
 
-    private func sendPrompt(){guard sendingPrompt == nil else{return};let prompt=(composerField?.stringValue ?? "").trimmingCharacters(in:.whitespacesAndNewlines);guard !prompt.isEmpty || queuedImageCount>0 else{return};sendingPrompt=prompt;setMotion("running-left",replay:true);bridge.send("send",["text":prompt])}
-    private func answerApproval(_ action:String){var fields:[String:Any]=["requestId":miniUI.pendingRequestID ?? ""];if let id=latestState?.approvalThreadId{fields["threadId"]=id};bridge.send(action,fields)}
+    private func sendPrompt(){guard sendingPrompt == nil else{return};let prompt=(composerField?.stringValue ?? "").trimmingCharacters(in:.whitespacesAndNewlines);guard !prompt.isEmpty || queuedImageCount>0 else{return};sendingPrompt=prompt;setMotion("running-left",replay:true);speech.cancelAudio();bridge.send("send",["text":prompt]);if compactOnSend{hidePetGallery(restore:false);autoCompact=false;compactWhileWorking=true;compactThreadID=latestState?.threadId;compactStartHistoryCount=latestState?.history.count ?? 0;pinned=true;setOpen(true,mini:false)}}
+    private func answerApproval(_ action:String){if action == "interrupt"{speech.cancelAudio()};var fields:[String:Any]=["requestId":miniUI.pendingRequestID ?? ""];if let id=latestState?.approvalThreadId{fields["threadId"]=id};bridge.send(action,fields)}
 
     private func queueImages(_ images:[NSImage]){
         var paths=[String]()
@@ -413,11 +462,17 @@ private final class NotchView:ImageDropView {
     }
 
     private func receive(_ state:KaiState){
-        let previous=latestState,previousNotice=previous?.notice;latestState=state;if !state.standalone{UserDefaults.standard.set(state.project,forKey:"kaiProject")};miniUI.setState(state);syncTaskPet(state);renderConversation(state.history)
+        defer{refreshMedia()}
+        let previous=latestState,previousNotice=previous?.notice;latestState=state
+        if mediaVisible && MediaCompanion.codexNeedsNotch(state) {
+            dismissMedia(closeNotch:false)
+            if !miniOpen {autoCompact=true;compactWhileWorking=true;compactThreadID=nil;setOpen(true,mini:false)}
+        }
+        if !state.standalone{UserDefaults.standard.set(state.project,forKey:"kaiProject")};miniUI.setState(state);speech.receive(state);syncTaskPet(state);renderConversation(state.history)
         let completed=previous?.threadId == state.threadId && state.threadId != nil && (previous?.activeTurnId != nil || previous?.activity.scene == "thinking") && state.activeTurnId == nil && state.activity.scene == "off"
         if sendingPrompt != nil {
             if state.notice == "Turn started" || state.notice.hasPrefix("Steered active turn") {setPrompt("");miniUI.clearImages();sendingPrompt=nil}
-            else if state.notice != previousNotice {sendingPrompt=nil}
+            else if state.notice != previousNotice {sendingPrompt=nil;if compactOnSend && compactWhileWorking{compactWhileWorking=false;compactThreadID=nil;setOpen(true,mini:true)}}
         }
         if !dictating && !miniListening {showActivity(state.activity)}
         if state.approval && previous?.approval != true {autoCompact=false;compactWhileWorking=false;pinned=true;setOpen(true,mini:true)}
@@ -440,6 +495,51 @@ private final class NotchView:ImageDropView {
         if let pendingFilesRequestID,state.completedRequestId == pendingFilesRequestID {self.pendingFilesRequestID=nil;indicator.setFileLoading(false)}
         if !state.activeTasks.isEmpty && !open {autoCompact=true;compactWhileWorking=true;setOpen(true,mini:false)}
         if state.activeTasks.isEmpty && autoCompact && !miniOpen {autoCompact=false;DispatchQueue.main.asyncAfter(deadline:.now()+1.2){[weak self] in guard let self,self.latestState?.activeTasks.isEmpty == true,!self.miniOpen else{return};self.compactWhileWorking=false;self.setOpen(false)}}
+    }
+    private func updateFeatureChecks(){
+        speechItem?.state=speakResponses ? .on:.off;compactSendItem?.state=compactOnSend ? .on:.off
+        youtubeItem?.state=youtubeMedia ? .on:.off;spotifyItem?.state=spotifyMedia ? .on:.off
+    }
+    @objc private func toggleSpeech(){speakResponses.toggle();UserDefaults.standard.set(speakResponses,forKey:"speakResponses");speech.configure(enabled:speakResponses,model:speech.selectedModel);updateFeatureChecks()}
+    @objc private func toggleCompactSend(){compactOnSend.toggle();UserDefaults.standard.set(compactOnSend,forKey:"compactOnSend");updateFeatureChecks()}
+    @objc private func stopSpeaking(){speech.cancelAudio()}
+    @objc private func rescanVoices(){speech.discover()}
+    @objc private func selectVoice(_ item:NSMenuItem){guard let path=item.representedObject as? String else{return};UserDefaults.standard.set(path,forKey:"speechModel");speech.configure(enabled:speakResponses,model:path);updateVoiceMenu(speech.models,configure:false)}
+    private func updateVoiceMenu(_ models:[String],configure:Bool=true){
+        voiceMenu.removeAllItems()
+        let saved=UserDefaults.standard.string(forKey:"speechModel") ?? ""
+        let selected=models.contains(saved) ? saved:models.first ?? ""
+        for model in models {let item=voiceMenu.addItem(withTitle:URL(fileURLWithPath:model).deletingPathExtension().lastPathComponent,action:#selector(selectVoice(_:)),keyEquivalent:"");item.target=self;item.representedObject=model;item.state=model == selected ? .on:.off}
+        if models.isEmpty {let item=voiceMenu.addItem(withTitle:"No compatible Piper ONNX voices found",action:nil,keyEquivalent:"");item.isEnabled=false}
+        if configure {speech.configure(enabled:speakResponses,model:selected)}
+    }
+    @objc private func toggleYouTube(){youtubeMedia.toggle();UserDefaults.standard.set(youtubeMedia,forKey:"youtubeMedia");configureMedia()}
+    @objc private func toggleSpotify(){spotifyMedia.toggle();UserDefaults.standard.set(spotifyMedia,forKey:"spotifyMedia");configureMedia()}
+    private func configureMedia(){updateFeatureChecks();media.configure(youtube:youtubeMedia,spotify:spotifyMedia);if !youtubeMedia && !spotifyMedia{dismissMedia()}}
+    @objc private func mediaPermissions(){
+        let options=[kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String:true] as CFDictionary
+        _=AXIsProcessTrustedWithOptions(options);_=CGRequestScreenCaptureAccess()
+        featureStatusItem.title="Enable Accessibility, Screen Recording, and Spotify Automation; then restart Kai"
+    }
+    private func receiveMedia(_ state:MediaNowPlaying?){
+        if mediaState == state{refreshMedia();return}
+        artworkTask?.cancel();mediaState=state;mediaImage=nil;mediaProfile=nil
+        guard let state else{dismissMedia();return}
+        guard let url=URL(string:state.artwork),url.scheme == "https" else{return}
+        artworkTask=URLSession.shared.dataTask(with:url){[weak self] data,_,_ in
+            DispatchQueue.main.async{ [weak self] in guard let self,self.mediaState == state,let data,let image=NSImage(data:data) else{return};self.mediaImage=image;self.mediaProfile=MediaNowPlaying.profile(image);self.refreshMedia()}
+        };artworkTask?.resume();refreshMedia()
+    }
+    private func refreshMedia(){
+        let busy=miniOpen || dictating || miniListening || compactWhileWorking || experimentalWebMode || sendingPrompt != nil || latestState?.activeTurnId != nil || latestState?.approval == true || !(latestState?.activeTasks.isEmpty ?? true)
+        guard !busy,mediaState != nil,let image=mediaImage else{if mediaVisible{dismissMedia()};return}
+        if !mediaVisible {mediaVisible=true;setOpen(true,mini:false);playToken += 1;sprite.isHidden=true;mediaArtwork.isHidden=false;mediaArtwork.frame=sprite.frame;indicator.setExternalLevels([0,0,0,0]);indicator.startListening(useMicrophone:false);media.capture(true)}
+        media.capture(true)
+        mediaArtwork.contents=image.cgImage(forProposedRect:nil,context:nil,hints:nil)
+        if let profile=mediaProfile{indicator.setProfile(profile,wave:false)}
+    }
+    private func dismissMedia(closeNotch:Bool=true){
+        guard mediaVisible else{return};mediaVisible=false;currentScene="";media.capture(false);mediaArtwork.isHidden=true;sprite.isHidden=false;mediaArtwork.contents=nil;play();if let state=latestState{showActivity(state.activity)};if closeNotch && !miniOpen && !compactWhileWorking{setOpen(false)}
     }
     private func syncTaskPet(_ state:KaiState){
         let ids=Set(state.activeTasks.map(\.id)),pets=catalog.pets.map(\.id)
@@ -464,6 +564,7 @@ private final class NotchView:ImageDropView {
         }
     }
     private func closeNotch(){
+        hidePetGallery(restore:false)
         if dictating{finishDictation()}
         pinned=false
         if let state=latestState, state.activeTurnId != nil || !state.activeTasks.isEmpty || state.activity.scene == "thinking" {
@@ -482,6 +583,7 @@ private final class NotchView:ImageDropView {
     }
 
     private func showActivity(_ activity:KaiActivity){
+        if mediaVisible && activity.scene == "off"{return}
         guard currentScene != activity.scene else{return};currentScene=activity.scene
         sounds.playScene(activity.scene)
         switch activity.scene {case "off":indicator.hide();case "thinking":indicator.showThinking();default:indicator.showScene(activity.scene)}
@@ -632,11 +734,11 @@ private final class NotchView:ImageDropView {
     }
     func textView(_ textView:NSTextView,clickedOnLink link:Any,at charIndex:Int)->Bool{guard let url=(link as? URL) ?? (link as? String).flatMap(URL.init(string:)) else{return false};if url.isFileURL{miniUI.previewFile(url);return true};guard ["http","https"].contains(url.scheme?.lowercased() ?? "") else{return false};NSWorkspace.shared.open(url);return true}
 
-    private func beginDictation(trigger:DictationTrigger){guard !dictating else{return};dictating=true;dictationTrigger=trigger;sounds.startListening();dictationPrefix=(composerField?.stringValue ?? "").trimmingCharacters(in:.whitespacesAndNewlines);if !dictationPrefix.isEmpty{dictationPrefix += " "};setMotion("waiting");indicator.startListening(useMicrophone:false);dictation.start()}
+    private func beginDictation(trigger:DictationTrigger){guard !dictating else{return};speech.cancelAudio();dictating=true;dictationTrigger=trigger;sounds.startListening();dictationPrefix=(composerField?.stringValue ?? "").trimmingCharacters(in:.whitespacesAndNewlines);if !dictationPrefix.isEmpty{dictationPrefix += " "};setMotion("waiting");indicator.startListening(useMicrophone:false);dictation.start()}
     private func finishDictation(){guard dictating else{return};dictating=false;dictationTrigger=nil;sounds.stopListening();dictation.stop{[weak self] final in guard let self else{return};self.setPrompt(self.dictationPrefix+final);self.syncMotion(force:true)};if miniOpen{exitMiniListening()}else{setOpen(true,mini:true)}}
 
     private func enterMiniListening(trigger:DictationTrigger) {
-        guard miniOpen,!miniListening else{return};miniListening=true;if miniUI.isFilesOpen{miniUI.toggleFiles()};indicator.setFileOpen(false);beginDictation(trigger:trigger)
+        guard miniOpen,!miniListening else{return};hidePetGallery();miniListening=true;if miniUI.isFilesOpen{miniUI.toggleFiles()};indicator.setFileOpen(false);beginDictation(trigger:trigger)
         let center=(canvasWidth+notchWidth)/2+40,duration=0.62
         for layer in [indicator.layer,indicator.fileLayer] { let move=CABasicAnimation(keyPath:"position.x");move.fromValue=layer.presentation()?.position.x ?? layer.position.x;move.toValue=center;move.duration=duration;move.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.7,0.25,1);CATransaction.begin();CATransaction.setDisableActions(true);layer.position.x=center;CATransaction.commit();layer.add(move,forKey:"listenMerge") }
         setFileButtonVisible(false,duration:duration)
@@ -679,6 +781,7 @@ private final class NotchView:ImageDropView {
     }
 
     private func play() {
+        if mediaVisible {return}
         guard let pet = catalog.pets.first(where: { $0.id == petID }), let motion = pet.animationOverrides?[motionID] ?? catalog.stateAnimations[motionID] else{return}
         let image:CGImage
         if loadedSpritePetID == petID,let loadedSprite {image=loadedSprite}
@@ -690,7 +793,7 @@ private final class NotchView:ImageDropView {
         CATransaction.begin(); CATransaction.setDisableActions(true); sprite.contents = image; CATransaction.commit()
         if let profile = gradientCatalog.profileByPetID[petID] { indicator.setProfile(profile, wave: true); miniUI.setProfile(profile,animated:true);if renderedPetID != petID {renderedPetID=petID;assistantPalette=assistantGradientColors();renderedThreadID=nil;if let state=latestState{renderConversation(state.history)}} }
         sprite.contentsScale = NSScreen.main?.backingScaleFactor ?? 2; frame = 0; playToken += 1
-        showFrame(pet, motion, playToken)
+        showFrame(pet, motion, playToken);if petGalleryVisible{petGallery.play(motionID)}
     }
 
     private func showFrame(_ pet: Pet, _ motion: Motion, _ token: Int) {
@@ -723,7 +826,7 @@ private final class NotchView:ImageDropView {
         DispatchQueue.main.asyncAfter(deadline:.now()+2.05,execute:shrink)
     }
     private func cancelSizeTest() { morphWork.forEach { $0.cancel() }; morphWork.removeAll() }
-    private func usePet(_ id:String){userPetID=id;petID=id;if let chatID=focusedTaskID ?? latestState?.threadId{taskPets[chatID]=id};refreshChecks();play()}
+    private func usePet(_ id:String){userPetID=id;petID=id;if let chatID=focusedTaskID ?? latestState?.threadId{taskPets[chatID]=id};petGallery.layout(in:petGallery.layer.bounds,selected:id);refreshChecks();play()}
     @objc private func closePetPicker(){status.menu?.cancelTracking()}
     @objc private func toggleMathRendering(){
         renderMath.toggle()
@@ -750,6 +853,13 @@ private final class NotchView:ImageDropView {
     private func applyAccentSide() { indicator.setAccentVisibility(left:accentSide == "left" || accentSide == "both", right:accentSide == "right" || accentSide == "both") }
     @objc private func selectIndicator(_ item: NSMenuItem) {
         indicatorID = item.representedObject as! String
+        if indicatorID == "cycle" {
+            let wasMini=miniOpen
+            autoCompact=false;compactWhileWorking=false;compactThreadID=nil;pinned=true
+            setOpen(true,mini:false)
+            if !wasMini {applyIndicator()}
+            refreshChecks();return
+        }
         if !miniOpen { applyIndicator() }
         if indicatorID != "off" { pinned = true; if !miniOpen { setOpen(true) } }; refreshChecks()
     }
@@ -776,5 +886,15 @@ private final class NotchView:ImageDropView {
 }
 
 @main struct Main {
-    @MainActor static func main() { let app = NSApplication.shared, delegate = KaiPetApp(); app.delegate = delegate; app.run() }
+    @MainActor static func main() {
+        if CommandLine.arguments.contains("--diagnose-speaker-audio") {
+            let meter=PlaybackMeter();var maximum:CGFloat=0,packets=0
+            meter.onError={print($0)}
+            meter.onLevels={levels in packets += 1;maximum=max(maximum,levels.max() ?? 0)}
+            meter.start(application:"diagnostic")
+            RunLoop.main.run(until:Date().addingTimeInterval(4))
+            meter.stop();print("Speaker meter packets=\(packets) peak=\(maximum)");return
+        }
+        let app = NSApplication.shared, delegate = KaiPetApp(); app.delegate = delegate; app.run()
+    }
 }

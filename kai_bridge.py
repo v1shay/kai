@@ -16,6 +16,7 @@ from typing import Any
 
 from kai import AppServer, Kai, image_file, item_lines, unique_thread_rows
 from kai_activity import SessionActivityMonitor
+from kai_dot import DotActivityMonitor
 
 
 def activity(app: Kai) -> dict[str, str]:
@@ -83,6 +84,7 @@ def snapshot(app: Kai, include_files: bool = True,
             history.append({
                 "id": item.get("id") or "",
                 "kind": "user" if item.get("type") == "userMessage" else "assistant",
+                "speechText": item.get("text", "") if item.get("type") == "agentMessage" else None,
                 "lines": [{"text": str(line), "style": getattr(line, "style", ""),
                            "mathEnabled": getattr(line, "math_enabled", True)} for line in lines],
             })
@@ -216,6 +218,7 @@ def main() -> int:
         limit_percent: int | None = None
         limit_results: queue.Queue[dict[str, Any] | None] = queue.Queue()
         monitor = SessionActivityMonitor()
+        dot_monitor = DotActivityMonitor()
         monitor_results: queue.Queue[dict[str, Any]] = queue.Queue()
         monitor_busy = False
         last_monitor = 0.0
@@ -289,8 +292,11 @@ def main() -> int:
                 pass
             else:
                 monitor_busy = False
-                if monitored["activeTasks"] != active_tasks:
-                    active_tasks = monitored["activeTasks"]
+                dot_tasks = dot_monitor.poll()["activeTasks"]
+                combined = monitored["activeTasks"] + dot_tasks
+                combined.sort(key=lambda task: (task.get("eventTime", ""), task.get("sequence", 0)), reverse=True)
+                if combined != active_tasks:
+                    active_tasks = combined
                     app.dirty = True
             if app.rate_limits_changed or time.monotonic() - last_limit_fetch > 120:
                 app.rate_limits_changed = False
