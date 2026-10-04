@@ -30,5 +30,11 @@ for pet in catalog["pets"]:
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, destination)
 PY
-codesign --force --deep --sign - "$product"
+# A certificate keeps the designated requirement stable across rebuilds.
+# Ad-hoc signatures change with the executable and can invalidate privacy grants.
+signing_identity=${KAI_SIGNING_IDENTITY:--}
+if [[ "$signing_identity" == "-" ]] && security find-identity -v -p codesigning | rg -q '"system local code signing"'; then
+    signing_identity="system local code signing"
+fi
+codesign --force --deep --sign "$signing_identity" "$product"
 print -r -- "$product"

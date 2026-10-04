@@ -178,7 +178,8 @@ struct GradientStop: Decodable { let location: Double, color: String }
 
     private func startTimer() {
         stopTimer(); lastTick = ProcessInfo.processInfo.systemUptime
-        timer = Timer.scheduledTimer(timeInterval: 1/30, target: self, selector: #selector(timerFired), userInfo: nil, repeats: true)
+        timer = Timer(timeInterval: 1/30, target: self, selector: #selector(timerFired), userInfo: nil, repeats: true)
+        if let timer {RunLoop.main.add(timer,forMode:.common)}
     }
 
     private func stopTimer() { timer?.invalidate(); timer = nil }

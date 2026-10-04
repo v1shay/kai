@@ -24,8 +24,10 @@ struct MediaNowPlaying: Equatable {
         generation += 1; self.youtube=youtube;self.spotify=spotify;timer?.invalidate();timer=nil
         if !youtube && !spotify {current=nil;onChange?(nil);meter.stop();return}
         timer=Timer.scheduledTimer(withTimeInterval:1,repeats:true){[weak self] _ in Task{ @MainActor [weak self] in self?.poll()}}
+        if let timer {RunLoop.main.add(timer,forMode:.common)}
         poll()
     }
+    func diagnose(){meter.diagnose()}
     func capture(_ enabled:Bool) {
         if enabled, let current {
             meter.onLevels=onLevels;meter.onError=onStatus;meter.start(application:current.application)
@@ -113,9 +115,12 @@ final class PlaybackMeter: NSObject, SCStreamOutput, SCStreamDelegate {
     private var silenceTimer:Timer?,lastLevelAt=0.0,reportedAudio=false,retryAfter=Date.distantPast
     private let queue=DispatchQueue(label:"kai.media.audio",qos:.userInteractive)
     private var lastSample=0.0
+    private(set) var audioPackets=0, peak:CGFloat=0
+    func diagnose(){logger.info("Capture active=\(self.stream != nil) packets=\(self.audioPackets) peak=\(Double(self.peak)) legacyPermission=\(CGPreflightScreenCaptureAccess())")}
     func start(application:String) {
         guard self.application != application,Date() >= retryAfter else{return};stop()
-        guard CGPreflightScreenCaptureAccess() else{retryAfter=Date().addingTimeInterval(5);report("Enable Screen Recording for Kai to react to speaker audio");return}
+        // The legacy preflight can remain false after access is granted. Let
+        // ScreenCaptureKit attempt capture and report its actual result instead.
         self.application=application;reportedAudio=false
         let token=generation
         SCShareableContent.getExcludingDesktopWindows(true,onScreenWindowsOnly:false){[weak self] content,error in
@@ -139,7 +144,10 @@ final class PlaybackMeter: NSObject, SCStreamOutput, SCStreamDelegate {
             }
         }
     }
-    private func report(_ status:String){logger.info("\(status,privacy:.public)");onError?(status)}
+    private func report(_ status:String){
+        logger.info("\(status,privacy:.public)")
+        onError?(status.contains("declined TCC") ? "macOS denied capture for this Kai build — open allow media permissions…" : status)
+    }
     private func startSilenceTimer(){
         lastLevelAt=ProcessInfo.processInfo.systemUptime
         silenceTimer?.invalidate()
@@ -147,6 +155,7 @@ final class PlaybackMeter: NSObject, SCStreamOutput, SCStreamDelegate {
             guard let self else{return}
             if ProcessInfo.processInfo.systemUptime-self.lastLevelAt > 0.25 {self.onLevels?([0,0,0,0])}
         }
+        if let silenceTimer {RunLoop.main.add(silenceTimer,forMode:.common)}
     }
     func stop(){generation += 1;application="";silenceTimer?.invalidate();silenceTimer=nil;stream?.stopCapture(completionHandler:nil);stream=nil;onLevels?([0,0,0,0])}
     func stream(_ stream:SCStream,didOutputSampleBuffer sampleBuffer:CMSampleBuffer,of outputType:SCStreamOutputType) {
@@ -165,7 +174,7 @@ final class PlaybackMeter: NSObject, SCStreamOutput, SCStreamDelegate {
             let measured=Self.rmsBands(UnsafeBufferPointer(start:values,count:count))
             for band in 0..<4 {bands[band]=max(bands[band],measured[band])}
         }
-        DispatchQueue.main.async{[weak self,weak stream] in guard let self,self.stream === stream else{return};self.lastLevelAt=ProcessInfo.processInfo.systemUptime;if !self.reportedAudio{self.reportedAudio=true;self.report("Speaker audio reactive")} ;self.onLevels?(bands)}
+        DispatchQueue.main.async{[weak self,weak stream] in guard let self,self.stream === stream else{return};self.audioPackets += 1;self.peak=max(self.peak,bands.max() ?? 0);self.lastLevelAt=ProcessInfo.processInfo.systemUptime;if !self.reportedAudio{self.reportedAudio=true;self.report("Speaker audio reactive")} ;self.onLevels?(bands)}
     }
     static func rmsBands(_ samples:UnsafeBufferPointer<Float>)->[CGFloat] {
         var result=[CGFloat](repeating:0,count:4)

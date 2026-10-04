@@ -179,3 +179,5 @@ notch uses the existing animation, pet assignment, completion, and failure
 behavior without reading the conversation.
 
 Run the local checks with `python3 -m unittest -v test_kai.py`.
+
+Local builds use the existing “system local code signing” certificate when available. You can select a certificate with `KAI_SIGNING_IDENTITY`. Without a certificate, builds use ad-hoc signing; rebuilding may require granting Screen Recording again. After changing signing identity, remove the old Kai entry in System Settings → Privacy & Security → Screen Recording, add the rebuilt Kai app, enable it, and restart Kai.

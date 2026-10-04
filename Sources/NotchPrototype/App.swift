@@ -220,6 +220,7 @@ private final class NotchView:ImageDropView {
         dragMonitor=NSEvent.addGlobalMonitorForEvents(matching:[.leftMouseDragged,.leftMouseUp]){[weak self] event in DispatchQueue.main.async{self?.globalDrag(event)}}
         NotificationCenter.default.addObserver(self, selector: #selector(placePanel),
             name: NSApplication.didChangeScreenParametersNotification, object: nil)
+        DistributedNotificationCenter.default().addObserver(self,selector:#selector(diagnoseMedia),name:NSNotification.Name("com.kai.media.diagnose"),object:nil)
         DistributedNotificationCenter.default().addObserver(self,selector:#selector(codexPreview(_:)),name:NSNotification.Name("com.kai.codex.preview"),object:nil)
     }
 
@@ -523,10 +524,18 @@ private final class NotchView:ImageDropView {
     @objc private func toggleYouTube(){youtubeMedia.toggle();UserDefaults.standard.set(youtubeMedia,forKey:"youtubeMedia");configureMedia()}
     @objc private func toggleSpotify(){spotifyMedia.toggle();UserDefaults.standard.set(spotifyMedia,forKey:"spotifyMedia");configureMedia()}
     private func configureMedia(){updateFeatureChecks();media.configure(youtube:youtubeMedia,spotify:spotifyMedia);if !youtubeMedia && !spotifyMedia{dismissMedia()}}
+    private var diagnosticMeter:PlaybackMeter?
+    @objc private func diagnoseMedia(){
+        media.diagnose()
+        guard diagnosticMeter == nil else{return}
+        let meter=PlaybackMeter();diagnosticMeter=meter;meter.start(application:"diagnostic")
+        DispatchQueue.main.asyncAfter(deadline:.now()+4){[weak self] in meter.diagnose();meter.stop();self?.diagnosticMeter=nil}
+    }
     @objc private func mediaPermissions(){
         let options=[kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String:true] as CFDictionary
         _=AXIsProcessTrustedWithOptions(options);_=CGRequestScreenCaptureAccess()
-        featureStatusItem.title="Enable Accessibility, Screen Recording, and Spotify Automation; then restart Kai"
+        media.capture(false)
+        refreshMedia()
     }
     private func receiveMedia(_ state:MediaNowPlaying?){
         guard let state else{
