@@ -8,7 +8,11 @@ labels, leaving pet and application colors intact.
 
 Hold Option for contextual dictation. Context is captured on key-down before Kai
 opens, and dictation begins after a short chord-disambiguation delay. Release to
-finish, then send normally. Option-Control, Command, and Function shortcuts remain
+finish; Option sends the final transcript automatically by default. Command and
+Function still require Send by default. Use the menu bar’s “Dictation auto-send”
+submenu to toggle each shortcut independently or enable/disable all. Preferences
+persist across launches. Empty dictation never auto-sends, and closing Kai’s
+chat cancels auto-send. Option waits for context attachment before sending. Option-Control, Command, and Function shortcuts remain
 available. The new standalone chat receives context as background text and image
 input. Screenshots are the default. Choose “Prefer lightweight Option context”
 in the menu bar, or “Context: screen/light” in the chat controls, to use selected

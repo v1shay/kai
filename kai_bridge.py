@@ -149,6 +149,7 @@ def apply(app: Kai, request: dict[str, Any]) -> None:
         if any(not image_file(path) for path in paths):
             raise ValueError("Context must be a supported image")
         app.context_images = paths
+        app.notice = "Context captured"
         app.dirty = True
     elif action == "project":
         app.refresh_threads()

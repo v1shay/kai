@@ -146,7 +146,10 @@ private final class NotchView:ImageDropView {
     private var assistantPalette=[NSColor]()
     private var petScale: CGFloat = 1
     private var accentSide = "right"
-    private enum DictationTrigger {case command,function,option}
+    private let autoSendPreferences=DictationSendPreferences(defaults:.standard)
+    private var autoSendMenu=NSMenu()
+    private var pendingAutoSend=false
+    private var dictationGeneration=UUID()
     private var open = false, miniOpen = false, pinned = false, commandDown = false, optionDown = false, controlDown = false, functionDown = false,petGalleryVisible=false
     private var optionWork: DispatchWorkItem?
     private var pendingContext: ApplicationContext?
@@ -214,7 +217,7 @@ private final class NotchView:ImageDropView {
         miniUI.onFilesVisibleChanged={ [weak self] visible in self?.indicator.setFileOpen(visible) }
         miniUI.onImagesChanged={ [weak self] images in self?.queueImages(images) }
         bridge.onState={ [weak self] state in self?.receive(state) }
-        bridge.onError={ [weak self] error in guard let self else{return};self.sounds.playScene("failure");self.contextRequestID=nil;self.pendingContext=nil;self.sendingPrompt=nil;self.pendingFilesRequestID=nil;self.indicator.setFileLoading(false);self.miniUI.cancelPending();self.miniUI.setCodexMessage(error);self.syncMotion(force:true) }
+        bridge.onError={ [weak self] error in guard let self else{return};self.sounds.playScene("failure");self.contextRequestID=nil;self.pendingContext=nil;self.pendingAutoSend=false;self.sendingPrompt=nil;self.pendingFilesRequestID=nil;self.indicator.setFileLoading(false);self.miniUI.cancelPending();self.miniUI.setCodexMessage(error);self.syncMotion(force:true) }
         speech.onModels={ [weak self] models in self?.updateVoiceMenu(models) }
         speech.onStatus={ [weak self] status in self?.featureStatusItem.title=status }
         media.onStatus={ [weak self] status in self?.featureStatusItem.title=status }
@@ -301,6 +304,17 @@ private final class NotchView:ImageDropView {
         mediaSizeView.addSubview(mediaSizeLabel);mediaSizeView.addSubview(mediaSlider);let mediaSizeItem=NSMenuItem();mediaSizeItem.view=mediaSizeView;menu.addItem(mediaSizeItem)
         menu.addItem(withTitle:"allow media permissions…",action:#selector(mediaPermissions),keyEquivalent:"")
         let contextItem=menu.addItem(withTitle:"Prefer lightweight Option context",action:#selector(toggleContextMode(_:)),keyEquivalent:"");contextItem.target=self;contextItem.state=contextLightweight ? .on:.off
+        let autoSendItem=menu.addItem(withTitle:"Dictation auto-send",action:nil,keyEquivalent:"")
+        autoSendItem.submenu=autoSendMenu
+        for trigger in DictationTrigger.allCases {
+            let item=autoSendMenu.addItem(withTitle:trigger.title,action:#selector(toggleDictationAutoSend(_:)),keyEquivalent:"")
+            item.target=self;item.representedObject=trigger.rawValue
+        }
+        autoSendMenu.addItem(.separator())
+        for (title,value) in [("Enable all","all"),("Disable all","none")] {
+            let item=autoSendMenu.addItem(withTitle:title,action:#selector(toggleDictationAutoSend(_:)),keyEquivalent:"");item.target=self;item.representedObject=value
+        }
+        refreshAutoSendMenu()
         featureStatusItem=menu.addItem(withTitle:"Local speech and media are optional",action:nil,keyEquivalent:"");featureStatusItem.isEnabled=false
         for item in menu.items where item.action != nil && item.target == nil {item.target=self}
         updateFeatureChecks()
@@ -494,11 +508,17 @@ private final class NotchView:ImageDropView {
         defer{refreshMedia()}
         let previous=latestState,previousNotice=previous?.notice;latestState=state
         if let requestID=contextRequestID,state.completedRequestId == requestID {
-            contextRequestID=nil
-            if let context=pendingContext,let threadID=state.threadId,state.notice.hasPrefix("New task") {
-                bridge.send("context",["threadId":threadID,"text":context.text,"paths":context.imagePath.map{[$0]} ?? []])
+            if let context=pendingContext {
+                pendingContext=nil
+                if let threadID=state.threadId,state.notice.hasPrefix("New task") {
+                    let contextID=UUID().uuidString;contextRequestID=contextID
+                    bridge.send("context",["requestId":contextID,"threadId":threadID,"text":context.text,"paths":context.imagePath.map{[$0]} ?? []])
+                } else {contextRequestID=nil;pendingAutoSend=false}
+            } else {
+                contextRequestID=nil
+                if state.notice != "Context captured" {pendingAutoSend=false}
+                if pendingAutoSend {DispatchQueue.main.async { [weak self] in self?.sendPendingDictation() }}
             }
-            pendingContext=nil
         }
         if mediaVisible && MediaCompanion.codexNeedsNotch(state) {
             dismissMedia(closeNotch:false)
@@ -535,6 +555,22 @@ private final class NotchView:ImageDropView {
     private func updateFeatureChecks(){
         speechItem?.state=speakResponses ? .on:.off;compactSendItem?.state=compactOnSend ? .on:.off
         youtubeItem?.state=youtubeMedia ? .on:.off;spotifyItem?.state=spotifyMedia ? .on:.off
+    }
+    private func refreshAutoSendMenu(){
+        for item in autoSendMenu.items {
+            if let value=item.representedObject as? String,let trigger=DictationTrigger(rawValue:value){item.state=autoSendPreferences.enabled(for:trigger) ? .on:.off}
+        }
+    }
+    @objc private func toggleDictationAutoSend(_ item:NSMenuItem){
+        guard let value=item.representedObject as? String else{return}
+        if let trigger=DictationTrigger(rawValue:value){autoSendPreferences.set(!autoSendPreferences.enabled(for:trigger),for:trigger)}
+        else {for trigger in DictationTrigger.allCases {autoSendPreferences.set(value == "all",for:trigger)}}
+        refreshAutoSendMenu()
+    }
+    private func sendPendingDictation(){
+        guard pendingAutoSend,contextRequestID == nil,!dictating else{return}
+        pendingAutoSend=false
+        sendPrompt()
     }
     @objc private func toggleContextMode(_ item:NSMenuItem){contextLightweight.toggle();miniUI.setContextMode(contextLightweight);item.state=contextLightweight ? .on:.off}
     @objc private func toggleSpeech(){speakResponses.toggle();UserDefaults.standard.set(speakResponses,forKey:"speakResponses");speech.configure(enabled:speakResponses,model:speech.selectedModel);updateFeatureChecks()}
@@ -619,7 +655,8 @@ private final class NotchView:ImageDropView {
     }
     private func closeNotch(){
         hidePetGallery(restore:false)
-        if dictating{finishDictation()}
+        pendingAutoSend=false;dictationGeneration=UUID()
+        if dictating{finishDictation(allowAutoSend:false)}
         pinned=false
         if let state=latestState, state.activeTurnId != nil || !state.activeTasks.isEmpty || state.activity.scene == "thinking" {
             compactWhileWorking=true;compactThreadID=state.focusThreadId ?? state.threadId;compactStartHistoryCount=state.history.count;setOpen(true,mini:false)
@@ -788,8 +825,21 @@ private final class NotchView:ImageDropView {
     }
     func textView(_ textView:NSTextView,clickedOnLink link:Any,at charIndex:Int)->Bool{guard let url=(link as? URL) ?? (link as? String).flatMap(URL.init(string:)) else{return false};if url.isFileURL{miniUI.previewFile(url);return true};guard ["http","https"].contains(url.scheme?.lowercased() ?? "") else{return false};NSWorkspace.shared.open(url);return true}
 
-    private func beginDictation(trigger:DictationTrigger){guard !dictating else{return};speech.cancelAudio();dictating=true;dictationTrigger=trigger;sounds.startListening();dictationPrefix=(composerField?.stringValue ?? "").trimmingCharacters(in:.whitespacesAndNewlines);if !dictationPrefix.isEmpty{dictationPrefix += " "};setMotion("waiting");indicator.startListening(useMicrophone:false);dictation.start()}
-    private func finishDictation(){guard dictating else{return};dictating=false;dictationTrigger=nil;sounds.stopListening();dictation.stop{[weak self] final in guard let self else{return};self.setPrompt(self.dictationPrefix+final);self.syncMotion(force:true)};if miniOpen{exitMiniListening()}else{setOpen(true,mini:true)}}
+    private func beginDictation(trigger:DictationTrigger){guard !dictating else{return};pendingAutoSend=false;dictationGeneration=UUID();speech.cancelAudio();dictating=true;dictationTrigger=trigger;sounds.startListening();dictationPrefix=(composerField?.stringValue ?? "").trimmingCharacters(in:.whitespacesAndNewlines);if !dictationPrefix.isEmpty{dictationPrefix += " "};setMotion("waiting");indicator.startListening(useMicrophone:false);dictation.start()}
+    private func finishDictation(allowAutoSend:Bool=true){
+        guard dictating else{return}
+        let autoSend=allowAutoSend && dictationTrigger.map{autoSendPreferences.enabled(for:$0)} == true
+        let prefix=dictationPrefix, generation=dictationGeneration
+        dictating=false;dictationTrigger=nil;sounds.stopListening()
+        dictation.stop{[weak self] final in
+            guard let self,self.dictationGeneration == generation else{return}
+            self.setPrompt(prefix+final);self.syncMotion(force:true)
+            if autoSend,!final.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty {
+                self.pendingAutoSend=true;self.sendPendingDictation()
+            }
+        }
+        if miniOpen{exitMiniListening()}else{setOpen(true,mini:true)}
+    }
 
     private func enterMiniListening(trigger:DictationTrigger) {
         guard miniOpen,!miniListening else{return};hidePetGallery();miniListening=true;if miniUI.isFilesOpen{miniUI.toggleFiles()};indicator.setFileOpen(false);beginDictation(trigger:trigger)
