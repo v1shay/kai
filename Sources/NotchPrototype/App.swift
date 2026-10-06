@@ -165,6 +165,11 @@ private final class NotchView:ImageDropView {
     private var imageExpandWork:DispatchWorkItem?
     private var lastCommandTap = 0.0, lastControlTap = 0.0
     private var holdWork: DispatchWorkItem?
+    private let scalableUI=NSView(),resizeHandles=NotchResizeHandles()
+    private var expandedSize:CGSize?,resizeInitial=CGSize.zero,resizeMode=NotchResizeMode.both
+    private var defaultWidthSlider:NSSlider?,defaultHeightSlider:NSSlider?
+    private var sizeLabels=[String:NSTextField]()
+    private var expandedWidth:CGFloat { (miniOpen || experimentalWebMode) ? (expandedSize?.width ?? notchWidth+160) : notchWidth+160 }
     private var notchWidth: CGFloat = 210, notchHeight: CGFloat = 39, canvasWidth: CGFloat = 470, canvasHeight: CGFloat = 320
     private var assetRoot: URL {
         if let resources=Bundle.main.resourceURL {
@@ -249,6 +254,17 @@ private final class NotchView:ImageDropView {
         mathModeItem.target=self
         soundsItem=menu.addItem(withTitle:"sounds",action:#selector(toggleSounds),keyEquivalent:"")
         soundsItem.target=self
+        let sizingItem=menu.addItem(withTitle:"Default notch size",action:nil,keyEquivalent:"")
+        let sizingMenu=NSMenu();sizingItem.submenu=sizingMenu
+        for (title,key,minimum,maximum) in [("Width","notchDefaultWidth",370.0,1200.0),("Height","notchDefaultHeight",320.0,900.0)] {
+            let view=NSView(frame:CGRect(x:0,y:0,width:240,height:42)),label=NSTextField(labelWithString:title)
+            label.frame=CGRect(x:12,y:23,width:210,height:14);view.addSubview(label);sizeLabels[key]=label
+            let slider=NSSlider(value:UserDefaults.standard.object(forKey:key) as? Double ?? minimum,minValue:minimum,maxValue:maximum,target:self,action:#selector(changeDefaultNotchSize(_:)))
+            slider.identifier=NSUserInterfaceItemIdentifier(key);slider.frame=CGRect(x:12,y:2,width:216,height:20);slider.isContinuous=true;view.addSubview(slider)
+            if key == "notchDefaultWidth" {defaultWidthSlider=slider}else{defaultHeightSlider=slider}
+            let item=NSMenuItem();item.view=view;sizingMenu.addItem(item)
+        }
+        for (title,action) in [("Use current size as default",#selector(saveDefaultNotchSize)),("Restore saved default",#selector(restoreDefaultNotchSize)),("Reset to original larger size",#selector(resetDefaultNotchSize))] {let item=sizingMenu.addItem(withTitle:title,action:action,keyEquivalent:"");item.target=self}
         let morphItem = menu.addItem(withTitle:"test size morph",action:#selector(testSizeMorph),keyEquivalent:"")
         morphItem.target = self
         let petRoot = NSMenuItem(title: "pet", action: nil, keyEquivalent: ""), petMenu = NSMenu()
@@ -325,10 +341,20 @@ private final class NotchView:ImageDropView {
     @objc private func placePanel() {
         guard let screen = NSScreen.screens.first(where: { $0.auxiliaryTopLeftArea != nil && $0.auxiliaryTopRightArea != nil }),
               let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea else { panel?.orderOut(nil); return }
+        CATransaction.begin();CATransaction.setDisableActions(true);defer{CATransaction.commit()}
         notchHeight = screen.safeAreaInsets.top + 1
         let gapCenter = (left.maxX + right.minX) / 2
         let center = abs(gapCenter - screen.frame.midX) <= 1 ? screen.frame.midX : gapCenter
-        notchWidth = 2 * max(center - left.maxX, right.minX - center); canvasWidth = notchWidth + 260
+        notchWidth = 2 * max(center - left.maxX, right.minX - center)
+        let baseline=CGSize(width:notchWidth+160,height:320)
+        let saved=CGSize(width:UserDefaults.standard.object(forKey:"notchDefaultWidth") as? Double ?? Double(baseline.width),height:UserDefaults.standard.object(forKey:"notchDefaultHeight") as? Double ?? 320)
+        expandedSize=NotchSizing.constrained(expandedSize ?? saved,baseline:baseline,screen:screen.frame.size)
+        canvasWidth=max(notchWidth+260,expandedSize!.width+100);canvasHeight=expandedSize!.height
+        let defaultSize=NotchSizing.constrained(saved,baseline:baseline,screen:screen.frame.size)
+        defaultWidthSlider?.minValue=Double(baseline.width);defaultWidthSlider?.maxValue=Double(max(baseline.width,screen.frame.width-80));defaultWidthSlider?.doubleValue=Double(defaultSize.width)
+        defaultHeightSlider?.maxValue=Double(max(320,screen.frame.height-80));defaultHeightSlider?.doubleValue=Double(defaultSize.height)
+        sizeLabels["notchDefaultWidth"]?.stringValue="Width · \(Int(defaultSize.width)) pt"
+        sizeLabels["notchDefaultHeight"]?.stringValue="Height · \(Int(defaultSize.height)) pt"
         let rect = NSRect(x: center - canvasWidth / 2, y: screen.frame.maxY - canvasHeight,
                           width: canvasWidth, height: canvasHeight)
         if panel == nil {
@@ -336,16 +362,21 @@ private final class NotchView:ImageDropView {
             panel.backgroundColor = .clear; panel.isOpaque = false; panel.hasShadow = false; panel.ignoresMouseEvents = true
             panel.level = .statusBar; panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
             let host=NotchView(frame:CGRect(origin:.zero,size:rect.size));host.click={ [weak self] point,count in self?.handleClick(point,count:count) };host.scroll={ [weak self] point,delta in self?.handleScroll(point,delta) };host.hover={ [weak self] point in self?.handleHover(point) };host.dragEntered={ [weak self] in guard self?.experimentalWebMode != true else{return};self?.handleImageEntered() };host.imageDropped={ [weak self] images in guard self?.experimentalWebMode != true else{return};self?.handleImageDrop(images) };panel.contentView=host;host.wantsLayer=true;panel.acceptsMouseMovedEvents=true
-            composerField=ComposerField();composerField.isBordered=false;composerField.drawsBackground=false;composerField.focusRingType = .none;composerField.font=NSFont.systemFont(ofSize:10);composerField.textColor=NSColor.white.withAlphaComponent(0.88);composerField.delegate=self;composerField.isHidden=true;composerField.imagesEntered={ [weak self] in self?.handleImageEntered() };composerField.imagesDropped={ [weak self] images in self?.handleImageDrop(images) };host.addSubview(composerField)
+            scalableUI.wantsLayer=true;host.addSubview(scalableUI)
+            composerField=ComposerField();composerField.isBordered=false;composerField.drawsBackground=false;composerField.focusRingType = .none;composerField.font=NSFont.systemFont(ofSize:10);composerField.textColor=NSColor.white.withAlphaComponent(0.88);composerField.delegate=self;composerField.isHidden=true;composerField.imagesEntered={ [weak self] in self?.handleImageEntered() };composerField.imagesDropped={ [weak self] images in self?.handleImageDrop(images) };scalableUI.addSubview(composerField)
             miniUI.composerFrameChanged={ [weak self] frame,animated in self?.layoutComposer(frame,animated:animated) }
             let scroll=NSScrollView(),text=NSTextView()
             scroll.drawsBackground=false;scroll.hasVerticalScroller=true;scroll.scrollerStyle = .overlay;scroll.borderType = .noBorder;scroll.isHidden=true
             text.drawsBackground=false;text.isEditable=false;text.isSelectable=true;text.textColor = .white;text.font=NSFont.systemFont(ofSize:9);text.textContainerInset=NSSize(width:3,height:3);text.isVerticallyResizable=true;text.textContainer?.widthTracksTextView=true;text.autoresizingMask=[.width];text.delegate=self
-            scroll.documentView=text;host.addSubview(scroll);conversationScroll=scroll;conversationText=text
+            scroll.documentView=text;scalableUI.addSubview(scroll);conversationScroll=scroll;conversationText=text
             mathRenderer.onImageReady={ [weak self] in self?.scheduleMathRefresh() }
-            if renderMath { mathRenderer.install(in:host,below:scroll) }
+            if renderMath { mathRenderer.install(in:scalableUI,below:scroll) }
             miniUI.conversationFrameChanged={ [weak self] frame in self?.layoutConversation(frame) }
-            let root = panel.contentView!.layer!; root.backgroundColor = NSColor.black.cgColor; root.mask = mask; root.addSublayer(miniUI.layer);root.addSublayer(petGallery.layer);root.addSublayer(notchContent)
+            let root = panel.contentView!.layer!; root.backgroundColor = NSColor.black.cgColor; root.mask = mask; scalableUI.layer!.addSublayer(miniUI.layer);scalableUI.layer!.addSublayer(petGallery.layer);root.addSublayer(notchContent)
+            host.addSubview(resizeHandles)
+            resizeHandles.onBegin={ [weak self] mode in guard let self else{return};self.cancelSizeTest();self.resizeMode=mode;self.resizeInitial=self.expandedSize ?? .zero }
+            resizeHandles.onDrag={ [weak self] delta in guard let self else{return};self.expandedSize=NotchSizing.dragged(self.resizeInitial,delta:delta,mode:self.resizeMode);self.placePanel() }
+            resizeHandles.onEnd={ [weak self] in guard let self else{return};self.panel.invalidateCursorRects(for:self.resizeHandles) }
             sprite.contentsGravity = .resizeAspect; sprite.magnificationFilter = .nearest; notchContent.addSublayer(indicator.leftAccentLayer); notchContent.addSublayer(indicator.accentLayer); notchContent.addSublayer(sprite);mediaArtwork.cornerRadius=7;mediaArtwork.masksToBounds=true;mediaArtwork.contentsGravity = .resizeAspectFill;mediaArtwork.isHidden=true;notchContent.addSublayer(mediaArtwork); notchContent.addSublayer(indicator.layer); notchContent.addSublayer(indicator.fileLayer)
         }
         panel.setFrame(rect, display: true); mask.frame = CGRect(origin: .zero, size: rect.size); notchContent.frame = mask.frame
@@ -355,7 +386,7 @@ private final class NotchView:ImageDropView {
         let dropRect=NSRect(x:center-notchWidth/2,y:screen.frame.maxY-notchHeight-dropReach,width:notchWidth,height:notchHeight+dropReach)
         if dropPanel == nil { dropPanel=NSPanel(contentRect:dropRect,styleMask:[.borderless,.nonactivatingPanel],backing:.buffered,defer:false);dropPanel.backgroundColor = .clear;dropPanel.isOpaque=false;dropPanel.level = .popUpMenu;dropPanel.collectionBehavior=[.canJoinAllSpaces,.fullScreenAuxiliary,.stationary];let drop=NotchView(frame:NSRect(origin:.zero,size:dropRect.size));drop.autoresizingMask=[.width,.height];drop.click={ [weak self] _,_ in guard let self,self.compactWhileWorking else{return};self.compactWhileWorking=false;self.compactThreadID=nil;self.pinned=true;self.setOpen(true,mini:true) };drop.dragEntered={ [weak self] in self?.handleImageEntered() };drop.imageDropped={ [weak self] images in self?.handleImageDrop(images) };dropPanel.contentView=drop }
         dropPanel.setFrame(dropRect,display:true);(miniOpen || experimentalWebMode) ? dropPanel.orderOut(nil):dropPanel.orderFrontRegardless()
-        let expanded = notchWidth + 160, kaiLeft = (canvasWidth - expanded) / 2
+        let expanded = expandedWidth, kaiLeft = (canvasWidth - expanded) / 2
         let scale = screen.backingScaleFactor, topBandY = canvasHeight-notchHeight
         func px(_ value: CGFloat) -> CGFloat { round(value * scale) / scale }
         layoutPet();layoutMediaArtwork(animated:false);mediaSizeSlider?.maxValue=Double(max(16,notchHeight-3))
@@ -367,12 +398,19 @@ private final class NotchView:ImageDropView {
         let glowWidth:CGFloat=108, glowHeight:CGFloat=82
         indicator.leftAccentLayer.frame = CGRect(x:px(kaiLeft),y:px(accentY),width:glowWidth,height:glowHeight)
         indicator.accentLayer.frame = CGRect(x:px(kaiRight-glowWidth),y:px(accentY),width:glowWidth,height:glowHeight); indicator.layout(); indicator.setAccentExpanded(miniOpen,duration:0)
-        miniUI.layout(in:CGRect(x:px(kaiLeft+8),y:8,width:px(expanded-16),height:px(topBandY-16)))
-        petGallery.layer.frame=miniUI.layer.frame;petGallery.layout(in:petGallery.layer.bounds,selected:petID)
+        let content=CGSize(width:px(expanded-16),height:px(topBandY-24))
+        let sizing=NotchSizing.layout(content:content,baseline:CGSize(width:notchWidth+144,height:320-notchHeight-24))
+        scalableUI.frame=CGRect(x:px(kaiLeft+8),y:16,width:content.width,height:content.height)
+        scalableUI.bounds=CGRect(origin:.zero,size:sizing.logical)
+        miniUI.setRenderingScale(scale*sizing.scale)
+        miniUI.layout(in:scalableUI.bounds)
+        resizeHandles.frame=CGRect(x:kaiLeft+8,y:0,width:expanded-16,height:14);resizeHandles.isHidden = !miniOpen || experimentalWebMode
+        resizeHandles.needsDisplay=true;panel.invalidateCursorRects(for:resizeHandles)
+        petGallery.layer.frame=miniUI.layer.frame;petGallery.layout(in:petGallery.layer.bounds,selected:petID);NotchSizing.updateTextResolution(petGallery.layer,scale:scale*sizing.scale)
         if experimentalWebMode{ensureBrowser()};browserView?.frame=CGRect(x:px(kaiLeft),y:0,width:px(expanded),height:canvasHeight)
         CATransaction.begin(); CATransaction.setDisableActions(true)
         mask.path = path(width:(open || experimentalWebMode) ? expanded:notchWidth, height:(open || experimentalWebMode) ? ((miniOpen || experimentalWebMode) ? canvasHeight:notchHeight):notchHeight)
-        notchContent.opacity = experimentalWebMode ? 0:1;miniUI.layer.isHidden=experimentalWebMode
+        notchContent.opacity = experimentalWebMode ? 0:1;miniUI.layer.isHidden=experimentalWebMode;scalableUI.isHidden=experimentalWebMode
         browserView?.isHidden = !experimentalWebMode
         CATransaction.commit()
         if open || experimentalWebMode { panel.orderFrontRegardless() }
@@ -448,10 +486,25 @@ private final class NotchView:ImageDropView {
         if mediaVisible && (mini || compactWhileWorking || dictating || experimentalWebMode){dismissMedia()}
         guard panel != nil, desired != open || (desired && mini != miniOpen) || presentedCompact != compactWhileWorking else { return }
         if petGalleryVisible && (!desired || !mini){hidePetGallery(restore:false)}
-        let wasOpen=open,wasMini=miniOpen; open = desired; miniOpen = desired && mini;presentedCompact=compactWhileWorking;if desired && !wasOpen{play()}else if !desired{playToken += 1}; panel.ignoresMouseEvents = !miniOpen && !compactWhileWorking;(panel.contentView as? NotchView)?.compactHitRect=compactWhileWorking && !miniOpen ? CGRect(x:(canvasWidth-notchWidth-160)/2,y:canvasHeight-notchHeight,width:notchWidth+160,height:notchHeight):nil;composerField?.isHidden = !miniOpen;conversationScroll?.isHidden = !miniOpen;miniOpen ? dropPanel?.orderOut(nil):dropPanel?.orderFrontRegardless();refreshChecks()
-        let destination = path(width:notchWidth+(desired ? 160:0),height:desired ? (mini ? canvasHeight:notchHeight):notchHeight), animation = CABasicAnimation(keyPath:"path")
-        animation.fromValue = mask.presentation()?.path ?? mask.path; animation.toValue = destination
+        let wasOpen=open,wasMini=miniOpen; open = desired; miniOpen = desired && mini;presentedCompact=compactWhileWorking;if desired && !wasOpen{play()}else if !desired{playToken += 1}; panel.ignoresMouseEvents = !miniOpen && !compactWhileWorking;(panel.contentView as? NotchView)?.compactHitRect=compactWhileWorking && !miniOpen ? CGRect(x:(canvasWidth-notchWidth-160)/2,y:canvasHeight-notchHeight,width:notchWidth+160,height:notchHeight):nil;composerField?.isHidden = !miniOpen;conversationScroll?.isHidden = !miniOpen;resizeHandles.isHidden = !miniOpen || experimentalWebMode;miniOpen ? dropPanel?.orderOut(nil):dropPanel?.orderFrontRegardless();refreshChecks()
+        let previousPath=mask.presentation()?.path ?? mask.path
+        let oldIndicatorX=indicator.layer.presentation()?.position.x ?? indicator.layer.position.x
+        let oldAccentY=[indicator.leftAccentLayer,indicator.accentLayer].map{$0.presentation()?.position.y ?? $0.position.y}
+        let oldFileOpacity=indicator.fileLayer.presentation()?.opacity ?? indicator.fileLayer.opacity
+        let oldFileTransform=indicator.fileLayer.presentation()?.transform ?? indicator.fileLayer.transform
+        let traveling=[sprite,indicator.fileLayer,indicator.leftAccentLayer,indicator.accentLayer]
+        let oldPositions=traveling.map{$0.presentation()?.position ?? $0.position}
+        placePanel()
+        CATransaction.begin();CATransaction.setDisableActions(true)
+        indicator.layer.position.x=oldIndicatorX;indicator.fileLayer.opacity=oldFileOpacity;indicator.fileLayer.transform=oldFileTransform
+        for (index,accent) in [indicator.leftAccentLayer,indicator.accentLayer].enumerated(){accent.position.y=oldAccentY[index]}
+        CATransaction.commit()
+        let destination = path(width:desired ? expandedWidth:notchWidth,height:desired ? (mini ? canvasHeight:notchHeight):notchHeight), animation = CABasicAnimation(keyPath:"path")
+        animation.fromValue = previousPath; animation.toValue = destination
         animation.duration = desired ? (mini ? 0.52:0.42):0.55; animation.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 0.65, 0.25, 1)
+        for (index,layer) in traveling.enumerated() {
+            let move=CABasicAnimation(keyPath:"position.x");move.fromValue=oldPositions[index].x;move.toValue=layer.position.x;move.duration=animation.duration;move.timingFunction=animation.timingFunction;layer.add(move,forKey:"responsiveTravel")
+        }
         animateTopAccessories(forMini:miniOpen,duration:animation.duration)
         animateCornerAccents(toBottom:miniOpen,duration:animation.duration)
         indicator.setAccentExpanded(miniOpen,duration:animation.duration)
@@ -473,18 +526,26 @@ private final class NotchView:ImageDropView {
             return
         }
         if petGalleryVisible {
-            let frame=petGallery.layer.frame,local=CGPoint(x:point.x-frame.minX,y:point.y-frame.minY)
-            if frame.contains(point),let id=petGallery.pet(at:local){usePet(id);hidePetGallery()}
+            let frame=petGallery.layer.frame,uiPoint=scalableUI.convert(point,from:panel.contentView),local=CGPoint(x:uiPoint.x-frame.minX,y:uiPoint.y-frame.minY)
+            if frame.contains(uiPoint),let id=petGallery.pet(at:local){usePet(id);hidePetGallery()}
             return
         }
         if !miniListening,(indicator.fileLayer.presentation()?.frame ?? indicator.fileLayer.frame).contains(point) { miniUI.toggleFiles();if miniUI.isFilesOpen{let requestID=UUID().uuidString;pendingFilesRequestID=requestID;indicator.setFileLoading(true);bridge.send("files",["requestId":requestID])}else{pendingFilesRequestID=nil;indicator.setFileLoading(false)};return }
         if (indicator.layer.presentation()?.frame ?? indicator.layer.frame).contains(point) { closeNotch();return }
-        let frame=miniUI.layer.frame, local=CGPoint(x:point.x-frame.minX,y:point.y-frame.minY)
-        if frame.contains(point) { _=miniUI.handleClick(local) }
+        let frame=miniUI.layer.frame,uiPoint=scalableUI.convert(point,from:panel.contentView), local=CGPoint(x:uiPoint.x-frame.minX,y:uiPoint.y-frame.minY)
+        if frame.contains(uiPoint) { _=miniUI.handleClick(local) }
     }
 
-    private func handleHover(_ point:CGPoint?) {guard miniOpen else{return};if petGalleryVisible{let frame=petGallery.layer.frame;petGallery.hover(at:point.flatMap{frame.contains($0) ? CGPoint(x:$0.x-frame.minX,y:$0.y-frame.minY):nil});miniUI.handleHover(nil);return};guard let point else{miniUI.handleHover(nil);return};let frame=miniUI.layer.frame;miniUI.handleHover(frame.contains(point) ? CGPoint(x:point.x-frame.minX,y:point.y-frame.minY):nil) }
-    private func handleScroll(_ point:CGPoint,_ delta:CGFloat){guard miniOpen else{return};let frame=miniUI.layer.frame;if frame.contains(point){miniUI.scroll(delta,at:CGPoint(x:point.x-frame.minX,y:point.y-frame.minY))}}
+    private func handleHover(_ point:CGPoint?) {
+        guard miniOpen else{return}
+        let local=point.map{scalableUI.convert($0,from:panel.contentView)}
+        if petGalleryVisible {petGallery.hover(at:local.flatMap{petGallery.layer.frame.contains($0) ? $0:nil});miniUI.handleHover(nil)}
+        else {miniUI.handleHover(local.flatMap{miniUI.layer.frame.contains($0) ? $0:nil})}
+    }
+    private func handleScroll(_ point:CGPoint,_ delta:CGFloat){
+        guard miniOpen else{return};let local=scalableUI.convert(point,from:panel.contentView)
+        if miniUI.layer.frame.contains(local){miniUI.scroll(delta,at:local)}
+    }
 
     private func showPetGallery(){guard miniOpen else{return};petGalleryVisible=true;miniUI.setVisible(false,duration:0.3);composerField?.isHidden=true;conversationScroll?.isHidden=true;petGallery.layout(in:petGallery.layer.bounds,selected:petID);petGallery.show(selected:petID,motion:motionID)}
     private func hidePetGallery(restore:Bool=true){guard petGalleryVisible else{return};petGalleryVisible=false;petGallery.hide();if restore{miniUI.setVisible(miniOpen,duration:0.32);composerField?.isHidden = !miniOpen;conversationScroll?.isHidden = !miniOpen}}
@@ -843,12 +904,12 @@ private final class NotchView:ImageDropView {
 
     private func enterMiniListening(trigger:DictationTrigger) {
         guard miniOpen,!miniListening else{return};hidePetGallery();miniListening=true;if miniUI.isFilesOpen{miniUI.toggleFiles()};indicator.setFileOpen(false);beginDictation(trigger:trigger)
-        let center=(canvasWidth+notchWidth)/2+40,duration=0.62
+        let center=(canvasWidth+notchWidth)/2+(expandedWidth-notchWidth)/4,duration=0.62
         for layer in [indicator.layer,indicator.fileLayer] { let move=CABasicAnimation(keyPath:"position.x");move.fromValue=layer.presentation()?.position.x ?? layer.position.x;move.toValue=center;move.duration=duration;move.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.7,0.25,1);CATransaction.begin();CATransaction.setDisableActions(true);layer.position.x=center;CATransaction.commit();layer.add(move,forKey:"listenMerge") }
         setFileButtonVisible(false,duration:duration)
     }
 
-    private func exitMiniListening(){guard miniListening else{return};miniListening=false;let center=(canvasWidth+notchWidth)/2+40,duration=0.62;indicator.showScene("settings");for(layer,target) in [(indicator.layer,center-20),(indicator.fileLayer,center+20)]{let move=CABasicAnimation(keyPath:"position.x");move.fromValue=layer.presentation()?.position.x ?? layer.position.x;move.toValue=target;move.duration=duration;move.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.7,0.25,1);CATransaction.begin();CATransaction.setDisableActions(true);layer.position.x=target;CATransaction.commit();layer.add(move,forKey:"listenSeparate")};setFileButtonVisible(true,duration:duration)}
+    private func exitMiniListening(){guard miniListening else{return};miniListening=false;let center=(canvasWidth+notchWidth)/2+(expandedWidth-notchWidth)/4,duration=0.62;indicator.showScene("settings");for(layer,target) in [(indicator.layer,center-20),(indicator.fileLayer,center+20)]{let move=CABasicAnimation(keyPath:"position.x");move.fromValue=layer.presentation()?.position.x ?? layer.position.x;move.toValue=target;move.duration=duration;move.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.7,0.25,1);CATransaction.begin();CATransaction.setDisableActions(true);layer.position.x=target;CATransaction.commit();layer.add(move,forKey:"listenSeparate")};setFileButtonVisible(true,duration:duration)}
 
     private func handleImageEntered(){guard !miniOpen else{return};sounds.playScene("image");pinned=true;if !open{setOpen(true)};indicator.showScene("image")}
     private func handleImageDrop(_ images:[NSImage]){guard !images.isEmpty,ProcessInfo.processInfo.systemUptime-lastImageDrop>0.35 else{return};lastImageDrop=ProcessInfo.processInfo.systemUptime;approachImages.removeAll();approachActive=false;miniUI.addImages(images);if miniOpen{return};sounds.playScene("success");indicator.showScene("success");imageExpandWork?.cancel();let work=DispatchWorkItem{[weak self] in guard let self,self.open,!self.miniOpen else{return};self.setOpen(true,mini:true)};imageExpandWork=work;DispatchQueue.main.asyncAfter(deadline:.now()+0.72,execute:work)}
@@ -857,18 +918,18 @@ private final class NotchView:ImageDropView {
     @objc private func changeMediaSize(_ slider:NSSlider){mediaSize=CGFloat(slider.doubleValue);UserDefaults.standard.set(Double(mediaSize),forKey:"mediaSize");layoutMediaArtwork(animated:true)}
     private func layoutMediaArtwork(animated:Bool){
         guard let screen=NSScreen.screens.first(where:{$0.auxiliaryTopLeftArea != nil}) else{return}
-        let expanded=notchWidth+160,physicalLeft=(canvasWidth-notchWidth)/2,kaiLeft=(canvasWidth-expanded)/2
+        let expanded=expandedWidth,physicalLeft=(canvasWidth-notchWidth)/2,kaiLeft=(canvasWidth-expanded)/2
         let center=CGPoint(x:(physicalLeft+kaiLeft)/2,y:canvasHeight-notchHeight/2)
         let frame=NotchVisualTransition.artworkFrame(size:mediaSize,notchHeight:notchHeight,center:center,scale:screen.backingScaleFactor)
         visualTransition.resize(mediaArtwork,to:frame,animated:animated)
     }
     private func layoutPet() {
-        guard let screen=NSScreen.screens.first(where:{$0.auxiliaryTopLeftArea != nil}) else{return};let expanded=notchWidth+160,physicalLeft=(canvasWidth-notchWidth)/2,kaiLeft=(canvasWidth-expanded)/2,scale=screen.backingScaleFactor,topBandY=canvasHeight-notchHeight,h=min(36,notchHeight-3)*petScale,w=h*192/208
+        guard let screen=NSScreen.screens.first(where:{$0.auxiliaryTopLeftArea != nil}) else{return};let expanded=expandedWidth,physicalLeft=(canvasWidth-notchWidth)/2,kaiLeft=(canvasWidth-expanded)/2,scale=screen.backingScaleFactor,topBandY=canvasHeight-notchHeight,h=min(36,notchHeight-3)*petScale,w=h*192/208
         func px(_ v:CGFloat)->CGFloat{round(v*scale)/scale};CATransaction.begin();CATransaction.setDisableActions(true);sprite.frame=CGRect(x:px((physicalLeft+kaiLeft)/2-w/2),y:px(topBandY+(notchHeight-h)/2),width:px(w),height:px(h));CATransaction.commit()
     }
 
     private func animateTopAccessories(forMini mini:Bool,duration:Double) {
-        let shift:CGFloat=mini ? -20:0, currentX=indicator.layer.presentation()?.position.x ?? indicator.layer.position.x, targetX=(canvasWidth+notchWidth)/2+40+shift
+        let shift:CGFloat=mini ? -20:0, currentX=indicator.layer.presentation()?.position.x ?? indicator.layer.position.x, targetX=(canvasWidth+notchWidth)/2+(expandedWidth-notchWidth)/4+shift
         let move=CABasicAnimation(keyPath:"position.x"); move.fromValue=currentX; move.toValue=targetX; move.duration=duration; move.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.65,0.25,1)
         CATransaction.begin(); CATransaction.setDisableActions(true); indicator.layer.position.x=targetX; CATransaction.commit(); indicator.layer.add(move,forKey:"miniShift")
         setFileButtonVisible(mini && !miniListening,duration:duration)
@@ -922,6 +983,27 @@ private final class NotchView:ImageDropView {
         }
     }
 
+    @objc private func changeDefaultNotchSize(_ slider:NSSlider){
+        guard let key=slider.identifier?.rawValue else{return}
+        UserDefaults.standard.set(slider.doubleValue,forKey:key);restoreDefaultNotchSize()
+    }
+    @objc private func saveDefaultNotchSize(){
+        guard let size=expandedSize else{return}
+        UserDefaults.standard.set(Double(size.width),forKey:"notchDefaultWidth");UserDefaults.standard.set(Double(size.height),forKey:"notchDefaultHeight")
+        defaultWidthSlider?.doubleValue=Double(size.width);defaultHeightSlider?.doubleValue=Double(size.height)
+        sizeLabels["notchDefaultWidth"]?.stringValue="Width · \(Int(size.width)) pt";sizeLabels["notchDefaultHeight"]?.stringValue="Height · \(Int(size.height)) pt"
+    }
+    @objc private func restoreDefaultNotchSize(){expandedSize=nil;resizeWithMorph()}
+    @objc private func resetDefaultNotchSize(){
+        UserDefaults.standard.removeObject(forKey:"notchDefaultWidth");UserDefaults.standard.removeObject(forKey:"notchDefaultHeight")
+        restoreDefaultNotchSize();defaultWidthSlider?.doubleValue=Double(notchWidth+160);defaultHeightSlider?.doubleValue=320
+    }
+    private func resizeWithMorph(){
+        let previous=mask.presentation()?.path ?? mask.path,oldHeight=canvasHeight,oldWidth=canvasWidth
+        placePanel()
+        guard let previous else{return};var translation=CGAffineTransform(translationX:(canvasWidth-oldWidth)/2,y:canvasHeight-oldHeight)
+        let animation=CABasicAnimation(keyPath:"path");animation.fromValue=previous.copy(using:&translation);animation.toValue=mask.path;animation.duration=0.42;animation.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.65,0.25,1);mask.add(animation,forKey:"width")
+    }
     @objc private func toggleFromMenu() { cancelSizeTest();if compactWhileWorking {compactWhileWorking=false;compactThreadID=nil;pinned=true;setOpen(true,mini:true)}else if open{closeNotch()}else{pinned=true;setOpen(true,mini:true)} }
     @objc private func toggleExperimentalWebMode(){
         if !experimentalWebMode{modeBeforeExperimental=(open,miniOpen,pinned);experimentalWebMode=true;open=false;miniOpen=false;pinned=true;panel?.ignoresMouseEvents=false;composerField?.isHidden=true;conversationScroll?.isHidden=true}
@@ -943,7 +1025,7 @@ private final class NotchView:ImageDropView {
     @objc private func toggleMathRendering(){
         renderMath.toggle()
         UserDefaults.standard.set(renderMath,forKey:"renderMath")
-        if renderMath,let host=panel?.contentView,let scroll=conversationScroll { mathRenderer.install(in:host,below:scroll) }
+        if renderMath,panel?.contentView != nil,let scroll=conversationScroll { mathRenderer.install(in:scalableUI,below:scroll) }
         else if !renderMath { mathRenderer.suspend() }
         renderedBlocks.removeAll()
         if let state=latestState { renderConversation(state.history) }

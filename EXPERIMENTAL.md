@@ -31,3 +31,19 @@ Verification uses `swift test --scratch-path /tmp/kai-experimental-build` and
 `python3 -m unittest test_kai test_kai_experimental`. This does not install, launch,
 replace, or restart the running Kai app. Live hotkey and permission UX verification
 requires a later launch of this build at the user's discretion.
+
+Resizable expanded notch
+-----------------------
+The existing larger expanded size (physical notch width + 160 points, 320 points
+high) remains the initial default. “Default notch size” in the menu bar offers
+independent width/height sliders, “Use current size as default,” “Restore saved
+default,” and “Reset to original larger size.” Saved defaults survive relaunch.
+Dragging changes the current session size; explicitly save it to change the default.
+
+At the bottom of the expanded chat, drag the center grip to change height, the
+quarter-width grips to change width symmetrically, or either corner to change both.
+The panel remains centered under the physical notch and anchored to the screen top.
+Sizes are constrained to the display. A shared native container scales typography,
+layer controls, native text fields, attachments, and hit coordinates uniformly.
+Independent aspect changes add conversation space rather than stretching content.
+Existing path morphs, pet animation, gradients, and control transitions are retained.

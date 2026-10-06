@@ -166,6 +166,8 @@ private final class AttachmentLayer:CALayer {
 
 @MainActor final class MiniAppInterface {
     let layer=CALayer()
+    private var renderingScale:CGFloat=NSScreen.main?.backingScaleFactor ?? 2
+    func setRenderingScale(_ scale:CGFloat){renderingScale=scale;NotchSizing.updateTextResolution(layer,scale:scale)}
     var onSettings: ((String,String)->Void)?
     var onNavigate: ((String)->Void)?
     var onContextMode: ((Bool)->Void)?
@@ -344,7 +346,7 @@ private final class AttachmentLayer:CALayer {
         let shownReadOnly=state.readOnly && (focus == nil || focus?.id == state.threadId)
         setCodexMessage(name+percent+(activityText.isEmpty ? "":" · "+activityText)+(shownReadOnly ? " · read only":""))
         message.truncationMode = .middle
-        layoutProjects(animated:false);layoutMain(animated:false)
+        layoutProjects(animated:false);layoutMain(animated:false);NotchSizing.updateTextResolution(layer,scale:renderingScale)
     }
     func setContextMode(_ lightweight:Bool){lightweightContext=lightweight;layoutSettings()}
     private func layoutSettings() {
@@ -421,7 +423,7 @@ private final class AttachmentLayer:CALayer {
 
     private func setFrame(_ item:CALayer,_ target:CGRect,animated:Bool) { let old=item.presentation()?.frame ?? item.frame;CATransaction.begin();CATransaction.setDisableActions(true);item.frame=target;CATransaction.commit();guard animated else{return};let pos=CABasicAnimation(keyPath:"position");pos.fromValue=NSValue(point:NSPoint(x:old.midX,y:old.midY));pos.toValue=NSValue(point:NSPoint(x:target.midX,y:target.midY));pos.duration=0.42;pos.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.7,0.25,1);item.add(pos,forKey:"position");if old.size != target.size { let bounds=CABasicAnimation(keyPath:"bounds");bounds.fromValue=NSValue(rect:NSRect(origin:.zero,size:old.size));bounds.toValue=NSValue(rect:NSRect(origin:.zero,size:target.size));bounds.duration=0.42;bounds.timingFunction=pos.timingFunction;item.add(bounds,forKey:"bounds") } }
     private func label(_ value:String,_ size:CGFloat,_ color:NSColor,_ weight:NSFont.Weight = .regular)->CATextLayer { let t=CATextLayer();configure(t,value,size,color,weight);return t }
-    private func configure(_ t:CATextLayer,_ value:String,_ size:CGFloat,_ color:NSColor,_ weight:NSFont.Weight = .regular) { t.string=value;t.font=NSFont.systemFont(ofSize:size,weight:weight);t.fontSize=size;t.foregroundColor=color.cgColor;t.contentsScale=NSScreen.main?.backingScaleFactor ?? 2;t.truncationMode = .end }
+    private func configure(_ t:CATextLayer,_ value:String,_ size:CGFloat,_ color:NSColor,_ weight:NSFont.Weight = .regular) { t.string=value;t.font=NSFont.systemFont(ofSize:size,weight:weight);t.fontSize=size;t.foregroundColor=color.cgColor;t.contentsScale=renderingScale;t.truncationMode = .end }
     private func installFlow(){response.startPoint=CGPoint(x:0,y:0.5);response.endPoint=CGPoint(x:1,y:0.5);response.locations=[0,0.45,1];let a=CABasicAnimation(keyPath:"locations");a.fromValue=[-0.12,0.28,0.88];a.toValue=[0.12,0.72,1.12];a.duration=2.8;a.autoreverses=true;a.repeatCount = .infinity;a.timingFunction=CAMediaTimingFunction(name:.easeInEaseOut);response.add(a,forKey:"flow")}
     private func installTyping(){let now=CACurrentMediaTime();for(i,dot) in typingDots.enumerated(){dot.frame=CGRect(x:CGFloat(i)*5.8+1,y:3.4,width:2.6,height:2.6);dot.cornerRadius=1.3;dot.backgroundColor=NSColor.white.cgColor;let jump=CAKeyframeAnimation(keyPath:"transform.translation.y");jump.values=[0,0,2.4,0,0];jump.keyTimes=[0,0.16,0.34,0.52,1];jump.duration=1.18;jump.beginTime=now+Double(i)*0.14;jump.repeatCount = .infinity;jump.timingFunction=CAMediaTimingFunction(name:.easeInEaseOut);dot.add(jump,forKey:"typing")}}
     private func animate(_ g:CAGradientLayer,to target:[CGColor],_ duration:Double){let from=(g.presentation()?.colors as? [CGColor]) ?? (g.colors as? [CGColor]) ?? target;CATransaction.begin();CATransaction.setDisableActions(true);g.colors=target;CATransaction.commit();guard duration>0 else{return};let a=CAKeyframeAnimation(keyPath:"colors");a.values=(0..<18).map{i in zip(from,target).map{mix($0.0,$0.1,CGFloat(i)/17)}};a.duration=duration;a.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.7,0.25,1);g.add(a,forKey:"theme")}
