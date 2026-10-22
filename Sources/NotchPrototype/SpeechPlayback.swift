@@ -14,6 +14,7 @@ import AVFoundation
     private var flush: DispatchWorkItem?
     private var enabled = false
     private var queuedBuffers=0
+    private var lastQueuedPhrase:String?
     private var inFlight = 0, phrases = [String](), warm = false
     private var requestStarted = Date(),wasActive=false
     var selectedModel = ""
@@ -59,6 +60,7 @@ import AVFoundation
         output=outgoing;input=incoming;process=task
         outgoing.fileHandleForReading.readabilityHandler = { [weak self, weak task] handle in
             let data=handle.availableData
+            if data.isEmpty{handle.readabilityHandler=nil;return}
             DispatchQueue.main.async { [weak self, weak task] in guard let self, self.process === task else{return};self.accept(data)}
         }
         task.terminationHandler = { [weak self, weak task] _ in DispatchQueue.main.async { [weak self, weak task] in
@@ -67,25 +69,30 @@ import AVFoundation
         do {try task.run()} catch {onStatus?(error.localizedDescription)}
     }
 
+    func synchronize(_ state:KaiState){
+        cancelAudio();thread=state.threadId;wasActive=state.activeTurnId != nil
+        seen=Dictionary(state.history.map{($0.id,text($0))},uniquingKeysWith:{_,last in last})
+    }
     func receive(_ state: KaiState) {
         guard enabled else{return}
         if thread != state.threadId {wasActive=state.activeTurnId != nil;cancelAudio();seen.removeAll();thread=state.threadId;for message in state.history {seen[message.id]=text(message)};return}
         let canSpeak=state.activeTurnId != nil || wasActive
         wasActive=state.activeTurnId != nil
         var changed=false
-        for message in state.history where message.kind == "assistant" {
+        let firstKnown=state.history.firstIndex{seen[$0.id] != nil} ?? 0
+        for (index,message) in state.history.enumerated() where message.kind == "assistant" {
             let value=text(message), prior=seen[message.id] ?? ""
             seen[message.id]=value
             guard value.hasPrefix(prior), value.count > prior.count else{continue}
             // Only speak streaming output or the final update of the active turn.
-            guard canSpeak else{continue}
+            guard canSpeak,index >= firstKnown else{continue}
             changed=true
             pending += String(value.dropFirst(prior.count))
         }
         drain(final:state.activeTurnId == nil)
         if changed || state.activeTurnId == nil {flush?.cancel()}
         if changed && !pending.isEmpty {
-            let work=DispatchWorkItem { [weak self] in self?.drain(final:true) };flush=work
+            let work=DispatchWorkItem { [weak self] in self?.drain(final:false) };flush=work
             DispatchQueue.main.asyncAfter(deadline:.now()+0.3,execute:work)
         }
     }
@@ -95,15 +102,24 @@ import AVFoundation
         while !remaining.isEmpty {
             let limit=remaining.index(remaining.startIndex,offsetBy:min(180,remaining.count))
             let prefix=remaining[..<limit]
-            let boundary=prefix.firstIndex{".!?\n".contains($0)} ?? (remaining.count >= 100 ? prefix.lastIndex(of:" "):nil)
-            guard let end=boundary.map({remaining.index(after:$0)}) ?? (final ? limit:nil) else{break}
-            let phrase=String(remaining[..<end]).replacingOccurrences(of:"`",with:"").replacingOccurrences(of:"**",with:"").trimmingCharacters(in:.whitespacesAndNewlines)
-            remaining.removeSubrange(..<end);if !phrase.isEmpty{phrases.append(phrase)}
+            let protected=SpeechText.protectedRanges(remaining)
+            func safe(_ index:String.Index)->Bool{let location=remaining[..<index].utf16.count;return !protected.contains{NSLocationInRange(location,$0)}}
+            let boundary=prefix.indices.first{safe($0) && ".!?\n".contains(remaining[$0])} ?? (remaining.count >= 100 ? prefix.indices.last{safe($0) && remaining[$0] == " "}:nil)
+            var fallback=limit
+            if final,limit<remaining.endIndex {
+                let location=remaining[..<limit].utf16.count
+                if let range=protected.first(where:{NSLocationInRange(location,$0)}) {
+                    fallback=String.Index(utf16Offset:NSMaxRange(range),in:remaining)
+                }
+            }
+            guard let end=boundary.map({remaining.index(after:$0)}) ?? (final ? fallback:nil) else{break}
+            let phrase=SpeechText.readable(String(remaining[..<end]))
+            remaining.removeSubrange(..<end);if phrase.rangeOfCharacter(from:.alphanumerics) != nil{phrases.append(phrase)}
         }
         return (phrases,remaining)
     }
     private func drain(final:Bool) {
-        let split=Self.splitPhrases(pending,final:final);pending=split.remainder;phrases.append(contentsOf:split.phrases);pump()
+        let split=Self.splitPhrases(pending,final:final);pending=split.remainder;for phrase in split.phrases where phrase != lastQueuedPhrase{phrases.append(phrase);lastQueuedPhrase=phrase};pump()
     }
     private func pump() {
         guard warm,inFlight == 0,queuedBuffers < 2,!phrases.isEmpty,let input else{return}
@@ -124,7 +140,7 @@ import AVFoundation
         }
     }
     private func play(_ pcm:Data,rate:Double) {
-        let next=AVAudioFormat(standardFormatWithSampleRate:rate,channels:1)!
+        guard rate.isFinite,rate > 0,rate <= 192000,!pcm.isEmpty,pcm.count <= 16*1024*1024,let next=AVAudioFormat(standardFormatWithSampleRate:rate,channels:1) else{onStatus?("Voice returned invalid audio");return}
         if format?.sampleRate != rate {
             engine.stop();if player.engine != nil {engine.detach(player)};engine.attach(player);engine.connect(player,to:engine.mainMixerNode,format:next);format=next
         }
@@ -138,6 +154,6 @@ import AVFoundation
             DispatchQueue.main.async{ [weak self] in guard let self,self.token == playbackToken else{return};self.queuedBuffers=max(0,self.queuedBuffers-1);self.pump()}
         }
     }
-    func cancelAudio() {token=UUID().uuidString;player.stop();queuedBuffers=0;pending="";phrases.removeAll();inFlight=0;flush?.cancel()}
+    func cancelAudio() {token=UUID().uuidString;player.stop();queuedBuffers=0;pending="";lastQueuedPhrase=nil;phrases.removeAll();inFlight=0;flush?.cancel()}
     func stop() {cancelAudio();engine.stop();warm=false;output?.fileHandleForReading.readabilityHandler=nil;process?.terminationHandler=nil;if process?.isRunning == true{process?.terminate()};process=nil;input=nil;output=nil;buffer.removeAll();seen.removeAll();thread=nil}
 }

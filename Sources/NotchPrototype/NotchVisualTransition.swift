@@ -5,7 +5,7 @@ import AppKit
     private var outgoing:CALayer?
     private var revision=0
     private let curve=CAMediaTimingFunction(controlPoints:0.16,0.85,0.22,1)
-    private var duration:Double {NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0.16:0.48}
+    private var duration:Double {NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0.1:0.26}
 
     func artwork(_ image:CGImage,on layer:CALayer) {
         revision += 1;let token=revision;outgoing?.removeFromSuperlayer();outgoing=nil

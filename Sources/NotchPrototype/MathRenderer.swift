@@ -6,11 +6,11 @@ struct MathExpression {
     let range: NSRange
     let latex: String
     let display: Bool
+    private static let regex = try! NSRegularExpression(pattern: #"(?<!\\)(\$\$)(.+?)(?<!\\)\$\$|(?<!\\)\\\[(.+?)(?<!\\)\\\]|(?<!\\)\\\((.+?)(?<!\\)\\\)|(?<![\\$])\$(?![\s$])(.+?)(?<![\s\\])\$(?!\$)"#, options: [.dotMatchesLineSeparators])
 
     static func find(in text: String) -> [MathExpression] {
         let source = text as NSString
-        let pattern = #"(?<!\\)(\$\$)(.+?)(?<!\\)\$\$|(?<!\\)\\\[(.+?)(?<!\\)\\\]|(?<!\\)\\\((.+?)(?<!\\)\\\)|(?<![\\$])\$(?![\s$])(.+?)(?<![\s\\])\$(?!\$)"#
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]) else { return [] }
+        guard text.contains("$") || text.contains("\\(") || text.contains("\\[") else{return []}
         return regex.matches(in: text, range: NSRange(location: 0, length: source.length)).compactMap { match in
             let group = (2...5).first { match.range(at: $0).location != NSNotFound }
             guard let group else { return nil }
@@ -39,6 +39,11 @@ struct MathExpression {
         }
         return output
     }
+
+    static func containsRenderableMath(_ lines:[KaiLine])->Bool {
+        guard lines.contains(where:{$0.style != "code" && $0.mathEnabled != false && ($0.text.contains("$") || $0.text.contains("\\(") || $0.text.contains("\\["))}) else{return false}
+        return collapsedLines(lines).contains{$0.style != "code" && $0.mathEnabled != false && !find(in:$0.text).isEmpty}
+    }
 }
 
 private final class PassiveMathWebView: WKWebView {
@@ -46,23 +51,27 @@ private final class PassiveMathWebView: WKWebView {
 }
 
 @MainActor final class MathRenderer: NSObject, WKNavigationDelegate {
-    private struct Job { let key: String; let latex: String; let display: Bool; let startColor: String; let endColor: String }
+    private struct Job { let id=UUID();let key: String; let latex: String; let display: Bool; let startColor: String; let endColor: String }
     private var webView: PassiveMathWebView?
     private var ready = false
     private var pending = [Job]()
     private var inFlight: Job?
+    private var jobTimeout:DispatchWorkItem?
     private var requested = Set<String>()
-    private var images = [String: NSImage]()
+    private let images = NSCache<NSString,NSImage>()
     private var failed = Set<String>()
-    private let imageContext = CIContext()
-    var onImageReady: (() -> Void)?
+    private lazy var imageContext = CIContext(options:[.cacheIntermediates:false])
+    var isInstalled:Bool {webView != nil}
+    var onImageReady: ((String) -> Void)?
 
-    func install(in host: NSView, below sibling: NSView) {
-        guard webView == nil else { return }
+    override init(){super.init();images.countLimit=256;images.totalCostLimit=24*1024*1024}
+
+    @discardableResult func install(in host: NSView, below sibling: NSView)->Bool {
+        guard webView == nil else { return false }
         let root = Bundle.main.resourceURL?.appendingPathComponent("katex")
             ?? URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Resources/katex")
         let page = root.appendingPathComponent("renderer.html")
-        guard FileManager.default.fileExists(atPath: page.path) else { return }
+        guard FileManager.default.fileExists(atPath: page.path) else { return false }
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
         let web = PassiveMathWebView(frame: NSRect(x: 0, y: 0, width: 700, height: 260), configuration: configuration)
@@ -72,9 +81,16 @@ private final class PassiveMathWebView: WKWebView {
         host.addSubview(web, positioned: .below, relativeTo: sibling)
         webView = web
         web.loadFileURL(page, allowingReadAccessTo: root)
+        return true
+    }
+
+    func beginDocument() {
+        pending.removeAll();requested.removeAll();failed.removeAll()
+        if let job=inFlight{requested.insert(job.key)}
     }
 
     func suspend() {
+        jobTimeout?.cancel();jobTimeout=nil
         ready = false
         pending.removeAll()
         requested.removeAll()
@@ -92,8 +108,8 @@ private final class PassiveMathWebView: WKWebView {
         }
         let start=hex(startColor),end=hex(endColor)
         let key = "\(expression.display)\u{0}\(start)\u{0}\(end)\u{0}\(expression.latex)"
-        if let image = images[key] { return image }
-        if !failed.contains(key), requested.insert(key).inserted {
+        if let image = images.object(forKey:key as NSString) { return image }
+        if webView != nil,pending.count<128,requested.count<512,!failed.contains(key), requested.insert(key).inserted {
             pending.append(Job(key: key, latex: expression.latex, display: expression.display, startColor: start, endColor: end))
             processNext()
         }
@@ -105,18 +121,24 @@ private final class PassiveMathWebView: WKWebView {
     }
 
     nonisolated func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-        Task { @MainActor [weak self] in self?.ready = false; self?.pending.removeAll() }
+        Task { @MainActor [weak self] in self?.suspend() }
+    }
+
+    nonisolated func webViewWebContentProcessDidTerminate(_ webView:WKWebView) {
+        Task { @MainActor [weak self] in self?.suspend() }
     }
 
     private func processNext() {
         guard ready, inFlight == nil, !pending.isEmpty, let webView else { return }
         let job = pending.removeFirst()
         inFlight = job
+        let timeout=DispatchWorkItem{[weak self] in self?.finish(job,image:nil)}
+        jobTimeout=timeout;DispatchQueue.main.asyncAfter(deadline:.now()+5,execute:timeout)
         // JSON encoding provides a JavaScript string literal without interpolating TeX as code.
         guard let data = try? JSONSerialization.data(withJSONObject: [job.latex, job.display, "#ffffff"], options: [.fragmentsAllowed]),
               let arguments = String(data: data, encoding: .utf8) else { finish(job, image: nil); return }
         webView.evaluateJavaScript("renderMath(...\(arguments))") { [weak self] value, error in
-            guard let self else { return }
+            guard let self,self.inFlight?.id == job.id else { return }
             guard error == nil, value is [String: Any] else {
                 self.finish(job, image: nil); return
             }
@@ -126,7 +148,7 @@ private final class PassiveMathWebView: WKWebView {
 
     private func snapshotWhenReady(_ job: Job, from webView: WKWebView, attempt: Int) {
         webView.evaluateJavaScript("({ready:document.fonts.status==='loaded',...mathSize()})") { [weak self] value, error in
-            guard let self else { return }
+            guard let self,self.inFlight?.id == job.id else { return }
             guard error == nil, let dimensions = value as? [String: Any],
                   let width = dimensions["width"] as? NSNumber, let height = dimensions["height"] as? NSNumber else {
                 self.finish(job, image: nil); return
@@ -141,15 +163,19 @@ private final class PassiveMathWebView: WKWebView {
             let config = WKSnapshotConfiguration()
             config.rect = CGRect(origin: .zero, size: size)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
+                guard let self,self.inFlight?.id == job.id else{return}
                 webView.takeSnapshot(with: config) { [weak self] image, _ in self?.finish(job, image: image) }
             }
         }
     }
 
     private func finish(_ job: Job, image: NSImage?) {
-        guard inFlight?.key == job.key else { return }
-        if let image,let tinted = tintedImage(image, startColor: job.startColor, endColor: job.endColor) { images[job.key] = tinted; onImageReady?() }
-        else { failed.insert(job.key) }
+        guard inFlight?.id == job.id else { return }
+        jobTimeout?.cancel();jobTimeout=nil
+        // An evicted image must not start a render/evict loop during equation
+        // refreshes. A new document or reopening resets the request budget.
+        if let image,let tinted = tintedImage(image, startColor: job.startColor, endColor: job.endColor) { images.setObject(tinted,forKey:job.key as NSString,cost:Int(tinted.size.width*tinted.size.height*16)); onImageReady?(job.latex) }
+        else {if failed.count>=256{failed.removeAll()};failed.insert(job.key)}
         inFlight = nil
         processNext()
     }

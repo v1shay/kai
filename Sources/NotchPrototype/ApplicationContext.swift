@@ -11,6 +11,7 @@ struct ApplicationContext {
             return ApplicationContext(text: "Frontmost application unavailable", imagePath: nil)
         }
         let element = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(element,0.25)
         func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
             var value: CFTypeRef?
             guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else { return nil }

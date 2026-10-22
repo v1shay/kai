@@ -96,56 +96,81 @@ private final class FileTypeGlyphLayer:CALayer {
 private final class FileRowLayer:CALayer {
     let url:URL
     let isDirectory:Bool
-    private let icon:FileTypeGlyphLayer,title=CATextLayer()
-    init(_ url:URL,isDirectory:Bool,open:Bool){self.url=url;self.isDirectory=isDirectory;icon=FileTypeGlyphLayer(url,isDirectory:isDirectory,open:open);super.init();title.string=url.lastPathComponent;title.font=NSFont.systemFont(ofSize:8);title.fontSize=8;title.foregroundColor=NSColor.white.withAlphaComponent(0.52).cgColor;title.contentsScale=NSScreen.main?.backingScaleFactor ?? 2;title.truncationMode = .end;addSublayer(icon);addSublayer(title)}
+    private let icon:FileTypeGlyphLayer,title=CATextLayer(),finder=CALayer(),clipboard=CALayer(),actionHover=CALayer()
+    private var hoveredAction:String?
+    var actionTargets:[(CGRect,String)]{[(CGRect(x:bounds.width-24,y:1,width:11,height:12),"reveal"),(CGRect(x:bounds.width-11,y:1,width:11,height:12),"copy")]}
+    init(_ url:URL,isDirectory:Bool,open:Bool){self.url=url;self.isDirectory=isDirectory;icon=FileTypeGlyphLayer(url,isDirectory:isDirectory,open:open);super.init();title.string=url.lastPathComponent;title.font=NSFont.systemFont(ofSize:8);title.fontSize=8;title.foregroundColor=NSColor.white.withAlphaComponent(0.52).cgColor;title.contentsScale=NSScreen.main?.backingScaleFactor ?? 2;title.truncationMode = .end;addSublayer(icon);addSublayer(title);actionHover.opacity=0;addSublayer(actionHover);for (item,action) in [(finder,"reveal"),(clipboard,"copy")]{item.contents=FileActionSymbols.image(action,url:url);item.contentsGravity = .resizeAspect;item.contentsScale=NSScreen.main?.backingScaleFactor ?? 2;addSublayer(item)}}
     required init?(coder:NSCoder){fatalError()}
     override init(layer:Any){let source=layer as? FileRowLayer;url=source?.url ?? URL(fileURLWithPath:"/");isDirectory=source?.isDirectory ?? false;icon=FileTypeGlyphLayer(url,isDirectory:isDirectory,open:false);super.init(layer:layer)}
-    override func layoutSublayers(){super.layoutSublayers();icon.frame=CGRect(x:0,y:0.5,width:15.5,height:13);title.frame=CGRect(x:18,y:2,width:max(0,bounds.width-18),height:11)}
+    override func layoutSublayers(){super.layoutSublayers();icon.frame=CGRect(x:0,y:0.5,width:15.5,height:13);title.frame=CGRect(x:18,y:2,width:max(0,bounds.width-46),height:11);finder.frame=actionTargets[0].0;clipboard.frame=actionTargets[1].0;FileActionSymbols.updateHover(hoveredAction,targets:actionTargets,backdrop:actionHover,animated:false)}
+    func setActionHover(_ action:String?){
+        guard hoveredAction != action else{return};hoveredAction=action
+        FileActionSymbols.updateHover(action,targets:actionTargets,backdrop:actionHover)
+    }
+    func refreshAction(_ action:String){(action == "reveal" ? finder:clipboard).contents=FileActionSymbols.image(action,url:url)}
     var string:String {get{title.string as? String ?? ""}set{title.string=newValue}}
     func setColors(_ colors:[CGColor],animated:Bool){icon.setColors(colors,animated:animated)}
 }
 
 private final class FilePreviewLayer:CALayer {
-    private let title=CATextLayer(),body=CATextLayer(),image=CALayer(),close=CALayer(),mark=CAShapeLayer()
-    private var representedURL:URL?,loadID=UUID()
-    override init(){super.init();opacity=0;masksToBounds=true;title.font=NSFont.systemFont(ofSize:7.5,weight:.semibold);title.fontSize=7.5;title.foregroundColor=NSColor.white.withAlphaComponent(0.8).cgColor;title.contentsScale=NSScreen.main?.backingScaleFactor ?? 2;title.truncationMode = .middle;addSublayer(title);body.font=NSFont.monospacedSystemFont(ofSize:5.7,weight:.regular);body.fontSize=5.7;body.foregroundColor=NSColor.white.withAlphaComponent(0.48).cgColor;body.contentsScale=NSScreen.main?.backingScaleFactor ?? 2;body.isWrapped=true;body.truncationMode = .end;addSublayer(body);image.contentsGravity = .resizeAspect;image.cornerRadius=5;image.masksToBounds=true;addSublayer(image);close.backgroundColor=NSColor.white.withAlphaComponent(0.09).cgColor;close.cornerRadius=5;addSublayer(close);mark.fillColor=nil;mark.strokeColor=NSColor.white.withAlphaComponent(0.72).cgColor;mark.lineWidth=0.9;mark.lineCap = .round;close.addSublayer(mark)}
+    private let title=CATextLayer(),body=CATextLayer(),image=CALayer(),close=CALayer(),mark=CAShapeLayer(),finder=CALayer(),clipboard=CALayer(),actionHover=CALayer()
+    private var hoveredAction:String?
+    var actionTargets:[(CGRect,String)]{[(CGRect(x:bounds.width-41,y:bounds.height-14,width:11,height:10),"reveal"),(CGRect(x:bounds.width-28,y:bounds.height-14,width:11,height:10),"copy")]}
+    private(set) var representedURL:URL?,textContent:String?
+    var onContentChanged:(()->Void)?
+    private var loadID=UUID()
+    override init(){super.init();opacity=0;masksToBounds=true;title.font=NSFont.systemFont(ofSize:7.5,weight:.semibold);title.fontSize=7.5;title.foregroundColor=NSColor.white.withAlphaComponent(0.8).cgColor;title.contentsScale=NSScreen.main?.backingScaleFactor ?? 2;title.truncationMode = .middle;addSublayer(title);body.font=NSFont.monospacedSystemFont(ofSize:5.7,weight:.regular);body.fontSize=5.7;body.foregroundColor=NSColor.white.withAlphaComponent(0.48).cgColor;body.contentsScale=NSScreen.main?.backingScaleFactor ?? 2;body.isWrapped=true;body.truncationMode = .end;addSublayer(body);image.contentsGravity = .resizeAspect;image.cornerRadius=5;image.masksToBounds=true;addSublayer(image);close.backgroundColor=NSColor.white.withAlphaComponent(0.09).cgColor;close.cornerRadius=5;addSublayer(close);actionHover.opacity=0;addSublayer(actionHover);for (item,action) in [(finder,"reveal"),(clipboard,"copy")]{item.contents=FileActionSymbols.image(action);item.contentsGravity = .resizeAspect;item.contentsScale=NSScreen.main?.backingScaleFactor ?? 2;addSublayer(item)};mark.fillColor=nil;mark.strokeColor=NSColor.white.withAlphaComponent(0.72).cgColor;mark.lineWidth=0.9;mark.lineCap = .round;close.addSublayer(mark)}
     required init?(coder:NSCoder){fatalError()}
     override init(layer:Any){super.init(layer:layer)}
-    override func layoutSublayers(){super.layoutSublayers();title.frame=CGRect(x:3,y:bounds.height-14,width:max(0,bounds.width-19),height:10);close.frame=CGRect(x:bounds.width-13,y:bounds.height-14,width:10,height:10);mark.frame=close.bounds;let p=CGMutablePath();p.move(to:CGPoint(x:3,y:3));p.addLine(to:CGPoint(x:7,y:7));p.move(to:CGPoint(x:7,y:3));p.addLine(to:CGPoint(x:3,y:7));mark.path=p;body.frame=CGRect(x:3,y:2,width:bounds.width-6,height:max(0,bounds.height-19));image.frame=CGRect(x:3,y:3,width:bounds.width-6,height:max(0,bounds.height-21))}
-    func closeContains(_ point:CGPoint)->Bool{close.frame.insetBy(dx:-3,dy:-3).contains(point)}
+    override func layoutSublayers(){super.layoutSublayers();title.frame=CGRect(x:3,y:bounds.height-14,width:max(0,bounds.width-48),height:10);finder.frame=actionTargets[0].0;clipboard.frame=actionTargets[1].0;FileActionSymbols.updateHover(hoveredAction,targets:actionTargets,backdrop:actionHover,animated:false);close.frame=CGRect(x:bounds.width-13,y:bounds.height-14,width:10,height:10);mark.frame=close.bounds;let p=CGMutablePath();p.move(to:CGPoint(x:3,y:3));p.addLine(to:CGPoint(x:7,y:7));p.move(to:CGPoint(x:7,y:3));p.addLine(to:CGPoint(x:3,y:7));mark.path=p;body.frame=CGRect(x:3,y:2,width:bounds.width-6,height:max(0,bounds.height-19));image.frame=CGRect(x:3,y:3,width:bounds.width-6,height:max(0,bounds.height-21))}
+    var closeTarget:CGRect{close.frame}
+    func closeContains(_ point:CGPoint)->Bool{close.frame.insetBy(dx:-4,dy:-4).contains(point)}
     func show(_ url:URL,onReady:@escaping ()->Void){
-        representedURL=url;loadID=UUID();let token=loadID
-        title.string=url.lastPathComponent;image.contents=nil;image.opacity=0;body.opacity=1;body.string="loading…"
+        representedURL=url;loadID=UUID();let token=loadID;refreshAction("reveal");refreshAction("copy")
+        title.string=url.lastPathComponent;image.contents=nil;image.opacity=0;body.string="loading…";textContent="loading…";notifyContent()
         let textExtensions=Set(["swift","md","txt","json","plist","py","js","ts","tsx","css","html","yaml","yml","sh","toml","csv"])
         DispatchQueue.global(qos:.userInitiated).async { [weak self] in
             if textExtensions.contains(url.pathExtension.lowercased()) {
-                let result=Result {String(decoding:try Data(contentsOf:url,options:.mappedIfSafe).prefix(3200),as:UTF8.self)}
-                DispatchQueue.main.async {guard let self,self.loadID==token else{return};switch result{case .success(let text):self.body.string=text;case .failure(let error):self.failure(error)};onReady()}
+                let result=Result {String(decoding:try Self.previewPrefix(url),as:UTF8.self)}
+                DispatchQueue.main.async {guard let self,self.loadID==token else{return};switch result{case .success(let text):self.body.string=text;self.textContent=text;self.notifyContent();case .failure(let error):self.failure(error)};onReady()}
                 return
             }
-            if let source=CGImageSourceCreateWithURL(url as CFURL,nil),let picture=CGImageSourceCreateImageAtIndex(source,0,nil){
-                DispatchQueue.main.async {guard let self,self.loadID==token else{return};self.body.opacity=0;self.image.contents=picture;self.image.opacity=1;onReady()}
+            if let source=CGImageSourceCreateWithURL(url as CFURL,nil),let picture=CGImageSourceCreateThumbnailAtIndex(source,0,[kCGImageSourceCreateThumbnailFromImageAlways:true,kCGImageSourceThumbnailMaxPixelSize:720,kCGImageSourceCreateThumbnailWithTransform:true] as CFDictionary){
+                DispatchQueue.main.async {guard let self,self.loadID==token else{return};self.textContent=nil;self.notifyContent();self.body.opacity=0;self.image.contents=picture;self.image.opacity=1;onReady()}
                 return
             }
             let request=QLThumbnailGenerator.Request(fileAt:url,size:CGSize(width:180,height:180),scale:NSScreen.main?.backingScaleFactor ?? 2,representationTypes:.all)
-            QLThumbnailGenerator.shared.generateBestRepresentation(for:request){result,error in DispatchQueue.main.async {guard let self,self.loadID==token else{return};if let result{self.body.opacity=0;self.image.contents=result.nsImage;self.image.opacity=1}else{self.failure(error)};onReady()}}
+            QLThumbnailGenerator.shared.generateBestRepresentation(for:request){result,error in DispatchQueue.main.async {guard let self,self.loadID==token else{return};if let result{self.textContent=nil;self.notifyContent();self.body.opacity=0;self.image.contents=result.nsImage;self.image.opacity=1}else{self.failure(error)};onReady()}}
         }
     }
-    private func failure(_ error:Error?){body.opacity=1;image.opacity=0;body.string=error == nil ? "preview unavailable":"unable to preview\n\(error!.localizedDescription)"}
+    func setActionHover(_ action:String?){
+        guard hoveredAction != action else{return};hoveredAction=action
+        FileActionSymbols.updateHover(action,targets:actionTargets,backdrop:actionHover)
+    }
+    func refreshAction(_ action:String){(action == "reveal" ? finder:clipboard).contents=FileActionSymbols.image(action,url:representedURL)}
+    private static func previewPrefix(_ url:URL)throws->Data {
+        let handle=try FileHandle(forReadingFrom:url);defer{try? handle.close()}
+        let limit=2*1024*1024,data=try handle.read(upToCount:limit+1) ?? Data()
+        return data.count>limit ? Data(data.prefix(limit))+Data("\n\n[Preview limited to 2 MB. Use Show in Finder to open the full file.]".utf8):data
+    }
+    private func notifyContent(){body.opacity=onContentChanged == nil ? 1:0;onContentChanged?()}
+    private func failure(_ error:Error?){body.opacity=1;image.opacity=0;body.string=error == nil ? "preview unavailable":"unable to preview\n\(error!.localizedDescription)";textContent=body.string as? String;notifyContent()}
 }
 
 private final class ChatRowLayer:CALayer {
-    private let title=CATextLayer(),dots=(0..<3).map{_ in CALayer()},value:String,font=NSFont.systemFont(ofSize:8)
-    private var hovered=false
+    private let hide=CATextLayer(),title=CATextLayer(),dots=(0..<3).map{_ in CALayer()},value:String,font=NSFont.systemFont(ofSize:8)
+    private var hovered=false,selected=false
     init(_ value:String) {
         self.value=value;super.init();masksToBounds=true;title.string=value;title.font=font;title.fontSize=8;title.foregroundColor=NSColor.white.withAlphaComponent(0.42).cgColor;title.contentsScale=NSScreen.main?.backingScaleFactor ?? 2;title.truncationMode = .end;addSublayer(title)
+        hide.string="×";hide.font=font;hide.fontSize=10;hide.foregroundColor=NSColor.white.withAlphaComponent(0.65).cgColor
+        hide.backgroundColor=NSColor.black.cgColor;hide.alignmentMode = .center;hide.contentsScale=NSScreen.main?.backingScaleFactor ?? 2;hide.opacity=0;hide.zPosition=1;addSublayer(hide)
         for dot in dots{dot.backgroundColor=NSColor.white.withAlphaComponent(0.48).cgColor;dot.cornerRadius=0.9;dot.opacity=0.25;addSublayer(dot)}
     }
     required init?(coder:NSCoder){fatalError()}
     override init(layer:Any){let source=layer as? ChatRowLayer;value=source?.value ?? "";super.init(layer:layer)}
-    override func layoutSublayers(){super.layoutSublayers();CATransaction.begin();CATransaction.setDisableActions(true);for(i,dot) in dots.enumerated(){dot.frame=CGRect(x:CGFloat(i)*3.4,y:4.4,width:1.8,height:1.8)};title.frame=CGRect(x:13,y:1,width:max(0,bounds.width-13),height:10);CATransaction.commit()}
-    func setHovered(_ active:Bool){guard active != hovered else{return};hovered=active;title.removeAnimation(forKey:"marquee");let available=max(0,bounds.width-13),full=ceil((value as NSString).size(withAttributes:[.font:font]).width);CATransaction.begin();CATransaction.setDisableActions(true);title.setAffineTransform(.identity);title.truncationMode=active ? .none:.end;title.frame=CGRect(x:13,y:1,width:active ? max(available,full):available,height:10);CATransaction.commit();guard active,full>available else{return};let distance=full-available+3,a=CAKeyframeAnimation(keyPath:"transform.translation.x");a.values=[0,0,-distance,-distance,0];a.keyTimes=[0,0.12,0.48,0.72,1];a.duration=max(2.4,Double(distance)/11);a.repeatCount = .infinity;a.timingFunction=CAMediaTimingFunction(name:.easeInEaseOut);title.add(a,forKey:"marquee")}
-    func setSelected(_ selected:Bool){title.foregroundColor=NSColor.white.withAlphaComponent(selected ? 0.9:0.42).cgColor}
+    override func layoutSublayers(){super.layoutSublayers();CATransaction.begin();CATransaction.setDisableActions(true);for(i,dot) in dots.enumerated(){dot.frame=CGRect(x:CGFloat(i)*3.4,y:4.4,width:1.8,height:1.8)};title.frame=CGRect(x:13,y:1,width:max(0,bounds.width-25),height:10);hide.frame=CGRect(x:bounds.width-12,y:0,width:12,height:12);CATransaction.commit()}
+    func setHovered(_ active:Bool){guard active != hovered else{return};hovered=active;hide.opacity=active ? 1:0;title.removeAnimation(forKey:"marquee");let available=max(0,bounds.width-25),full=ceil((value as NSString).size(withAttributes:[.font:font]).width);CATransaction.begin();CATransaction.setDisableActions(true);title.setAffineTransform(.identity);title.truncationMode=active ? .none:.end;title.frame=CGRect(x:13,y:1,width:active ? max(available,full):available,height:10);CATransaction.commit();guard active,full>available else{return};let distance=full-available+3,a=CAKeyframeAnimation(keyPath:"transform.translation.x");a.values=[0,0,-distance,-distance,0];a.keyTimes=[0,0.12,0.48,0.72,1];a.duration=max(2.4,Double(distance)/11);a.repeatCount = .infinity;a.timingFunction=CAMediaTimingFunction(name:.easeInEaseOut);title.add(a,forKey:"marquee")}
+    func setSelected(_ selected:Bool){guard selected != self.selected else{return};self.selected=selected;title.foregroundColor=NSColor.white.withAlphaComponent(selected ? 0.9:0.42).cgColor}
     func setRunning(_ running:Bool){
         guard (dots.first?.animation(forKey:"chatHop") != nil) != running else{return}
         let now=CACurrentMediaTime()
@@ -161,7 +186,8 @@ private final class AttachmentLayer:CALayer {
     override init(layer:Any){image=(layer as? AttachmentLayer)?.image ?? NSImage();super.init(layer:layer)}
     override func layoutSublayers(){super.layoutSublayers();close.frame=CGRect(x:bounds.width-14,y:bounds.height-14,width:12,height:12);mark.frame=close.bounds;let p=CGMutablePath();p.move(to:CGPoint(x:3.5,y:3.5));p.addLine(to:CGPoint(x:8.5,y:8.5));p.move(to:CGPoint(x:8.5,y:3.5));p.addLine(to:CGPoint(x:3.5,y:8.5));mark.path=p}
     func setHovered(_ hovered:Bool){let target:Float=hovered ? 1:0,a=CABasicAnimation(keyPath:"opacity");a.fromValue=close.presentation()?.opacity ?? close.opacity;a.toValue=target;a.duration=0.16;CATransaction.begin();CATransaction.setDisableActions(true);close.opacity=target;CATransaction.commit();close.add(a,forKey:"hover")}
-    func closeContains(_ point:CGPoint)->Bool{close.frame.insetBy(dx:-3,dy:-3).contains(point)}
+    var closeTarget:CGRect{close.frame}
+    func closeContains(_ point:CGPoint)->Bool{close.frame.insetBy(dx:-4,dy:-4).contains(point)}
 }
 
 @MainActor final class MiniAppInterface {
@@ -171,28 +197,52 @@ private final class AttachmentLayer:CALayer {
     var onSettings: ((String,String)->Void)?
     var onNavigate: ((String)->Void)?
     var onContextMode: ((Bool)->Void)?
+    var onVoice:(()->Void)?
+    var onFocusComposer:(()->Void)?
+    private let voiceButton=CATextLayer()
+    private var voiceActive=false
+    func setVoiceActive(_ active:Bool){voiceActive=active;voiceButton.string=active ? "■":"◉";voiceButton.foregroundColor=(active ? NSColor.systemRed:NSColor.white.withAlphaComponent(0.7)).cgColor}
     private var modelState: KaiState?
     private var lightweightContext=false
     private let settingsBar=CALayer()
+    private var settingsLayoutKey:[String]=[]
+    private var actionsLayoutKey:[String]=[]
     private var settingsHits=[(CGRect,String)]()
     var composerFrameChanged:((CGRect,Bool)->Void)?
     var conversationFrameChanged:((CGRect)->Void)?
+    var previewContentChanged:((CGRect,String?,URL?,Bool)->Void)?
+    var onFileActions:((URL)->Void)?
+    var onFileAction:((String,URL)->Void)?
     var onFilesVisibleChanged:((Bool)->Void)?
     var onProject:((String)->Void)?,onChat:((String)->Void)?,onNew:(()->Void)?,onNewInProject:(()->Void)?,onFolder:((String)->Void)?,onSend:(()->Void)?,onApprove:(()->Void)?,onReject:(()->Void)?,onInterrupt:(()->Void)?,onClose:(()->Void)?,onImagesChanged:(([NSImage])->Void)?
     private let left=CALayer(), projectToggle=CAShapeLayer(), preview=FilePreviewLayer(), main=CALayer(), right=CALayer(), input=CAGradientLayer(), imageStrip=CALayer(), command=CALayer(), send=CAGradientLayer(), sendShade=CAGradientLayer(), sendGlass=CAGradientLayer(), arrow=CAShapeLayer(), message=CATextLayer(), response=CAGradientLayer(), responseMask=CALayer(), typingDots=(0..<3).map{_ in CALayer()},pendingHighlight=CALayer(),pendingRibbon=CAGradientLayer()
-    private let newRow=CATextLayer(), projectNewRow=CATextLayer(), standaloneTitle=CATextLayer(), activeTitle=CATextLayer(), actionBar=CALayer(), closeButton=CATextLayer()
-    private var projectRows=[(CALayer,String)](),chatRows=[(ChatRowLayer,String)](),standaloneRows=[(ChatRowLayer,String)](),activeRows=[(ChatRowLayer,String)](),projects=[KaiProject](),chats=[KaiChat](),standaloneChats=[KaiChat](),selectedProject="",selectedThread:String?,fileEntries=[KaiFile](),fileRows=[FileRowLayer](),pathHits=[(CGRect,URL)](),filesOpen=false,previewOpen=false,previewFromFiles=false,projectsCollapsed=false,projectIntrudesComposer=false,projectOffset:CGFloat=0,fileOffset:CGFloat=0,approvalNeeded=false,turnActive=false
+    private let newRow=CATextLayer(), projectNewRow=CATextLayer(), standaloneTitle=CATextLayer(),codeTitle=CATextLayer(), activeTitle=CATextLayer(), actionBar=CALayer(), closeButton=CATextLayer()
+    private var projectRows=[(CALayer,String)](),chatRows=[(ChatRowLayer,String)](),standaloneRows=[(ChatRowLayer,String)](),activeRows=[(ChatRowLayer,String)](),codeRows=[(ChatRowLayer,String)](),codeChats=[KaiChat](),projects=[KaiProject](),chats=[KaiChat](),standaloneChats=[KaiChat](),selectedProject="",selectedThread:String?,fileEntries=[KaiFile](),fileRows=[FileRowLayer](),pathHits=[(CGRect,URL)](),filesOpen=false,previewOpen=false,previewFromFiles=false,projectsCollapsed=false,projectIntrudesComposer=false,projectOffset:CGFloat=0,fileOffset:CGFloat=0,approvalNeeded=false,turnActive=false
+    private var sidebarContentHeight:CGFloat=0
+    private var elsewhere=[KaiActiveTask]()
+    var renderedSidebarRowCount:Int {projectRows.count+chatRows.count+standaloneRows.count+activeRows.count+codeRows.count}
     private var fileGlyphColors=[NSColor.systemBlue.cgColor,NSColor.systemPurple.cgColor,NSColor.white.cgColor]
     private var actionHits=[(CGRect,String)]()
     private weak var hoveredAttachment:AttachmentLayer?
     private(set) var pendingRequestID:String?
+    private enum PendingSidebarTarget {case chat(String),project(String),newChat,newInProject}
+    private var pendingSidebarTarget:PendingSidebarTarget?
     private let leftWidth:CGFloat=86, drawerWidth:CGFloat=78
 
-    init() {
+    private let defaults:UserDefaults
+    private var hiddenChats:Set<String>,hiddenProjects:Set<String>
+    private var chatProjects:[String:String]
+    init(defaults:UserDefaults = .standard) {
+        self.defaults=defaults
+        chatProjects=defaults.dictionary(forKey:"kaiChatProjects") as? [String:String] ?? [:]
+        hiddenChats=Set(defaults.stringArray(forKey:"kaiHiddenChats") ?? [])
+        hiddenProjects=Set(defaults.stringArray(forKey:"kaiHiddenProjects") ?? [])
+        preview.onContentChanged={ [weak self] in self?.notifyPreviewContent() }
         layer.opacity=0; layer.addSublayer(left);layer.addSublayer(projectToggle);layer.addSublayer(preview); layer.addSublayer(main); layer.addSublayer(right);left.masksToBounds=true;right.masksToBounds=true;projectToggle.fillColor=nil;projectToggle.strokeColor=NSColor.white.withAlphaComponent(0.38).cgColor;projectToggle.lineWidth=1;projectToggle.lineCap = .round;projectToggle.lineJoin = .round
         configure(newRow,"+ new chat",8,.white.withAlphaComponent(0.65));left.addSublayer(newRow)
         configure(projectNewRow,"+ in project",7,.white.withAlphaComponent(0.58));left.addSublayer(projectNewRow)
         configure(standaloneTitle,"CHATS",7,.white.withAlphaComponent(0.42),.medium);left.addSublayer(standaloneTitle)
+        configure(codeTitle,"CODE",7,.white.withAlphaComponent(0.42),.medium);left.addSublayer(codeTitle)
         configure(activeTitle,"ACTIVE",7,.white.withAlphaComponent(0.42),.medium);activeTitle.opacity=0;left.addSublayer(activeTitle)
         configure(message,"Choose a project and chat",9,.white.withAlphaComponent(0.68),.medium);main.addSublayer(message);configure(closeButton,"×",12,.white.withAlphaComponent(0.65));closeButton.alignmentMode = .center;main.addSublayer(closeButton);main.addSublayer(actionBar);main.addSublayer(settingsBar)
         input.cornerRadius=14; input.borderWidth=0.75; input.masksToBounds=true; layer.addSublayer(input);imageStrip.masksToBounds=true;layer.addSublayer(imageStrip)
@@ -201,18 +251,44 @@ private final class AttachmentLayer:CALayer {
         sendShade.type = .radial;sendShade.colors=[NSColor.clear.cgColor,NSColor.black.withAlphaComponent(0.3).cgColor];sendShade.locations=[0,1];sendShade.startPoint=CGPoint(x:0.5,y:0.5);sendShade.endPoint=CGPoint(x:1,y:0.5);sendShade.cornerRadius=13;sendShade.masksToBounds=true;send.addSublayer(sendShade)
         sendGlass.type = .radial; sendGlass.cornerRadius=13; sendGlass.masksToBounds=true; sendGlass.colors=[NSColor.white.withAlphaComponent(0.18).cgColor,NSColor.white.withAlphaComponent(0.04).cgColor,NSColor.clear.cgColor]; sendGlass.locations=[0,0.42,1]; sendGlass.startPoint=CGPoint(x:0.3,y:0.76);sendGlass.endPoint=CGPoint(x:0.94,y:0.08);send.addSublayer(sendGlass)
         arrow.fillColor=nil;arrow.strokeColor=NSColor.white.withAlphaComponent(0.92).cgColor;arrow.lineWidth=1.15;arrow.lineCap = .round;arrow.lineJoin = .round;send.addSublayer(arrow)
+        configure(voiceButton,"◉",14,.white.withAlphaComponent(0.7));voiceButton.alignmentMode = .center;input.addSublayer(voiceButton)
         pendingHighlight.opacity=0;pendingHighlight.cornerRadius=4;pendingHighlight.masksToBounds=true;pendingHighlight.backgroundColor=NSColor.white.withAlphaComponent(0.12).cgColor;pendingHighlight.borderColor=NSColor.white.withAlphaComponent(0.28).cgColor;pendingHighlight.borderWidth=0.6;pendingRibbon.colors=[NSColor.clear.cgColor,NSColor.white.withAlphaComponent(0.5).cgColor,NSColor.clear.cgColor];pendingRibbon.startPoint=CGPoint(x:0,y:0.5);pendingRibbon.endPoint=CGPoint(x:1,y:0.5);pendingHighlight.addSublayer(pendingRibbon);layer.addSublayer(pendingHighlight)
         installFlow()
     }
 
-    private func beginPending(_ frame:CGRect){
+    private func beginPending(_ frame:CGRect,sidebarTarget:PendingSidebarTarget?=nil){
         pendingRequestID=UUID().uuidString
-        CATransaction.begin();CATransaction.setDisableActions(true);pendingHighlight.removeAllAnimations();pendingHighlight.frame=frame.insetBy(dx:-2,dy:-2);pendingHighlight.opacity=1;pendingRibbon.frame=CGRect(x:-34,y:0,width:34,height:pendingHighlight.bounds.height);CATransaction.commit()
+        pendingHighlight.name="loadingHighlight"
+        pendingSidebarTarget=sidebarTarget
+        CATransaction.begin();CATransaction.setDisableActions(true);layer.addSublayer(pendingHighlight);pendingHighlight.isHidden=false;pendingHighlight.removeAllAnimations();pendingHighlight.frame=frame.insetBy(dx:-2,dy:-2);pendingHighlight.opacity=1;updatePendingSidebarHighlight();pendingRibbon.frame=CGRect(x:-34,y:0,width:34,height:pendingHighlight.bounds.height);CATransaction.commit()
         let sweep=CABasicAnimation(keyPath:"position.x");sweep.fromValue = -17;sweep.toValue=pendingHighlight.bounds.width+17;sweep.duration=0.95;sweep.repeatCount = .infinity;sweep.timingFunction=CAMediaTimingFunction(name:.easeInEaseOut);pendingRibbon.add(sweep,forKey:"loadingSweep")
         CATransaction.flush()
     }
+    func beginChatLoading(_ name:String)->String {
+        beginPending(CGRect(x:main.frame.minX+4,y:layer.bounds.height-21,width:max(24,main.bounds.width-8),height:15))
+        setCodexMessage("Loading \(name.isEmpty ? "chat":name)…")
+        return pendingRequestID!
+    }
     func finishPending(requestID:String?){guard let requestID,requestID == pendingRequestID else{return};cancelPending()}
-    func cancelPending(){pendingRequestID=nil;pendingRibbon.removeAnimation(forKey:"loadingSweep");let fade=CABasicAnimation(keyPath:"opacity");fade.fromValue=pendingHighlight.presentation()?.opacity ?? pendingHighlight.opacity;fade.toValue=0;fade.duration=0.18;CATransaction.begin();CATransaction.setDisableActions(true);pendingHighlight.opacity=0;CATransaction.commit();pendingHighlight.add(fade,forKey:"pendingFade")}
+    func cancelPending(){pendingRequestID=nil;pendingSidebarTarget=nil;pendingRibbon.removeAnimation(forKey:"loadingSweep");let fade=CABasicAnimation(keyPath:"opacity");fade.fromValue=pendingHighlight.presentation()?.opacity ?? pendingHighlight.opacity;fade.toValue=0;fade.duration=0.18;CATransaction.begin();CATransaction.setDisableActions(true);pendingHighlight.opacity=0;CATransaction.commit();pendingHighlight.add(fade,forKey:"pendingFade")}
+
+    private func updatePendingSidebarHighlight(){
+        guard pendingRequestID != nil,let target=pendingSidebarTarget else{return}
+        let row:CALayer?
+        switch target {
+        case .chat(let id):row=(chatRows+standaloneRows+activeRows+codeRows).first{$0.1 == id}?.0
+        case .project(let path):row=projectRows.first{$0.1 == path}?.0
+        case .newChat:row=newRow
+        case .newInProject:row=projectNewRow.opacity>0 ? projectNewRow:nil
+        }
+        // The sidebar clips the highlight at its viewport. Track the logical
+        // row ID so virtualization can remove and recreate its layer safely.
+        CATransaction.begin();CATransaction.setDisableActions(true)
+        if pendingHighlight.superlayer !== left{left.addSublayer(pendingHighlight)}
+        pendingHighlight.isHidden = row == nil
+        if let row{pendingHighlight.frame=row.frame.insetBy(dx:-2,dy:-2)}
+        CATransaction.commit()
+    }
 
     func layout(in frame:CGRect) {
         layer.frame=frame; left.frame=CGRect(x:0,y:31,width:leftWidth,height:layer.bounds.height-31);projectToggle.frame=CGRect(x:0,y:2,width:12,height:16);layoutProjectToggle(animated:false)
@@ -221,32 +297,66 @@ private final class AttachmentLayer:CALayer {
     }
 
     private func layoutProjects(animated:Bool) {
+        CATransaction.begin();CATransaction.setDisableActions(true);defer{CATransaction.commit()}
+        sidebarContentHeight=21+CGFloat(codeChats.isEmpty ? 0:21+codeChats.count*16)+CGFloat(standaloneChats.isEmpty ? 0:21+standaloneChats.count*16)+CGFloat(elsewhere.isEmpty ? 0:21+elsewhere.count*16)+CGFloat(projects.count)*21+(projects.contains(where:{$0.path == selectedProject}) ? CGFloat(chats.count)*16+19:0)
+        projectOffset=min(projectOffset,max(0,sidebarContentHeight-left.bounds.height+8))
         var cursor=left.bounds.height-4+projectOffset
+        let viewport=left.bounds.insetBy(dx:0,dy:-18)
+        let oldProjects=Dictionary(projectRows.map{($0.1,$0.0)},uniquingKeysWith:{first,_ in first})
+        let oldChats=Dictionary((chatRows+standaloneRows+activeRows+codeRows).map{($0.1,$0.0)},uniquingKeysWith:{first,_ in first})
+        var nextProjects=[(CALayer,String)](),nextChats=[(ChatRowLayer,String)](),nextStandalone=[(ChatRowLayer,String)](),nextActive=[(ChatRowLayer,String)](),nextCode=[(ChatRowLayer,String)]()
+        func chat(_ id:String,_ name:String,_ running:Bool,_ rect:CGRect)->(ChatRowLayer,String)? {
+            guard viewport.intersects(rect) else{return nil}
+            let row:ChatRowLayer
+            if let existing=oldChats[id],existing.name == name {row=existing}
+            else {row=ChatRowLayer(name);row.name=name;left.addSublayer(row)}
+            setFrame(row,rect,animated:animated);row.setSelected(id == selectedThread);row.setRunning(running)
+            return (row,id)
+        }
         setFrame(newRow,CGRect(x:5,y:cursor-12,width:leftWidth-10,height:11),animated:animated);cursor-=21
-        projectNewRow.opacity=projectRows.contains(where:{$0.1 == selectedProject}) ? 1:0
-        standaloneTitle.opacity=standaloneRows.isEmpty ? 0:1
-        if !standaloneRows.isEmpty {
-            setFrame(standaloneTitle,CGRect(x:5,y:cursor-10,width:leftWidth-10,height:9),animated:animated);cursor-=15
-            for (chat,id) in standaloneRows {setFrame(chat,CGRect(x:9,y:cursor-13,width:leftWidth-13,height:12),animated:animated);chat.setSelected(id == selectedThread);cursor-=16}
-            cursor-=6
-        }
-        activeTitle.opacity=activeRows.isEmpty ? 0:1
-        if !activeRows.isEmpty {
+        projectNewRow.opacity=projects.contains(where:{$0.path == selectedProject}) ? 1:0
+        activeTitle.opacity=elsewhere.isEmpty ? 0:1
+        if !elsewhere.isEmpty {
             setFrame(activeTitle,CGRect(x:5,y:cursor-10,width:leftWidth-10,height:9),animated:animated);cursor-=15
-            for (chat,id) in activeRows {setFrame(chat,CGRect(x:4,y:cursor-13,width:leftWidth-8,height:12),animated:animated);chat.setSelected(id == selectedThread);cursor-=16}
+            for item in elsewhere {if let row=chat(item.id,item.name,true,CGRect(x:4,y:cursor-13,width:leftWidth-8,height:12)){nextActive.append(row)};cursor-=16}
             cursor-=6
         }
-        for (row,path) in projectRows {
-            setFrame(row,CGRect(x:4,y:cursor-17,width:leftWidth-8,height:16),animated:animated);cursor-=21
-            if path == selectedProject {
-                for (chat,id) in chatRows { setFrame(chat,CGRect(x:18,y:cursor-13,width:leftWidth-21,height:12),animated:animated);chat.setSelected(id == selectedThread);cursor-=16 }
+        codeTitle.opacity=codeChats.isEmpty ? 0:1
+        if !codeChats.isEmpty {
+            setFrame(codeTitle,CGRect(x:5,y:cursor-10,width:leftWidth-10,height:9),animated:animated);cursor-=15
+            for item in codeChats {if let row=chat(item.id,item.name,item.status == "active",CGRect(x:9,y:cursor-13,width:leftWidth-13,height:12)){nextCode.append(row)};cursor-=16}
+            cursor-=6
+        }
+        standaloneTitle.opacity=standaloneChats.isEmpty ? 0:1
+        if !standaloneChats.isEmpty {
+            setFrame(standaloneTitle,CGRect(x:5,y:cursor-10,width:leftWidth-10,height:9),animated:animated);cursor-=15
+            for item in standaloneChats {if let row=chat(item.id,item.name,item.status == "active",CGRect(x:9,y:cursor-13,width:leftWidth-13,height:12)){nextStandalone.append(row)};cursor-=16}
+            cursor-=6
+        }
+        for project in projects {
+            let rect=CGRect(x:4,y:cursor-17,width:leftWidth-8,height:16)
+            if viewport.intersects(rect) {
+                let row=oldProjects[project.path] ?? CALayer()
+                if row.superlayer == nil {let folder=FileGlyphLayer(size:CGSize(width:16,height:13)),title=label(project.name,8,.white.withAlphaComponent(0.72)),hide=label("×",10,.white.withAlphaComponent(0.65));row.addSublayer(folder);row.addSublayer(title);row.addSublayer(hide);hide.name="hide";hide.opacity=0;hide.frame=CGRect(x:leftWidth-20,y:2,width:12,height:12);folder.frame=CGRect(x:0,y:1,width:16,height:13);title.frame=CGRect(x:19,y:2,width:leftWidth-42,height:11);left.addSublayer(row)}
+                row.sublayers?.compactMap{$0 as? CATextLayer}.first?.string=project.name
+                row.name=project.path;setFrame(row,rect,animated:animated);nextProjects.append((row,project.path))
+            }
+            cursor-=21
+            if project.path == selectedProject {
+                for item in chats {if let row=chat(item.id,item.name,item.status == "active",CGRect(x:18,y:cursor-13,width:leftWidth-21,height:12)){nextChats.append(row)};cursor-=16}
                 setFrame(projectNewRow,CGRect(x:19,y:cursor-12,width:leftWidth-22,height:11),animated:animated);cursor-=19
             }
         }
+        var kept=Set((nextProjects.map{$0.0}+(nextChats+nextStandalone+nextActive).map{$0.0 as CALayer}).map{ObjectIdentifier($0)})
+        kept.formUnion(nextCode.map{ObjectIdentifier($0.0)})
+        for row in projectRows.map({$0.0})+(chatRows+standaloneRows+activeRows+codeRows).map({$0.0 as CALayer}) where !kept.contains(ObjectIdentifier(row)){row.removeFromSuperlayer()}
+        projectRows=nextProjects;chatRows=nextChats;standaloneRows=nextStandalone;activeRows=nextActive;codeRows=nextCode
+        updatePendingSidebarHighlight()
         projectIntrudesComposer=cursor+left.frame.minY<36
     }
 
     private func layoutMain(animated:Bool) {
+        defer{notifyPreviewContent()}
         let paired=previewOpen && previewFromFiles && filesOpen
         let previewWidth:CGFloat=paired ? max(94,min(126,layer.bounds.width*0.35)):leftWidth
         let fileX:CGFloat=paired ? layer.bounds.width-previewWidth-drawerWidth-9:layer.bounds.width-drawerWidth
@@ -261,102 +371,204 @@ private final class AttachmentLayer:CALayer {
         if composerW < 200 { texts.first?.string="hold";texts.first?.frame=CGRect(x:11,y:8,width:22,height:11);command.frame=CGRect(x:36,y:5,width:47,height:18);if texts.count>1{texts[1].string=""} }
         else { texts.first?.string="type or hold";texts.first?.frame=CGRect(x:11,y:8,width:55,height:11);command.frame=CGRect(x:68,y:5,width:47,height:18);if texts.count>1{texts[1].string="to speak";texts[1].frame=CGRect(x:120,y:8,width:43,height:11)} }
         command.sublayers?.first?.frame=CGRect(x:4,y:4,width:39,height:10)
-        setFrame(send,CGRect(x:composerW-27,y:1,width:26,height:26),animated:animated);sendShade.frame=send.bounds;sendGlass.frame=send.bounds;let p=CGMutablePath();p.move(to:CGPoint(x:9,y:14.5));p.addLine(to:CGPoint(x:13,y:18.5));p.addLine(to:CGPoint(x:17,y:14.5));p.move(to:CGPoint(x:13,y:18.5));p.addLine(to:CGPoint(x:13,y:7.5));arrow.path=p;arrow.frame=send.bounds
+        setFrame(send,CGRect(x:composerW-27,y:1,width:26,height:26),animated:animated);voiceButton.frame=CGRect(x:composerW-51,y:3,width:22,height:22);sendShade.frame=send.bounds;sendGlass.frame=send.bounds;let p=CGMutablePath();p.move(to:CGPoint(x:9,y:14.5));p.addLine(to:CGPoint(x:13,y:18.5));p.addLine(to:CGPoint(x:17,y:14.5));p.move(to:CGPoint(x:13,y:18.5));p.addLine(to:CGPoint(x:13,y:7.5));arrow.path=p;arrow.frame=send.bounds
         let conversationBottom:CGFloat=(imageStrip.sublayers?.isEmpty == false) ? 68:32
         conversationFrameChanged?(CGRect(x:target.minX+2,y:conversationBottom,width:max(0,target.width-4),height:max(0,h-56-conversationBottom)))
     }
 
-    func handleClick(_ point:CGPoint)->Bool {
-        let settingsPoint=CGPoint(x:point.x-main.frame.minX-settingsBar.frame.minX,y:point.y-main.frame.minY-settingsBar.frame.minY)
-        if let hit=settingsHits.first(where:{$0.0.contains(settingsPoint)}) {
-            if hit.1 == "context" {lightweightContext.toggle();onContextMode?(lightweightContext);layoutSettings()}
-            else {showSettingsMenu(hit.1)}
+    func handleClick(_ point:CGPoint,count:Int=1)->Bool {
+        if count>=2,let url=fileURL(at:point){onFileActions?(url);return true}
+        // Keep overlapping image previews' existing front-to-back ownership.
+        let attachmentPoint=CGPoint(x:point.x-imageStrip.frame.minX,y:point.y-imageStrip.frame.minY)
+        if imageStrip.frame.contains(point),let attachment=((hoveredAttachment?.frame.contains(attachmentPoint) == true ? hoveredAttachment:nil) ?? imageStrip.sublayers?.compactMap{$0 as? AttachmentLayer}.reversed().first{$0.frame.contains(attachmentPoint)}) {
+            let local=CGPoint(x:attachmentPoint.x-attachment.frame.minX,y:attachmentPoint.y-attachment.frame.minY)
+            if attachment.closeContains(local){remove(attachment)}
             return true
         }
-        let closePoint=CGPoint(x:point.x-main.frame.minX,y:point.y-main.frame.minY)
-        if closeButton.frame.insetBy(dx:-3,dy:-2).contains(closePoint){onClose?();return true}
-        if !previewOpen,projectToggle.frame.contains(point){toggleProjects();return true}
-        if input.frame.contains(point) {
-            let local=CGPoint(x:point.x-input.frame.minX,y:point.y-input.frame.minY)
-            if send.frame.contains(local) { onSend?(); return true }
+        var targets=[(frame:CGRect,limit:CGRect,action:()->Void)]()
+        func add(_ rect:CGRect,limit:CGRect?=nil,_ action:@escaping()->Void){
+            targets.append((rect,limit ?? layer.bounds,action))
         }
-        let actionPoint=CGPoint(x:point.x-main.frame.minX-actionBar.frame.minX,y:point.y-main.frame.minY-actionBar.frame.minY)
-        if let action=actionHits.first(where:{$0.0.contains(actionPoint)}) {
-            beginPending(action.0.offsetBy(dx:main.frame.minX+actionBar.frame.minX,dy:main.frame.minY+actionBar.frame.minY))
-            switch action.1 { case "back":onNavigate?("back");case "forward":onNavigate?("forward");case "new":onNew?();case "approve":onApprove?();case "reject":onReject?();case "interrupt":onInterrupt?();default:cancelPending() };return true
+        func inMain(_ rect:CGRect)->CGRect{rect.offsetBy(dx:main.frame.minX,dy:main.frame.minY)}
+        for (rect,id) in settingsHits {
+            let frame=inMain(rect.offsetBy(dx:settingsBar.frame.minX,dy:settingsBar.frame.minY))
+            add(frame,limit:main.frame){[self] in
+                if id == "context"{lightweightContext.toggle();onContextMode?(lightweightContext);layoutSettings()}
+                else{showSettingsMenu(id)}
+            }
         }
-        let attachmentPoint=CGPoint(x:point.x-imageStrip.frame.minX,y:point.y-imageStrip.frame.minY)
-        if imageStrip.frame.contains(point),let preview=((hoveredAttachment?.frame.contains(attachmentPoint) == true ? hoveredAttachment:nil) ?? imageStrip.sublayers?.compactMap{$0 as? AttachmentLayer}.reversed().first{$0.frame.contains(attachmentPoint)}) { let local=CGPoint(x:attachmentPoint.x-preview.frame.minX,y:attachmentPoint.y-preview.frame.minY);if preview.closeContains(local){remove(preview)};return true }
-        let previewPoint=CGPoint(x:point.x-preview.frame.minX,y:point.y-preview.frame.minY);if previewOpen,preview.frame.contains(point),preview.closeContains(previewPoint){setPreviewVisible(false);return true}
-        let rightPoint=CGPoint(x:point.x-right.frame.minX,y:point.y-right.frame.minY);if filesOpen,right.frame.contains(point),let row=fileRows.first(where:{$0.frame.insetBy(dx:0,dy:-3).contains(rightPoint)}){beginPending(row.frame.offsetBy(dx:right.frame.minX,dy:right.frame.minY));if row.isDirectory {onFolder?(row.url.path)}else{openPreview(row.url,pendingID:pendingRequestID)};return true}
-        let mainPoint=CGPoint(x:point.x-main.frame.minX,y:point.y-main.frame.minY);if let hit=pathHits.first(where:{$0.0.contains(mainPoint)}){openPreview(hit.1);return true}
-        let local=CGPoint(x:point.x-left.frame.minX,y:point.y-left.frame.minY)
+        add(inMain(closeButton.frame),limit:main.frame){[self] in onClose?()}
+        if !previewOpen{add(projectToggle.frame){[self] in toggleProjects()}}
+        let composerActions:[(CGRect,()->Void)]=[(send.frame,{[self] in onSend?()}),(voiceButton.frame,{[self] in onVoice?()})]
+        for (frame,action) in composerActions {
+            add(frame.offsetBy(dx:input.frame.minX,dy:input.frame.minY),limit:input.frame.insetBy(dx:0,dy:-4),action)
+        }
+        let typingArea=CGRect(x:input.frame.minX,y:input.frame.minY,width:max(0,voiceButton.frame.minX-6),height:input.frame.height)
+        add(typingArea,limit:input.frame){[self] in onFocusComposer?()}
+        for (rect,id) in actionHits {
+            let frame=inMain(rect.offsetBy(dx:actionBar.frame.minX,dy:actionBar.frame.minY))
+            add(frame,limit:main.frame){[self] in
+                beginPending(frame)
+                switch id {case "back":onNavigate?("back");case "forward":onNavigate?("forward");case "new":onNew?();case "approve":onApprove?();case "reject":onReject?();case "interrupt":onInterrupt?();default:cancelPending()}
+            }
+        }
+        if previewOpen {
+            if let url=preview.representedURL {
+                for (rect,action) in preview.actionTargets {add(rect.offsetBy(dx:preview.frame.minX,dy:preview.frame.minY),limit:preview.frame){[self] in onFileAction?(action,url)}}
+            }
+            add(preview.closeTarget.offsetBy(dx:preview.frame.minX,dy:preview.frame.minY),limit:preview.frame){[self] in setPreviewVisible(false)}
+        }
+        if filesOpen {
+            for row in fileRows {
+                let frame=row.frame.offsetBy(dx:right.frame.minX,dy:right.frame.minY)
+                for (rect,action) in row.actionTargets {add(rect.offsetBy(dx:frame.minX,dy:frame.minY),limit:right.frame){[self] in onFileAction?(action,row.url)}}
+                let body=CGRect(x:frame.minX,y:frame.minY,width:max(0,frame.width-26),height:frame.height)
+                add(body,limit:right.frame){[self] in
+                    beginPending(frame)
+                    if row.isDirectory{onFolder?(row.url.path)}else{openPreview(row.url,pendingID:pendingRequestID)}
+                }
+            }
+        }
+        for (rect,url) in pathHits {add(inMain(rect),limit:main.frame){[self] in openPreview(url)}}
         if !projectsCollapsed && !previewOpen {
-            if newRow.frame.contains(local){beginPending(newRow.frame.offsetBy(dx:left.frame.minX,dy:left.frame.minY));onNew?();return true}
-            if let chat=standaloneRows.first(where:{$0.0.frame.contains(local)}){beginPending(chat.0.frame.offsetBy(dx:left.frame.minX,dy:left.frame.minY));onChat?(chat.1);return true}
-            if let chat=activeRows.first(where:{$0.0.frame.contains(local)}){beginPending(chat.0.frame.offsetBy(dx:left.frame.minX,dy:left.frame.minY));onChat?(chat.1);return true}
-            if let project=projectRows.first(where:{$0.0.frame.contains(local)}){beginPending(project.0.frame.offsetBy(dx:left.frame.minX,dy:left.frame.minY));onProject?(project.1);return true}
-            if let chat=chatRows.first(where:{$0.0.frame.contains(local)}){beginPending(chat.0.frame.offsetBy(dx:left.frame.minX,dy:left.frame.minY));onChat?(chat.1);return true}
-            if projectRows.contains(where:{$0.1 == selectedProject}) && projectNewRow.frame.contains(local){beginPending(projectNewRow.frame.offsetBy(dx:left.frame.minX,dy:left.frame.minY));onNewInProject?();return true}
+            add(newRow.frame.offsetBy(dx:left.frame.minX,dy:left.frame.minY),limit:left.frame){[self] in
+                beginPending(newRow.frame.offsetBy(dx:left.frame.minX,dy:left.frame.minY),sidebarTarget:.newChat);onNew?()
+            }
+            for (row,id) in (standaloneRows+activeRows+chatRows+codeRows).map({($0.0 as CALayer,$0.1)})+projectRows {
+                let frame=row.frame.offsetBy(dx:left.frame.minX,dy:left.frame.minY)
+                let project=projectRows.contains{$0.0 === row}
+                // Separate the row's normal action from its hide affordance.
+                let body=CGRect(x:frame.minX,y:frame.minY,width:max(0,frame.width-12),height:frame.height)
+                let hide=CGRect(x:frame.maxX-12,y:frame.minY,width:12,height:frame.height)
+                add(body,limit:left.frame){[self] in
+                    beginPending(frame,sidebarTarget:project ? .project(id):.chat(id))
+                    if project{onProject?(id)}else{onChat?(id)}
+                }
+                add(hide,limit:left.frame){[self] in if project{hideProject(id)}else{hideChat(id)}}
+            }
+            if projects.contains(where:{$0.path == selectedProject}) {
+                add(projectNewRow.frame.offsetBy(dx:left.frame.minX,dy:left.frame.minY),limit:left.frame){[self] in
+                    beginPending(projectNewRow.frame.offsetBy(dx:left.frame.minX,dy:left.frame.minY),sidebarTarget:.newInProject);onNewInProject?()
+                }
+            }
+        }
+        if let index=NotchInputRegion.nearestTarget(at:point,frames:targets.map(\.frame),limits:targets.map(\.limit)) {
+            targets[index].action();return true
         }
         return layer.bounds.contains(point)
     }
 
+    func fileAction(at point:CGPoint)->(action:String,url:URL)? {
+        var frames=[CGRect](),limits=[CGRect](),actions=[(String,URL)?]()
+        func add(_ rect:CGRect,limit:CGRect,action:(String,URL)?=nil){frames.append(rect);limits.append(limit);actions.append(action)}
+        if previewOpen,let url=preview.representedURL {
+            for (rect,action) in preview.actionTargets{add(rect.offsetBy(dx:preview.frame.minX,dy:preview.frame.minY),limit:preview.frame,action:(action,url))}
+            add(preview.closeTarget.offsetBy(dx:preview.frame.minX,dy:preview.frame.minY),limit:preview.frame)
+        }
+        if filesOpen {
+            for row in fileRows {
+                let frame=row.frame.offsetBy(dx:right.frame.minX,dy:right.frame.minY)
+                for (rect,action) in row.actionTargets{add(rect.offsetBy(dx:frame.minX,dy:frame.minY),limit:right.frame,action:(action,row.url))}
+                add(CGRect(x:frame.minX,y:frame.minY,width:max(0,frame.width-26),height:frame.height),limit:right.frame)
+            }
+        }
+        guard let index=NotchInputRegion.nearestTarget(at:point,frames:frames,limits:limits),let result=actions[index] else{return nil}
+        return (result.0,result.1)
+    }
     func handleHover(_ point:CGPoint?) {
-        guard let point else { (chatRows+standaloneRows+activeRows).forEach{$0.0.setHovered(false)};hoveredAttachment=nil;for(i,item) in (imageStrip.sublayers?.compactMap{$0 as? AttachmentLayer} ?? []).enumerated(){item.setHovered(false);item.zPosition=CGFloat(i)};return }
+        let fileHover=point.flatMap{fileAction(at:$0)}
+        preview.setActionHover(preview.representedURL == fileHover?.url ? fileHover?.action:nil)
+        for row in fileRows{row.setActionHover(row.url == fileHover?.url ? fileHover?.action:nil)}
+        guard let point else {projectRows.forEach{$0.0.sublayers?.last?.opacity=0}; (chatRows+standaloneRows+activeRows+codeRows).forEach{$0.0.setHovered(false)};hoveredAttachment=nil;for(i,item) in (imageStrip.sublayers?.compactMap{$0 as? AttachmentLayer} ?? []).enumerated(){item.setHovered(false);item.zPosition=CGFloat(i)};return }
         let attachmentPoint=CGPoint(x:point.x-imageStrip.frame.minX,y:point.y-imageStrip.frame.minY),previews=imageStrip.sublayers?.compactMap{$0 as? AttachmentLayer} ?? [],hovered=(hoveredAttachment?.frame.contains(attachmentPoint) == true ? hoveredAttachment:previews.reversed().first{$0.frame.contains(attachmentPoint)})
         hoveredAttachment=hovered;for(i,item) in previews.enumerated(){item.setHovered(item === hovered);item.zPosition=item === hovered ? 1000:CGFloat(i)}
         let p=CGPoint(x:point.x-left.frame.minX,y:point.y-left.frame.minY)
-        for (row,_) in chatRows { row.setHovered(row.frame.contains(p)) }
-        for (row,_) in standaloneRows { row.setHovered(row.frame.contains(p)) }
-        for (row,_) in activeRows { row.setHovered(row.frame.contains(p)) }
+        let rows=projectRows.map{$0.0}+(chatRows+standaloneRows+codeRows+activeRows).map{$0.0 as CALayer}
+        let hoveredRow=(!projectsCollapsed && !previewOpen) ? NotchInputRegion.nearestTarget(at:p,frames:rows.map(\.frame),limits:Array(repeating:left.bounds,count:rows.count)).map{rows[$0]}:nil
+        for (row,_) in projectRows {row.sublayers?.last?.opacity=row === hoveredRow ? 1:0}
+        for (row,_) in chatRows+standaloneRows+codeRows+activeRows {row.setHovered(row === hoveredRow)}
     }
 
-    func scroll(_ delta:CGFloat,at point:CGPoint) { if filesOpen,right.frame.contains(point){let overflow=max(0,CGFloat(fileEntries.count)*18-right.bounds.height+8);fileOffset=min(overflow,max(0,fileOffset-delta));layoutFiles()}else if left.frame.contains(point){let total=CGFloat(projectRows.count)*21+CGFloat(chatRows.count)*16+CGFloat(standaloneRows.isEmpty ? 0:21+standaloneRows.count*16)+CGFloat(activeRows.isEmpty ? 0:21+activeRows.count*16)+40;projectOffset=min(max(0,total-left.bounds.height+8),max(0,projectOffset-delta));layoutProjects(animated:false)} }
+    func fileURL(at point:CGPoint)->URL? {
+        if previewOpen,preview.frame.contains(point){return preview.representedURL}
+        if filesOpen,right.frame.contains(point) {
+            let local=CGPoint(x:point.x-right.frame.minX,y:point.y-right.frame.minY)
+            if let index=NotchInputRegion.nearestTarget(at:local,frames:fileRows.map(\.frame),limits:Array(repeating:right.bounds,count:fileRows.count)){return fileRows[index].url}
+        }
+        return nil
+    }
+    private func notifyPreviewContent(){
+        let rect=CGRect(x:preview.frame.minX+3,y:preview.frame.minY+2,width:max(0,preview.frame.width-6),height:max(0,preview.frame.height-19))
+        previewContentChanged?(rect,preview.textContent,preview.representedURL,previewOpen && layer.opacity>0)
+    }
+    func scroll(_ delta:CGFloat,at point:CGPoint) { if filesOpen,right.frame.contains(point){let overflow=max(0,CGFloat(fileEntries.count)*18-right.bounds.height+8);fileOffset=min(overflow,max(0,fileOffset-delta));layoutFiles()}else if left.frame.contains(point){let total=sidebarContentHeight;projectOffset=min(max(0,total-left.bounds.height+8),max(0,projectOffset-delta));layoutProjects(animated:false)} }
 
     func toggleFiles() { if previewOpen && !previewFromFiles{setPreviewVisible(false)};filesOpen.toggle();if !filesOpen{previewFromFiles=false};setFilesVisible(filesOpen,animated:true);onFilesVisibleChanged?(filesOpen);layoutMain(animated:true) }
     var isFilesOpen:Bool { filesOpen }
     func resetFiles() { if previewOpen{setPreviewVisible(false)};filesOpen=false;fileOffset=0;setFilesVisible(false,animated:false);onFilesVisibleChanged?(false);layoutFiles();layoutMain(animated:false) }
 
-    func setCodexMessage(_ text:String){let font=NSFont.systemFont(ofSize:8),result=NSMutableAttributedString(string:text,attributes:[.font:font,.foregroundColor:NSColor.white.withAlphaComponent(0.62)]),pattern=#"(?:file://)?(?:/Users/|Users/|~/)[^\s\]\[\)\(>,]+"#;pathHits.removeAll();if let regex=try? NSRegularExpression(pattern:pattern){for match in regex.matches(in:text,range:NSRange(text.startIndex...,in:text)){result.addAttributes([.font:NSFont.systemFont(ofSize:8,weight:.bold),.underlineStyle:NSUnderlineStyle.single.rawValue,.foregroundColor:NSColor.white.withAlphaComponent(0.9)],range:match.range)}};message.string=result;layoutPathHits()}
+    func setCodexMessage(_ text:String){guard (message.string as? NSAttributedString)?.string != text else{return};let font=NSFont.systemFont(ofSize:8),result=NSMutableAttributedString(string:text,attributes:[.font:font,.foregroundColor:NSColor.white.withAlphaComponent(0.62)]),pattern=#"(?:file://)?(?:/Users/|Users/|~/)[^\s\]\[\)\(>,]+"#;pathHits.removeAll();if let regex=try? NSRegularExpression(pattern:pattern){for match in regex.matches(in:text,range:NSRange(text.startIndex...,in:text)){result.addAttributes([.font:NSFont.systemFont(ofSize:8,weight:.bold),.underlineStyle:NSUnderlineStyle.single.rawValue,.foregroundColor:NSColor.white.withAlphaComponent(0.9)],range:match.range)}};message.string=result;layoutPathHits()}
+    func hideChat(_ id:String){
+        hiddenChats.insert(id);defaults.set(Array(hiddenChats).sorted(),forKey:"kaiHiddenChats")
+        if let state=modelState {setState(state)}
+    }
+    func hideProject(_ path:String){
+        hiddenProjects.insert(path);defaults.set(Array(hiddenProjects).sorted(),forKey:"kaiHiddenProjects")
+        if let state=modelState {setState(state)}
+    }
     func setState(_ state:KaiState){
+        let oldIntrusion=projectIntrudesComposer
+        var membershipChanged=false
+        for chat in state.chats where chatProjects[chat.id] != state.project {chatProjects[chat.id]=state.project;membershipChanged=true}
+        if membershipChanged {defaults.set(chatProjects,forKey:"kaiChatProjects")}
+        let nextProjects=state.projects.filter{!hiddenProjects.contains($0.path)}
+        let active=state.activeTasks.filter{!hiddenChats.contains($0.id) && !$0.id.hasPrefix("dot:") && !(chatProjects[$0.id].map{hiddenProjects.contains($0)} ?? false)}
+        let activeIDs=Set(active.map(\.id))
+        let nextChats=hiddenProjects.contains(state.project) ? [] : state.chats.filter{!hiddenChats.contains($0.id) && !activeIDs.contains($0.id)}
+        let nextStandalone=state.standaloneChats.filter{!hiddenChats.contains($0.id) && !activeIDs.contains($0.id)}
+        let nextCode=(state.codeChats ?? []).filter{!hiddenChats.contains($0.id) && !activeIDs.contains($0.id)}
+        let sidebarChanged=codeChats != nextCode || selectedProject != state.project || selectedThread != state.threadId || projects != nextProjects || chats != nextChats || standaloneChats != nextStandalone || elsewhere != active
         modelState=state
         selectedProject=state.project;selectedThread=state.threadId;approvalNeeded=state.approval;turnActive=state.activeTurnId != nil
-        if projects.map(\.path) != state.projects.map(\.path){projectRows.forEach{$0.0.removeFromSuperlayer()};projectRows.removeAll();projects=state.projects;for project in projects{let row=CALayer(),folder=FileGlyphLayer(size:CGSize(width:16,height:13)),title=label(project.name,8,.white.withAlphaComponent(0.72));row.addSublayer(folder);row.addSublayer(title);folder.frame=CGRect(x:0,y:1,width:16,height:13);title.frame=CGRect(x:19,y:2,width:leftWidth-30,height:11);left.addSublayer(row);projectRows.append((row,project.path))}}
-        if chats.map(\.id) != state.chats.map(\.id) || chats.map(\.name) != state.chats.map(\.name){chatRows.forEach{$0.0.removeFromSuperlayer()};chatRows.removeAll();chats=state.chats;for chat in chats{let row=ChatRowLayer(chat.name);left.addSublayer(row);chatRows.append((row,chat.id))}}
-        if standaloneChats.map(\.id) != state.standaloneChats.map(\.id) || standaloneChats.map(\.name) != state.standaloneChats.map(\.name){standaloneRows.forEach{$0.0.removeFromSuperlayer()};standaloneRows.removeAll();standaloneChats=state.standaloneChats;for chat in standaloneChats{let row=ChatRowLayer(chat.name);left.addSublayer(row);standaloneRows.append((row,chat.id))}}
-        for(row,id) in chatRows{row.setRunning(state.chats.first(where:{$0.id == id})?.status == "active")}
-        for(row,id) in standaloneRows{row.setRunning(state.standaloneChats.first(where:{$0.id == id})?.status == "active")}
-        let visibleIDs=Set(state.chats.map(\.id)+state.standaloneChats.map(\.id)),elsewhere=state.activeTasks.filter{!visibleIDs.contains($0.id)}
-        if activeRows.map({$0.1}) != elsewhere.map(\.id) || activeRows.map({$0.0.name ?? ""}) != elsewhere.map(\.name){
-            if activeRows.isEmpty && !elsewhere.isEmpty{projectOffset=0}
-            activeRows.forEach{$0.0.removeFromSuperlayer()};activeRows.removeAll()
-            for task in elsewhere {let row=ChatRowLayer(task.name);row.name=task.name;row.setRunning(true);left.addSublayer(row);activeRows.append((row,task.id))}
-        }
+        projects=nextProjects;chats=nextChats;standaloneChats=nextStandalone;codeChats=nextCode
+        if elsewhere.isEmpty && !active.isEmpty {projectOffset=0}
+        elsewhere=active
         if let files=state.files {
             if fileEntries.count != files.count || zip(fileEntries,files).contains(where:{$0.path != $1.path || $0.collapsed != $1.collapsed}) {
                 fileEntries=files;fileOffset=min(fileOffset,max(0,CGFloat(fileEntries.count)*18-right.bounds.height+8));layoutFiles()
             }
         }
         let title=state.threadId == nil ? "Choose a chat" : (state.threadName.isEmpty ? "Chat" : state.threadName)
-        let focus=state.activeTasks.first(where:{$0.id == state.focusThreadId})
-        let percent=state.rateLimitRemainingPercent.map{" · \($0)%"} ?? ""
-        let name=focus?.name ?? title
-        let activityText=state.approval ? "Approval needed" : (focus?.text ?? (state.activity.scene == "off" ? "" : state.activity.text))
+        let focus=state.activeTasks.first(where:{$0.id == state.threadId})
+        let percent=(state.threadId?.hasPrefix("code:") == true ? nil:state.rateLimitRemainingPercent).map{" · \($0)%"} ?? ""
+        let name=title
+        let selectedApproval=state.approval && (state.approvalThreadId == nil || state.approvalThreadId == state.threadId)
+        let activityText=selectedApproval ? "Approval needed" : (state.viewedActivity.scene == "off" ? "" : state.viewedActivity.text)
         let shownReadOnly=state.readOnly && (focus == nil || focus?.id == state.threadId)
-        setCodexMessage(name+percent+(activityText.isEmpty ? "":" · "+activityText)+(shownReadOnly ? " · read only":""))
+        let loadingText=state.projectsLoading == true ? (state.notice.hasPrefix("Could not refresh projects") ? " · projects unavailable, retrying":" · loading projects") : ""
+        let codeNotice=state.threadId?.hasPrefix("code:") == true && (state.notice.hasPrefix("Code:") || state.notice.hasPrefix("Loading Code") || state.notice.hasPrefix("Code disconnected") || state.notice.hasPrefix("Prompt staged")) ? " · "+state.notice:""
+        setCodexMessage(name+percent+loadingText+codeNotice+(activityText.isEmpty ? "":" · "+activityText)+(shownReadOnly ? " · read only":""))
         message.truncationMode = .middle
-        layoutProjects(animated:false);layoutMain(animated:false);NotchSizing.updateTextResolution(layer,scale:renderingScale)
+        if sidebarChanged {layoutProjects(animated:false)}
+        // Streaming text does not change geometry. Relayout would reset the
+        // scroll view and recreate controls on every packet.
+        if oldIntrusion != projectIntrudesComposer {layoutMain(animated:false)}
+        else {layoutActions();layoutSettings()}
     }
     func setContextMode(_ lightweight:Bool){lightweightContext=lightweight;layoutSettings()}
     private func layoutSettings() {
-        settingsBar.sublayers?.forEach{$0.removeFromSuperlayer()};settingsHits.removeAll()
         guard let state=modelState else{return}
         let model=state.models?.first{$0.model == state.selectedModel}
         let name=model?.displayName ?? state.selectedModel ?? "Models unavailable"
         let effort=state.reasoningEffort ?? "Effort"
+        let key=[String(Double(settingsBar.bounds.width)),name,effort,String(lightweightContext),String(state.threadId?.hasPrefix("code:") == true),String(Double(renderingScale))]
+        guard key != settingsLayoutKey else{return};settingsLayoutKey=key
+        settingsBar.sublayers?.forEach{$0.removeFromSuperlayer()};settingsHits.removeAll()
         var x:CGFloat=0
-        for (id,text) in [("model",name),("effort",effort),("context",lightweightContext ? "Context: light":"Context: screen")] {
+        let codeView=state.threadId?.hasPrefix("code:") == true
+        let contextTitle=lightweightContext ? "Context: light":"Context: screen"
+        let settings=codeView ? [("model",name),("context",contextTitle)]:[("model",name),("effort",effort),("context",contextTitle)]
+        for (id,text) in settings {
             let width=min(id == "model" ? 100: id == "effort" ? 48:80, min(CGFloat(text.count)*4.5+9,max(0,settingsBar.bounds.width-x)))
             guard width>16 else{break}
             let mask=label(text,7.5,.white,.medium);mask.frame=CGRect(x:0,y:1,width:width,height:11)
@@ -366,7 +578,7 @@ private final class AttachmentLayer:CALayer {
             let levels=["none","minimal","low","medium","high","xhigh","max","ultra"]
             let intensity=CGFloat(levels.firstIndex(of:effort) ?? 3)/7
             gradient.colors=(id == "effort" ? [NSColor.white.withAlphaComponent(0.45+intensity*0.55),NSColor.systemPurple.withAlphaComponent(0.4+intensity*0.6),NSColor.systemPink.withAlphaComponent(0.4+intensity*0.6)]:colors).map(\.cgColor)
-            settingsBar.addSublayer(gradient);settingsHits.append((gradient.frame,id));x+=width+6
+            settingsBar.addSublayer(gradient);if !codeView || id == "context"{settingsHits.append((gradient.frame,id))};x+=width+6
         }
     }
     private func showSettingsMenu(_ kind:String) {
@@ -385,13 +597,22 @@ private final class AttachmentLayer:CALayer {
     }
     @objc private func selectSetting(_ item:NSMenuItem) {guard let values=item.representedObject as? [String],values.count == 2 else{return};onSettings?(values[0],values[1])}
 
-    private func layoutActions(){actionBar.sublayers?.forEach{$0.removeFromSuperlayer()};actionHits.removeAll();var x:CGFloat=0
-        let actions:[(String,String)]=((modelState?.canGoBack == true ? [("back","‹")]:[])+(modelState?.canGoForward == true ? [("forward","›")]:[]))+(approvalNeeded ? [("approve","Approve"),("reject","Reject")]:[])+(turnActive ? [("interrupt","Stop")]:[])+[("new","+ New")]
+    private func layoutActions(){
+        let key=[String(Double(actionBar.bounds.width)),String(modelState?.canGoBack == true),String(modelState?.canGoForward == true),String(approvalNeeded),String(turnActive),String(modelState?.threadId?.hasPrefix("code:") == true),String(Double(renderingScale))]
+        guard key != actionsLayoutKey else{return};actionsLayoutKey=key
+        actionBar.sublayers?.forEach{$0.removeFromSuperlayer()};actionHits.removeAll();var x:CGFloat=0
+        let actions:[(String,String)]=((modelState?.canGoBack == true ? [("back","‹")]:[])+(modelState?.canGoForward == true ? [("forward","›")]:[]))+(approvalNeeded ? [("approve","Approve"),("reject","Reject")]:[])+(turnActive ? [("interrupt","Stop")]:[])+[("new",modelState?.threadId?.hasPrefix("code:") == true ? "+ Codex chat":"+ New")]
         for (id,title) in actions {let width=CGFloat(title.count)*5+10;if x+width>actionBar.bounds.width{break};let item=label(title,7.5,.white.withAlphaComponent(0.74),.medium);item.frame=CGRect(x:x+4,y:1,width:width-8,height:11);actionBar.addSublayer(item);actionHits.append((CGRect(x:x,y:0,width:width,height:13),id));x+=width+3}
     }
     func previewFile(_ url:URL){openPreview(url)}
+    func refreshFileAction(_ action:String,url:URL){
+        CATransaction.begin();CATransaction.setDisableActions(true)
+        for row in fileRows where row.url == url{row.refreshAction(action)}
+        if preview.representedURL == url{preview.refreshAction(action)}
+        CATransaction.commit()
+    }
 
-    func setComposerHasText(_ hasText:Bool){CATransaction.begin();CATransaction.setDisableActions(true);for item in input.sublayers ?? [] where item !== send{item.opacity=hasText ? 0:1};CATransaction.commit()}
+    func setComposerHasText(_ hasText:Bool){CATransaction.begin();CATransaction.setDisableActions(true);for item in input.sublayers ?? [] where item !== send && item !== voiceButton{item.opacity=hasText ? 0:1};CATransaction.commit()}
     func clearImages(){imageStrip.sublayers?.forEach{$0.removeFromSuperlayer()};layoutImages();imagesChanged()}
     func addImages(_ images:[NSImage]){for image in images{let preview=AttachmentLayer(image);preview.opacity=0;imageStrip.addSublayer(preview);let reveal=CAAnimationGroup();let fade=CABasicAnimation(keyPath:"opacity"),scale=CABasicAnimation(keyPath:"transform.scale");fade.fromValue=0;fade.toValue=1;scale.fromValue=0.82;scale.toValue=1;reveal.animations=[fade,scale];reveal.duration=0.34;reveal.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.7,0.25,1);preview.opacity=1;preview.add(reveal,forKey:"attach")};layoutImages();imagesChanged()}
     private func layoutImages(){let previews=imageStrip.sublayers ?? [],w:CGFloat=42,step=previews.count<2 ? 0:min(w+5,max(13,(imageStrip.bounds.width-w)/CGFloat(previews.count-1)));CATransaction.begin();CATransaction.setDisableActions(true);for(i,preview) in previews.enumerated(){preview.frame=CGRect(x:CGFloat(i)*step,y:0,width:w,height:32);preview.zPosition=CGFloat(i)};imageStrip.opacity=previews.isEmpty ? 0:1;CATransaction.commit()}
@@ -404,7 +625,7 @@ private final class AttachmentLayer:CALayer {
         let slide=CABasicAnimation(keyPath:"transform.translation.x");slide.fromValue=right.presentation()?.transform.m41 ?? (visible ? 10:0);slide.toValue=offset;slide.duration=duration;slide.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.7,0.25,1);CATransaction.begin();CATransaction.setDisableActions(true);right.setAffineTransform(CGAffineTransform(translationX:offset,y:0));CATransaction.commit();if animated{right.add(slide,forKey:"filesSlide")}
     }
 
-    private func layoutFiles(){fileRows.forEach{$0.removeFromSuperlayer()};fileRows.removeAll();let first=max(0,Int(fileOffset/18)-1),last=min(fileEntries.count,first+Int(right.bounds.height/18)+4);guard first<last else{return};CATransaction.begin();CATransaction.setDisableActions(true);for i in first..<last {let entry=fileEntries[i],indent=CGFloat(min(entry.depth,8))*5,row=FileRowLayer(URL(fileURLWithPath:entry.path),isDirectory:entry.directory,open:entry.directory && !entry.collapsed);row.string=entry.name;row.frame=CGRect(x:3+indent,y:right.bounds.height-15+fileOffset-CGFloat(i)*18,width:max(24,drawerWidth-6-indent),height:14);row.setColors(fileGlyphColors,animated:false);right.addSublayer(row);fileRows.append(row)};CATransaction.commit()}
+    private func layoutFiles(){fileRows.forEach{$0.removeFromSuperlayer()};fileRows.removeAll();let first=max(0,Int(fileOffset/18)-1),last=min(fileEntries.count,first+Int(right.bounds.height/18)+4);guard first<last else{return};CATransaction.begin();CATransaction.setDisableActions(true);for i in first..<last {let entry=fileEntries[i],indent=min(CGFloat(min(entry.depth,8))*5,max(0,drawerWidth-66)),row=FileRowLayer(URL(fileURLWithPath:entry.path),isDirectory:entry.directory,open:entry.directory && !entry.collapsed);row.string=entry.name;row.frame=CGRect(x:3+indent,y:right.bounds.height-15+fileOffset-CGFloat(i)*18,width:max(24,drawerWidth-6-indent),height:14);row.setColors(fileGlyphColors,animated:false);right.addSublayer(row);fileRows.append(row)};CATransaction.commit()}
 
     private func openPreview(_ url:URL,pendingID:String?=nil){previewFromFiles=filesOpen;preview.show(url){[weak self] in if let pendingID{self?.finishPending(requestID:pendingID)}};if previewOpen{layoutMain(animated:true)}else{setPreviewVisible(true)}}
     private func setPreviewVisible(_ visible:Bool){guard visible != previewOpen else{return};previewOpen=visible;if !visible{previewFromFiles=false};let duration=0.46,curve=CAMediaTimingFunction(controlPoints:0.16,0.72,0.24,1);func transition(_ item:CALayer,opacity:Float,from fallback:CGFloat,to offset:CGFloat){let fade=CABasicAnimation(keyPath:"opacity");fade.fromValue=item.presentation()?.opacity ?? item.opacity;fade.toValue=opacity;fade.duration=duration;fade.timingFunction=curve;let slide=CABasicAnimation(keyPath:"transform.translation.x");slide.fromValue=item.presentation()?.transform.m41 ?? fallback;slide.toValue=offset;slide.duration=duration;slide.timingFunction=curve;CATransaction.begin();CATransaction.setDisableActions(true);item.opacity=opacity;item.setAffineTransform(CGAffineTransform(translationX:offset,y:0));CATransaction.commit();item.add(fade,forKey:"previewFade");item.add(slide,forKey:"previewSlide")};transition(left,opacity:visible || projectsCollapsed ? 0:1,from:visible ? 0:-16,to:visible || projectsCollapsed ? -16:0);transition(preview,opacity:visible ? 1:0,from:visible ? leftWidth*0.62:0,to:visible ? 0:leftWidth*0.62);projectToggle.opacity=visible ? 0:1;layoutProjectToggle(animated:true);layoutMain(animated:true)}
@@ -414,10 +635,10 @@ private final class AttachmentLayer:CALayer {
 
     private func collapse(_ group:CALayer,_ expanded:Bool) { let fade=CABasicAnimation(keyPath:"opacity");fade.fromValue=group.presentation()?.opacity ?? group.opacity;fade.toValue=expanded ? 1:0;fade.duration=0.26;fade.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.7,0.25,1);CATransaction.begin();CATransaction.setDisableActions(true);group.opacity=expanded ? 1:0;group.setAffineTransform(.identity);CATransaction.commit();group.add(fade,forKey:"collapse") }
 
-    func setVisible(_ visible:Bool,duration:Double) { let fade=CABasicAnimation(keyPath:"opacity");fade.fromValue=layer.presentation()?.opacity ?? layer.opacity;fade.toValue=visible ? 1:0;fade.duration=duration*0.72;fade.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.65,0.25,1);CATransaction.begin();CATransaction.setDisableActions(true);layer.opacity=visible ? 1:0;CATransaction.commit();layer.add(fade,forKey:"visibility") }
+    func setVisible(_ visible:Bool,duration:Double) { if !visible{handleHover(nil)};let fade=CABasicAnimation(keyPath:"opacity");fade.fromValue=layer.presentation()?.opacity ?? layer.opacity;fade.toValue=visible ? 1:0;fade.duration=duration*0.72;fade.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.65,0.25,1);CATransaction.begin();CATransaction.setDisableActions(true);layer.opacity=visible ? 1:0;CATransaction.commit();layer.add(fade,forKey:"visibility");notifyPreviewContent() }
 
     func setProfile(_ profile:PetGradientProfile,animated:Bool) {
-        let s=profile.gradients.ambient.stops,c=[s.first!,s[s.count/2],s.last!].map{color($0.color)},radial=c.sorted{brightness($0)<brightness($1)};fileGlyphColors=c.map{readable($0)};fileRows.forEach{$0.setColors(fileGlyphColors,animated:animated)};animate(input,to:[alpha(c[0],0.15),alpha(c[1],0.065),alpha(c[2],0.1)],animated ? 0.72:0);animate(response,to:c.map{alpha(readable($0),0.92)},animated ? 0.72:0);animate(send,to:[mix(radial[2],NSColor.white.cgColor,0.2),mix(radial[1],NSColor.black.cgColor,0.16),mix(radial[0],NSColor.black.cgColor,0.58)],animated ? 0.72:0)
+        let s=profile.gradients.ambient.stops;guard !s.isEmpty else{return};let c=[s.first!,s[s.count/2],s.last!].map{color($0.color)},radial=c.sorted{brightness($0)<brightness($1)};fileGlyphColors=c.map{readable($0)};fileRows.forEach{$0.setColors(fileGlyphColors,animated:animated)};animate(input,to:[alpha(c[0],0.15),alpha(c[1],0.065),alpha(c[2],0.1)],animated ? 0.72:0);animate(response,to:c.map{alpha(readable($0),0.92)},animated ? 0.72:0);animate(send,to:[mix(radial[2],NSColor.white.cgColor,0.2),mix(radial[1],NSColor.black.cgColor,0.16),mix(radial[0],NSColor.black.cgColor,0.58)],animated ? 0.72:0)
         CATransaction.begin();CATransaction.setDisableActions(true);input.borderColor=alpha(c[2],0.22);command.backgroundColor=alpha(c[0],0.14);command.borderColor=alpha(c[2],0.22);send.borderColor=NSColor.white.withAlphaComponent(0.36).cgColor;CATransaction.commit()
     }
 

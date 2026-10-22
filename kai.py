@@ -81,8 +81,13 @@ class AppServer:
         self.errors: collections.deque[str] = collections.deque(maxlen=12)
         threading.Thread(target=self._read, daemon=True).start()
         threading.Thread(target=self._stderr, daemon=True).start()
-        self.call("initialize", {"clientInfo": {"name": "kai", "title": "Kai TUI", "version": "0.1.0"}})
-        self.notify("initialized", {})
+        try:
+            self.call("initialize", {"clientInfo": {"name": "kai", "title": "Kai", "version": "0.1.0"},
+                                     "capabilities": {"experimentalApi": True}})
+            self.notify("initialized", {})
+        except Exception:
+            self.close()
+            raise
 
     def _send(self, message: dict[str, Any]) -> None:
         line = json.dumps(message, separators=(",", ":")) + "\n"
@@ -503,13 +508,77 @@ def consume_dropped_images(value: str, cwd: Path) -> tuple[str, list[Path]]:
     return value, []
 
 
+def list_thread_rows(rpc: AppServer, max_pages: int | None = None,
+                     timeout: float = 8) -> tuple[list[dict[str, Any]], bool]:
+    rows: list[dict[str, Any]] = []
+    cursor = None
+    seen: set[str] = set()
+    page = 0
+    while max_pages is None or page < max_pages:
+        # The default server path repairs metadata by scanning JSONL rollouts.
+        # Routine sidebar refreshes need only the existing indexed metadata.
+        params: dict[str, Any] = {"limit": 100, "sourceKinds": ["cli", "vscode", "exec"],
+                                  "useStateDbOnly": True, "sortKey": "updated_at"}
+        if cursor:
+            params["cursor"] = cursor
+        result = rpc.call("thread/list", params, timeout=timeout)
+        rows.extend(result.get("data") or [])
+        cursor = result.get("nextCursor")
+        page += 1
+        if not cursor:
+            break
+        if cursor in seen:
+            raise RPCError("Project discovery returned a repeated cursor")
+        seen.add(cursor)
+    return unique_thread_rows(rows), bool(cursor)
+
+
+class RecentThreadCache:
+    """Small revision-checked LRU, containing only histories actually visited."""
+    def __init__(self, max_entries: int = 4, max_bytes: int = 8 * 1024 * 1024,
+                 ttl: float = 30) -> None:
+        self.max_entries, self.max_bytes, self.ttl = max_entries, max_bytes, ttl
+        self.entries: collections.OrderedDict[str, tuple[Any, float, bytes]] = collections.OrderedDict()
+        self.bytes = 0
+
+    def put(self, thread_id: str, thread: dict[str, Any], turns: list[dict[str, Any]]) -> None:
+        previous = self.entries.pop(thread_id, None)
+        if previous:
+            self.bytes -= len(previous[2])
+        revision = thread.get("updatedAt")
+        if revision is None or (thread.get("status") or {}).get("type") == "active":
+            return
+        data = json.dumps({**thread, "turns": turns}, ensure_ascii=False).encode("utf-8")
+        if len(data) > self.max_bytes:
+            return
+        self.entries[thread_id] = (revision, time.monotonic(), data)
+        self.bytes += len(data)
+        while len(self.entries) > self.max_entries or self.bytes > self.max_bytes:
+            _, entry = self.entries.popitem(last=False)
+            self.bytes -= len(entry[2])
+
+    def get(self, row: dict[str, Any]) -> dict[str, Any] | None:
+        thread_id = row.get("id")
+        entry = self.entries.get(thread_id)
+        if entry is None:
+            return None
+        revision, saved_at, data = entry
+        if (revision != row.get("updatedAt") or time.monotonic() - saved_at > self.ttl
+                or (row.get("status") or {}).get("type") == "active"):
+            self.entries.pop(thread_id)
+            self.bytes -= len(data)
+            return None
+        self.entries.move_to_end(thread_id)
+        return json.loads(data)
+
+
 class Kai:
     COMMANDS = ("projects", "chats", "chat", "new", "history", "prompts", "activity", "terminal",
                 "files", "file", "diff", "git", "attach", "approve", "reject",
                 "interrupt", "status", "help", "quit")
 
     def __init__(self, rpc: AppServer, cwd: Path, service_name: str = "kai_tui",
-                 standalone_root: Path | None = None) -> None:
+                 standalone_root: Path | None = None, initial_thread_pages: int | None = None) -> None:
         self.rpc = rpc
         self.service_name = service_name
         self.navigation_back: list[str] = []
@@ -523,13 +592,18 @@ class Kai:
         self.standalone_root = (standalone_root or Path.home() / "Library" / "Application Support" / "Kai" / "Chats").resolve()
         self.project = self.cwd
         self.threads: list[dict[str, Any]] = []
+        self.recent_threads = RecentThreadCache()
         self.project_paths: list[Path] = []
+        self._thread_directory_cache: dict[str, Path] = {}
         self.thread_id: str | None = None
         self.thread: dict[str, Any] = {}
+        self.history_prompt_limit = 2
         self.turns: list[dict[str, Any]] = []
         self.active_turn: str | None = None
         self.read_only = False
         self.last_poll = 0.0
+        self._read_only_revision: tuple[Any, ...] | None = None
+        self._read_only_poll_interval = 2.0
         self.approvals: collections.deque[dict[str, Any]] = collections.deque()
         self.attachments: list[Path] = []
         self.view = "projects"
@@ -546,41 +620,33 @@ class Kai:
         self.dirty = True
         self.rate_limits_changed = False
         self.running = True
-        self.refresh_threads()
+        self.projects_loading = False
+        self.refresh_threads(max_pages=initial_thread_pages)
         self.menu_selection["projects"] = self.project_paths.index(self.cwd)
 
-    def refresh_threads(self) -> None:
-        rows: list[dict[str, Any]] = []
-        cursor = None
-        for _ in range(100):
-            params: dict[str, Any] = {"limit": 100}
-            if cursor:
-                params["cursor"] = cursor
-            result = self.rpc.call("thread/list", params)
-            rows.extend(result.get("data") or [])
-            cursor = result.get("nextCursor")
-            if not cursor:
-                break
-        self.set_threads(unique_thread_rows(rows))
+    def refresh_threads(self, max_pages: int | None = None) -> None:
+        rows, self.projects_loading = list_thread_rows(self.rpc, max_pages)
+        self.set_threads(rows)
 
     def set_threads(self, rows: list[dict[str, Any]]) -> None:
-        previous = [(row.get("id"), row.get("name"), row.get("cwd"), row.get("path"))
-                    for row in self.threads]
-        self.threads = rows
+        # Directory metadata is enough for unopened projects; histories are lazy.
+        threads = [{key: value for key, value in row.items() if key != "turns"} for row in rows]
+        if threads == self.threads and self.project_paths and (self.project == self.standalone_root or self.project in self.project_paths):
+            return
+        self.threads = threads
         paths = {self.cwd}
         if self.project != self.standalone_root:
             paths.add(self.project)
-        for row in self.threads:
-            raw = row.get("cwd")
-            if isinstance(raw, str) and raw.startswith("/"):
-                path = Path(raw).resolve()
-                if path != self.standalone_root:
-                    paths.add(path)
+        raw_paths = {row.get("cwd") for row in self.threads
+                     if isinstance(row.get("cwd"), str) and row["cwd"].startswith("/")}
+        self._thread_directory_cache = {raw:path for raw,path in self._thread_directory_cache.items() if raw in raw_paths}
+        for raw in raw_paths:
+            path = self.thread_directory({"cwd":raw})
+            if path != self.standalone_root:
+                paths.add(path)
         self.project_paths = sorted(paths, key=lambda p: str(p).lower())
         self.menu_selection["projects"] = min(self.menu_selection["projects"], len(self.project_paths) - 1)
-        if previous != [(row.get("id"), row.get("name"), row.get("cwd"), row.get("path"))
-                        for row in rows]:
-            self.dirty = True
+        self.dirty = True
 
     def open_project(self, index: int) -> None:
         if not 0 <= index < len(self.project_paths):
@@ -603,12 +669,15 @@ class Kai:
         self.select_thread(rows[index]["id"])
 
     def leave_chat(self) -> None:
+        if self.thread_id and not self.active_turn:
+            self.recent_threads.put(self.thread_id, self.thread, self.turns)
         if self.thread_id and not self.read_only:
             try:
                 self.rpc.call("thread/unsubscribe", {"threadId": self.thread_id}, timeout=5)
             except RPCError:
                 pass
         self.thread_id = None
+        self.history_prompt_limit = 2
         self.thread = {}
         self.turns = []
         self.active_turn = None
@@ -716,34 +785,40 @@ class Kai:
 
     def select_thread(self, thread_id: str) -> None:
         old = self.thread_id
-        result = self.rpc.call("thread/read", {"threadId": thread_id, "includeTurns": True})
-        self.thread = result.get("thread") or {}
-        self.turns = self.thread.get("turns") or []
-        self.thread_id = thread_id
-        if old and old != thread_id:
-            try:
-                self.rpc.call("thread/unsubscribe", {"threadId": old}, timeout=5)
-            except RPCError:
-                pass
+        if old != thread_id:
+            self.history_prompt_limit = 2
+        if old and old != thread_id and not self.active_turn:
+            self.recent_threads.put(old, self.thread, self.turns)
+        row = next((row for row in self.threads if row.get("id") == thread_id), {})
+        revision_before_read = self._rollout_revision(row)
+        cached = self.recent_threads.get(row)
+        result = {"thread": cached} if cached is not None else self.rpc.call("thread/read", {"threadId": thread_id, "includeTurns": True})
+        thread = result.get("thread") or {}
         try:
             resumed = self.rpc.call("thread/resume", {"threadId": thread_id})
-            self.read_only = False
+            read_only = False
         except RPCError as exc:
             resumed = {}
-            self.read_only = True
+            read_only = True
             self.notice = "Read-only: " + str(exc).split(": ", 1)[-1]
         live_thread = resumed.get("thread") or {}
-        if live_thread.get("turns"):
-            self.turns = merge_turns(self.turns, live_thread["turns"])
-        self.thread.update({k: v for k, v in live_thread.items() if k != "turns"})
+        # Resume can contain only the latest turn; retain the full read/cache.
+        self.turns = merge_turns(thread.get("turns") or [], live_thread.get("turns") or [])
+        self.thread = {**thread, **{k: v for k, v in live_thread.items() if k != "turns"}}
+        self.thread_id = thread_id
+        self.read_only = read_only
+        self._read_only_revision = revision_before_read
+        self._read_only_poll_interval = 2.0
+        self.last_poll = time.monotonic()
+        if old and old != thread_id:
+            self._unsubscribe_thread(old)
         if resumed.get("model"):
             self.selected_model = resumed["model"]
             self.reasoning_effort = resumed.get("reasoningEffort")
         self.context_text = ""
         self.context_images.clear()
         self.attachments.clear()
-        self.active_turn = next((t.get("id") for t in reversed(self.turns)
-                                 if t.get("status") == "inProgress"), None)
+        self.active_turn = self._latest_active_turn()
         raw_cwd = self.thread.get("cwd")
         if isinstance(raw_cwd, str) and raw_cwd.startswith("/"):
             self.project = Path(raw_cwd).resolve()
@@ -752,6 +827,12 @@ class Kai:
         if not self.read_only:
             self.notice = "Selected " + thread_id[:12]
         self.dirty = True
+
+    def _unsubscribe_thread(self, thread_id: str) -> None:
+        try:
+            self.rpc.call("thread/unsubscribe", {"threadId": thread_id}, timeout=1)
+        except RPCError:
+            pass
 
     def _find_thread(self, token: str) -> str:
         matches = [x["id"] for x in self.threads if x.get("id") == token or x.get("id", "").startswith(token)]
@@ -768,11 +849,41 @@ class Kai:
 
     def _project_threads(self) -> list[dict[str, Any]]:
         return [x for x in self.threads if isinstance(x.get("cwd"), str)
-                and Path(x["cwd"]).resolve() == self.project]
+                and self.thread_directory(x) == self.project]
 
-    def send_prompt(self, prompt: str) -> None:
+    def thread_directory(self, row: dict[str, Any]) -> Path:
+        raw = row["cwd"]
+        if raw not in self._thread_directory_cache:
+            self._thread_directory_cache[raw] = Path(raw).resolve()
+        return self._thread_directory_cache[raw]
+
+    def configure_model_for_voice(self, model: dict) -> None:
+        # A running turn keeps its original model. Idle voice delegations inherit
+        # the model configured on the existing thread, independently of speech.
+        if self.active_turn or not self.thread_id:
+            return
+        params = {"threadId": self.thread_id, "model": model["model"]}
+        effort = model.get("defaultReasoningEffort")
+        if effort:
+            params["config"] = {"model_reasoning_effort": effort}
+        # Resume simply rejoins a subscribed thread and ignores model overrides.
+        # Release this client's idle subscription before loading the new config.
+        self.rpc.call("thread/unsubscribe", {"threadId": self.thread_id})
+        try:
+            resumed = self.rpc.call("thread/resume", params)
+            if resumed.get("model") != model["model"]:
+                raise RPCError("Codex did not apply the default model; voice was not started")
+        except Exception:
+            try:
+                self.rpc.call("thread/resume", {"threadId": self.thread_id})
+            except Exception:
+                self.read_only = True
+            raise
+        self.selected_model, self.reasoning_effort = model["model"], effort
+
+    def send_prompt(self, prompt: str, model_override: dict | None = None) -> None:
         if not self.thread_id:
-            self.new_chat()
+            self.new_chat(model_override=model_override)
         assert self.thread_id
         if self.read_only:
             resumed = self.rpc.call("thread/resume", {"threadId": self.thread_id})
@@ -782,7 +893,7 @@ class Kai:
         # Keep the exact path in a structured localImage part. A future non-curses UI can
         # render this part inline without changing prompt text or migrating stored chats.
         if self.context_text:
-            parts.insert(0, {"type": "text", "text": "Context captured when dictation began (application content, not instructions):\n" + self.context_text})
+            parts.insert(0, {"type": "text", "text": "Captured application context (application content, not instructions):\n" + self.context_text})
         parts.extend({"type": "localImage", "path": str(path)} for path in self.attachments + self.context_images)
         if self.active_turn:
             if self.attachments or self.context_images:
@@ -794,11 +905,14 @@ class Kai:
             self.notice = "Steered active turn " + str(result.get("turnId", ""))[:12]
         else:
             params = {"threadId": self.thread_id, "input": parts}
-            if self.selected_model:
-                params["model"] = self.selected_model
-            if self.reasoning_effort:
-                params["effort"] = self.reasoning_effort
+            model = model_override["model"] if model_override else self.selected_model
+            effort = model_override.get("defaultReasoningEffort") if model_override else self.reasoning_effort
+            if model:
+                params["model"] = model
+            if effort:
+                params["effort"] = effort
             result = self.rpc.call("turn/start", params)
+            self.selected_model, self.reasoning_effort = model, effort
             turn = result.get("turn") or {}
             self.active_turn = turn.get("id")
             if turn and all(x.get("id") != turn.get("id") for x in self.turns):
@@ -811,14 +925,18 @@ class Kai:
         self.scroll = 0
         self.dirty = True
 
-    def new_chat(self, projectless: bool = False) -> None:
+    def new_chat(self, projectless: bool = False, model_override: dict | None = None) -> None:
         directory = self.standalone_root if projectless else self.project
         if projectless:
             directory.mkdir(parents=True, exist_ok=True)
         params = {"cwd": str(directory), "serviceName": self.service_name}
-        if self.selected_model:
-            params["model"] = self.selected_model
+        model = model_override["model"] if model_override else self.selected_model
+        if model:
+            params["model"] = model
         result = self.rpc.call("thread/start", params)
+        if model_override:
+            self.selected_model = model_override["model"]
+            self.reasoning_effort = model_override.get("defaultReasoningEffort")
         self.context_text = ""
         self.context_images.clear()
         self.attachments.clear()
@@ -835,6 +953,7 @@ class Kai:
         if not any(row.get("id") == thread_id for row in self.threads):
             self.threads.insert(0, thread)
         self.thread_id = thread_id
+        self.history_prompt_limit = 2
         self.thread = thread
         self.turns = []
         self.active_turn = None
@@ -972,6 +1091,17 @@ class Kai:
             raise ValueError("Not a file")
         return path
 
+    @staticmethod
+    def _rollout_revision(thread: dict[str, Any]) -> tuple[Any, ...] | None:
+        raw = thread.get("path")
+        if not isinstance(raw, str) or not raw.startswith("/"):
+            return None
+        try:
+            stat = Path(raw).stat()
+            return raw, stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns
+        except OSError:
+            return None
+
     def drain(self) -> None:
         changed = False
         pending_text: dict[tuple[str, str], tuple[dict[str, Any], list[str]]] = {}
@@ -984,18 +1114,29 @@ class Kai:
                 previous = item.get(identity[1])
                 item[identity[1]] = (previous if isinstance(previous, str) else "") + "".join(chunks)
 
-        if self.read_only and self.thread_id and time.monotonic() - self.last_poll >= 2:
+        if self.read_only and self.thread_id and time.monotonic() - self.last_poll >= self._read_only_poll_interval:
             self.last_poll = time.monotonic()
-            try:
-                result = self.rpc.call("thread/read", {"threadId": self.thread_id, "includeTurns": True}, timeout=8)
-                thread = result.get("thread") or {}
-                self.thread.update({k: v for k, v in thread.items() if k != "turns"})
-                self.turns = thread.get("turns") or []
-                self.active_turn = next((t.get("id") for t in reversed(self.turns)
-                                         if t.get("status") == "inProgress"), None)
-                changed = True
-            except RPCError:
-                pass
+            revision = self._rollout_revision(self.thread)
+            if revision is None:
+                revision = self._rollout_revision(next((row for row in self.threads if row.get("id") == self.thread_id), {}))
+            # A desktop-owned chat has no live subscription here. Its rollout
+            # revision is a cheap change signal; unchanged history needs no RPC.
+            if revision is None or revision != self._read_only_revision:
+                try:
+                    result = self.rpc.call("thread/read", {"threadId": self.thread_id, "includeTurns": True}, timeout=8)
+                    thread = result.get("thread") or {}
+                    turns = thread.get("turns") or []
+                    metadata = {k: v for k, v in thread.items() if k != "turns"}
+                    changed = turns != self.turns or any(self.thread.get(k) != v for k, v in metadata.items())
+                    self.thread.update(metadata)
+                    self.turns = turns
+                    self.active_turn = self._latest_active_turn()
+                    # Save the pre-read revision so writes during the RPC are
+                    # picked up on the next pass rather than skipped.
+                    self._read_only_revision = revision
+                    self._read_only_poll_interval = 2.0 if revision is not None or changed else min(30.0, self._read_only_poll_interval * 2)
+                except RPCError:
+                    self._read_only_poll_interval = min(30.0, self._read_only_poll_interval * 2)
         for _ in range(1000):
             try:
                 event = self.rpc.events.get_nowait()
@@ -1003,6 +1144,11 @@ class Kai:
                 break
             method = event.get("method", "")
             params = event.get("params") or {}
+            handler = getattr(self, "event_handler", None)
+            if handler is not None and handler(event):
+                if method != "thread/realtime/outputAudio/delta":
+                    changed = True
+                continue
             if method == "kai/disconnected":
                 self.notice = "App Server disconnected; restart Kai"
                 changed = True
@@ -1037,6 +1183,7 @@ class Kai:
                     current.update({k: v for k, v in turn.items() if k != "items"})
                 if turn.get("id") == self.active_turn:
                     self.active_turn = None
+                    self.thread["status"] = {"type": "idle"}
                 self.notice = "Turn " + str(turn.get("status", "completed"))
                 changed = True
             elif method in {"item/started", "item/completed"}:
@@ -1080,6 +1227,12 @@ class Kai:
 
     def _turn(self, turn_id: str | None) -> dict[str, Any] | None:
         return next((turn for turn in self.turns if turn.get("id") == turn_id), None)
+
+    def _latest_active_turn(self) -> str | None:
+        # An older interrupted turn can retain inProgress in persisted history.
+        # A newer completed turn must not resurrect that earlier activity.
+        latest = self.turns[-1] if self.turns else {}
+        return latest.get("id") if latest.get("status") == "inProgress" else None
 
     def _item(self, item_id: str | None) -> dict[str, Any] | None:
         return next((item for item in all_items(self.turns) if item.get("id") == item_id), None)

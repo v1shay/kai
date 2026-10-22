@@ -4,6 +4,39 @@ import AppKit
 
 final class NotchSizingTests: XCTestCase {
     let baseline=CGSize(width:370,height:320)
+    func testOverlayFrameRemainsAtScreenTopWhenHeightChanges() async {
+        await MainActor.run {
+            let panel=NotchPanel(contentRect:.zero,styleMask:[.borderless,.nonactivatingPanel],backing:.buffered,defer:false)
+            let screen=NSScreen.main
+            let top=screen?.frame.maxY ?? 900
+            for height:CGFloat in [320,600,420] {
+                let frame=CGRect(x:300,y:top-height,width:470,height:height)
+                XCTAssertEqual(panel.constrainFrameRect(frame,to:screen),frame)
+            }
+        }
+    }
+    func testMaskFullyCoversTopPixelAfterHeightResizes() async {
+        await MainActor.run {
+            for scale:CGFloat in [1,2] {
+                for height:CGFloat in [320,320.1,320.5,599.3,700] {
+                    let size=NotchSizing.constrained(CGSize(width:470,height:height),baseline:CGSize(width:470,height:320),screen:CGSize(width:1440,height:1000))
+                    let panel=NotchPanel(contentRect:CGRect(x:300,y:1000-size.height,width:size.width,height:size.height),styleMask:[.borderless,.nonactivatingPanel],backing:.buffered,defer:false)
+                    let host=NSView(frame:CGRect(origin:.zero,size:size));panel.contentView=host;host.wantsLayer=true
+                    panel.setFrame(CGRect(x:300,y:1000-size.height,width:size.width,height:size.height),display:true)
+                    let root=host.layer!;root.backgroundColor=NSColor.black.cgColor
+                    let mask=CAShapeLayer();mask.frame=CGRect(origin:.zero,size:size)
+                    mask.contentsScale=scale
+                    mask.path=NotchSizing.path(canvas:size,width:370,height:size.height)
+                    root.mask=mask
+                    let pixelsHigh=Int(host.bounds.height*scale)
+                    let context=CGContext(data:nil,width:Int(size.width*scale),height:pixelsHigh,bitsPerComponent:8,bytesPerRow:0,space:CGColorSpaceCreateDeviceRGB(),bitmapInfo:CGImageAlphaInfo.premultipliedLast.rawValue)!
+                    context.scaleBy(x:scale,y:scale);root.render(in:context)
+                    let bitmap=NSBitmapImageRep(cgImage:context.makeImage()!)
+                    XCTAssertEqual(bitmap.colorAt(x:Int(size.width*scale/2),y:0)!.alphaComponent,1,accuracy:0.001,"height \(height), scale \(scale)")
+                }
+            }
+        }
+    }
     func testDefaultAndScreenLimits() {
         let screen=CGSize(width:1440,height:900)
         XCTAssertEqual(NotchSizing.constrained(baseline,baseline:baseline,screen:screen),baseline)

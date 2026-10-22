@@ -54,6 +54,12 @@ look for the 海 icon in the menu bar
 
 kai uses your existing local Codex login and requires no separate account or API key; the optional local speech feature needs Piper
 
+`build-app.sh` packages an optimized release executable at the existing
+`.build/debug/Kai.app` location. For an unoptimized debugger build, use
+`KAI_BUILD_CONFIGURATION=debug ./scripts/build-app.sh`.
+
+[Performance changes and verification](docs/performance-audit.txt)
+
 ### permissions
 
 for dictation, allow **Microphone** and **Speech Recognition**
@@ -81,6 +87,67 @@ python3 -m unittest -v test_kai.py
 
 
 [Detailed onboarding, updates, and troubleshooting](docs/ONBOARDING.md)
+
+## Voice conversations
+
+Click **◉** beside Send in the notch, or use **海 → start voice in selected chat**.
+Kai connects to native Codex voice over WebRTC using your existing ChatGPT login.
+It stays with the selected Codex chat, agents, tools, and approvals. Click **■**
+to end voice. Voice starts in the compact notch with the pet and listening,
+thinking, or speaking indicator. Click the compact band, choose **海 → expand notch**,
+or hold **Control–Option** to open the transcript and approval controls during the
+call. **Escape** or **Close** returns to compact view without ending voice.
+There is no Apple speech fallback. Native voice requires a Codex
+chat; Code chats retain their separate dictation integration.
+
+Choose **海 → Voice & Audio → Realtime voice** to select the native voice for your next conversation.
+Your choice persists across launches. **Codex default** uses Codex's configured
+voice. Changing the selection leaves the current call running with its original voice.
+
+Choose **海 → Shortcuts & Input → Shortcut actions → Hold Command / Fn / Option** to assign any of:
+
+- Send in new chat
+- Send in active / last opened chat
+- Send in new chat with appshot context
+- Realtime voice in selected chat
+- Realtime voice in selected chat with appshot context
+- Realtime voice in new chat
+- Realtime voice in new chat with appshot context
+
+Assignments persist. Defaults remain Command → active/last chat, Fn → new chat,
+and Option → new chat with appshot. For voice, **hold the chosen key and speak
+your first prompt**, then **release to connect and send that recorded audio**.
+The call continues hands-free; press the shortcut again or choose **end voice
+conversation** to end it. Short taps and keyboard chords cancel recording.
+The voice button also accepts a typed draft as the first prompt. Dictation's release-to-send
+behavior remains in **Dictation auto-send**. Voice with appshot attaches the
+captured image to the same Codex chat and brings its description into the call.
+
+[Shortcut behavior and defaults](docs/SHORTCUTS.md)
+
+[Authentication, transcript compatibility, and verification](docs/VOICE.md)
+
+## Defaults and menu organization
+
+**海 → Chats & Models → Default model** saves a model from Codex's available
+catalogue when creating a new chat, including chats created by voice or appshot
+shortcuts. Existing chats keep their chosen model for manual sends, automatic
+dictation sends, and voice. **Follow chat model (default)** restores the previous
+new-chat behavior. An unavailable saved model stops new-chat creation with a
+clear message instead of silently using another model.
+
+**海 → Shortcuts & Input → Hotkey hold timing** has separate sliders for
+Command, Fn, and Option, from 0.10 to 5 seconds. Original timings remain the
+defaults: 1 second for Command/Fn dictation, 0.2 seconds for Option dictation,
+and 0.25 seconds for voice. Voice starts recording and shows its listening
+indicator only after the configured hold time. Speak after that indicator appears;
+release to connect the call. Quick taps never start recording or animate the notch. Timings
+persist across launches and can be restored with **Restore original hold timings**.
+
+All existing controls remain under **Chats & Models**, **Shortcuts & Input**,
+**Voice & Audio**, **Appearance**, **Media**, and **Advanced & Connections**.
+Opening the notch, starting/ending voice, and reviewing voice approvals remain
+at the top of the menu.
 
 ## Optional speech, automatic compaction, and media
 
@@ -181,3 +248,14 @@ behavior without reading the conversation.
 Run the local checks with `python3 -m unittest -v test_kai.py`.
 
 Local builds use the existing “system local code signing” certificate when available. You can select a certificate with `KAI_SIGNING_IDENTITY`. Without a certificate, builds use ad-hoc signing; rebuilding may require granting Screen Recording again. After changing signing identity, remove the old Kai entry in System Settings → Privacy & Security → Screen Recording, add the rebuilt Kai app, enable it, and restart Kai.
+
+
+Kai's file viewer scrolls text previews and supports selecting/copying their text.
+Double-click a file in the file list, the preview header, or the preview contents
+to choose **Copy file** or **Show in Finder**. Copy file places a file reference
+on the clipboard for pasting into Finder or other applications. Text previews
+show up to 2 MB, with an explicit notice for larger files.
+
+Local file citation cards, file-list rows, and preview headers also show Finder
+and clipboard buttons. Click Finder to reveal the file or clipboard to copy the
+file reference; click the filename to open its Kai preview.

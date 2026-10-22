@@ -1,14 +1,25 @@
 import AppKit
 
 struct NotchSizing {
+    static func path(canvas:CGSize,width:CGFloat,height:CGFloat,radius:CGFloat=14)->CGPath {
+        let x = (canvas.width-width)/2, r: CGFloat = min(max(0,radius),min(width/2,height/2)), sx: CGFloat = 7, sy: CGFloat = 9, top = canvas.height, bottom = top-height, right = x+width, k = 1-0.5523
+        let p = CGMutablePath(); p.move(to: CGPoint(x:x-sx,y:top)); p.addLine(to:CGPoint(x:right+sx,y:top))
+        p.addCurve(to:CGPoint(x:right,y:top-sy),control1:CGPoint(x:right+sx*k,y:top),control2:CGPoint(x:right,y:top-sy*k))
+        p.addLine(to:CGPoint(x:right,y:bottom+r)); p.addCurve(to:CGPoint(x:right-r,y:bottom),control1:CGPoint(x:right,y:bottom+r*k),control2:CGPoint(x:right-r*k,y:bottom))
+        p.addLine(to:CGPoint(x:x+r,y:bottom)); p.addCurve(to:CGPoint(x:x,y:bottom+r),control1:CGPoint(x:x+r*k,y:bottom),control2:CGPoint(x:x,y:bottom+r*k))
+        p.addLine(to:CGPoint(x:x,y:top-sy)); p.addCurve(to:CGPoint(x:x-sx,y:top),control1:CGPoint(x:x,y:top-sy*k),control2:CGPoint(x:x-sx*k,y:top)); p.closeSubpath(); return p
+    }
+
     static func updateTextResolution(_ layer:CALayer, scale:CGFloat) {
-        if layer is CATextLayer {layer.contentsScale=scale;layer.setNeedsDisplay()}
+        if layer is CATextLayer,layer.contentsScale != scale {layer.contentsScale=scale;layer.setNeedsDisplay()}
         if let mask=layer.mask {updateTextResolution(mask,scale:scale)}
         for child in layer.sublayers ?? [] {updateTextResolution(child,scale:scale)}
     }
     static func constrained(_ size: CGSize, baseline: CGSize, screen: CGSize) -> CGSize {
         func clamp(_ value: CGFloat, fallback: CGFloat, maximum: CGFloat) -> CGFloat {
-            min(maximum, max(fallback, value.isFinite ? value : fallback))
+            // NSWindow rounds its frame outward to whole points. Use the same
+            // size for the mask and content so their top edge cannot fall short.
+            min(floor(maximum), ceil(max(fallback, value.isFinite ? value : fallback)))
         }
         return CGSize(width: clamp(size.width, fallback: baseline.width, maximum: max(baseline.width, screen.width-80)),
                       height: clamp(size.height, fallback: baseline.height, maximum: max(baseline.height, screen.height-80)))

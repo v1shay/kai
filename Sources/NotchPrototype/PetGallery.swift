@@ -12,18 +12,22 @@ struct PetGallerySpec {
 @MainActor final class PetGallery:NSObject {
     private final class Entry {
         let spec:PetGallerySpec, glow=CAGradientLayer(), sprite=CALayer(), ring=CAShapeLayer()
-        var cell=CGRect.zero, frame=0, nextFrame=0.0, active=false
+        var cell=CGRect.zero
         init(_ spec:PetGallerySpec){self.spec=spec}
     }
 
     let layer=CALayer()
-    private var entries=[Entry](), motionID="idle", timer:Timer?, hovered:String?
+    private var root:URL?
+    private let thumbnails=SpriteAssetCache(maxPixelSize:960)
+    private var loadGeneration=UUID()
+    private var entries=[Entry](), motionID="idle", hovered:String?
     private let curve=CAMediaTimingFunction(controlPoints:0.16,0.72,0.24,1)
     private(set) var visible=false
 
     override init(){super.init();layer.opacity=0;layer.isHidden=true}
 
     func configure(_ specs:[PetGallerySpec],at root:URL) {
+        self.root=root;loadGeneration=UUID()
         entries.forEach{$0.glow.removeFromSuperlayer();$0.sprite.removeFromSuperlayer();$0.ring.removeFromSuperlayer()}
         entries=specs.map{spec in
             let entry=Entry(spec)
@@ -32,10 +36,6 @@ struct PetGallerySpec {
             entry.glow.colors=[colors.first!,colors[colors.count/2],colors.last!,NSColor.clear.cgColor]
             entry.glow.locations=[0,0.3,0.62,1];entry.glow.opacity=0.2
             entry.sprite.contentsGravity = .resizeAspect;entry.sprite.magnificationFilter = .nearest;entry.sprite.contentsScale=NSScreen.main?.backingScaleFactor ?? 2
-            if let source=CGImageSourceCreateWithURL(root.appendingPathComponent(spec.spritesheet) as CFURL,nil) {
-                let options=[kCGImageSourceCreateThumbnailFromImageAlways:true,kCGImageSourceCreateThumbnailWithTransform:true,kCGImageSourceThumbnailMaxPixelSize:960] as CFDictionary
-                entry.sprite.contents=CGImageSourceCreateThumbnailAtIndex(source,0,options)
-            }
             entry.ring.fillColor=nil;entry.ring.strokeColor=colors.last;entry.ring.lineWidth=1;entry.ring.opacity=0
             layer.addSublayer(entry.glow);layer.addSublayer(entry.ring);layer.addSublayer(entry.sprite)
             return entry
@@ -59,6 +59,17 @@ struct PetGallerySpec {
     }
 
     func show(selected:String,motion:String) {
+        visible=true
+        let generation=UUID();loadGeneration=generation
+        if let root {
+            for entry in entries where entry.sprite.contents == nil {
+                thumbnails.load(root.appendingPathComponent(entry.spec.spritesheet)) { [weak self,weak entry] image in
+                    guard let self,let entry,self.visible,self.loadGeneration == generation,let image else{return}
+                    CATransaction.begin();CATransaction.setDisableActions(true);entry.sprite.contents=image;CATransaction.commit()
+                    let fade=CABasicAnimation(keyPath:"opacity");fade.fromValue=0;fade.toValue=1;fade.duration=0.18;entry.sprite.add(fade,forKey:"loaded")
+                }
+            }
+        }
         visible=true;layer.isHidden=false;play(motion)
         let fade=CABasicAnimation(keyPath:"opacity");fade.fromValue=layer.presentation()?.opacity ?? 0;fade.toValue=1;fade.duration=0.32;fade.timingFunction=curve
         CATransaction.begin();CATransaction.setDisableActions(true);layer.opacity=1;CATransaction.commit();layer.add(fade,forKey:"galleryReveal")
@@ -70,23 +81,29 @@ struct PetGallerySpec {
             appear.animations=[opacity,scale,rise];appear.duration=0.36;appear.beginTime=now+Double(index%6)*0.025+Double(index/6)*0.035;appear.fillMode = .backwards;appear.timingFunction=curve
             entry.sprite.add(appear,forKey:"galleryPetReveal");entry.glow.add(appear,forKey:"galleryGlowReveal")
         }
-        timer?.invalidate();timer=Timer.scheduledTimer(timeInterval:1/30,target:self,selector:#selector(timerFired),userInfo:nil,repeats:true)
     }
 
     func hide() {
-        guard visible else{return};visible=false;timer?.invalidate();timer=nil;hovered=nil
+        guard visible else{return};visible=false;hovered=nil;entries.forEach{$0.sprite.removeAnimation(forKey:"spriteFrames")}
         let fade=CABasicAnimation(keyPath:"opacity");fade.fromValue=layer.presentation()?.opacity ?? 1;fade.toValue=0;fade.duration=0.24;fade.timingFunction=curve
         CATransaction.begin();CATransaction.setDisableActions(true);layer.opacity=0;CATransaction.commit();layer.add(fade,forKey:"galleryHide")
-        DispatchQueue.main.asyncAfter(deadline:.now()+0.24){[weak self] in guard let self,!self.visible else{return};self.layer.isHidden=true}
+        DispatchQueue.main.asyncAfter(deadline:.now()+0.24){[weak self] in guard let self,!self.visible else{return};self.layer.isHidden=true;CATransaction.begin();CATransaction.setDisableActions(true);self.entries.forEach{$0.sprite.contents=nil};CATransaction.commit()}
     }
 
     func play(_ id:String) {
-        motionID=id;let now=CACurrentMediaTime()
-        for entry in entries {entry.frame=0;entry.nextFrame=now;entry.active=entry.spec.motions[id] != nil}
-        tick()
+        motionID=id
+        guard visible else{return}
+        CATransaction.begin();CATransaction.setDisableActions(true);defer{CATransaction.commit()}
+        for entry in entries {
+            entry.sprite.removeAnimation(forKey:"spriteFrames")
+            guard let motion=entry.spec.motions[id],let timeline=SpriteTimeline(row:motion.row,rows:entry.spec.rows,columns:motion.columns,durationsMs:motion.durationsMs,loops:motion.loop) else{continue}
+            let reduceMotion=NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            entry.sprite.contentsRect=motion.loop || reduceMotion ? timeline.frames[0]:timeline.frames[timeline.frames.count-1]
+            if !reduceMotion,timeline.frames.count>1 {entry.sprite.add(timeline.animation(),forKey:"spriteFrames")}
+        }
     }
 
-    func pet(at point:CGPoint)->String?{entries.first(where:{$0.cell.contains(point)})?.spec.id}
+    func pet(at point:CGPoint)->String?{NotchInputRegion.nearestTarget(at:point,frames:entries.map(\.cell),padding:4).map{entries[$0].spec.id}}
 
     func hover(at point:CGPoint?) {
         let id=point.flatMap{pet(at:$0)};guard id != hovered else{return};hovered=id
@@ -98,16 +115,4 @@ struct PetGallerySpec {
         }
     }
 
-    private func tick() {
-        guard visible else{return};let now=CACurrentMediaTime()
-        for entry in entries where entry.active {
-            guard let motion=entry.spec.motions[motionID],!motion.columns.isEmpty,now >= entry.nextFrame else{continue}
-            let index=min(entry.frame,motion.columns.count-1),column=motion.columns[index]
-            CATransaction.begin();CATransaction.setDisableActions(true);entry.sprite.contentsRect=CGRect(x:CGFloat(column)/8,y:1-CGFloat(motion.row+1)/CGFloat(entry.spec.rows),width:1/8,height:1/CGFloat(entry.spec.rows));CATransaction.commit()
-            let duration=motion.durationsMs.indices.contains(index) ? motion.durationsMs[index]:120
-            entry.nextFrame=now+Double(duration)/1000
-            if index+1<motion.columns.count {entry.frame=index+1}else if motion.loop{entry.frame=0}else{entry.active=false}
-        }
-    }
-    @objc private func timerFired(){tick()}
 }

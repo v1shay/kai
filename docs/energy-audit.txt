@@ -1,0 +1,103 @@
+Kai energy investigation — October 18, 2026
+
+The earlier rendering benchmark did not establish low whole-app energy use.
+The macOS “Using Significant Energy” report was valid evidence of an unresolved
+problem. This pass inspected the running process tree and collected native
+stack samples and live CPU/power-score readings.
+
+Observed before the changes
+
+Kai PID 61899 owned Python bridge PID 61901, npm wrapper PID 61904 and native
+Codex helper PID 61905. A process snapshot showed about 4.9% CPU in Kai, 11.9%
+in Python and 101.8% in its Codex helper. Short top samples captured lower and
+higher points in this periodic workload; these are samples, not sustained
+averages or hardware watt measurements. Physical footprint from sample was
+139 MB for Kai, 488 MB for Python and 158 MB for the Codex helper.
+
+The helper's stack samples included rollout JSON decoding, filesystem reads
+and metadata reconstruction. The installed server's generated protocol schema
+documents useStateDbOnly on thread/list: the default scan-and-repair path reads
+rollouts, while the indexed path avoids that repair scan.
+
+Read-only RPC benchmark on this Mac, 3 interleaved pairs, 100 entries per call:
+
+  Default catalog scan:
+    elapsed: 1008.49, 1005.81, 1159.33 ms
+    server CPU: 1210, 1120, 1240 ms
+  Indexed catalog:
+    elapsed: 13.59, 15.35, 11.85 ms
+    server CPU: 20, 20, 10 ms
+
+These compare a specific backend operation, not total energy or battery life.
+scripts/profile-history.py --catalog reproduces the comparison without logging
+conversation text or thread IDs. Its CPU counter includes CLI child processes.
+The installed native executable was passed explicitly for this measurement.
+
+Fixes
+
+* Routine thread/list requests use useStateDbOnly=true and updated_at ordering.
+  Full indexed discovery remains paginated; no background repair scans run on
+  every refresh. Active catalogs refresh every 5 seconds, idle catalogs every
+  30 seconds, and complete indexed sweeps every 5 minutes.
+* Desktop-owned read-only chats stat their rollout revision before asking for
+  full history. An unchanged file causes no history RPC. Device/inode, size and
+  nanosecond mtime detect append, rewrite and replacement. The pre-read revision
+  ensures concurrent writes are picked up on the following pass.
+* Missing-file and failed-history polling backs off to at most one attempt per
+  30 seconds. Normal external status events are still consumed immediately.
+* Unchanged catalog rows do not rebuild project metadata. Resolved project
+  directories are cached instead of issuing realpath/lstat calls per chat on
+  every streaming snapshot.
+* Optional media discovery and capture suspend while chat, voice, dictation or
+  task activity takes priority, then resume when media can be shown again.
+* Decorative indicator shine is finite and is removed when the indicator hides.
+  Repeating file-loading animation is reserved for an actual pending request.
+
+Validation
+
+139 Swift tests: zero failures, one optional live Piper playback test skipped.
+120 Python tests: zero failures, including ten new polling/index/cache checks.
+10 voice-media tests: zero failures.
+Optimized app rebuilt, signed and verified by scripts/build-app.sh.
+
+Post-restart investigation
+
+The user restarted the app and the battery menu still listed Kai. The restarted
+process tree was native PID 65350, Python PID 65352, wrapper PID 65355 and helper
+PID 65356. Two 30-second windows (15 interval samples each, initial top sample
+excluded) showed:
+
+                         Mean CPU %       Highest sample %
+  Earlier window:
+    Native interface          4.97              20.2
+    Python bridge             1.67               5.4
+    Codex helper             10.55              51.0
+  Later settled window:
+    Native interface          0.53               1.4
+    Python bridge             0.89               1.3
+    Codex helper              1.90               4.2
+
+The later footprint in top was about 77 MB native, 92 MB Python and 111 MB
+helper. These are short observed windows with uncontrolled user activity;
+they establish neither battery consumption nor a clean battery-menu result.
+The later window was measured BEFORE the sound change below.
+
+A separate initialized helper consumed 160 ms CPU in each of two ten-second
+idle windows without any chat/history polling. All 137 indexed catalog entries
+loaded in 23.69 ms elapsed / 30 ms helper CPU. Selected full history loaded in
+175.38 ms / 120 ms helper CPU (4 turns, 366 items). This supports the catalog
+improvement, but shows the helper has its own idle overhead as well.
+
+The native sample caught repeated AVAudioPlayer initialization/start from
+showActivity. Its visual scene key includes the changing integration/tool icon,
+so semantic work activity can replay the same sound repeatedly. Sound cues now
+deduplicate by semantic phase, with one work phase across thinking, waiting and
+tool updates, and a three-second cooldown across rapid off/work flicker.
+Completion, permission, warning and failure transitions remain immediate.
+Two new regression tests cover 1,000 tool/status changes, status flicker and
+important cues. All 11 targeted performance tests passed.
+
+The sound fix requires a new app launch. It has not been measured in the user's
+running interface. The battery-menu warning has NOT been verified cleared.
+Never infer that the warning is gone merely because a build or regression suite
+passed. Further idle overhead remains in the Codex helper and bridge.
