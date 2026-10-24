@@ -26,6 +26,20 @@ class FixtureConnection(CodeConnection):
         return {'accepted':True,'started':method=='send'}
 
 class CodeConnectionTests(unittest.TestCase):
+    def test_only_confirmed_idle_sessions_emit_completion_for_their_run(self):
+        code=FixtureConnection();previous=code.tasks()
+        self.assertEqual(previous[0]['runId'],'run1')
+        self.assertEqual(code.finished_tasks(previous),[])
+        code.connected=False
+        self.assertEqual(code.tasks(),[])
+        self.assertEqual(code.tasks(include_disconnected=True),previous)
+        code.state['sessions'][0]['running']=False
+        self.assertEqual(code.finished_tasks(previous),[])
+        code.connected=True
+        self.assertEqual(code.finished_tasks(previous),[{'id':'code:s1','runId':'run1'}])
+        code.state['sessions']=[]
+        self.assertEqual(code.finished_tasks(previous),[])
+
     def test_code_private_status_envelopes_are_not_displayed_or_read(self):
         marker='<orbit_interaction version="1">'+json.dumps({'orbit_interaction':1,'card':{'kind':'status','title':'Running command','details':'Internal metadata','status':'working'}})+'</orbit_interaction>'
         lines,speech=normalize_live_output('Actual response.\n\n'+marker+'\n\nMore useful prose.')

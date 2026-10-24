@@ -94,6 +94,15 @@ struct GradientStop: Decodable { let location: Double, color: String }
         }
     }
 
+    func moveAccents(toBottom bottom:CGFloat,expanded:Bool,duration:Double){
+        for accent in [leftAccentLayer,accentLayer]{
+            let target=bottom+accent.bounds.height/2
+            let move=CABasicAnimation(keyPath:"position.y");move.fromValue=accent.presentation()?.position.y ?? accent.position.y;move.toValue=target;move.duration=duration;move.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.65,0.25,1)
+            CATransaction.begin();CATransaction.setDisableActions(true);accent.position.y=target;CATransaction.commit();accent.add(move,forKey:"cornerTravel")
+        }
+        setAccentExpanded(expanded,duration:duration)
+    }
+
     private func updateAccentOpacity() {
         // The corner gradients remain visible while the status icon is idle.
         leftAccentLayer.opacity = showLeftAccent ? 1:0; accentLayer.opacity = showRightAccent ? 1:0
@@ -134,13 +143,13 @@ struct GradientStop: Decodable { let location: Double, color: String }
 
     func showThinking() { transitionToThinking() }
 
-    func showScene(_ id: String) {
+    func showScene(_ id: String,looping:Bool=true) {
         cancelCycle()
         if let image=IntegrationIcons.image(id) {
-            displayScene("tool");primitives.forEach{$0.isHidden=true}
+            displayScene("tool",looping:looping);primitives.forEach{$0.isHidden=true}
             integrationMask.frame=CGRect(x:5,y:0,width:18,height:18)
             integrationMask.contents=image.cgImage(forProposedRect:nil,context:nil,hints:nil);integrationMask.isHidden=false
-        }else{displayScene(id)}
+        }else{displayScene(id,looping:looping)}
     }
 
     func startRandomCycle() {
@@ -159,13 +168,13 @@ struct GradientStop: Decodable { let location: Double, color: String }
 
     private func cancelCycle() { cycleToken += 1;integrationMask.isHidden=true;primitives.forEach{$0.isHidden=false} }
 
-    private func displayScene(_ id: String) {
+    private func displayScene(_ id: String,looping:Bool=true) {
         guard let scene = IndicatorScenes.all[id] else { return }
         demoWork?.cancel(); currentSceneID = id
         themeKind = id == "thinking" || id == "waiting" ? .thinking : (id == "success" ? .success : (id == "warning" || id == "permission" || id == "question" ? .warning : (id == "failure" || id == "declined" ? .error : .working)))
         meter.stop(); layer.opacity = 1; updateAccentOpacity()
         if let profile { waveTo(recipe(for:profile, kind:themeKind), highlight:profile.palette.highlight, duration:scene.transition) }
-        transition(to: scene, finalMode: .scene)
+        transition(to: scene, finalMode: .scene,looping:looping)
     }
 
     func hide() {
@@ -286,7 +295,7 @@ struct GradientStop: Decodable { let location: Double, color: String }
         setPoses(poses)
     }
 
-    private func transition(to scene: IndicatorScene, finalMode: Mode, completion: (() -> Void)? = nil) {
+    private func transition(to scene: IndicatorScene, finalMode: Mode,looping:Bool=true, completion: (() -> Void)? = nil) {
         let duration=NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0.1:min(0.24,scene.transition)
         sceneToken += 1; let token = sceneToken; stopTimer(); capturePresentation(); let from = poses, target = scene.firstPoses
         mode = .transitioning; setPoses(target)
@@ -302,12 +311,12 @@ struct GradientStop: Decodable { let location: Double, color: String }
             primitives[i].add(group, forKey: "sceneTransition")
         }
         DispatchQueue.main.asyncAfter(deadline: .now()+duration) { [weak self] in
-            guard let self, self.sceneToken == token else { return }; self.mode = finalMode; self.installLoop(scene); completion?()
+            guard let self, self.sceneToken == token else { return }; self.mode = finalMode; self.installLoop(scene,looping:looping); completion?()
         }
     }
 
-    private func installLoop(_ scene: IndicatorScene) {
-        guard scene.duration > 0 else { return }; let now = CACurrentMediaTime()
+    private func installLoop(_ scene: IndicatorScene,looping:Bool) {
+        guard scene.duration > 0,!NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }; let now = CACurrentMediaTime()
         for (i,track) in scene.tracks.prefix(8).enumerated() {
             let group = CAAnimationGroup()
             func keyframes(_ path: String,_ values: [Any]) -> CAKeyframeAnimation { let x=CAKeyframeAnimation(keyPath:path);x.values=values;x.keyTimes=track.keyTimes;return x }
@@ -317,7 +326,7 @@ struct GradientStop: Decodable { let location: Double, color: String }
                 keyframes("cornerRadius",track.poses.map(\.radius)), keyframes("transform.rotation.z",track.poses.map(\.rotation)), keyframes("opacity",track.poses.map(\.opacity))
             ]
             if track.poses.allSatisfy({ $0.shape != .capsule }) { group.animations?.append(keyframes("path",track.poses.map { shapePath($0) })) }
-            group.duration = scene.duration; group.beginTime = now+track.phase; group.repeatCount = .infinity
+            group.duration = scene.duration; group.beginTime = now+track.phase; group.repeatCount = looping ? .infinity:0
             group.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut); primitives[i].add(group, forKey: "sceneLoop")
         }
     }

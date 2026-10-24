@@ -47,6 +47,13 @@ codex app-server --help
 open .build/debug/Kai.app
 ```
 
+Kai’s Dock icon is the current pet on a transparent background, following its
+idle and task animations. It restores the last displayed pet on launch and keeps
+a still pet icon in Finder and the Dock after quitting. Animation uses cached
+128 px frames, updates at most 10 times per second, pauses while the display or
+session is asleep, and respects macOS Reduce Motion. Icon persistence uses macOS
+custom-icon metadata and requires a writable app location.
+
 look for the 海 icon in the menu bar
 - ```Command``` to dictate into your last chat
 - ```Fn``` to dictate into a new chat
@@ -59,6 +66,35 @@ kai uses your existing local Codex login and requires no separate account or API
 `KAI_BUILD_CONFIGURATION=debug ./scripts/build-app.sh`.
 
 [Performance changes and verification](docs/performance-audit.txt)
+
+**海 → Appearance → Floating task pets** optionally shows concurrent chats as a
+vertical stack of pets with small native glass status pills. Choose any screen
+corner, change pet size, or hide the pills for pets only. Single-click a pet to
+cycle its task's avatar (shared with the notch); double-click to open that chat.
+Active tasks use distinct pets when enough are available; cycling prefers an
+unused pet. Opening a chat keeps its floating pet in place. Pets disappear when
+a task turns off or leaves the active task list. Confirmed completed tasks pop away and
+open for review in the notch; drafts, voice and approvals take priority, and
+additional finished reviews wait until you close the current expanded notch.
+Scroll over a pet or choose **Next tasks** if the stack exceeds the display.
+
+The same submenu includes **Preview floating pets** and **Finish a preview task**
+to try the interactions locally. After quitting Kai, the standalone preview
+starts without a Codex bridge:
+
+```sh
+open -n .build/debug/Kai.app --args --preview-task-pets
+```
+
+Approvals open a compact command review below the pet: animated check to approve,
+X to decline, or pause to stop the requesting task. Long commands scroll and can
+be selected/copied. Try **海 → Advanced & Connections → preview approval popout**;
+the preview buttons never send a command. After quitting Kai, launch directly
+into the preview without starting the Codex bridge:
+
+```sh
+open -n .build/debug/Kai.app --args --preview-approval
+```
 
 ### permissions
 

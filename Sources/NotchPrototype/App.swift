@@ -226,9 +226,12 @@ private final class NotchView:ImageDropView {
     private var localMonitor: Any?, globalMonitor: Any?, dragMonitor:Any?, showItem: NSMenuItem!
     private var morphWork = [DispatchWorkItem](),petClickWork:DispatchWorkItem?
     private let petSelection=PetSelectionPreferences(defaults:.standard)
+    private let petAppIcon=PetAppIcon()
     private var petFilterItem:NSMenuItem?,explicitTaskPets=Set<String>()
     private var petID = "codex", userPetID = "codex", renderedPetID = "", motionID = "idle", indicatorID = "demo", frame = 0, playToken = 0
-    private var taskPets=[String:String](),activeTaskIDs=Set<String>(),focusedTaskID:String?,autoCompact=false
+    private var taskPets=[String:String](),focusedTaskID:String?,autoCompact=false
+    private let floatingTasks=FloatingTaskPets()
+    private var floatingFocus:String?,floatingReviews=[KaiActiveTask]()
     private var loadedSpritePetID:String?,loadedSprite:CGImage?
     private var assistantPalette=[NSColor]()
     private var conversationPetID=""
@@ -258,6 +261,10 @@ private final class NotchView:ImageDropView {
     private var experimentalWebMode=false
     private var modeBeforeExperimental=(open:false,mini:false,pinned:false)
     private var compactWhileWorking=false,presentedCompact=false,compactThreadID:String?,compactStartHistoryCount=0
+    private let approvalUI=CompactApprovalView()
+    private var approvalPopout=false,presentedApproval=false,lastApproval:CompactApprovalRequest?
+    private var beforeApproval=(open:false,mini:false,pinned:false,automatic:false)
+    private var popoutHeight:CGFloat {approvalPopout ? CompactApprovalRequest.height(notch:notchHeight):(miniOpen || experimentalWebMode ? canvasHeight:notchHeight)}
     private var pendingFilesRequestID:String?
     private var miniListening = false,dictating=false,finalizingDictation=false,dictationPrefix=""
     private var approachImages=[NSImage](),approachActive=false,lastImageDrop=0.0
@@ -282,7 +289,7 @@ private final class NotchView:ImageDropView {
     func applicationDidFinishLaunching(_ note: Notification) {
         NSApp.setActivationPolicy(.regular)
         petScale = CGFloat(UserDefaults.standard.object(forKey: "petScale") as? Double ?? 1)
-        experimentalWebMode=UserDefaults.standard.bool(forKey:"experimentalWebMode")
+        experimentalWebMode = !CommandLine.arguments.contains("--preview-approval") && !CommandLine.arguments.contains("--preview-task-pets") && UserDefaults.standard.bool(forKey:"experimentalWebMode")
         renderMath=UserDefaults.standard.object(forKey:"renderMath") as? Bool ?? true
         soundsEnabled=UserDefaults.standard.object(forKey:"soundsEnabled") as? Bool ?? true;sounds.enabled=soundsEnabled
         if let size=UserDefaults.standard.object(forKey:"mediaSize") as? Double,size.isFinite{mediaSize=CGFloat(size)}
@@ -299,13 +306,25 @@ private final class NotchView:ImageDropView {
             let alert=NSAlert();alert.messageText="Kai could not load its assets";alert.informativeText=error.localizedDescription;alert.runModal();NSApp.terminate(nil);return
         }
         if let initial=petSelection.initialID(catalog.pets.map(\.id)){petID=initial;userPetID=initial}
-        petGallery.configure(catalog.pets.map{pet in
+        let gallerySpecs=catalog.pets.map{pet in
             var motions=catalog.stateAnimations;pet.animationOverrides?.forEach{motions[$0.key]=$0.value}
             let galleryMotions=motions.mapValues{PetGalleryMotion(row:$0.row,columns:$0.columns,durationsMs:$0.durationsMs,loop:$0.loop)}
             let stops=gradientCatalog.profileByPetID[pet.id]?.gradients.ambient.stops ?? []
             let colors=stops.map{stop -> CGColor in let value=UInt64(stop.color.dropFirst(),radix:16) ?? 0;return NSColor(srgbRed:CGFloat((value>>16)&255)/255,green:CGFloat((value>>8)&255)/255,blue:CGFloat(value&255)/255,alpha:0.9).cgColor}
             return PetGallerySpec(id:pet.id,spritesheet:pet.spritesheet,rows:pet.grid.rows,motions:galleryMotions,colors:colors)
-        },at:assetRoot)
+        }
+        petGallery.configure(gallerySpecs,at:assetRoot)
+        petAppIcon.onCompletion={ [weak self] in self?.syncMotion(force:true) }
+        floatingTasks.configure(gallerySpecs,profiles:gradientCatalog.profileByPetID,root:assetRoot)
+        floatingTasks.onCycle={ [weak self] in self?.cycleFloatingPet($0) }
+        floatingTasks.onOpen={ [weak self] task,preview in self?.openFloatingTask(task,preview:preview) }
+        floatingTasks.onFinish={ [weak self] task,preview in
+            guard let self else{return}
+            if preview{self.openFloatingTask(task,preview:true);return}
+            if self.miniOpen,self.latestState?.threadId == task.id{return}
+            self.floatingReviews.append(task);DispatchQueue.main.asyncAfter(deadline:.now()+0.18){[weak self] in self?.reviewNextFloatingTask()}
+        }
+        floatingTasks.onChange={ [weak self] in guard let self else{return};if !self.floatingTasks.enabled{self.floatingReviews=[];self.floatingFocus=nil};if let state=self.latestState{self.floatingTasks.update(state.activeTasks,finished:[],pets:self.taskPets)} }
         dictation.onText={ [weak self] text in guard let self,self.dictating else{return};self.setPrompt(self.dictationPrefix+text,dictation:true) };dictation.onLevels={ [weak self] levels in self?.indicator.setExternalLevels(levels) }
         dictation.onError={ [weak self] error in guard let self else{return};self.cancelShortcutInput();self.miniListening=false;self.indicator.hide();self.miniUI.setCodexMessage(error);self.syncMotion(force:true) }
         buildMenu(); applyAccentSide(); placePanel(); play(); indicator.hide()
@@ -401,7 +420,7 @@ private final class NotchView:ImageDropView {
             self.chatVoiceMenuItem?.title=self.chatVoice.active ? "end voice conversation":"start voice in selected chat"
             if self.compactVoiceMode{self.renderCompactVoice()}
             else if self.chatVoice.listening{self.indicator.startListening(useMicrophone:false)}
-            else if let state=self.latestState{self.showActivity(self.miniOpen ? state.viewedActivity:state.activity)}
+            else if let state=self.latestState{self.showActivity(self.displayActivity(state))}
         }
         chatVoice.attachMedia(to:panel.contentView)
         bridge.onVoiceSDP={ [weak self] in self?.chatVoice.receiveSDP($0,$1) }
@@ -419,7 +438,9 @@ private final class NotchView:ImageDropView {
         media.onChange={ [weak self] state in self?.receiveMedia(state) }
         media.onLevels={ [weak self] values in guard let self,self.mediaVisible else{return};self.indicator.setExternalLevels(values) }
         speech.discover();media.configure(youtube:youtubeMedia,spotify:spotifyMedia)
-        bridge.start()
+        if CommandLine.arguments.contains("--preview-task-pets"){DispatchQueue.main.async{[weak self] in self?.floatingTasks.previewPets()}}
+        else if CommandLine.arguments.contains("--preview-approval"){DispatchQueue.main.async{[weak self] in self?.previewCompactApproval()}}
+        else{bridge.start()}
         localMonitor = NSEvent.addLocalMonitorForEvents(matching:[.flagsChanged,.keyDown]) { [weak self] e in
             if e.type == .flagsChanged {self?.flags(e)}
             else {
@@ -438,9 +459,10 @@ private final class NotchView:ImageDropView {
             name: NSApplication.didChangeScreenParametersNotification, object: nil)
         DistributedNotificationCenter.default().addObserver(self,selector:#selector(diagnoseMedia),name:NSNotification.Name("com.kai.media.diagnose"),object:nil)
         DistributedNotificationCenter.default().addObserver(self,selector:#selector(codexPreview(_:)),name:NSNotification.Name("com.kai.codex.preview"),object:nil)
+        DistributedNotificationCenter.default().addObserver(self,selector:#selector(previewCompactApproval),name:NSNotification.Name("com.kai.approval.preview"),object:nil)
     }
 
-    func applicationWillTerminate(_ notification:Notification){imageEncodingWork?.cancel();voicePrompt.cancel();voiceLaunchTimeout?.cancel();shortcutPreparation.cancel();cancelShortcutHold();mediaReleaseWork?.cancel();chatVoice.stop();dictation.cancel();speech.stop();media.stop();artworkTask?.cancel();bridge.stop();attachmentFiles.forEach{try? FileManager.default.removeItem(at:$0)}}
+    func applicationWillTerminate(_ notification:Notification){petAppIcon.stop();floatingTasks.stop();imageEncodingWork?.cancel();voicePrompt.cancel();voiceLaunchTimeout?.cancel();shortcutPreparation.cancel();cancelShortcutHold();mediaReleaseWork?.cancel();chatVoice.stop();dictation.cancel();speech.stop();media.stop();artworkTask?.cancel();bridge.stop();attachmentFiles.forEach{try? FileManager.default.removeItem(at:$0)}}
     @objc private func codexPreview(_ note:Notification){guard let path=note.userInfo?["path"] as? String else{return};pinned=true;setOpen(true,mini:true,userInitiated:true);miniUI.previewFile(URL(fileURLWithPath:(path as NSString).expandingTildeInPath))}
 
     private func buildMenu() {
@@ -457,6 +479,7 @@ private final class NotchView:ImageDropView {
         realtimeVoiceMenu.onSelection={ [weak self] choice in self?.featureStatusItem?.title="Realtime voice: \(choice.title) · next conversation" }
         voiceApprovalMenuItem=menu.addItem(withTitle:"review voice approval",action:#selector(reviewCompactVoiceApproval),keyEquivalent:"")
         voiceApprovalMenuItem?.isHidden=true
+        let approvalPreview=menu.addItem(withTitle:"preview approval popout",action:#selector(previewCompactApproval),keyEquivalent:"")
         chatVoiceMenuItem?.target=self
         experimentalModeItem=menu.addItem(withTitle:"experimental web mode",action:#selector(toggleExperimentalWebMode),keyEquivalent:"")
         experimentalModeItem.target=self
@@ -591,14 +614,15 @@ private final class NotchView:ImageDropView {
             .init(title:"Chats & Models",items:[defaultModelItem]),
             .init(title:"Shortcuts & Input",items:items([shortcutItem,timingItem,expandedDictationItem,autoSendItem,contextItem,compactSendItem])),
             .init(title:"Voice & Audio",items:items([realtimeVoices,speechItem,voices,rescanVoicesItem,stopSpeakingItem,soundsItem])),
-            .init(title:"Appearance",items:items([petRoot,sizeItem,motionRoot,indicatorRoot,accentRoot,sizingItem,glassItem,glassControls,mathModeItem])),
+            .init(title:"Appearance",items:items([petRoot,floatingTasksItem(),sizeItem,motionRoot,indicatorRoot,accentRoot,sizingItem,glassItem,glassControls,mathModeItem])),
             .init(title:"Media",items:items([youtubeItem,spotifyItem,mediaSizeItem,mediaPermissionsItem])),
-            .init(title:"Advanced & Connections",items:items([codeConnectionItem,experimentalModeItem,morphItem]))
+            .init(title:"Advanced & Connections",items:items([codeConnectionItem,experimentalModeItem,morphItem,approvalPreview]))
         ],footer:items([featureStatusItem,quit]))
         status.menu = menu; refreshChecks()
     }
 
     @objc private func placePanel() {
+        defer{floatingTasks.refresh()}
         guard let screen = NSScreen.screens.first(where: { $0.auxiliaryTopLeftArea != nil && $0.auxiliaryTopRightArea != nil }),
               let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea else { panel?.orderOut(nil); return }
         CATransaction.begin();CATransaction.setDisableActions(true);defer{CATransaction.commit()}
@@ -656,10 +680,12 @@ private final class NotchView:ImageDropView {
         panel.setFrame(rect, display: true); mask.frame = CGRect(origin: .zero, size: rect.size); notchContent.frame = mask.frame
         // The full canvas must never intercept the desktop while compact.
         panel.ignoresMouseEvents = !NotchInputRegion.mainAcceptsInput(expanded:miniOpen,web:experimentalWebMode)
-        let dropRect=NotchInputRegion.compactFrame(screen:screen.frame,center:center,width:notchWidth+160,height:notchHeight)
-        if dropPanel == nil { dropPanel=NotchPanel(contentRect:dropRect,styleMask:[.borderless,.nonactivatingPanel],backing:.buffered,defer:false);dropPanel.backgroundColor = .clear;dropPanel.isOpaque=false;dropPanel.level = .popUpMenu;dropPanel.collectionBehavior=[.canJoinAllSpaces,.fullScreenAuxiliary,.stationary];let drop=NotchView(frame:NSRect(origin:.zero,size:dropRect.size));drop.autoresizingMask=[.width,.height];drop.click={ [weak self] _,_ in guard let self else{return};if self.compactVoiceMode{self.handleCompactVoiceClick();return};guard self.compactWhileWorking else{return};self.autoCompact=false;self.compactWhileWorking=false;self.compactThreadID=nil;self.pinned=true;self.setOpen(true,mini:true) };drop.dragEntered={ [weak self] in self?.handleImageEntered() };drop.imageDropped={ [weak self] images in self?.handleImageDrop(images) };dropPanel.contentView=drop }
+        let dropRect=NotchInputRegion.compactFrame(screen:screen.frame,center:center,width:notchWidth+160,height:approvalPopout ? popoutHeight:notchHeight)
+        if dropPanel == nil { dropPanel=NotchPanel(contentRect:dropRect,styleMask:[.borderless,.nonactivatingPanel],backing:.buffered,defer:false);dropPanel.backgroundColor = .clear;dropPanel.isOpaque=false;dropPanel.level = .popUpMenu;dropPanel.collectionBehavior=[.canJoinAllSpaces,.fullScreenAuxiliary,.stationary];let drop=NotchView(frame:NSRect(origin:.zero,size:dropRect.size));drop.autoresizingMask=[.width,.height];drop.click={ [weak self] _,_ in guard let self else{return};if self.compactVoiceMode{self.handleCompactVoiceClick();return};guard self.compactWhileWorking else{return};self.expandToRunningChat() };drop.dragEntered={ [weak self] in self?.handleImageEntered() };drop.imageDropped={ [weak self] images in self?.handleImageDrop(images) };dropPanel.contentView=drop }
         dropPanel.setFrame(dropRect,display:true)
-        let compactInput=NotchInputRegion.compactAcceptsInput(open:open,expanded:miniOpen,web:experimentalWebMode,working:compactWhileWorking,voice:compactVoiceMode)
+        if approvalUI.superview == nil {dropPanel.contentView?.addSubview(approvalUI);approvalUI.onDecision={ [weak self] action,request in self?.decidePopout(action,request:request) }}
+        approvalUI.frame=CGRect(x:16,y:12,width:dropRect.width-32,height:CompactApprovalRequest.height(notch:0)-24);approvalUI.isHidden = !approvalPopout
+        let compactInput=approvalPopout || NotchInputRegion.compactAcceptsInput(open:open,expanded:miniOpen,web:experimentalWebMode,working:compactWhileWorking,voice:compactVoiceMode)
         dropPanel.ignoresMouseEvents = !compactInput
         compactInput ? dropPanel.orderFrontRegardless():dropPanel.orderOut(nil)
         updateGlassBackground()
@@ -676,11 +702,11 @@ private final class NotchView:ImageDropView {
         indicator.fileLayer.bounds=CGRect(x:0,y:0,width:28,height:18)
         indicator.fileLayer.position=CGPoint(x:px(iconCenter+(miniListening ? -14:6))+14,y:indicator.layer.position.y)
         indicator.layout();setFileButtonVisible(miniOpen && !miniListening,duration:0)
-        let accentY=miniOpen ? 0:topBandY
+        let accentY=approvalPopout ? canvasHeight-popoutHeight:(miniOpen ? 0:topBandY)
         let shoulder:CGFloat=7,glowWidth:CGFloat=115, glowHeight:CGFloat=82
         indicator.compactBandHeight=notchHeight
         indicator.leftAccentLayer.frame = CGRect(x:px(kaiLeft-shoulder),y:px(accentY),width:glowWidth,height:glowHeight)
-        indicator.accentLayer.frame = CGRect(x:px(kaiRight+shoulder-glowWidth),y:px(accentY),width:glowWidth,height:glowHeight); indicator.layout(); indicator.setAccentExpanded(miniOpen,duration:0)
+        indicator.accentLayer.frame = CGRect(x:px(kaiRight+shoulder-glowWidth),y:px(accentY),width:glowWidth,height:glowHeight); indicator.layout()
         let content=CGSize(width:px(expanded-16),height:px(topBandY-24))
         let sizing=NotchSizing.layout(content:content,baseline:CGSize(width:notchWidth+144,height:320-notchHeight-24))
         scalableUI.frame=CGRect(x:px(kaiLeft+8),y:16,width:content.width,height:content.height)
@@ -692,7 +718,7 @@ private final class NotchView:ImageDropView {
         petGallery.layer.frame=miniUI.layer.frame;petGallery.layout(in:petGallery.layer.bounds,selected:petID);NotchSizing.updateTextResolution(petGallery.layer,scale:scale*sizing.scale)
         if experimentalWebMode{ensureBrowser()};browserView?.frame=CGRect(x:px(kaiLeft),y:0,width:px(expanded),height:canvasHeight)
         CATransaction.begin(); CATransaction.setDisableActions(true)
-        mask.path = path(width:(open || experimentalWebMode) ? expanded:notchWidth, height:(open || experimentalWebMode) ? ((miniOpen || experimentalWebMode) ? canvasHeight:notchHeight):notchHeight)
+        mask.path = path(width:(open || experimentalWebMode) ? expanded:notchWidth, height:(open || experimentalWebMode) ? popoutHeight:notchHeight)
         notchContent.opacity = experimentalWebMode ? 0:1;miniUI.layer.isHidden=experimentalWebMode;scalableUI.isHidden=experimentalWebMode
         browserView?.isHidden = !experimentalWebMode
         CATransaction.commit()
@@ -826,6 +852,7 @@ private final class NotchView:ImageDropView {
         setOpen(true,mini:true,userInitiated:true)
     }
     private func dismissNotchView(){
+        if approvalPopout{dismissCompactApproval();return}
         if compactVoiceMode {setOpen(true,mini:false,userInitiated:true)}else{closeNotch()}
     }
     @objc private func reviewCompactVoiceApproval(){
@@ -888,7 +915,8 @@ private final class NotchView:ImageDropView {
 
     private func expandToRunningChat(){
         if compactVoiceMode {expandVoiceChat();return}
-        let target=latestState.flatMap{RunningChatSelection.target(in:$0)}
+        let preferred=latestState?.activeTasks.first(where:{$0.id == floatingFocus})
+        let target=preferred.map{(id:$0.id,name:$0.name)} ?? latestState.flatMap{RunningChatSelection.target(in:$0)}
         pinned=true;setOpen(true,mini:true)
         guard let target,target.id != latestState?.threadId,expandedChatRequest == nil else{return}
         let requestID=miniUI.beginChatLoading(target.name)
@@ -900,13 +928,43 @@ private final class NotchView:ImageDropView {
         expandedChatRequest=nil;composerField?.isEnabled=true
     }
 
+    private func floatingTasksItem()->NSMenuItem{let item=NSMenuItem(title:"Floating task pets",action:nil,keyEquivalent:"");item.submenu=floatingTasks.menu;return item}
+    private func displayActivity(_ state:KaiState)->KaiActivity{
+        if !miniOpen,!state.approval,let task=state.activeTasks.first(where:{$0.id == floatingFocus}){return KaiActivity(scene:task.scene,text:task.text)}
+        return miniOpen ? state.viewedActivity:state.activity
+    }
+    private func cycleFloatingPet(_ task:KaiActiveTask){
+        let options=TaskPetAssignments.cycleChoices(for:task.id,assignments:taskPets,taskIDs:petAssignmentTaskIDs(for:task.id),available:petSelection.automaticIDs(catalog.pets.map(\.id)))
+        guard let id=options.randomElement() else{return}
+        taskPets[task.id]=id;explicitTaskPets.insert(task.id);floatingFocus=task.id
+        reconcileTaskPets(priority:task.id)
+        if !miniOpen || latestState?.threadId == task.id{petID=id;focusedTaskID=task.id;currentScene="";play();if let state=latestState{showActivity(displayActivity(state))}}
+        floatingTasks.refresh(pets:taskPets)
+    }
+    private func openFloatingTask(_ task:KaiActiveTask,preview:Bool){
+        if preview{autoCompact=false;compactWhileWorking=false;pinned=true;setOpen(true,mini:true);miniUI.setCodexMessage(task.text);return}
+        guard expandedChatRequest == nil,!dictating,!finalizingDictation,!shortcutPreparation.busy,!chatVoice.active,
+              task.id == latestState?.threadId || ((composerField?.stringValue ?? "").trimmingCharacters(in:.whitespacesAndNewlines).isEmpty && queuedImageCount == 0) else{pinned=true;setOpen(true,mini:true);miniUI.setCodexMessage("Finish the current input before switching tasks");return}
+        floatingFocus=task.id;autoCompact=false;compactWhileWorking=false;compactThreadID=nil;pinned=true;setOpen(true,mini:true,userInitiated:true)
+        guard task.id != latestState?.threadId else{if let state=latestState{syncTaskPet(state)};return}
+        let id=miniUI.beginChatLoading(task.name);expandedChatRequest=(id,task.id,task.name);composerField?.isEnabled=false
+        bridge.send("chat",["id":task.id,"requestId":id])
+    }
+    private func reviewNextFloatingTask(){
+        guard !floatingReviews.isEmpty,!miniOpen,!approvalPopout,!dictating,!finalizingDictation,!chatVoice.active,!voicePrompt.active,!shortcutPreparation.busy,
+              expandedChatRequest == nil,sendingPrompt == nil,queuedImageCount == 0,(composerField?.stringValue ?? "").trimmingCharacters(in:.whitespacesAndNewlines).isEmpty else{return}
+        openFloatingTask(floatingReviews.removeFirst(),preview:false)
+    }
+
     private func setOpen(_ requested: Bool, mini requestedMini: Bool = false,userInitiated:Bool=false) {
+        if approvalPopout && (!requested || requestedMini){approvalPopout=false;approvalUI.reset()}
         if compactVoiceMode,userInitiated {voiceExpanded=requested && requestedMini}
         let presentation=CompactVoicePresentation.layout(active:compactVoiceMode,open:requested,expanded:requestedMini,manualExpansion:voiceExpanded)
-        let desired=presentation.open,mini=presentation.expanded
+        let desired=approvalPopout || presentation.open,mini=approvalPopout ? false:presentation.expanded
         if desired && mini {autoCompact=false}
         if mediaVisible && (mini || compactWhileWorking || dictating || experimentalWebMode){dismissMedia()}
-        guard panel != nil, desired != open || (desired && mini != miniOpen) || presentedCompact != compactWhileWorking else { refreshChecks();return }
+        guard panel != nil, desired != open || (desired && mini != miniOpen) || presentedCompact != compactWhileWorking || presentedApproval != approvalPopout else { refreshChecks();return }
+        presentedApproval=approvalPopout
         if petGalleryVisible && (!desired || !mini){hidePetGallery(restore:false)}
         panelRevision += 1;let revision=panelRevision
         let wasOpen=open,wasMini=miniOpen; open = desired; miniOpen = desired && mini;presentedCompact=compactWhileWorking;if desired && !wasOpen{play()}else if !desired{playToken += 1;sprite.removeAnimation(forKey:"spriteFrames")}; panel.ignoresMouseEvents = !miniOpen;composerField?.isHidden = !miniOpen;conversationScroll?.isHidden = !miniOpen;resizeHandles.isHidden = !miniOpen || experimentalWebMode;refreshChecks()
@@ -923,28 +981,29 @@ private final class NotchView:ImageDropView {
         indicator.layer.position.x=oldIndicatorX;indicator.fileLayer.opacity=oldFileOpacity;indicator.fileLayer.transform=oldFileTransform
         for (index,accent) in [indicator.leftAccentLayer,indicator.accentLayer].enumerated(){accent.position.y=oldAccentY[index]}
         CATransaction.commit()
-        let destination = path(width:desired ? expandedWidth:notchWidth,height:desired ? (mini ? canvasHeight:notchHeight):notchHeight), animation = CABasicAnimation(keyPath:"path")
+        let destination = path(width:desired ? expandedWidth:notchWidth,height:desired ? popoutHeight:notchHeight), animation = CABasicAnimation(keyPath:"path")
         animation.fromValue = previousPath; animation.toValue = destination
-        animation.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0.1:(desired ? (mini ? 0.28:0.24):0.22); animation.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 0.85, 0.25, 1)
+        animation.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0.1:(desired ? (mini || approvalPopout ? 0.28:0.24):0.22); animation.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 0.85, 0.25, 1)
         for (index,layer) in traveling.enumerated() {
             let move=CABasicAnimation(keyPath:"position.x");move.fromValue=oldPositions[index].x;move.toValue=layer.position.x;move.duration=animation.duration;move.timingFunction=animation.timingFunction;layer.add(move,forKey:"responsiveTravel")
         }
         animateTopAccessories(forMini:miniOpen,duration:animation.duration)
-        animateCornerAccents(toBottom:miniOpen,duration:animation.duration)
-        indicator.setAccentExpanded(miniOpen,duration:animation.duration)
+        animateCornerAccents(toBottom:miniOpen || approvalPopout,duration:animation.duration)
+        if approvalPopout,let layer=approvalUI.layer{visualTransition.reveal(layer,visible:true,fromOpacity:0)}
         miniUI.setVisible(miniOpen,duration:animation.duration)
         syncConversationTheme()
-        if miniOpen && !wasMini { if let state=latestState {renderConversation(state.history,forceBottom:true)};miniListening=false;miniUI.resetFiles(); indicator.setFileOpen(false); currentScene="";if let state=latestState{showActivity(miniOpen ? state.viewedActivity:state.activity)};setMotion("waving",replay:true) }
-        else if wasMini && !miniOpen { mathRenderer.suspend();mathRefreshWork?.cancel();mathRefreshWork=nil;historyControl.update(hasMore:false,loading:false);miniListening=false;if compactWhileWorking,let state=latestState {currentScene="";showActivity(miniOpen ? state.viewedActivity:state.activity)}else{applyIndicator()};syncMotion(force:true) }
+        if miniOpen && !wasMini { if let state=latestState {renderConversation(state.history,forceBottom:true)};miniListening=false;miniUI.resetFiles(); indicator.setFileOpen(false); currentScene="";if let state=latestState{showActivity(displayActivity(state))};setMotion("waving",replay:true) }
+        else if wasMini && !miniOpen { mathRenderer.suspend();mathRefreshWork?.cancel();mathRefreshWork=nil;historyControl.update(hasMore:false,loading:false);miniListening=false;if compactWhileWorking,let state=latestState {currentScene="";showActivity(displayActivity(state))}else{applyIndicator()};syncMotion(force:true) }
         panel.orderFrontRegardless(); CATransaction.begin(); CATransaction.setDisableActions(true); mask.path = destination; CATransaction.commit(); mask.add(animation, forKey: "width")
         if compactVoiceMode{compactVoiceIndicator=nil;renderCompactVoice()}
         if !desired {indicator.hide();currentScene="";mathRefreshWork?.cancel();mathRefreshWork=nil;DispatchQueue.main.asyncAfter(deadline: .now()+animation.duration) { [weak self] in
             guard let self,!self.open,self.panelRevision == revision else { return }; self.panel.orderOut(nil)
+            self.reviewNextFloatingTask()
         } }
     }
 
     private func handleClick(_ point:CGPoint,count:Int) {
-        if compactWhileWorking && !miniOpen {autoCompact=false;compactWhileWorking=false;pinned=true;setOpen(true,mini:true);return}
+        if compactWhileWorking && !miniOpen {expandToRunningChat();return}
         guard miniOpen else{return}
         let topFrames=[sprite,indicator.fileLayer,indicator.layer].enumerated().map{index,item -> CGRect in
             let visible=item.presentation() ?? item
@@ -1004,6 +1063,45 @@ private final class NotchView:ImageDropView {
     private func sendPrompt(){if attachmentEncoding{pendingAttachmentSend=true;miniUI.setCodexMessage("Preparing images…");return};guard expandedChatRequest == nil,sendingPrompt == nil, !shortcutPreparation.busy else{return};if latestState?.threadId?.hasPrefix("code:") == true,latestState?.readOnly == true{miniUI.setCodexMessage("Code is busy or loading — your prompt is kept here.");return};let prompt=(composerField?.stringValue ?? "").trimmingCharacters(in:.whitespacesAndNewlines);guard !prompt.isEmpty || queuedImageCount>0 else{return};sendingPrompt=prompt;setMotion("running-left",replay:true);speech.cancelAudio();let requestID=UUID().uuidString;sendingPromptRequestID=requestID;bridge.send("send",["text":prompt,"requestId":requestID]);if compactOnSend{hidePetGallery(restore:false);autoCompact=false;compactWhileWorking=true;compactThreadID=latestState?.threadId;compactStartHistoryCount=latestState?.history.count ?? 0;pinned=true;setOpen(true,mini:false)}}
     private func answerApproval(_ action:String){if action == "interrupt"{speech.cancelAudio()};var fields:[String:Any]=["requestId":miniUI.pendingRequestID ?? ""];if let id=latestState?.approvalThreadId{fields["threadId"]=id};bridge.send(action,fields)}
 
+    @objc private func previewCompactApproval(){
+        guard latestState?.approval != true else{featureStatusItem?.title="Review the pending approval before starting a preview";return}
+        presentCompactApproval(CompactApprovalRequest(preview:true))
+    }
+    private func presentCompactApproval(_ request:CompactApprovalRequest){
+        if experimentalWebMode{toggleExperimentalWebMode()}
+        if !approvalPopout{beforeApproval=(open,miniOpen,pinned,autoCompact)}
+        approvalPopout=true;autoCompact=false;compactWhileWorking=false;pinned=true
+        approvalUI.show(request)
+        if let profile=gradientCatalog.profileByPetID[conversationPetID.isEmpty ? petID:conversationPetID]{approvalUI.setProfile(profile)}
+        setOpen(true);sounds.playScene("permission");indicator.showScene("permission")
+    }
+    private func dismissCompactApproval(){
+        approvalPopout=false;approvalUI.reset();pinned=beforeApproval.pinned
+        let working=latestState?.activeTurnId != nil || !(latestState?.activeTasks.isEmpty ?? true)
+        compactWhileWorking=working && !beforeApproval.mini
+        autoCompact=working && !beforeApproval.mini && (beforeApproval.automatic || !beforeApproval.open)
+        setOpen((beforeApproval.open && !beforeApproval.automatic) || working,mini:beforeApproval.mini)
+    }
+    private func updateCompactApproval(_ state:KaiState){
+        guard let request=CompactApprovalRequest(state:state) else{
+            lastApproval=nil
+            if approvalPopout,approvalUI.request?.preview != true{dismissCompactApproval()}
+            return
+        }
+        if approvalPopout,approvalUI.request?.matches(state) == true{
+            approvalUI.show(request);approvalUI.finish(state.completedRequestId,error:state.completedRequestError);return
+        }
+        guard request.id != lastApproval?.id || request.thread != lastApproval?.thread else{return}
+        lastApproval=request;presentCompactApproval(request)
+    }
+    private func decidePopout(_ action:String,request:CompactApprovalRequest){
+        if request.preview{featureStatusItem?.title="Approval preview: \(action == "approve" ? "approved":action == "reject" ? "declined":"stopped") · nothing ran";dismissCompactApproval();return}
+        guard let state=latestState,request.matches(state) else{return}
+        if action == "approval_stop",chatVoice.threadID == request.thread{speech.cancelAudio();chatVoice.stop()}
+        let id=UUID().uuidString;approvalUI.begin(id)
+        bridge.send(action,["threadId":request.thread,"approvalRequestId":request.id,"requestId":id])
+    }
+
     private func queueImages(_ images:[NSImage]){
         imageEncodingWork?.cancel();imageEncodingWork=nil
         let generation=UUID();attachmentGeneration=generation
@@ -1048,7 +1146,7 @@ private final class NotchView:ImageDropView {
     private func receive(_ state:KaiState){
         defer{refreshMedia()}
         if let connection=state.codeConnection{codeConnectionItem?.toolTip=connection.error;codeConnectionItem?.title=connection.enabled ? "Connect to Code · \(connection.connected ? "connected":"waiting")":"Connect to Code"}
-        let previous=latestState,previousNotice=previous?.notice;latestState=state
+        let previous=latestState,previousNotice=previous?.notice,wasFloating=floatingTasks.tracking;latestState=state
         if let models=state.models{defaultModelMenu.update(models)}
         let prepending=previous?.threadId == state.threadId && earlierHistoryRequest != nil && state.completedRequestId == earlierHistoryRequest
         if prepending || previous?.threadId != state.threadId{earlierHistoryRequest=nil}
@@ -1060,19 +1158,21 @@ private final class NotchView:ImageDropView {
             if !miniOpen {autoCompact=true;compactWhileWorking=true;compactThreadID=nil;setOpen(true,mini:false)}
         }
         if !state.standalone,previous?.project != state.project{UserDefaults.standard.set(state.project,forKey:"kaiProject")};miniUI.setState(state);if chatVoice.active{speech.synchronize(state)}else{speech.receive(state)};syncTaskPet(state);if miniOpen {renderConversation(state.history,forceBottom:previous?.threadId != state.threadId,preserveViewport:prepending)}
+        floatingTasks.update(state.activeTasks,finished:state.finishedTasks ?? [],pets:taskPets)
+        let floatingTransition=wasFloating || floatingTasks.tracking
         let completed=previous?.threadId == state.threadId && state.threadId != nil && (previous?.activeTurnId != nil || previous?.viewedActivity.scene == "thinking") && state.activeTurnId == nil && state.viewedActivity.scene == "off"
         if sendingPrompt != nil {
             if (state.completedRequestId == sendingPromptRequestID && state.completedRequestError == nil) || (state.threadId?.hasPrefix("code:") == true ? state.codeAcceptedRequestId != nil && state.codeAcceptedRequestId == sendingPromptRequestID : state.notice == "Turn started" || state.notice == "Sent to voice" || state.notice.hasPrefix("Steered active turn")) {setPrompt("");miniUI.clearImages();sendingPrompt=nil;sendingPromptRequestID=nil}
             else if state.notice != previousNotice {sendingPrompt=nil;sendingPromptRequestID=nil;if compactOnSend && compactWhileWorking{compactWhileWorking=false;compactThreadID=nil;setOpen(true,mini:true)}}
         }
         if state.threadId?.hasPrefix("code:") == true,state.notice.hasPrefix("Prompt staged in Code"),state.notice != previousNotice{compactWhileWorking=false;compactThreadID=nil;pinned=true;setOpen(true,mini:true)}
-        if !dictating && !miniListening && !chatVoice.listening {showActivity(miniOpen ? state.viewedActivity:state.activity)}
-        if state.approval && previous?.approval != true {autoCompact=false;compactWhileWorking=false;pinned=true;setOpen(true,mini:true)}
+        if !dictating && !miniListening && !chatVoice.listening {showActivity(displayActivity(state))}
+        if state.approval{updateCompactApproval(state)}
         let finishedTasks=Set(previous?.activeTasks.map(\.id) ?? []).subtracting(state.activeTasks.map(\.id))
         if completed || !finishedTasks.isEmpty {sounds.playScene("success");setMotion("jumping",replay:true)}
         else if previous?.activity.scene != "failure" && state.activity.scene == "failure" {setMotion("failed",replay:true)}
         else {syncMotion()}
-        if compactWhileWorking,state.threadId == compactThreadID {
+        if !floatingTransition,!approvalPopout,compactWhileWorking,state.threadId == compactThreadID {
             if completed {
                 let output=latestOutputCitation(in:Array(state.history.dropFirst(max(0,compactStartHistoryCount-1))))
                 compactWhileWorking=false;compactThreadID=nil;pinned=true;setOpen(true,mini:true)
@@ -1080,7 +1180,7 @@ private final class NotchView:ImageDropView {
                 if let output,!compactVoiceMode{miniUI.previewFile(output)}
             }
         }
-        if compactWhileWorking && !autoCompact && state.activeTasks.isEmpty && previous?.activeTasks.isEmpty == false && !miniOpen {
+        if !floatingTransition && !approvalPopout && compactWhileWorking && !autoCompact && state.activeTasks.isEmpty && previous?.activeTasks.isEmpty == false && !miniOpen {
             compactWhileWorking=false;compactThreadID=nil;pinned=true;setOpen(true,mini:true);setMotion("jumping",replay:true)
         }
         if let request=expandedChatRequest {
@@ -1097,6 +1197,8 @@ private final class NotchView:ImageDropView {
         if let error=state.voice?.historyError{miniUI.setCodexMessage(error)}
         miniUI.finishPending(requestID:state.completedRequestId)
         if let pendingFilesRequestID,state.completedRequestId == pendingFilesRequestID {self.pendingFilesRequestID=nil;indicator.setFileLoading(false)}
+        if !state.approval{updateCompactApproval(state)}
+        reviewNextFloatingTask()
         if !state.activeTasks.isEmpty && !open {autoCompact=true;compactWhileWorking=true;setOpen(true,mini:false)}
         if state.activeTasks.isEmpty && autoCompact && !miniOpen {autoCompact=false;DispatchQueue.main.asyncAfter(deadline:.now()+1.2){[weak self] in guard let self,self.latestState?.activeTasks.isEmpty == true,!self.miniOpen,!self.dictating,!self.finalizingDictation else{return};self.compactWhileWorking=false;self.setOpen(false)}}
     }
@@ -1213,7 +1315,7 @@ private final class NotchView:ImageDropView {
             DispatchQueue.main.async{ [weak self] in guard let self,self.mediaState == state else{return};self.artworkTask=nil;guard let image else{self.mediaImage=nil;self.mediaProfile=nil;self.loadedMediaKey=nil;self.dismissMedia();return};self.mediaImage=NSImage(cgImage:image,size:CGSize(width:image.width,height:image.height));self.mediaProfile=profile;self.loadedMediaKey=state.application+":"+state.identity+":"+state.artwork;self.refreshMedia()}
         };artworkTask?.resume();refreshMedia()
     }
-    private var mediaSuppressed:Bool {compactVoiceMode || voicePrompt.active || chatVoice.active || miniOpen || dictating || finalizingDictation || pendingAutoSend || miniListening || compactWhileWorking || experimentalWebMode || sendingPrompt != nil || latestState?.activeTurnId != nil || latestState?.approval == true || !(latestState?.activeTasks.isEmpty ?? true)}
+    private var mediaSuppressed:Bool {approvalPopout || compactVoiceMode || voicePrompt.active || chatVoice.active || miniOpen || dictating || finalizingDictation || pendingAutoSend || miniListening || compactWhileWorking || experimentalWebMode || sendingPrompt != nil || latestState?.activeTurnId != nil || latestState?.approval == true || !(latestState?.activeTasks.isEmpty ?? true)}
     private func refreshMedia(){
         let busy=mediaSuppressed
         media.setSuppressed(busy)
@@ -1228,7 +1330,7 @@ private final class NotchView:ImageDropView {
         }
     }
     private func dismissMedia(closeNotch:Bool=true){
-        guard mediaVisible else{return};mediaVisible=false;currentScene="";media.capture(false);presentedMediaKey=nil;visualTransition.hideArtwork(mediaArtwork);sprite.isHidden=false;visualTransition.reveal(sprite,visible:true);play();if let state=latestState{showActivity(miniOpen ? state.viewedActivity:state.activity)};if closeNotch && !miniOpen && !compactWhileWorking && !dictating && !finalizingDictation{setOpen(false)}
+        guard mediaVisible else{return};mediaVisible=false;currentScene="";media.capture(false);presentedMediaKey=nil;visualTransition.hideArtwork(mediaArtwork);sprite.isHidden=false;visualTransition.reveal(sprite,visible:true);play();if let state=latestState{showActivity(displayActivity(state))};if closeNotch && !miniOpen && !compactWhileWorking && !dictating && !finalizingDictation{setOpen(false)}
     }
     private func syncConversationTheme(){
         let id=ConversationTheme.petID(expanded:miniOpen || compactVoiceMode,viewedThread:latestState?.threadId,taskPets:taskPets,indicatorPet:petID,fallback:userPetID)
@@ -1238,25 +1340,21 @@ private final class NotchView:ImageDropView {
         if let storage=conversationText?.textStorage{ConversationTheme.recolor(storage,palette:assistantPalette)}
         updateGlassBackground()
     }
+    private func petAssignmentTaskIDs(for id:String)->[String]{
+        if id.hasPrefix("floating-preview:"){return floatingTasks.trackedTasks.map(\.id)}
+        return (latestState?.activeTasks ?? []).filter{$0.scene != "off"}.map(\.id)
+    }
+    private func reconcileTaskPets(priority:String){
+        taskPets=TaskPetAssignments.reconcile(taskPets,taskIDs:petAssignmentTaskIDs(for:priority),available:petSelection.automaticIDs(catalog.pets.map(\.id)),preferred:petID,explicit:explicitTaskPets,priority:priority)
+    }
     private func syncTaskPet(_ state:KaiState){
         let ids=Set(state.activeTasks.map(\.id)),pets=petSelection.automaticIDs(catalog.pets.map(\.id))
-        var occupied=Set(activeTaskIDs.intersection(ids).compactMap{taskPets[$0]})
-        for task in state.activeTasks.reversed(){
-            if taskPets[task.id] == nil {
-                if occupied.isEmpty {
-                    taskPets[task.id]=pets.contains(petID) ? petID : (pets.first ?? userPetID)
-                } else {
-                    let available=pets.filter{!occupied.contains($0)}
-                    taskPets[task.id]=(available.isEmpty ? pets:available).randomElement() ?? userPetID
-                }
-            }
-            if let assigned=taskPets[task.id]{occupied.insert(assigned)}
-        }
+        if let floatingFocus,!ids.contains(floatingFocus){self.floatingFocus=nil}
+        taskPets=TaskPetAssignments.reconcile(taskPets,taskIDs:state.activeTasks.reversed().filter{$0.scene != "off"}.map(\.id),available:pets,preferred:petID,explicit:explicitTaskPets)
         if let viewed=state.threadId,taskPets[viewed] == nil {taskPets[viewed]=pets.contains(userPetID) ? userPetID : (pets.first ?? userPetID)}
-        activeTaskIDs=ids
-        if compactVoiceMode,let viewed=state.threadId,let assigned=taskPets[viewed] {
+        if miniOpen || compactVoiceMode,let viewed=state.threadId,let assigned=taskPets[viewed] {
             if petID != assigned {petID=assigned;currentScene="";play()}
-        } else if let focus=state.focusThreadId {
+        } else if let focus=floatingFocus ?? state.focusThreadId {
             let assigned=taskPets[focus] ?? petID
             if focusedTaskID != focus || petID != assigned {focusedTaskID=focus;petID=assigned;currentScene="";play()}
         } else {
@@ -1310,7 +1408,7 @@ private final class NotchView:ImageDropView {
         if compactVoiceMode{renderCompactVoice();return}
         if !force && ["waving","running-left","jumping","failed"].contains(motionID){return}
         let motion:String
-        let activity=latestState.map{miniOpen ? $0.viewedActivity:$0.activity}
+        let activity=latestState.map{displayActivity($0)}
         if dictating || finalizingDictation || miniListening || (sendingPrompt == nil && !(composerField?.stringValue.isEmpty ?? true)) {motion="waiting"}
         else if activity?.scene == "permission" || activity?.scene == "question" {motion="waiting"}
         else if sendingPrompt != nil || latestState?.activeTurnId != nil || (activity?.scene != "off" && activity?.scene != "failure" && activity != nil) {motion="running"}
@@ -1414,7 +1512,7 @@ private final class NotchView:ImageDropView {
                 // Empty recognition still leaves a composer available for retry.
                 self.setOpen(true,mini:true)
             }
-            if !self.pendingAutoSend,self.sendingPrompt == nil,let state=self.latestState{self.showActivity(self.miniOpen ? state.viewedActivity:state.activity)}
+            if !self.pendingAutoSend,self.sendingPrompt == nil,let state=self.latestState{self.showActivity(self.displayActivity(state))}
             self.refreshMedia()
         }
         if miniOpen{exitMiniListening()}else if !keepCompact{setOpen(true,mini:true)}
@@ -1464,15 +1562,10 @@ private final class NotchView:ImageDropView {
     }
 
     private func animateCornerAccents(toBottom bottom:Bool,duration:Double) {
-        for layer in [indicator.leftAccentLayer,indicator.accentLayer] {
-            let targetY=(bottom ? 0:canvasHeight-notchHeight)+layer.bounds.height/2
-            let move=CABasicAnimation(keyPath:"position.y"); move.fromValue=layer.presentation()?.position.y ?? layer.position.y; move.toValue=targetY; move.duration=duration; move.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.65,0.25,1)
-            CATransaction.begin(); CATransaction.setDisableActions(true); layer.position.y=targetY; CATransaction.commit(); layer.add(move,forKey:"cornerTravel")
-        }
+        indicator.moveAccents(toBottom:canvasHeight-(bottom ? popoutHeight:notchHeight),expanded:bottom,duration:duration)
     }
 
     private func play() {
-        if mediaVisible {return}
         guard let pet = catalog.pets.first(where: { $0.id == petID }), let motion = pet.animationOverrides?[motionID] ?? catalog.stateAnimations[motionID] else{return}
         let image:CGImage
         if loadedSpritePetID == petID,let loadedSprite {image=loadedSprite}
@@ -1498,6 +1591,9 @@ private final class NotchView:ImageDropView {
                 return
             }
         }
+        petSelection.lastUsedID=petID
+        petAppIcon.play(petID:petID,sheet:image,rows:pet.grid.rows,row:motion.row,columns:motion.columns,durationsMs:motion.durationsMs,loops:motion.loop)
+        if mediaVisible {return}
         if renderedPetID != petID && !renderedPetID.isEmpty {let blend=CATransition();blend.type = .fade;blend.duration=0.36;blend.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.7,0.25,1);sprite.add(blend,forKey:"petBlend")}
         CATransaction.begin(); CATransaction.setDisableActions(true); sprite.contents = image;sprite.isHidden=false;sprite.opacity=1; CATransaction.commit()
         renderedPetID=petID
@@ -1515,12 +1611,6 @@ private final class NotchView:ImageDropView {
         sprite.contentsRect=motion.loop || reduceMotion ? timeline.frames[0]:timeline.frames[timeline.frames.count-1]
         CATransaction.commit()
         if !reduceMotion,timeline.frames.count>1 {sprite.add(timeline.animation(),forKey:"spriteFrames")}
-        if !motion.loop {
-            DispatchQueue.main.asyncAfter(deadline:.now()+timeline.duration) { [weak self] in
-                guard let self,token == self.playToken else{return}
-                self.syncMotion(force:true)
-            }
-        }
     }
 
     @objc private func changeDefaultNotchSize(_ slider:NSSlider){
@@ -1560,7 +1650,7 @@ private final class NotchView:ImageDropView {
         DispatchQueue.main.asyncAfter(deadline:.now()+2.05,execute:shrink)
     }
     private func cancelSizeTest() { morphWork.forEach { $0.cancel() }; morphWork.removeAll() }
-    private func usePet(_ id:String,explicit:Bool=true){if explicit{petSelection.selectedID=id};userPetID=id;petID=id;if let chatID=miniOpen ? latestState?.threadId : (focusedTaskID ?? latestState?.threadId){taskPets[chatID]=id;if explicit{explicitTaskPets.insert(chatID)}};syncConversationTheme();petGallery.layout(in:petGallery.layer.bounds,selected:id);refreshChecks();play()}
+    private func usePet(_ id:String,explicit:Bool=true){if explicit{petSelection.selectedID=id};userPetID=id;petID=id;if let chatID=miniOpen ? latestState?.threadId : (focusedTaskID ?? latestState?.threadId){taskPets[chatID]=id;if explicit{explicitTaskPets.insert(chatID)};reconcileTaskPets(priority:chatID)};syncConversationTheme();petGallery.layout(in:petGallery.layer.bounds,selected:id);refreshChecks();play();floatingTasks.refresh(pets:taskPets)}
     @objc private func closePetPicker(){status.menu?.cancelTracking()}
     @objc private func toggleMathRendering(){
         renderMath.toggle()

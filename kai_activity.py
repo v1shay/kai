@@ -74,6 +74,13 @@ def _event(payload: dict[str, Any], state: dict[str, Any]) -> bool:
             return True
     if not state.get("running"):
         return False
+    if kind == "agent_message" or kind == "message" and payload.get("role") == "assistant":
+        content = payload.get("message") or payload.get("text") or "\n".join(
+            part.get("text", "") for part in (payload.get("content") or []) if isinstance(part, dict))
+        lines = str(content).strip().splitlines()
+        if lines:
+            state.update(scene="pencil", text=_label(lines[-1], "Writing"))
+            return True
     if kind in {"item_started", "item_completed"}:
         item = payload.get("item") or {}
         scene = TOOL_SCENES.get(item.get("type"))
@@ -156,6 +163,7 @@ class SessionActivityMonitor:
                        if key not in listed and state.get("running") and key in self.paths]
         present: set[str] = set()
         changed = False
+        finished = []
         for row in rows:
             thread_id, raw_path = row.get("id"), row.get("path")
             if not isinstance(thread_id, str) or not isinstance(raw_path, str):
@@ -199,6 +207,8 @@ class SessionActivityMonitor:
                     continue
                 state = self.states.get(thread_id, {"running": False, "scene": "off", "text": "Ready", "turn": None, "sequence": 0, "eventTime": "",
                                                     "name": row.get("name") or row.get("preview") or "Chat"}).copy()
+            was_running = self.states.get(thread_id, {}).get("running", False)
+            previous_turn = self.states.get(thread_id, {}).get("turn")
             for line in lines:
                 try:
                     record = json.loads(line)
@@ -206,6 +216,9 @@ class SessionActivityMonitor:
                     continue
                 payload = record.get("payload") or {}
                 event_changed = isinstance(payload, dict) and _event(payload, state)
+                if was_running and event_changed and not state.get("running"):
+                    finished.append({"id":thread_id,"runId":previous_turn})
+                    was_running = False
                 stamp = _activity_time(record, now)
                 if stamp is not None and (payload.get("type") not in FINISH_EVENTS or event_changed):
                     state["lastActivity"] = stamp
@@ -230,6 +243,7 @@ class SessionActivityMonitor:
             changed = True
         active = [{"id": thread_id, "name": state.get("name") or "Chat",
                    "scene": state["scene"], "text": state["text"],
+                   "runId":state.get("turn"),
                    "sequence": state["sequence"], "eventTime": state["eventTime"]}
                   for thread_id, state in self.states.items() if state["running"] and
                   (thread_id in live_ids or now - state.get("lastActivity", now) < self.stale_after)]
@@ -238,4 +252,4 @@ class SessionActivityMonitor:
         self.active_ids = active_ids
         active.sort(key=lambda task: (task["eventTime"], task["sequence"]), reverse=True)
         return {"activeTasks": active, "focusThreadId": active[0]["id"] if active else None,
-                "changed": changed}
+                "finishedTasks":finished,"changed": changed}

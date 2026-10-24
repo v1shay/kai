@@ -250,12 +250,12 @@ class CodeConnection:
         with self._lock:
             return {row["externalId"] for row in self.state["sessions"] if row.get("externalId")} if self.connected and self.enabled else set()
 
-    def tasks(self) -> list[dict[str, Any]]:
+    def tasks(self, include_disconnected: bool = False) -> list[dict[str, Any]]:
         with self._lock:
-            if not self.connected or not self.enabled:
+            if not self.enabled or not self.connected and not include_disconnected:
                 return []
             return [{"id": PREFIX + row["id"], "name": row["title"], "scene": self.scene(row),
-                     "text": f"{row['agent']} · {row['status']}", "externalId": row.get("externalId"),
+                     "text": f"{row['agent']} · {row['status']}", "externalId": row.get("externalId"),"runId":row.get("runId"),
                      "sequence": index, "eventTime": ""} for index, row in enumerate(self.state["sessions"]) if row["running"]]
 
     @staticmethod
@@ -263,6 +263,13 @@ class CodeConnection:
         if not row["running"]:
             return "off"
         return next((scene for word, scene in SCENES if word in row["status"].lower()), "thinking")
+
+    def finished_tasks(self, previous: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        with self._lock:
+            if not self.connected or not self.enabled:
+                return []
+            idle={PREFIX+row["id"] for row in self.state["sessions"] if not row["running"]}
+            return [{"id":task["id"],"runId":task.get("runId")} for task in previous if task["id"] in idle]
 
     def overlay(self, state: dict[str, Any]) -> dict[str, Any]:
         with self._lock:

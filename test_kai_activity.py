@@ -72,6 +72,26 @@ class ActivityLifecycleTests(unittest.TestCase):
 
 
 class SelectedChatActivityTests(unittest.TestCase):
+    def test_completion_feed_is_explicit_and_commentary_uses_the_last_line(self):
+        import json
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/"session.jsonl";monitor=SessionActivityMonitor(clock=lambda:1000)
+            rows=[{"id":"chat","path":str(path),"status":{"type":"active"}}]
+            def append(payload):
+                with path.open("a") as stream:stream.write(json.dumps({"type":"event_msg","payload":payload})+"\n")
+            append({"type":"task_started","turn_id":"run"})
+            self.assertEqual(monitor.poll(rows)["activeTasks"][0]["runId"],"run")
+            append({"type":"agent_message","message":"Explaining the change\nUpdating the animation now"})
+            state=monitor.poll(rows)
+            self.assertEqual(state["activeTasks"][0]["text"],"Updating the animation now")
+            self.assertEqual(state["activeTasks"][0]["scene"],"pencil")
+            self.assertEqual(state["finishedTasks"],[])
+            append({"type":"task_complete","turn_id":"old"})
+            self.assertEqual(monitor.poll(rows)["finishedTasks"],[])
+            append({"type":"task_complete","turn_id":"run"})
+            self.assertEqual(monitor.poll(rows)["finishedTasks"],[{"id":"chat","runId":"run"}])
+            self.assertEqual(monitor.poll(rows)["finishedTasks"],[])
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
@@ -84,6 +104,12 @@ class SelectedChatActivityTests(unittest.TestCase):
         result = snapshot(self.app, active_tasks=[task])
         self.assertEqual(result["activity"]["scene"], "terminal")
         self.assertEqual(result["sessionActivity"]["scene"], "off")
+
+    def test_active_task_snapshot_keeps_run_id_for_floating_pet_completion(self):
+        task = {"id": "other", "name": "Other", "scene": "terminal", "text": "Running tests", "runId": "turn-2"}
+        self.assertEqual(snapshot(self.app, active_tasks=[task])["activeTasks"], [task])
+        task.pop("runId")
+        self.assertIsNone(snapshot(self.app, active_tasks=[task])["activeTasks"][0]["runId"])
 
     def test_new_turn_does_not_reuse_unfinished_tool_from_old_turn(self):
         self.app.turns = [

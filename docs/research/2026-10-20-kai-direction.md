@@ -2,6 +2,8 @@
 
 Research and product proposal · October 20, 2026
 
+> Scope correction · October 22, 2026: Kai is a better interface for the existing Codex engine, chats, voice, tools, and approvals. The user wants aesthetic and interaction improvements, with Codex voice as the model for useful progress. The broader assistant/platform strategy below is historical exploration, not the current implementation mandate. Prioritize voice/text continuity, clear chat selection, readable conversations, compact/expanded presentation, attractive state transitions, accessible controls, and review of Codex's real output. Do not introduce a separate agent runtime, general-purpose intent router, memory system, connector platform, or automation product as part of this interface work.
+
 ## The recommendation
 
 **Build the shortest path from seeing a problem to finishing it.**

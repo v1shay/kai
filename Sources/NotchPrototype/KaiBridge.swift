@@ -14,7 +14,11 @@ struct KaiLine: Decodable, Equatable {
 struct KaiMessage: Decodable, Equatable { let id: String; let kind: String; let lines: [KaiLine]; let speechText: String?; let activityIcon: String? }
 struct KaiFile: Decodable { let path: String; let name: String; let depth: Int; let directory: Bool; let collapsed: Bool }
 struct KaiActivity: Decodable { let scene: String; let text: String }
-struct KaiActiveTask: Decodable, Equatable { let id: String; let name: String; let scene: String; let text: String }
+struct KaiActiveTask: Decodable, Equatable {
+    let id:String,name:String,scene:String,text:String
+    var runId:String?=nil
+}
+struct KaiFinishedTask:Decodable,Equatable {let id:String;var runId:String?=nil}
 struct KaiReasoningOption: Decodable { let reasoningEffort: String }
 struct KaiModel: Decodable { let model: String; let displayName: String; let supportedReasoningEfforts: [KaiReasoningOption] }
 struct KaiCodeConnectionState:Decodable {let connected:Bool;let enabled:Bool;let error:String?}
@@ -49,6 +53,7 @@ struct KaiState: Decodable {
     let approvalSummary:String?
     let activity: KaiActivity
     let activeTasks: [KaiActiveTask]
+    let finishedTasks:[KaiFinishedTask]?
     let focusThreadId: String?
     let notice: String
     let attachments: [String]

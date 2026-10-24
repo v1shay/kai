@@ -242,7 +242,8 @@ def snapshot(app: Kai, include_files: bool = True,
                     ({"scene": active_tasks[0]["scene"], "text": active_tasks[0]["text"]}
                      if active_tasks else activity(app)),
         "sessionActivity": selected_activity,
-        "activeTasks": [{key: task[key] for key in ("id", "name", "scene", "text")}
+        "activeTasks": [{**{key: task[key] for key in ("id", "name", "scene", "text")},
+                         "runId": task.get("runId")}
                         for task in active_tasks],
         "focusThreadId": active_tasks[0]["id"] if active_tasks else None,
         "notice": app.notice,
@@ -403,11 +404,19 @@ def apply(app: Kai, request: dict[str, Any], code: CodeConnection | None = None)
             raise ValueError("Attachment must be a supported image")
         app.attachments = checked
         app.dirty = True
-    elif action in {"approve", "reject"}:
+    elif action in {"approve", "reject", "approval_stop"}:
+        if action == "approval_stop" and (not request.get("approvalRequestId") or not request.get("threadId")):
+            raise ValueError("Review the current approval before stopping its task")
         if request.get("approvalRequestId") is not None:
             pending = app._approval_for_thread(request.get("threadId")) if request.get("threadId") else app._approval_for_selected()
             if not pending or str(pending.get("id")) != request["approvalRequestId"]:
                 raise ValueError("Approval changed; review the current request before deciding")
+        if action == "approval_stop":
+            params = pending.get("params") or {}
+            turn_id = params.get("turnId")
+            if not turn_id:
+                raise ValueError("This approval has no turn ID; stop its task in the desktop app")
+            app.rpc.call("turn/interrupt", {"threadId": request["threadId"], "turnId": turn_id})
         app.decide(action == "approve", request.get("threadId"))
     elif action == "interrupt":
         app.command("/interrupt")
@@ -510,16 +519,19 @@ def main() -> int:
         active_tasks: list[dict[str, Any]] = []
 
         def scan_sessions(rows: list[dict[str, Any]], fallback: list[dict[str, Any]]) -> None:
+            monitored={"activeTasks":fallback,"finishedTasks":[],"changed":False}
             try:
                 monitored=monitor.poll(rows)
+                previous_code_tasks=code.tasks(include_disconnected=True)
                 code_changed=code.poll()
                 code_tasks=code.tasks()
+                monitored["finishedTasks"].extend(code.finished_tasks(previous_code_tasks))
                 owned=code.owned_thread_ids()
                 monitored["activeTasks"]=[task for task in monitored["activeTasks"] if task["id"] not in owned] + code_tasks
                 monitored["changed"]=monitored["changed"] or code_changed
                 monitor_results.put(monitored)
             except Exception:
-                monitor_results.put({"activeTasks": fallback, "changed": False})
+                monitor_results.put(monitored)
 
         def fetch_limits() -> None:
             try:
@@ -535,6 +547,7 @@ def main() -> int:
                 thread_results.put(None)
 
         while True:
+            finished_tasks=[]
             if os.getppid() != parent_pid:
                 break
             try:
@@ -608,6 +621,8 @@ def main() -> int:
                 pass
             else:
                 monitor_busy = False
+                finished_tasks=monitored.get("finishedTasks",[])
+                if finished_tasks:app.dirty=True
                 dot_tasks = dot_monitor.poll()["activeTasks"]
                 combined = monitored["activeTasks"] + dot_tasks
                 combined.sort(key=lambda task: (task.get("eventTime", ""), task.get("sequence", 0)), reverse=True)
@@ -636,6 +651,7 @@ def main() -> int:
                 state = snapshot(app, include_files=files != previous_files,
                                  remaining_percent=limit_percent, active_tasks=active_tasks)
                 state=code.overlay(state)
+                state["finishedTasks"]=finished_tasks
                 state["completedRequestId"] = completed_request_id
                 state["completedRequestError"] = completed_request_error
                 previous_files = files
