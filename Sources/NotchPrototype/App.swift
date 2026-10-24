@@ -623,13 +623,19 @@ private final class NotchView:ImageDropView {
 
     @objc private func placePanel() {
         defer{floatingTasks.refresh()}
-        guard let screen = NSScreen.screens.first(where: { $0.auxiliaryTopLeftArea != nil && $0.auxiliaryTopRightArea != nil }),
-              let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea else { panel?.orderOut(nil); return }
+        let screen = NSScreen.screens.first(where: { $0.auxiliaryTopLeftArea != nil && $0.auxiliaryTopRightArea != nil }) ?? NSScreen.main
+        guard let screen else { panel?.orderOut(nil); return }
         CATransaction.begin();CATransaction.setDisableActions(true);defer{CATransaction.commit()}
-        notchHeight = screen.safeAreaInsets.top + 1
-        let gapCenter = (left.maxX + right.minX) / 2
-        let center = abs(gapCenter - screen.frame.midX) <= 1 ? screen.frame.midX : gapCenter
-        notchWidth = 2 * max(center - left.maxX, right.minX - center)
+        let center: CGFloat
+        if let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea {
+            notchHeight = screen.safeAreaInsets.top + 1
+            let gapCenter = (left.maxX + right.minX) / 2
+            center = abs(gapCenter - screen.frame.midX) <= 1 ? screen.frame.midX : gapCenter
+            notchWidth = 2 * max(center - left.maxX, right.minX - center)
+        } else {
+            notchWidth = 210; notchHeight = 39
+            center = screen.frame.midX
+        }
         let baseline=CGSize(width:notchWidth+160,height:320)
         let saved=CGSize(width:UserDefaults.standard.object(forKey:"notchDefaultWidth") as? Double ?? Double(baseline.width),height:UserDefaults.standard.object(forKey:"notchDefaultHeight") as? Double ?? 320)
         expandedSize=NotchSizing.constrained(expandedSize ?? saved,baseline:baseline,screen:screen.frame.size)
