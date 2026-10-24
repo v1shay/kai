@@ -1546,7 +1546,7 @@ private final class NotchView:ImageDropView {
         visualTransition.resize(mediaArtwork,to:frame,animated:animated)
     }
     private func layoutPet() {
-        guard let screen=NSScreen.screens.first(where:{$0.auxiliaryTopLeftArea != nil}) else{return};let expanded=expandedWidth,physicalLeft=(canvasWidth-notchWidth)/2,kaiLeft=(canvasWidth-expanded)/2,scale=screen.backingScaleFactor,topBandY=canvasHeight-notchHeight,h=min(36,notchHeight-3)*petScale,w=h*192/208
+        guard let screen=NSScreen.screens.first(where:{$0.auxiliaryTopLeftArea != nil && $0.auxiliaryTopRightArea != nil}) ?? NSScreen.main else{return};let expanded=expandedWidth,physicalLeft=(canvasWidth-notchWidth)/2,kaiLeft=(canvasWidth-expanded)/2,scale=screen.backingScaleFactor,topBandY=canvasHeight-notchHeight,h=min(36,notchHeight-3)*petScale,w=h*192/208
         func px(_ v:CGFloat)->CGFloat{round(v*scale)/scale};CATransaction.begin();CATransaction.setDisableActions(true);sprite.frame=CGRect(x:px((physicalLeft+kaiLeft)/2-w/2),y:px(topBandY+(notchHeight-h)/2),width:px(w),height:px(h));CATransaction.commit()
     }
 
