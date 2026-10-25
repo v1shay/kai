@@ -210,8 +210,15 @@ private final class NotchView:ImageDropView {
     private let chatVoice=ChatVoiceController()
     private let realtimeVoiceMenu=RealtimeVoiceMenu()
     private let defaultModelMenu=DefaultModelMenu(),shortcutTimingMenu=ShortcutTimingMenu()
-    private let voicePrompt=HoldToVoiceController()
+    private let voicePrompt:HoldToVoiceController
+    private let modifierFlags:()->NSEvent.ModifierFlags
+    private let contextCapture:((Bool,@escaping(ApplicationContext)->Void)->Void)?
+    init(voiceRecorder:VoicePromptRecording?=nil,shortcutDefaults:UserDefaults = .standard,modifierFlags:@escaping()->NSEvent.ModifierFlags={NSEvent.modifierFlags},capture:((Bool,@escaping(ApplicationContext)->Void)->Void)?=nil){
+        shortcutPreferences=ShortcutPreferences(defaults:shortcutDefaults);voicePrompt=HoldToVoiceController(recorder:voiceRecorder);self.modifierFlags=modifierFlags;contextCapture=capture;super.init()
+    }
     private var compactVoiceMode=false,compactVoiceError:String?
+    private var voiceShortcutArmed=false
+    private var beforeVoiceShortcut:(open:Bool,mini:Bool,pinned:Bool,working:Bool,automatic:Bool)?
     private var voiceExpanded=false
     private var voiceApprovalMenuItem:NSMenuItem?
     private var compactVoiceIndicator:CompactVoicePresentation.Activity?
@@ -258,7 +265,7 @@ private final class NotchView:ImageDropView {
     private var accentSide = "right"
     private let autoSendPreferences=DictationSendPreferences(defaults:.standard)
     private var autoSendMenu=NSMenu()
-    private let shortcutPreferences=ShortcutPreferences(defaults:.standard)
+    private let shortcutPreferences:ShortcutPreferences
     private var shortcutMenu=NSMenu()
     private var expandedDictationItem:NSMenuItem?
     private var shortcutWork:DispatchWorkItem?
@@ -369,7 +376,7 @@ private final class NotchView:ImageDropView {
         }
         fileViewer.onFileActions={ [weak self] url in self?.showFileActions(url) }
         shortcutPreparation.onCommand={ [weak self] action,fields in self?.bridge.send(action,fields) }
-        shortcutPreparation.capture={ lightweight,completion in
+        shortcutPreparation.capture=contextCapture ?? { lightweight,completion in
             DispatchQueue.global(qos:.userInitiated).async {
                 let context=ApplicationContext.capture(lightweight:lightweight)
                 DispatchQueue.main.async {completion(context)}
@@ -411,13 +418,15 @@ private final class NotchView:ImageDropView {
             self.indicator.setExternalLevels(levels)
         }
         voicePrompt.onChange={ [weak self] in self?.renderCompactVoice() }
-        voicePrompt.onDiscard={ [weak self] in guard let self else{return};self.closeNotch(keepExpanded:self.miniOpen) }
+        voicePrompt.onArmed={ [weak self] in self?.armVoiceShortcutSurface() }
+        voicePrompt.onDiscard={ [weak self] in self?.discardRecordedVoice() }
         voicePrompt.onError={ [weak self] in self?.failCompactVoice($0) }
         voicePrompt.onReady={ [weak self] action,audio,context in
             guard let self,self.compactVoiceMode else {
                 if let path=context?.imagePath{try? FileManager.default.removeItem(atPath:path)};return
             }
             self.pendingVoiceStart=(action,audio,context,self.voiceCaptureSource)
+            self.armVoiceShortcutSurface()
             let work=DispatchWorkItem{[weak self] in
                 guard let self,self.pendingVoiceStart != nil else{return}
                 self.failCompactVoice("Codex voice startup timed out; hold the shortcut to try again")
@@ -454,7 +463,7 @@ private final class NotchView:ImageDropView {
         miniUI.onFilesVisibleChanged={ [weak self] visible in self?.indicator.setFileOpen(visible) }
         miniUI.onImagesChanged={ [weak self] images in self?.queueImages(images) }
         EmbeddedCodeRuntime.shared.onLevels={ [weak self] levels in
-            guard let self,self.latestState?.workspaceVoiceActive == true,self.latestState?.workspaceVoiceScene == "listening",!self.dictating else{return}
+            guard let self,self.latestState?.workspaceVoiceActive == true,["listening","speaking"].contains(self.latestState?.workspaceVoiceScene ?? ""),!self.dictating else{return}
             self.indicator.setExternalLevels(levels)
         }
         approvalUI.onCycle={[weak self] in self?.bridge.send("approval_next",[:])}
@@ -477,13 +486,13 @@ private final class NotchView:ImageDropView {
             else {
                 self?.cancelShortcutHold();self?.cancelWorkspaceHold();self?.commandDismissGesture.cancel();self?.lastControlTap=0
                 if e.keyCode == 53,self?.panel.isKeyWindow == true,self?.open == true {self?.dismissNotchView();return nil}
-                if self?.voicePrompt.phase == .recording {self?.endCompactVoice()}
+                self?.cancelVoicePromptForKeypress()
             }
             return e
         }
         globalMonitor = NSEvent.addGlobalMonitorForEvents(matching:[.flagsChanged,.keyDown]) { [weak self] e in
             if e.type == .flagsChanged {self?.flags(e)}
-            else {self?.cancelShortcutHold();self?.cancelWorkspaceHold();self?.commandDismissGesture.cancel();self?.lastControlTap=0;if self?.voicePrompt.phase == .recording {self?.endCompactVoice()}}
+            else {self?.cancelShortcutHold();self?.cancelWorkspaceHold();self?.commandDismissGesture.cancel();self?.lastControlTap=0;self?.cancelVoicePromptForKeypress()}
         }
         for name in [NSWindow.didBecomeKeyNotification,NSWindow.didResignKeyNotification,NSApplication.didBecomeActiveNotification,NSApplication.didResignActiveNotification]{NotificationCenter.default.addObserver(self,selector:#selector(scheduleWorkspaceFocusRefresh),name:name,object:nil)}
         NSWorkspace.shared.notificationCenter.addObserver(self,selector:#selector(scheduleWorkspaceFocusRefresh),name:NSWorkspace.didActivateApplicationNotification,object:nil)
@@ -774,7 +783,7 @@ private final class NotchView:ImageDropView {
         NotchSizing.path(canvas:CGSize(width:canvasWidth,height:canvasHeight),width:width,height:height,radius:glassEnabled && miniOpen ? CGFloat(GlassPreferences(defaults:.standard).radius):14)
     }
 
-    private func flags(_ event: NSEvent) {
+    func flags(_ event: NSEvent) {
         cancelSizeTest()
         let down=event.modifierFlags.contains(.command),option=event.modifierFlags.contains(.option),control=event.modifierFlags.contains(.control),function=event.modifierFlags.contains(.function)
         let miniChord=option && control && !down && !function && !event.modifierFlags.contains(.shift),wasMiniChord=optionDown && controlDown
@@ -799,14 +808,16 @@ private final class NotchView:ImageDropView {
                 holdWork?.cancel();holdWork=nil
                 let expanded=miniOpen
                 guard let action=shortcutPreferences.action(for:trigger,expanded:expanded) else{return}
+                if action.isVoice,!compactVoiceMode,latestState?.workspaceVoiceActive != true{
+                    startVoicePromptShortcut(action,trigger:trigger);return
+                }
                 let generation=shortcutGeneration
-                // Voice used to start as soon as the modifier went down. The
-                // configured hold time only delayed microphone arming, which
-                // still opened the notch and animated on quick taps. Gate the
-                // whole voice startup on the same threshold as other shortcuts.
+                // Dictation and ending an existing voice call still use the
+                // configured hold threshold. A new held voice prompt records
+                // immediately, retaining words spoken during that threshold.
                 let work=DispatchWorkItem { [weak self] in
                     guard let self,self.shortcutGeneration == generation,self.miniOpen == expanded,self.shortcutPreferences.action(for:trigger,expanded:expanded) == action else{return}
-                    let flags=NSEvent.modifierFlags
+                    let flags=self.modifierFlags()
                     guard ShortcutPreferences.heldTrigger(command:flags.contains(.command),option:flags.contains(.option),control:flags.contains(.control),function:flags.contains(.function),shift:flags.contains(.shift)) == trigger else{return}
                     self.shortcutWork=nil
                     if action.isVoice { self.startVoicePromptShortcut(action,trigger:trigger) }
@@ -852,8 +863,7 @@ private final class NotchView:ImageDropView {
     private func cancelWorkspaceHold(){workspaceHold.cancel();workspaceHoldJobs.forEach{$0.cancel()};workspaceHoldJobs=[]}
 
     private func startVoicePromptShortcut(_ action:ShortcutAction,trigger:DictationTrigger){
-        revealNotchForInput()
-        if EmbeddedCodeRuntime.shared.active,latestState?.workspaceVoiceActive == true{bridge.send("voice_stop");return}
+        if EmbeddedCodeRuntime.shared.active,latestState?.workspaceVoiceActive == true{closeNotch();return}
         if compactVoiceMode && (chatVoice.active || voicePrompt.active || shortcutPreparation.busy || pendingVoiceStart != nil) {endCompactVoice();return}
         guard !dictating,!finalizingDictation,!shortcutPreparation.busy,sendingPrompt == nil,expandedChatRequest == nil else{miniUI.setCodexMessage("Finish the current input before starting voice");return}
         guard (composerField?.stringValue ?? "").trimmingCharacters(in:.whitespacesAndNewlines).isEmpty,queuedImageCount == 0 else{miniUI.setCodexMessage("Send or clear your draft before starting voice");return}
@@ -864,16 +874,29 @@ private final class NotchView:ImageDropView {
         }
         dictationDestination=nil;voiceCaptureSource=latestState?.threadId
         if experimentalWebMode{toggleExperimentalWebMode()}
-        voiceExpanded=miniOpen;compactVoiceMode=true;compactVoiceError=nil;compactVoiceIndicator=nil
+        beforeVoiceShortcut=(open,miniOpen,pinned,compactWhileWorking,autoCompact);voiceShortcutArmed=false
+        voiceExpanded=false;compactVoiceMode=true;compactVoiceError=nil;compactVoiceIndicator=nil
         autoCompact=false;compactWhileWorking=false;pinned=true
         speech.cancelAudio();dismissMedia(closeNotch:false)
-        // The global shortcut monitor already waited out the configured hold
-        // threshold before entering here. Starting a second timer inside the
-        // recorder would require two holds and discard a prompt released at
-        // the slider's displayed duration.
-        voicePrompt.begin(action,trigger:trigger,lightweight:contextLightweight,minimumHold:0)
+        voicePrompt.begin(action,trigger:trigger,lightweight:contextLightweight,minimumHold:shortcutPreferences.holdDuration(for:trigger))
         guard voicePrompt.active else{return}
-        setOpen(true,mini:false);renderCompactVoice()
+        renderCompactVoice()
+    }
+    func cancelVoicePromptForKeypress(){
+        guard voicePrompt.phase == .recording else{return}
+        voicePrompt.cancel();discardRecordedVoice()
+    }
+    private func discardRecordedVoice(){
+        if !voiceShortcutArmed,let prior=beforeVoiceShortcut{
+            compactVoiceMode=false;compactVoiceIndicator=nil;voiceExpanded=false
+            pinned=prior.pinned;compactWhileWorking=prior.working;autoCompact=prior.automatic;setOpen(prior.open,mini:prior.mini)
+            currentScene="";if let state=latestState{showActivity(displayActivity(state))}
+            beforeVoiceShortcut=nil
+        }else{closeNotch()}
+    }
+    private func armVoiceShortcutSurface(){
+        guard compactVoiceMode,!voiceShortcutArmed else{return};voiceShortcutArmed=true
+        revealNotchForInput();setOpen(true,mini:false);renderCompactVoice()
     }
     private func prepareRecordedVoice(){
         guard compactVoiceMode,let pending=pendingVoiceStart,!shortcutPreparation.busy,let state=latestState else{return}
@@ -890,7 +913,7 @@ private final class NotchView:ImageDropView {
             if let levels=latestState?.workspaceVoiceLevels{indicator.setExternalLevels(levels)}
             if currentScene != "workspace-voice:"+scene {
                 currentScene="workspace-voice:"+scene
-                if scene == "listening"{indicator.startListening(useMicrophone:false)}else{indicator.showThinking()}
+                if ["listening","speaking"].contains(scene){indicator.startListening(useMicrophone:false)}else{indicator.showThinking()}
             }
             return
         }
@@ -1040,7 +1063,7 @@ private final class NotchView:ImageDropView {
         bridge.send("chat",["id":task.id,"requestId":id])
     }
     private func reviewNextFloatingTask(){
-        guard !quickChatVisible,!workspaceMorph.expanded,!workspaceMorph.transitioning,!floatingReviews.isEmpty,!miniOpen,!approvalPopout,!dictating,!finalizingDictation,!chatVoice.active,!voicePrompt.active,!shortcutPreparation.busy,
+        guard !quickChatVisible,latestState?.workspaceVoiceActive != true,!workspaceMorph.expanded,!workspaceMorph.transitioning,!floatingReviews.isEmpty,!miniOpen,!approvalPopout,!dictating,!finalizingDictation,!chatVoice.active,!voicePrompt.active,!shortcutPreparation.busy,
               expandedChatRequest == nil,sendingPrompt == nil,queuedImageCount == 0,(composerField?.stringValue ?? "").trimmingCharacters(in:.whitespacesAndNewlines).isEmpty else{return}
         openFloatingTask(floatingReviews.removeFirst(),preview:false)
     }
@@ -1174,6 +1197,10 @@ private final class NotchView:ImageDropView {
         if quickChatVisible{EmbeddedCodeRuntime.shared.sendAction("quick_dismiss");quickChatVisible=false}
         guard EmbeddedCodeRuntime.shared.active,workspaceMorph.expanded || workspaceMorph.transitioning,let window=EmbeddedCodeRuntime.shared.workspaceWindow else{return}
         workspaceNotchOverlay=true;workspaceMorph.retainOpen(window);restoreWorkspacePet();floatingTasks.setSuppressed(suppressFloatingTasks);setOpen(true,mini:false,userInitiated:true)
+    }
+    func unifiedVoiceHost()->NSView?{
+        let surface=showsNotchSurface && open ? panel:EmbeddedCodeRuntime.shared.workspaceWindow
+        return surface?.isVisible == true ? surface?.contentView:nil
     }
     func unifiedPresentationDiagnostics()->UInt32{
         var value:UInt32=0
@@ -1372,15 +1399,12 @@ private final class NotchView:ImageDropView {
         nativeReview.update(state)
         if EmbeddedCodeRuntime.shared.active {
             synchronizeOwnerAttachments(state)
+            if let error=state.workspaceVoiceError,error != latestState?.workspaceVoiceError,compactVoiceMode || workspaceVoiceRequest != nil{failCompactVoice(error)}
             if let motion=state.workspaceMotion{workspaceMorph.motionEnabled=motion}
             if let text=state.workspaceTextMorph,text != morphingText{morphingText=text;textRevealPreferences.enabled=text;textMorphItem?.state=text ? .on:.off}
-            if let request=workspaceVoiceRequest,state.completedRequestId == request || state.workspaceVoiceActive == true{
-                workspaceVoiceRequest=nil;voiceLaunchTimeout?.cancel();voiceLaunchTimeout=nil
-                if let error=state.completedRequestError{failCompactVoice(error)}
-            }
             if let voice=state.workspaceVoiceChoice{realtimeVoiceMenu.synchronize(voice)}
             miniUI.setVoiceActive(state.workspaceVoiceActive == true)
-            if let levels=state.workspaceVoiceLevels,state.workspaceVoiceScene == "listening"{indicator.setExternalLevels(levels)}
+            if let levels=state.workspaceVoiceLevels,["listening","speaking"].contains(state.workspaceVoiceScene ?? ""){indicator.setExternalLevels(levels)}
             if pendingAttachmentSend,!attachmentEncoding,!state.readOnly {
                 pendingAttachmentSend=false
                 if state.completedRequestError == nil{DispatchQueue.main.async{[weak self] in self?.sendPrompt()}}
@@ -1397,6 +1421,15 @@ private final class NotchView:ImageDropView {
         }
         if let connection=state.codeConnection{codeConnectionItem?.toolTip=connection.error;codeConnectionItem?.title=EmbeddedCodeRuntime.shared.active ? "Code runtime · in this app":connection.enabled ? "Connect to Code · \(connection.connected ? "connected":"waiting")":"Connect to Code"}
         let previous=latestState,previousNotice=previous?.notice,wasFloating=floatingTasks.tracking;latestState=state
+        // Composer adoption above can render the voice indicator. Keep the
+        // connecting request until its new owner snapshot is actually installed.
+        if EmbeddedCodeRuntime.shared.active{
+            if let request=workspaceVoiceRequest,state.completedRequestId == request || state.workspaceVoiceActive == true{
+                workspaceVoiceRequest=nil;voiceLaunchTimeout?.cancel();voiceLaunchTimeout=nil
+                if let error=state.completedRequestError{failCompactVoice(error)}
+            }
+            if previous?.workspaceVoiceActive == true,state.workspaceVoiceActive != true,state.workspaceVoiceError == nil,compactVoiceMode,!voicePrompt.active,pendingVoiceStart == nil,!shortcutPreparation.busy{closeNotch()}
+        }
         var confirmedCompletion=false
         if let models=state.models{defaultModelMenu.update(models)}
         let prepending=previous?.threadId == state.threadId && earlierHistoryRequest != nil && state.completedRequestId == earlierHistoryRequest
@@ -1462,7 +1495,7 @@ private final class NotchView:ImageDropView {
         if let pendingFilesRequestID,state.completedRequestId == pendingFilesRequestID {self.pendingFilesRequestID=nil;indicator.setFileLoading(false)}
         if !state.approval{updateCompactApproval(state)}
         renderInputIndicator();syncWorkspacePet();reviewNextFloatingTask()
-        if (legacyCompletion || confirmedCompletion),!state.approval,!dictating,!voicePrompt.active,!quickChatVisible {
+        if (legacyCompletion || confirmedCompletion),!state.approval,!dictating,!compactVoiceMode,!voicePrompt.active,!quickChatVisible {
             completionIndicatorWork?.cancel();currentScene="success";indicator.showScene("success",looping:false)
             let finish=DispatchWorkItem{[weak self] in guard let self,self.currentScene == "success",let state=self.latestState else{return};self.currentScene="";self.showActivity(self.displayActivity(state))}
             completionIndicatorWork=finish;DispatchQueue.main.asyncAfter(deadline:.now()+1.05,execute:finish)
@@ -1643,6 +1676,8 @@ private final class NotchView:ImageDropView {
         syncConversationTheme()
     }
     private func closeNotch(keepExpanded:Bool=false){
+        if EmbeddedCodeRuntime.shared.active,latestState?.workspaceVoiceActive == true{bridge.send("voice_stop")}
+        beforeVoiceShortcut=nil;voiceShortcutArmed=false
         voiceExpanded=false;voiceApprovalMenuItem?.isHidden=true
         compactVoiceMode=false;compactVoiceError=nil;compactVoiceIndicator=nil;voiceCaptureSource=nil;currentScene=""
         if let path=pendingVoiceStart?.context?.imagePath{attachmentFiles.append(URL(fileURLWithPath:path))}

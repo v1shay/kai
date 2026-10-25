@@ -176,7 +176,7 @@ impl Media {
         let id = CString::new(session_id)?;
         let native = unsafe {
             (api.create)(
-                handle.ns_view.as_ptr(),
+                if crate::unified::active(){crate::unified::voice_host().ok_or_else(||anyhow!("The voice surface is not visible"))?}else{handle.ns_view.as_ptr()},
                 script.as_ptr(),
                 (&mut *state as *mut CallbackState).cast(),
                 callback,

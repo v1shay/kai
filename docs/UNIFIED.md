@@ -47,8 +47,9 @@ before signing the bundle. On a fresh development machine, first run
 - Existing Command/Fn/Option dictation shortcuts remain available. Image drops
   and screen context use Code's attachment import and native submission path.
   The voice button uses Code's single Codex call. Hold-to-voice passes the
-  recorded first prompt to that same call; voice screen captures are supplied
-  as local image references for the native agent's image-viewing tools.
+  recorded first prompt to that same call. Voice appshots send the actual image
+  to a native context turn in the same chat before realtime starts. Short taps
+  preserve the current surface; a held silent release creates no chat or call.
 
 Kai Unified has a separate bundle ID (`com.kai.unified.experimental`) and data
 store (`~/Library/Application Support/Kai Unified`). On first launch it seeds
@@ -261,3 +262,61 @@ Activity focus does not implicitly navigate. Explicit pet/chat selections still
 use normal owner navigation. Launch uses Code’s normal saved workspace restore
 or its new-chat state. The native event harness covers the competing-running-chat
 case and verifies that expansion emits no chat-navigation command.
+
+### 0.5.0 held voice restoration
+
+Voice shortcuts record from modifier-down, including the configured hold interval.
+Activation and appshot capture still require that hold; a short tap restores the
+prior surface. Releasing a silent recording discards it without creating a chat
+or opening a voice session. Releasing speech starts the selected-chat or new-chat
+action only after the exact navigation acknowledgement, preserving its audio and
+context. Holding the assigned shortcut again stops the native call.
+
+New standalone voice chats now create their validated, application-owned working
+directory before launching Codex. Existing user project directories are never
+recreated. Voice media attaches to the actual visible notch for a shortcut or the Code
+workspace for its own voice controls. A direct native view handoff prevents
+starting WebKit capture in an ordered-out IDE, without another media window. Appshots use real
+`localImage` inputs in a native Codex context turn, followed by realtime on that
+same thread. Voice shutdown is excluded from ordinary coding-completion popouts. Listening
+and speaking both retain Kai's audio waveform. Terminal Stop also closes its
+PTY before waiting for the owned shell; the previous order repeatedly stalled
+that shutdown regression in the full test suite.
+
+Reproducible checks:
+
+```sh
+scripts/test-unified-native.sh voice
+python3 scripts/diagnose-unified-voice.py --backend /absolute/path/to/orbit
+```
+
+The shortcut harness invokes the actual AppKit modifier handler with in-memory
+NSEvents; it does not post keys to the desktop. It replaces hardware recording,
+context capture, and owner acknowledgements with controlled fixtures. The live
+diagnostic uses the real native Code runtime, signed Apple media shim, installed
+Codex, generated speech, and a generated image. Earlier in this repair, both new-chat-with-image and
+same-chat resume completed with peer connection, transmitted first prompt,
+user/assistant transcripts, and received audio while the IDE window was hidden.
+Its microphone track is disabled and its speaker muted. Its temporary app uses
+the original Kai microphone identity; it does not establish physical key delivery
+or the experimental app's own macOS permission grant.
+
+Full suites: 188 Swift tests (one optional local-audio test skipped), 730 Code
+tests passed and 11 opt-in tests ignored. The final modifier harness tests every
+voice action on Command, Option and Fn, including compact indicator ownership,
+actual native host selection, speaking waveforms, ordinary Command-key
+combinations, short taps, and double-Command in the big form.
+The native state harness passed separately. The release signature, all nine ABI
+exports, and owner startup handshake passed; installed executable/library hashes
+match the signed build.
+
+The final awake-display run passed both strengthened spoken-image checks using
+the release Code executable and production Apple media shim: a new chat read the
+generated blue image and answered its color in voice; resuming the same native
+chat answered the color again with user/assistant transcripts and received audio.
+The signed packaged probe passed continuous morph reversal, maximized working
+area, shared pet, repeat open, extended-notch return, double-Command dismissal,
+and exclusive Quick Chat. Earlier locked-display attempts were invalid for
+these checks: macOS deferred capture and animation completion until unlock.
+Native desktop automation remained unavailable, so physical key delivery and the
+experimental bundle's first macOS permission prompt were not automated.

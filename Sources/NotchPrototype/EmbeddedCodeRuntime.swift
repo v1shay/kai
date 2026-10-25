@@ -16,6 +16,7 @@ enum UnifiedDraftHandoff {
     private(set) var active=false
     private var command:Command?
     private var app:KaiPetApp?
+    var makeApp:()->KaiPetApp={KaiPetApp()}
     weak var workspaceWindow:NSWindow?
     var workspaceFocusProvider:(()->Bool)?
     var workspaceIsForeground:Bool{workspaceFocusProvider?() ?? (NSApp.isActive && workspaceWindow?.isVisible == true && workspaceWindow?.isKeyWindow == true)}
@@ -35,7 +36,7 @@ enum UnifiedDraftHandoff {
             defaults.set(true,forKey:"unifiedPreferencesSeeded")
         }
         window.orderOut(nil)
-        let app=KaiPetApp();self.app=app
+        let app=makeApp();self.app=app
         app.applicationDidFinishLaunching(Notification(name:NSApplication.didFinishLaunchingNotification))
         self.app?.showUnifiedNotchOnLaunch()
         NotificationCenter.default.addObserver(forName:NSApplication.willTerminateNotification,object:nil,queue:.main){[weak app] note in
@@ -78,6 +79,7 @@ enum UnifiedDraftHandoff {
     var ready:Bool{active && onState != nil && lastState != nil}
     func presentation(_ phase:String){var now=timespec();clock_gettime(CLOCK_MONOTONIC_RAW,&now);sendAction("workspace_presentation",["phase":phase,"started":Double(now.tv_sec)+Double(now.tv_nsec)/1_000_000_000])}
     func sendAction(_ action:String,_ fields:[String:Any]=[:]){var value=fields;value["action"]=action;if let data=try? JSONSerialization.data(withJSONObject:value){send(data)}}
+    var voiceHost:NSView?{app?.unifiedVoiceHost()}
     func diagnostics()->UInt32{app?.unifiedPresentationDiagnostics() ?? 0}
     func toggle(){app?.toggleUnifiedSurface()}
     func collapse(){app?.collapseWorkspace()}
@@ -111,5 +113,10 @@ public func kaiUnifiedLevels(_ values:UnsafePointer<Float>?,_ count:Int){
     guard Thread.isMainThread,let values,count == 4 else{return}
     let levels=(0..<4).map{CGFloat(values[$0].isFinite ? min(1,max(0,values[$0])):0)}
     MainActor.assumeIsolated{EmbeddedCodeRuntime.shared.onLevels?(levels)}
+}
+@_cdecl("kai_unified_voice_host")
+public func kaiUnifiedVoiceHost()->UnsafeMutableRawPointer?{
+    guard Thread.isMainThread else{return nil}
+    return MainActor.assumeIsolated{EmbeddedCodeRuntime.shared.voiceHost.map{Unmanaged.passUnretained($0).toOpaque()}}
 }
 #endif

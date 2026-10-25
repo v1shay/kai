@@ -64,6 +64,15 @@ import AVFoundation
         now=1.3;hold.release(.command)
         XCTAssertEqual(discarded,2);XCTAssertEqual(starts,1)
     }
+    func testConfiguredThresholdNeverDelaysAudioCaptureOrArmsAShortTap(){
+        let recorder=PromptRecorderStub();var now:TimeInterval=0,armed=0,ready=0
+        let hold=HoldToVoiceController(recorder:recorder,clock:{now});hold.onArmed={armed+=1};hold.onReady={_,_,_ in ready+=1}
+        hold.begin(.realtimeVoice,trigger:.command,lightweight:false,minimumHold:2)
+        XCTAssertEqual(recorder.starts,1);XCTAssertEqual(armed,0)
+        now=0.1;hold.release(.command);XCTAssertEqual(ready,0);XCTAssertEqual(armed,0)
+        hold.begin(.realtimeVoice,trigger:.command,lightweight:false,minimumHold:2)
+        XCTAssertEqual(recorder.starts,2);now=2.2;hold.release(.command);XCTAssertEqual(ready,1)
+    }
     func testRecordsBeforeReleaseAndNeverConnectsUntilReleased() {
         let recorder=PromptRecorderStub(),hold=HoldToVoiceController(recorder:recorder,minimumHold:0)
         var ready=[(ShortcutAction,Data)]();hold.onReady={ready.append(($0,$1));_=$2}

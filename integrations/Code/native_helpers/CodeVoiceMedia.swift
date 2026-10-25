@@ -28,6 +28,7 @@ private final class Relay:NSObject,WKScriptMessageHandler {
     }
     func start(_ id:String){
         stop();session=id
+        diagnostic("authorization",["status":AVCaptureDevice.authorizationStatus(for:.audio).rawValue])
         switch AVCaptureDevice.authorizationStatus(for:.audio){
         case .authorized:open(id)
         case .notDetermined:AVCaptureDevice.requestAccess(for:.audio){[weak self] allowed in
@@ -36,6 +37,7 @@ private final class Relay:NSObject,WKScriptMessageHandler {
         default:fail("Allow microphone access for Code in System Settings to start voice.")
         }
     }
+    func diagnostic(_ step:String,_ fields:[String:Any]=[:]){guard ProcessInfo.processInfo.environment["KAI_CODE_VOICE_DIAGNOSTIC"] == "1" else{return};var event=fields;event["type"]="diagnostic";event["step"]=step;post(event)}
     func open(_ id:String){
         guard session==id,let host else{fail("The conversation window closed before voice started.");return}
         let configuration=WKWebViewConfiguration()
@@ -46,7 +48,10 @@ private final class Relay:NSObject,WKScriptMessageHandler {
         configuration.userContentController.addUserScript(WKUserScript(source:script,injectionTime:.atDocumentEnd,forMainFrameOnly:true))
         let web=WKWebView(frame:CGRect(x:0,y:0,width:1,height:1),configuration:configuration)
         web.alphaValue=0.01;web.navigationDelegate=self;web.uiDelegate=self;view=web
+        // The owner supplies the actual visible notch or workspace surface.
+        // Starting capture in an ordered-out IDE defers WebKit permission.
         host.addSubview(web,positioned:.below,relativeTo:nil)
+        diagnostic("loading",["hostVisible":host.window?.isVisible == true,"unoccluded":host.window?.occlusionState.contains(.visible) == true])
         web.loadHTMLString("<!doctype html><html><head><meta http-equiv='Content-Security-Policy' content=\"default-src 'none'; script-src 'unsafe-inline'; media-src blob:; connect-src 'none'\"></head><body></body></html>",baseURL:URL(string:"http://localhost")!)
     }
     func invoke(_ method:String,_ values:[Any]){
@@ -75,18 +80,19 @@ private final class Relay:NSObject,WKScriptMessageHandler {
             view.stopLoading();view.uiDelegate=nil;view.navigationDelegate=nil;view.removeFromSuperview()
             view.loadHTMLString("",baseURL:nil)
         }
-        view=nil
+        view=nil;initialPrompt=""
     }
     func fail(_ message:String){post(["type":"error","message":String(message.prefix(1000))]);stop()}
     func receive(_ message:WKScriptMessage){
         guard message.webView===view,message.frameInfo.isMainFrame,let event=message.body as? [String:Any],let type=event["type"] as? String,let id=session else{return}
-        if type=="ready"{let prompt=initialPrompt;initialPrompt="";invoke("start",[id,true,prompt,false]);return}
+        if type=="ready"{diagnostic("documentReady",["hostVisible":host?.window?.isVisible == true,"unoccluded":host?.window?.occlusionState.contains(.visible) == true]);let prompt=initialPrompt;initialPrompt="";invoke("start",[id,true,prompt,ProcessInfo.processInfo.environment["KAI_CODE_VOICE_DIAGNOSTIC"] == "1"]);return}
         guard event["sessionId"] as? String==id else{return}
         switch type{
         case "offer":if let sdp=event["sdp"] as? String,sdp.hasPrefix("v=0"),sdp.utf8.count<=128*1024{post(["type":"offer","sdp":sdp])}
         case "connected":post(["type":"connected"])
         case "activity":if let activity=event["activity"] as? String,["listening","thinking","speaking"].contains(activity){post(["type":"activity","activity":activity])}
         case "level":if let level=event["level"] as? Double,level.isFinite{post(["type":"level","level":max(0,min(1,level))])}
+        case "promptSent","stats","event":if ProcessInfo.processInfo.environment["KAI_CODE_VOICE_DIAGNOSTIC"] == "1"{post(event)}
         case "error":fail(event["message"] as? String ?? "The Codex voice media connection failed.")
         default:break
         }
@@ -95,7 +101,7 @@ private final class Relay:NSObject,WKScriptMessageHandler {
         MainActor.assumeIsolated{let url=action.request.url;let local=url?.scheme=="http" && url?.host=="localhost" && url?.port==nil && ["","/"].contains(url?.path ?? "") && url?.query==nil;decisionHandler(webView===view && (url?.absoluteString=="about:blank" || local) ? .allow:.cancel)}
     }
     nonisolated func webView(_ webView:WKWebView,requestMediaCapturePermissionFor origin:WKSecurityOrigin,initiatedByFrame frame:WKFrameInfo,type:WKMediaCaptureType,decisionHandler:@escaping(WKPermissionDecision)->Void){
-        MainActor.assumeIsolated{let local=(origin.host=="localhost" && origin.protocol=="http") || (origin.host.isEmpty && origin.protocol=="about");decisionHandler(webView===view && session != nil && frame.isMainFrame && local && type == .microphone ? .grant:.deny)}
+        MainActor.assumeIsolated{let local=(origin.host=="localhost" && origin.protocol=="http") || (origin.host.isEmpty && origin.protocol=="about");let allowed=webView===view && session != nil && frame.isMainFrame && local && type == .microphone;diagnostic("mediaPermission",["allowed":allowed]);decisionHandler(allowed ? .grant:.deny)}
     }
     nonisolated func webViewWebContentProcessDidTerminate(_ webView:WKWebView){MainActor.assumeIsolated{if webView===view{fail("Codex voice media stopped. Start voice again to reconnect.")}}}
     nonisolated func webView(_ webView:WKWebView,didFailProvisionalNavigation navigation:WKNavigation!,withError error:Error){MainActor.assumeIsolated{if webView===view{fail(error.localizedDescription)}}}

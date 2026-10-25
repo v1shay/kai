@@ -36,6 +36,7 @@ struct VoiceState {
     canonical: bool,
     closed: bool,
     coding: bool,
+    preparing_context:bool,
     segments: HashMap<String, (String, ResponseBuffer)>,
     final_ids: std::collections::HashSet<String>,
     final_order: std::collections::VecDeque<String>,
@@ -532,11 +533,12 @@ fn run_turn(
         pending,
         ..Session::default()
     };
-    if let Some((method, params)) = &state.maintenance
+    if let Some((method, params)) = &mut state.maintenance
         && method == "thread/realtime/start"
     {
+        let prepare=params.as_object_mut().and_then(|p|p.remove("_codePrepareAppshot")).and_then(|v|v.as_bool()).unwrap_or(false);
         state.voice = crate::voice::session_id(params).ok().map(|id| VoiceState {
-            id,
+            id,preparing_context:prepare,
             ..Default::default()
         });
     }
@@ -1038,7 +1040,13 @@ impl Session {
             if !value["id"].is_null() {
                 return self.request(method, &value["id"], &value["params"], stdin, ctx);
             }
-            return self.notification(method, &value["params"], ctx);
+            let context_ready=method=="turn/completed" && value["params"]["threadId"]==self.thread && self.voice.as_ref().is_some_and(|v|v.preparing_context);
+            self.notification(method,&value["params"],ctx)?;
+            if context_ready{
+                let (method,mut params)=self.maintenance.clone().context("Missing voice start")?;params["threadId"]=json!(self.thread);
+                let id=self.next_id;self.next_id+=1;self.calls.insert(id,method.clone());rpc(stdin,&ctx.cancelled,id,&method,params)?;
+            }
+            return Ok(());
         }
         if let Some(id) = value["id"].as_str() {
             if let Some(child) = id.strip_prefix("code-child-subscribe:") {
@@ -1104,7 +1112,7 @@ impl Session {
             }
         }
         if let Some(error) = value.get("error") {
-            if value["id"].as_u64().is_some_and(|id| id <= 3) {
+            if value["id"].as_u64().is_some_and(|id| id <= 3 || self.calls.get(&id).is_some_and(|m|m=="thread/realtime/start")) {
                 bail!(
                     "{}",
                     error["message"]
@@ -1196,6 +1204,11 @@ impl Session {
                     )?;
                 }
                 if let Some((method, mut params)) = self.maintenance.clone() {
+                    if method=="thread/realtime/start" && self.voice.as_ref().is_some_and(|v|v.preparing_context){
+                        self.voice.as_mut().context("Missing voice context owner")?.preparing_context=true;
+                        rpc(stdin,&ctx.cancelled,3,"turn/start",turn_params(&self.thread,request))?;
+                        send(&ctx.tx,RuntimeEvent::Status("Reading appshot for voice".into()),&ctx.cancelled)?;return Ok(())
+                    }
                     params["threadId"] = json!(self.thread);
                     rpc(stdin, &ctx.cancelled, 3, &method, params)?;
                     let status = match method.as_str() {
@@ -1769,6 +1782,11 @@ impl Session {
                 self.events(events, ctx)?;
             }
             "turn/completed" => {
+                if self.voice.as_ref().is_some_and(|v|v.preparing_context){
+                    anyhow::ensure!(p["turn"]["status"]=="completed","Appshot preparation did not complete successfully");
+                    let voice=self.voice.as_mut().unwrap();voice.preparing_context=false;voice.coding=false;self.turn.clear();
+                    return Ok(())
+                }
                 if let Some(voice) = &mut self.voice {
                     voice.coding = false;
                     if voice.closed {
@@ -3077,6 +3095,35 @@ mod tests {
             codex_approvals: crate::runtime::CodexApprovals::default(),
             trust_workspace: false,
         }
+    }
+    #[test]
+    fn voice_appshot_uses_real_image_input_before_realtime_on_same_native_thread(){
+        let thread="12345678-1234-4234-8234-123456789012";
+        let script=fixture(r#"v=recv();send({'id':v['id'],'result':{}})
+assert recv()['method']=='initialized'
+v=recv();assert v['method']=='thread/start';send({'id':v['id'],'result':{'thread':{'id':'12345678-1234-4234-8234-123456789012'}}})
+v=recv();assert v['method']=='turn/start'
+assert any(i['type']=='localImage' for i in v['params']['input'])
+assert 'untrusted' in v['params']['input'][0]['text']
+send({'id':v['id'],'result':{'turn':{'id':'context-turn'}}})
+send({'method':'turn/started','params':{'threadId':'12345678-1234-4234-8234-123456789012','turn':{'id':'context-turn'}}})
+send({'method':'item/agentMessage/delta','params':{'threadId':'12345678-1234-4234-8234-123456789012','itemId':'context','delta':'The fixture image is blue.'}})
+send({'method':'turn/completed','params':{'threadId':'12345678-1234-4234-8234-123456789012','turn':{'id':'context-turn','status':'completed'}}})
+v=recv();assert v['method']=='thread/realtime/start';assert '_codePrepareAppshot' not in v['params']
+sid=v['params']['realtimeSessionId'];send({'id':v['id'],'result':{}})
+send({'method':'thread/realtime/started','params':{'threadId':'12345678-1234-4234-8234-123456789012','realtimeSessionId':sid}})
+v=recv();assert v['method']=='thread/realtime/stop';send({'id':v['id'],'result':{}})
+send({'method':'thread/realtime/closed','params':{'threadId':'12345678-1234-4234-8234-123456789012','realtimeSessionId':sid,'reason':'userRequested'}})
+"#);
+        let image=std::env::temp_dir().join(format!("code-voice-context-{}.png",uuid::Uuid::new_v4()));
+        image::RgbaImage::new(8,8).save(&image).unwrap();
+        let mut r=request(&script);r.prompt="Describe untrusted captured context".into();r.images=vec![image.clone()];
+        let mut params=crate::voice::Start{session_id:uuid::Uuid::new_v4().to_string(),sdp:"v=0\r\nfixture".into(),voice:None}.params().unwrap();params["_codePrepareAppshot"]=json!(true);
+        let handle=maintenance(r,"thread/realtime/start",params).unwrap();let mut text=String::new();let mut started=false;
+        while let Ok(event)=handle.events.recv_timeout(Duration::from_secs(10)){
+            match event{RuntimeEvent::Text(t)=>text.push_str(&t),RuntimeEvent::Voice(crate::voice::Signal::Started{..})=>{started=true;handle.native_command("thread/realtime/stop",json!({})).unwrap()},RuntimeEvent::Failed(e)=>panic!("{e}"),RuntimeEvent::Finished=>break,_=>{}}
+        }
+        handle.cancel();assert!(started,"Realtime did not follow context turn in {thread}");assert!(text.contains("fixture image is blue"));let _=std::fs::remove_file(script);let _=std::fs::remove_file(image);
     }
     #[test]
     fn native_turn_transmits_selected_reasoning_without_changing_model_id(){

@@ -632,6 +632,9 @@ fn worker(
         while signal.read(&mut buffer).is_ok_and(|n| n > 0) {}
     }
     let stopped = shared.stopped.load(Ordering::Acquire);
+    // Retire PTY IO before waiting for shell teardown. The unreaped session
+    // leader still anchors process ownership while its background jobs stop.
+    drop(master);
     // Cleanup happens before publishing settled, and only targets this session.
     drop(child);
     publish(

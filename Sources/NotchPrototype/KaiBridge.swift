@@ -48,6 +48,7 @@ struct KaiState: Decodable {
     let workspaceVoiceScene:String?
     let workspaceVoiceLevels:[CGFloat]?
     let workspaceVoiceActive:Bool?
+    let workspaceVoiceError:String?
     let voice:KaiVoiceState?
     let sessionActivity:KaiActivity?
     let codeAcceptedRequestId:String?

@@ -15,6 +15,7 @@ struct Host {
     _library: *mut c_void,
     publish: Publish,
     levels: unsafe extern "C" fn(*const f32, usize),
+    voice_host:unsafe extern "C" fn()->*mut c_void,
     collapse: Collapse,
     _toggle: Collapse,
     last: Vec<u8>,
@@ -94,17 +95,19 @@ pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Resul
         let toggle = unsafe { libc::dlsym(library, c"kai_unified_toggle".as_ptr()) };
         let ready = unsafe { libc::dlsym(library, c"kai_unified_ready".as_ptr()) };
         let levels = unsafe { libc::dlsym(library, c"kai_unified_levels".as_ptr()) };
+        let voice_host=unsafe{libc::dlsym(library,c"kai_unified_voice_host".as_ptr())};
         anyhow::ensure!(
             !start.is_null()
                 && !publish.is_null()
                 && !collapse.is_null()
                 && !toggle.is_null()
                 && !ready.is_null()
-                && !levels.is_null(),
+                && !levels.is_null() && !voice_host.is_null(),
             "Incompatible Kai library"
         );
         let levels: unsafe extern "C" fn(*const f32, usize) =
             unsafe { std::mem::transmute(levels) };
+        let voice_host:unsafe extern "C" fn()->*mut c_void=unsafe{std::mem::transmute(voice_host)};
         let ready: unsafe extern "C" fn() -> bool = unsafe { std::mem::transmute(ready) };
         let start: Start = unsafe { std::mem::transmute(start) };
         let publish: Publish = unsafe { std::mem::transmute(publish) };
@@ -116,7 +119,7 @@ pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Resul
             *host.borrow_mut() = Some(Host {
                 _library: library,
                 publish,
-                levels,
+                levels,voice_host,
                 collapse,
                 _toggle:toggle,
                 last: vec![],
@@ -584,9 +587,9 @@ impl Orbit {
                 if self.voice_call.is_some() {
                     return Err("A voice conversation is already running".into());
                 }
-                self.unified_voice_context = None;
+                self.unified_voice_context = None;self.unified_voice_images.clear();self.voice_error=None;
                 if let Some(context) = request["appshot"].as_object() {
-                    let mut text = bounded(
+                    let text = bounded(
                         context.get("text").and_then(Value::as_str).unwrap_or(""),
                         12000,
                     );
@@ -601,7 +604,9 @@ impl Orbit {
                                     p.starts_with('/') && p.len() < 4096 && !p.contains('\0')
                                 })
                                 .ok_or("Invalid captured image path")?;
-                            text.push_str(&format!("\nCaptured image file (available to your native image-viewing tool): {path}"));
+                            let image=PathBuf::from(path);let info=std::fs::metadata(&image).map_err(|_|"The captured image is no longer available")?;
+                            if !info.is_file()||info.len()>25*1024*1024{return Err("The captured image must be a file under 25 MB".into())}
+                            self.unified_voice_images.push(image);
                         }
                     }
                     if !text.is_empty() {
@@ -766,7 +771,7 @@ impl Orbit {
             "notice":self.notice.as_deref().unwrap_or("Kai · Code"),"attachments":self.attachments.iter().filter(|a|!self.attachment_removals.contains_key(&a.id)).map(|a|a.path.to_string_lossy().into_owned()).collect::<Vec<_>>(),"modelsLoading":self.controls_pending.contains(self.agent.command()),"models":models.iter().map(|m|json!({"model":m.id,"displayName":m.label,"supportedReasoningEfforts":m.reasoning_efforts.iter().map(|v|json!({"reasoningEffort":v})).collect::<Vec<_>>()})).collect::<Vec<_>>(),
             "selectedModel":self.model,"reasoningEffort":self.unified_effort().unwrap_or(""),"canGoBack":!self.unified_back.is_empty(),"canGoForward":!self.unified_forward.is_empty(),
             "agents":self.agents.iter().map(|a|json!({"id":a.kind.command(),"name":a.kind.name(),"available":a.available&&a.executable.is_some()})).collect::<Vec<_>>(),"selectedAgent":self.agent.command(),"workspaceVoiceChoice":self.voice_choice,"workspaceVoiceActive":self.voice_call.is_some(),"workspaceVoiceScene":self.voice_call.as_ref().map(|v|v.scene())});
-        snapshot["historyEarlier"]=json!(self.unified_history_end.as_ref().is_some_and(|(owner,_)|owner==&self.unified_token()) || self.history_offset>0 || self.navigation_history);snapshot["approvalCount"]=json!(self.unified_pending_ids().len());snapshot["workspaceMotion"]=json!(self.motion);snapshot["workspaceTextMorph"]=json!(self.unified_text_morph);snapshot
+        snapshot["workspaceVoiceError"]=json!(self.voice_error);snapshot["historyEarlier"]=json!(self.unified_history_end.as_ref().is_some_and(|(owner,_)|owner==&self.unified_token()) || self.history_offset>0 || self.navigation_history);snapshot["approvalCount"]=json!(self.unified_pending_ids().len());snapshot["workspaceMotion"]=json!(self.motion);snapshot["workspaceTextMorph"]=json!(self.unified_text_morph);snapshot
 
     }
     fn unified_history(&self) -> Vec<Value> {
@@ -1319,4 +1324,8 @@ pub(super) fn dismiss(){emit(&json!({"type":"workspaceDismiss"}));}
    assert!(error.contains("Install Codex"));assert!(app.voice_call.is_none());
   });
  }
+}
+
+pub(super) fn voice_host()->Option<*mut c_void>{
+    HOST.with(|host|host.borrow().as_ref().and_then(|h|{let view=unsafe{(h.voice_host)()};(!view.is_null()).then_some(view)}))
 }

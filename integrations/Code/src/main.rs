@@ -545,6 +545,9 @@ struct Orbit {
     unified_successes: std::collections::VecDeque<(String, String)>,
     unified_context: Option<String>,
     unified_voice_context: Option<String>,
+    unified_voice_images:Vec<PathBuf>,
+    voice_error:Option<String>,
+    voice_runs:HashSet<(String,uuid::Uuid)>,
     unified_attachment_expected: Option<usize>,
     unified_notch_sources: Vec<PathBuf>,
     unified_attachment_sources: HashMap<PathBuf, uuid::Uuid>,
@@ -1063,6 +1066,7 @@ impl Orbit {
             unified_successes: Default::default(),
             unified_context: None,
             unified_voice_context: None,
+            unified_voice_images:vec![],voice_error:None,voice_runs:HashSet::new(),
             unified_attachment_expected: None,
             unified_notch_sources: vec![],
             unified_attachment_sources: HashMap::new(),
@@ -3537,12 +3541,13 @@ impl Orbit {
             self.update_stream(id, cx);
         }
         if finished {
+            let ended_voice=self.runs.get(id).is_some_and(|r|self.voice_runs.remove(&(id.to_owned(),r.parse_epoch)));
             if self
                 .voice_call
                 .as_ref()
                 .is_some_and(|call| call.owner == id)
             {
-                self.voice_call.take();
+                self.voice_error=failed.clone();self.voice_call.take();
             }
             if failed.is_some()
                 || self
@@ -3556,6 +3561,7 @@ impl Orbit {
                 .retain(|_, request| request.owner != id || request.broker.is_some());
             if let Some(run) = self.runs.remove(id) {
                 if failed.is_none()
+                    && !ended_voice
                     && !run.handle.is_cancelled()
                     && !matches!(run.status.as_str(), "Stopped" | "Interrupted")
                 {
@@ -6238,6 +6244,7 @@ fn bind_app_keys(cx: &mut App) {
 }
 
 fn main() {
+    if std::env::args().any(|a|a=="--diagnose-native-voice"){if let Err(error)=voice::transport_diagnostic(){eprintln!("Native voice diagnostic: {error}");std::process::exit(1)}return}
     unified::prepare_environment();
     let application = Application::new().with_assets(Assets);
     application.on_reopen(|cx| {

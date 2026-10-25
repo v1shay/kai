@@ -6,7 +6,7 @@ import Foundation
     enum Phase {case off,recording,finishing}
     var onReady:((ShortcutAction,Data,ApplicationContext?)->Void)?
     var onChange:(()->Void)?,onError:((String)->Void)?,onLevels:(([CGFloat])->Void)?
-    var onDiscard:(()->Void)?
+    var onDiscard:(()->Void)?,onArmed:(()->Void)?
     var capture:((Bool,@escaping(ApplicationContext)->Void)->Void)?
     private(set) var phase=Phase.off
     var active:Bool {phase != .off}
@@ -27,6 +27,7 @@ import Foundation
         let token=generation
         let arm=DispatchWorkItem{[weak self] in
             guard let self,self.generation == token,self.active else{return}
+            self.onArmed?()
             guard action.capturesContext else{return}
             guard let capture=self.capture else{self.fail("Appshot capture is unavailable");return}
             capture(lightweight){[weak self] context in

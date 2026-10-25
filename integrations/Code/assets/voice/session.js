@@ -108,8 +108,10 @@
         } catch (_) {}
       }, 500);
       if (captureMicrophone) {
+        if (promptOnly) post(session, 'event', {eventType: 'microphoneRequested'});
         const stream = await navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true, autoGainControl: true}, video: false});
         if (current !== session) { stream.getTracks().forEach(track => track.stop()); return; }
+        if (promptOnly) post(session, 'event', {eventType: 'microphoneGranted'});
         session.stream = stream;
         const track = stream.getAudioTracks()[0];
         if (!track) throw new Error('No microphone track is available');
@@ -148,6 +150,7 @@
           post(session, 'level', {level: Math.max(track.enabled ? level : 0, remoteLevel)});
         }, 80);
       }
+      if (promptOnly) post(session, 'event', {eventType: 'preparingOffer'});
       await peer.setLocalDescription(await peer.createOffer());
       if (current === session) post(session, 'offer', {sdp: peer.localDescription.sdp});
     } catch (error) {
