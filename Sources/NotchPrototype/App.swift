@@ -825,7 +825,7 @@ private final class NotchView:ImageDropView {
                 }
                 shortcutWork=work;DispatchQueue.main.asyncAfter(deadline:.now()+shortcutPreferences.holdDuration(for:trigger),execute:work)
             } else {
-                if voicePrompt.phase == .recording {endCompactVoice()}
+                cancelVoicePromptForKeypress()
                 for trigger in DictationTrigger.allCases {shortcutPreparation.release(trigger)}
             }
         }

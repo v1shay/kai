@@ -92,6 +92,8 @@ private func command(_ bytes:UnsafePointer<UInt8>?,_ count:Int)->Bool{
         prefs.set(.realtimeVoice,for:.command);app.expandToRunningChat();pump(0.3)
         modifiers(.command);app.cancelVoicePromptForKeypress();modifiers([]);pump(0.1)
         precondition(member(app,"miniOpen") as? Bool == true,"A normal Command-key combination closed the chat")
+        pump(0.4);modifiers(.command);modifiers([.command,.shift]);modifiers([]);pump(0.1)
+        precondition(member(app,"miniOpen") as? Bool == true,"A multi-modifier keyboard shortcut closed the chat")
         app.dismissUnifiedSurface();pump(0.3)
         // A short modifier tap must leave a foreground workspace intact and
         // must not send provider commands or activate its notch overlay.
