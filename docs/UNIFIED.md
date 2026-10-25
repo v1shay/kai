@@ -450,3 +450,34 @@ window double-Command and exclusive Quick Chat. Installation of 0.6.2 (10)
 verified the signature and executable/library hashes and retained a 0.6.1 backup.
 Running user chats were not stopped. Physical desktop input and subjective visual
 review remain outside these checks because native desktop automation is unavailable.
+
+### 0.6.3 restore native text unjumbling in the extended notch
+
+The native renderer no longer skips text reveal merely because Code owns its
+state. Streaming assistant suffixes use the existing bounded Kai reveal engine.
+Opening the extended notch explicitly replays its visible text, including an
+unchanged cached chat and the direct Code-to-notch handoff. The opening reveal
+is prepared after the actual panel is ordered front, while the same atomic
+shape/layout transaction is still active. The underlying transcript stays exact
+for selection, copying, links and accessibility; temporary glyph tiles settle
+back to native rendering. Shared Text Morph preferences and Reduce Motion still
+control the effect. The large Code view keeps its own existing decode effect.
+
+Six focused text-animation tests passed, covering changed suffixes, Unicode,
+viewport budgets, settings, bounded snapshots and cleanup. The native view
+harness passed with assertions for visible tiles on new text, reopening the
+same chat, the overlapping Code handoff, and exact settled native text. Its
+text scenario explicitly closes Quick Chat first, preserving exclusive surfaces.
+
+Opt-in self-tests now omit physical keyboard/mouse monitors and invoke the real
+handlers directly, preventing simultaneous user input from arming another voice
+or notch shortcut in the test process. Normal launches retain those monitors.
+This does not establish physical shortcut delivery. Two earlier packaged runs
+left a visible surface after the simulated double-Command check; the final
+isolated packaged retry ended with SIGTERM before completion. No successful full
+packaged smoke run is claimed for this release, and no cause is inferred from
+that termination. The native text regression passed independently.
+
+The installed 0.6.3 (11) bundle's signature and executable/library hashes were
+verified through a clean staging copy. Previous bundles are retained, and no
+running user chat or agent was stopped. Relaunch to load the new native library.

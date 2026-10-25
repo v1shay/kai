@@ -180,9 +180,26 @@ private func member(_ object:Any,_ name:String)->Any?{Mirror(reflecting:object).
     controls.onCycle?();precondition(commands.last?["action"] as? String == "approval_next")
     // A normal owner update omits the unchanged transcript. The native model
     // retains it for the same chat and clears it for a different owner.
+    runtime.receive(try JSONSerialization.data(withJSONObject:["type":"quickVisibility","visible":false]))
     var history=try JSONSerialization.jsonObject(with:packet(scene:"off",run:nil)) as! [String:Any]
     history["history"]=[["id":"message","kind":"assistant","lines":[["text":"Retain this transcript","style":"text"]]]]
+    history["workspaceTextMorph"]=true
     runtime.receive(try JSONSerialization.data(withJSONObject:history))
+    app.expandToRunningChat()
+    let textDecode=member(app,"textReveal") as! ConversationTextReveal
+    let nativeText=member(app,"conversationText") as! NSTextView
+    precondition(textDecode.activeTileCount>0 && textDecode.snapshotCount>0,"Unified extended notch skipped native text unjumbling")
+    let textSettled=Date().addingTimeInterval(0.45);while Date()<textSettled{RunLoop.current.run(until:Date().addingTimeInterval(0.005))}
+    precondition(textDecode.activeTileCount==0 && nativeText.string.contains("Retain this transcript"),"Unjumbling changed or failed to restore the real transcript")
+    app.dismissUnifiedSurface();let closedText=Date().addingTimeInterval(0.3);while Date()<closedText{RunLoop.current.run(until:Date().addingTimeInterval(0.005))}
+    app.expandToRunningChat()
+    precondition(textDecode.activeTileCount>0,"Reopening the unchanged selected chat did not replay visible text unjumbling")
+    app.revealWorkspace();let codeText=Date().addingTimeInterval(1);while Date()<codeText{RunLoop.current.run(until:Date().addingTimeInterval(0.01))}
+    foreground=true;app.collapseWorkspace();let decodeOverlap=Date().addingTimeInterval(0.23);while Date()<decodeOverlap{RunLoop.current.run(until:Date().addingTimeInterval(0.005))}
+    precondition(textDecode.activeTileCount>0,"Direct Code-to-notch handoff lost the native text unjumbling")
+    let decodedHandoff=Date().addingTimeInterval(0.5);while Date()<decodedHandoff{RunLoop.current.run(until:Date().addingTimeInterval(0.005))}
+    precondition(textDecode.activeTileCount==0 && nativeText.string.contains("Retain this transcript"),"Handoff text failed to settle into the real native glyphs")
+    foreground=false
     history.removeValue(forKey:"history");history["notice"]="Status changed"
     runtime.receive(try JSONSerialization.data(withJSONObject:history))
     precondition((member(app,"latestState") as? KaiState)?.history.first?.lines.first?.text == "Retain this transcript")

@@ -481,22 +481,29 @@ private final class NotchView:ImageDropView {
         if CommandLine.arguments.contains("--preview-task-pets"){DispatchQueue.main.async{[weak self] in self?.floatingTasks.previewPets()}}
         else if CommandLine.arguments.contains("--preview-approval"){DispatchQueue.main.async{[weak self] in self?.previewCompactApproval()}}
         else{bridge.start();if EmbeddedCodeRuntime.shared.active{EmbeddedCodeRuntime.shared.onError={ [weak self] in self?.miniUI.setCodexMessage($0)}}}
-        localMonitor = NSEvent.addLocalMonitorForEvents(matching:[.flagsChanged,.keyDown]) { [weak self] e in
-            if e.type == .flagsChanged {self?.flags(e)}
-            else {
-                self?.cancelShortcutHold();self?.cancelWorkspaceHold();self?.commandDismissGesture.cancel();self?.lastControlTap=0
-                if e.keyCode == 53,self?.panel.isKeyWindow == true,self?.open == true {self?.dismissNotchView();return nil}
-                self?.cancelVoicePromptForKeypress()
+        // Isolated self-tests drive the real handlers directly. Listening to
+        // the user's simultaneous keyboard input can arm extra voice/notch
+        // shortcuts in the test process and invalidate its surface assertions.
+        if !CommandLine.arguments.contains("--unified-smoke-test"){
+            localMonitor = NSEvent.addLocalMonitorForEvents(matching:[.flagsChanged,.keyDown]) { [weak self] e in
+                if e.type == .flagsChanged {self?.flags(e)}
+                else {
+                    self?.cancelShortcutHold();self?.cancelWorkspaceHold();self?.commandDismissGesture.cancel();self?.lastControlTap=0
+                    if e.keyCode == 53,self?.panel.isKeyWindow == true,self?.open == true {self?.dismissNotchView();return nil}
+                    self?.cancelVoicePromptForKeypress()
+                }
+                return e
             }
-            return e
-        }
-        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching:[.flagsChanged,.keyDown]) { [weak self] e in
-            if e.type == .flagsChanged {self?.flags(e)}
-            else {self?.cancelShortcutHold();self?.cancelWorkspaceHold();self?.commandDismissGesture.cancel();self?.lastControlTap=0;self?.cancelVoicePromptForKeypress()}
+            globalMonitor = NSEvent.addGlobalMonitorForEvents(matching:[.flagsChanged,.keyDown]) { [weak self] e in
+                if e.type == .flagsChanged {self?.flags(e)}
+                else {self?.cancelShortcutHold();self?.cancelWorkspaceHold();self?.commandDismissGesture.cancel();self?.lastControlTap=0;self?.cancelVoicePromptForKeypress()}
+            }
         }
         for name in [NSWindow.didBecomeKeyNotification,NSWindow.didResignKeyNotification,NSApplication.didBecomeActiveNotification,NSApplication.didResignActiveNotification]{NotificationCenter.default.addObserver(self,selector:#selector(scheduleWorkspaceFocusRefresh),name:name,object:nil)}
         NSWorkspace.shared.notificationCenter.addObserver(self,selector:#selector(scheduleWorkspaceFocusRefresh),name:NSWorkspace.didActivateApplicationNotification,object:nil)
-        dragMonitor=NSEvent.addGlobalMonitorForEvents(matching:[.leftMouseDragged,.leftMouseUp]){[weak self] event in DispatchQueue.main.async{self?.globalDrag(event)}}
+        if !CommandLine.arguments.contains("--unified-smoke-test"){
+            dragMonitor=NSEvent.addGlobalMonitorForEvents(matching:[.leftMouseDragged,.leftMouseUp]){[weak self] event in DispatchQueue.main.async{self?.globalDrag(event)}}
+        }
         NotificationCenter.default.addObserver(self, selector: #selector(placePanel),
             name: NSApplication.didChangeScreenParametersNotification, object: nil)
         DistributedNotificationCenter.default().addObserver(self,selector:#selector(diagnoseMedia),name:NSNotification.Name("com.kai.media.diagnose"),object:nil)
@@ -1114,12 +1121,15 @@ private final class NotchView:ImageDropView {
         if approvalPopout,let layer=approvalUI.layer{visualTransition.reveal(layer,visible:true,fromOpacity:0)}
         miniUI.setVisible(miniOpen,duration:animation.duration)
         syncConversationTheme()
-        if miniOpen && !wasMini { if let state=latestState {renderConversation(state.history,forceBottom:true)};miniListening=false;miniUI.resetFiles(); indicator.setFileOpen(false); currentScene="";if let state=latestState{showActivity(displayActivity(state))};setMotion("waving",replay:true) }
+        if miniOpen && !wasMini { if let state=latestState {renderConversation(state.history,forceBottom:true,deferReveal:true)};miniListening=false;miniUI.resetFiles(); indicator.setFileOpen(false); currentScene="";if let state=latestState{showActivity(displayActivity(state))};setMotion("waving",replay:true) }
         else if wasMini && !miniOpen { textReveal.finish();mathRenderer.suspend();mathRefreshWork?.cancel();mathRefreshWork=nil;historyControl.update(hasMore:false,loading:false);miniListening=false;if compactWhileWorking,let state=latestState {currentScene="";showActivity(displayActivity(state))}else{applyIndicator()};syncMotion(force:true) }
         mask.path=destination
         animation.beginTime=mask.convertTime(CACurrentMediaTime(),from:nil);animation.fillMode = .backwards
         mask.add(animation,forKey:"width")
         if showsNotchSurface{panel.orderFrontRegardless();if !dropPanel.ignoresMouseEvents{dropPanel.orderFrontRegardless()}else{dropPanel.orderOut(nil)}}else{panel.orderOut(nil);dropPanel?.orderOut(nil)}
+        if miniOpen && !wasMini && showsNotchSurface && morphingText,let view=conversationText{
+            textReveal.reveal([NSRange(location:0,length:view.textStorage?.length ?? 0)],in:view,loading:true)
+        }
         if compactVoiceMode{compactVoiceIndicator=nil;renderCompactVoice()}
         if !desired {indicator.hide();currentScene="";mathRefreshWork?.cancel();mathRefreshWork=nil;DispatchQueue.main.asyncAfter(deadline: .now()+animation.duration) { [weak self] in
             guard let self,!self.open,self.panelRevision == revision else { return }; self.panel.orderOut(nil)
@@ -1767,7 +1777,7 @@ private final class NotchView:ImageDropView {
         historyControl.update(hasMore:true,loading:true)
         bridge.send("history_more",["threadId":id,"requestId":request])
     }
-    private func renderConversation(_ history:[KaiMessage],forceBottom:Bool=false,preserveViewport:Bool=false){
+    private func renderConversation(_ history:[KaiMessage],forceBottom:Bool=false,preserveViewport:Bool=false,deferReveal:Bool=false){
         guard let view=conversationText,let scroll=conversationScroll else{return}
         // Most conversations need no WebKit process. Start it only for equations.
         if miniOpen,renderMath,!mathRenderer.isInstalled,history.contains(where:{MathExpression.containsRenderableMath($0.lines)}),mathRenderer.install(in:scalableUI,below:scroll) {
@@ -1776,14 +1786,16 @@ private final class NotchView:ImageDropView {
         let anchor=ConversationViewport.anchor(view,in:scroll)
         historyControl.update(hasMore:latestState?.historyHasMore == true,loading:earlierHistoryRequest != nil || latestState?.historyLoading == true,earlier:latestState?.historyEarlier == true)
         let followBottom=forceBottom || ConversationViewport.isAtBottom(view,in:scroll)
-        let changed=conversationRenderer.render(history,threadID:latestState?.threadId,in:view,scroll:scroll,renderMath:renderMath,palette:assistantPalette,anchorCharacter:anchor?.character,collectRevealRanges:morphingText && !EmbeddedCodeRuntime.shared.active && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+        let changed=conversationRenderer.render(history,threadID:latestState?.threadId,in:view,scroll:scroll,renderMath:renderMath,palette:assistantPalette,anchorCharacter:anchor?.character,collectRevealRanges:morphingText && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
         guard conversationRenderer.didChange || forceBottom else{return}
         ConversationViewport.layout(view,in:scroll)
         if preserveViewport {ConversationViewport.revealOlderText(view,characters:conversationRenderer.prependedCharacterCount)}
         if !forceBottom,let anchor,(preserveViewport || !followBottom) {
             ConversationViewport.restore(anchor,adding:(conversationRenderer.mappedAnchorCharacter ?? anchor.character)-anchor.character,text:view,scroll:scroll)
         } else if changed && followBottom || forceBottom {scrollConversationToBottom(threadID:latestState?.threadId)}
-        if morphingText,!EmbeddedCodeRuntime.shared.active,!preserveViewport{ textReveal.reveal(conversationRenderer.revealRanges,in:view,loading:conversationRenderer.didChangeThread) }
+        if morphingText,!preserveViewport,!deferReveal{
+            textReveal.reveal(conversationRenderer.revealRanges,in:view,loading:conversationRenderer.didChangeThread)
+        }
     }
     private func scheduleMathRefresh(){
         guard renderMath,miniOpen,conversationRenderer.hasDirtyMath,mathRefreshWork == nil else{return}
