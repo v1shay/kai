@@ -252,3 +252,12 @@ dismissal, replayed morph, foreground approval suppression, background approval
 routing through activation notifications, and repeated focus changes for the
 same pending request. Swift: 187 tests, one optional audio fixture skipped.
 Rust: six motion regressions and the native owner regression suite.
+
+### 0.4.2 selected-chat continuity
+
+Ordinary compact/extended/workspace expansion preserves Code’s selected chat and
+composer draft, including an idle selected chat while another agent is running.
+Activity focus does not implicitly navigate. Explicit pet/chat selections still
+use normal owner navigation. Launch uses Code’s normal saved workspace restore
+or its new-chat state. The native event harness covers the competing-running-chat
+case and verifies that expansion emits no chat-navigation command.

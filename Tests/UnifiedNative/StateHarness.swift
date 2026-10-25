@@ -79,6 +79,17 @@ private func member(_ object:Any,_ name:String)->Any?{Mirror(reflecting:object).
     ui.setState(viewState(run:nil,success:true))
     precondition(engine.mode != .off,"Late confirmed outcome lost its done badge")
 
+    // Ordinary compact -> mini -> workspace expansion keeps the owner’s selected
+    // idle chat even while the activity indicator follows a different agent.
+    var selected=try JSONSerialization.jsonObject(with:packet(scene:"thinking",run:nil)) as! [String:Any]
+    selected["activeTasks"]=[["id":"code:other-running","name":"Other agent","runId":"other-run","scene":"thinking","text":"Working","agent":"codex"]]
+    selected["focusThreadId"]="code:other-running";selected["composerDraft"]="Keep this draft"
+    runtime.receive(try JSONSerialization.data(withJSONObject:selected))
+    let priorNavigation=commands.filter{$0["action"] as? String == "chat"}.count
+    app.expandToRunningChat()
+    precondition((member(app,"latestState") as? KaiState)?.threadId == "code:fixture","Notch expansion switched away from the selected chat")
+    precondition((member(app,"composerField") as? NSTextField)?.stringValue == "Keep this draft","Notch expansion replaced the current draft")
+    precondition(commands.filter{$0["action"] as? String == "chat"}.count == priorNavigation,"Expanding implicitly navigated to another running agent")
     // A workspace behind another application stays open while its notch overlays
     // that application. Returning reuses the same window and native morph.
     app.revealWorkspace()
@@ -94,6 +105,7 @@ private func member(_ object:Any,_ name:String)->Any?{Mirror(reflecting:object).
     precondition(window.isVisible && window.windowNumber==retainedWindow && window.frame==retainedFrame,"Morph return replaced the workspace")
     foreground=true
     var approval=try JSONSerialization.jsonObject(with:packet(scene:"permission",run:"5")) as! [String:Any]
+    approval["composerDraft"]="Keep this draft"
     approval["approval"]=true;approval["approvalThreadId"]="code:fixture";approval["approvalRequestId"]="5:opaque";approval["approvalSummary"]="Run cargo test";approval["approvalCount"]=2
     approval["nativeReview"]=["owner":"code:fixture","token":"5:opaque","title":"Permission","detail":"cargo test","choices":[["id":"accept","label":"Allow once"],["id":"decline","label":"Decline"]],"questions":[]]
     runtime.receive(try JSONSerialization.data(withJSONObject:approval))
@@ -137,6 +149,6 @@ private func member(_ object:Any,_ name:String)->Any?{Mirror(reflecting:object).
     precondition(commands.filter{$0["action"] as? String == "attachments"}.count == beforeImports,"Owner thumbnail reimported its original")
     guard let mini=member(app,"miniUI") as? MiniAppInterface else{fatalError("Missing mini UI")}
     mini.onSend?();precondition(commands.last?["action"] as? String == "send" && commands.last?["text"] as? String == "","Image-only draft could not send from notch")
-    print("Native state regression: failure/cancellation, late success, exclusive Quick Chat, retained background workspace, replayed morph, focus-aware clickable approvals, exact approval decisions, inbox cycling, incremental history, and image-only owner drafts passed")
+    print("Native state regression: failure/cancellation, late success, exclusive Quick Chat, retained background workspace, replayed morph, focus-aware clickable approvals, selected-chat/draft continuity, exact approval decisions, inbox cycling, incremental history, and image-only owner drafts passed")
  }
 }

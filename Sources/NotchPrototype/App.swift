@@ -997,10 +997,12 @@ private final class NotchView:ImageDropView {
         if dictating {dictation.cancel();dictating=false;dictationTrigger=nil;sounds.stopListening();exitMiniListening()}
     }
 
-    private func expandToRunningChat(){
+    func expandToRunningChat(){
         prepareNotchOverlay()
         if compactVoiceMode {expandVoiceChat();return}
-        if workspaceNotchOverlay{pinned=true;compactWhileWorking=false;setOpen(true,mini:true,userInitiated:true);return}
+        // Unified surfaces share Code’s selected session. A status focus on
+        // another running agent must never become implicit navigation.
+        if EmbeddedCodeRuntime.shared.active{pinned=true;compactWhileWorking=false;setOpen(true,mini:true,userInitiated:true);return}
         let preferred=latestState?.activeTasks.first(where:{$0.id == floatingFocus})
         let target=preferred.map{(id:$0.id,name:$0.name)} ?? latestState.flatMap{RunningChatSelection.target(in:$0)}
         pinned=true;setOpen(true,mini:true)
