@@ -5,6 +5,7 @@ use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+pub const REALTIME_MODEL:&str="gpt-live-1-codex";
 pub const MAX_SDP_BYTES: usize = 128 * 1024;
 /// Realtime V3 currently uses the V1 family, as verified by Kai's real sessions.
 pub const VOICES: &[&str] = &[
@@ -78,7 +79,7 @@ impl Start {
         let mut params = json!({
             "realtimeSessionId":self.session_id,"outputModality":"audio",
             "transport":{"type":"webrtc","sdp":self.sdp},"version":"v3",
-            "model":"gpt-live-1-codex","flushTranscriptTailOnSessionEnd":true,
+            "model":REALTIME_MODEL,"flushTranscriptTailOnSessionEnd":true,
             "clientManagedHandoffs":false
         });
         if let Some(voice) = &self.voice {

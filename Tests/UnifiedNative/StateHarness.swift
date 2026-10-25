@@ -79,6 +79,18 @@ private func member(_ object:Any,_ name:String)->Any?{Mirror(reflecting:object).
     ui.setState(viewState(run:nil,success:true))
     precondition(engine.mode != .off,"Late confirmed outcome lost its done badge")
 
+    // A busy text composer is not a read-only voice conversation. Actual
+    // effective model/effort labels must render even with no model override.
+    var voice=try JSONSerialization.jsonObject(with:packet(scene:"thinking",run:"voice")) as! [String:Any]
+    voice["readOnly"]=false;voice["composerBusy"]=true;voice["workspaceVoiceActive"]=true
+    voice["sessionActivity"]=["scene":"speaking","text":"Speaking · gpt-live-1-codex"]
+    voice["effectiveModel"]="gpt-6-luna";voice["effectiveReasoningEffort"]="medium";voice["models"]=[["model":"gpt-6-luna","displayName":"GPT-6-Luna","supportedReasoningEfforts":[["reasoningEffort":"medium"]]]]
+    let voiceState=try JSONDecoder().decode(KaiState.self,from:JSONSerialization.data(withJSONObject:voice));ui.setState(voiceState)
+    let status=(member(ui,"message") as? CATextLayer)?.string as? NSAttributedString
+    precondition(status?.string.contains("Speaking") == true && status?.string.contains("read only") == false,"An active editable voice call retained its stale connecting/read-only header")
+    let labels=(member(ui,"settingsBar") as? CALayer)?.sublayers?.compactMap{($0.mask as? CATextLayer)?.string as? String} ?? []
+    precondition(labels.contains("gpt-6-luna") && labels.contains("medium"),"Resolved CLI model/effort were not rendered in the actual settings strip")
+
     // Ordinary compact -> mini -> workspace expansion keeps the owner’s selected
     // idle chat even while the activity indicator follows a different agent.
     var selected=try JSONSerialization.jsonObject(with:packet(scene:"thinking",run:nil)) as! [String:Any]
@@ -104,6 +116,15 @@ private func member(_ object:Any,_ name:String)->Any?{Mirror(reflecting:object).
     let reopened=Date().addingTimeInterval(0.95);while Date()<reopened{RunLoop.current.run(until:Date().addingTimeInterval(0.01))}
     precondition(window.isVisible && window.windowNumber==retainedWindow && window.frame==retainedFrame,"Morph return replaced the workspace")
     foreground=true
+    let originalLevel=window.level
+    window.setFrame(CGRect(x:retainedFrame.minX+90,y:retainedFrame.minY+80,width:850,height:580),display:true)
+    app.dismissUnifiedSurface()
+    guard let morph=member(app,"workspaceMorph") as? WorkspaceMorph,let shell=member(morph,"shell") as? NSPanel,let notch=member(app,"panel") as? NSPanel else{fatalError("Windowed collapse did not create a continuous native contour")}
+    precondition(shell.level.rawValue>NSWindow.Level.statusBar.rawValue,"Windowed collapse was hidden underneath the menu bar")
+    precondition(abs(shell.frame.maxY-notch.frame.maxY)<0.1,"Windowed collapse ended at a synthetic notch below the real screen edge")
+    let folded=Date().addingTimeInterval(0.8);while Date()<folded{RunLoop.current.run(until:Date().addingTimeInterval(0.01))}
+    precondition(!window.isVisible && window.level==originalLevel,"Windowed collapse left a floating window or lost its original level")
+    app.revealWorkspace();let restored=Date().addingTimeInterval(1);while Date()<restored{RunLoop.current.run(until:Date().addingTimeInterval(0.01))}
     var approval=try JSONSerialization.jsonObject(with:packet(scene:"permission",run:"5")) as! [String:Any]
     approval["composerDraft"]="Keep this draft"
     approval["approval"]=true;approval["approvalThreadId"]="code:fixture";approval["approvalRequestId"]="5:opaque";approval["approvalSummary"]="Run cargo test";approval["approvalCount"]=2

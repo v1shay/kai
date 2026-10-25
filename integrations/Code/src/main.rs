@@ -1,4 +1,5 @@
 mod agent_controls;
+mod provider_defaults;
 mod agent_picker;
 mod appearance;
 mod attachments;
@@ -3528,6 +3529,7 @@ impl Orbit {
         for signal in voice_signals {
             self.handle_voice_signal(signal, cx);
         }
+        self.synchronize_voice_status();
         if let Some(external) = external
             && let Some(session) = self.sessions.iter_mut().find(|s| s.id == id)
         {
@@ -5174,10 +5176,7 @@ impl Orbit {
                                         agent_color(self.agent),
                                     ))
                                     .child(
-                                        self.model
-                                            .as_deref()
-                                            .unwrap_or(agent_name(self.agent))
-                                            .to_owned(),
+                                        self.effective_model_label(),
                                     )
                                     .child(icon("chevron-down", 10., MUTED))
                                     .on_click(cx.listener(

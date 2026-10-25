@@ -854,6 +854,10 @@ private final class NotchView:ImageDropView {
     }
     func probeDoubleCommand(){
         guard CommandLine.arguments.contains("--unified-smoke-test") else{return}
+        if workspaceMorph.expanded,let window=EmbeddedCodeRuntime.shared.workspaceWindow{
+            let f=window.frame
+            window.setFrame(CGRect(x:f.minX+80,y:f.minY+70,width:max(600,f.width-160),height:max(420,f.height-140)),display:true)
+        }
         commandDismissGesture.cancel();let time=ProcessInfo.processInfo.systemUptime
         _=handleCommandDismiss(down:true,bare:true,at:time)
         _=handleCommandDismiss(down:false,bare:true,at:time+0.05)
@@ -1289,7 +1293,7 @@ private final class NotchView:ImageDropView {
     func controlTextDidChange(_ obj:Notification){miniUI.setComposerHasText(!(composerField?.stringValue.isEmpty ?? true));syncMotion(force:true)}
     func control(_ control:NSControl,textView:NSTextView,doCommandBy selector:Selector)->Bool{if selector == #selector(NSResponder.insertNewline(_:)){sendPrompt();return true};return false}
 
-    private func sendPrompt(){if attachmentEncoding{pendingAttachmentSend=true;miniUI.setCodexMessage("Preparing images…");return};guard expandedChatRequest == nil,sendingPrompt == nil, !shortcutPreparation.busy else{return};if latestState?.threadId?.hasPrefix("code:") == true,latestState?.readOnly == true{miniUI.setCodexMessage("Code is busy or loading — your prompt is kept here.");return};let prompt=(composerField?.stringValue ?? "").trimmingCharacters(in:.whitespacesAndNewlines);guard !prompt.isEmpty || queuedImageCount>0 else{return};sendingPrompt=prompt;setMotion("running-left",replay:true);speech.cancelAudio();let requestID=UUID().uuidString;sendingPromptRequestID=requestID;bridge.send("send",["text":prompt,"requestId":requestID]);if compactOnSend{hidePetGallery(restore:false);autoCompact=false;compactWhileWorking=true;compactThreadID=latestState?.threadId;compactStartHistoryCount=latestState?.history.count ?? 0;pinned=true;setOpen(true,mini:false)}}
+    private func sendPrompt(){if attachmentEncoding{pendingAttachmentSend=true;miniUI.setCodexMessage("Preparing images…");return};guard expandedChatRequest == nil,sendingPrompt == nil, !shortcutPreparation.busy else{return};if latestState?.threadId?.hasPrefix("code:") == true,latestState?.inputBlocked == true{miniUI.setCodexMessage("Code is busy or loading — your prompt is kept here.");return};let prompt=(composerField?.stringValue ?? "").trimmingCharacters(in:.whitespacesAndNewlines);guard !prompt.isEmpty || queuedImageCount>0 else{return};sendingPrompt=prompt;setMotion("running-left",replay:true);speech.cancelAudio();let requestID=UUID().uuidString;sendingPromptRequestID=requestID;bridge.send("send",["text":prompt,"requestId":requestID]);if compactOnSend{hidePetGallery(restore:false);autoCompact=false;compactWhileWorking=true;compactThreadID=latestState?.threadId;compactStartHistoryCount=latestState?.history.count ?? 0;pinned=true;setOpen(true,mini:false)}}
     private func answerApproval(_ action:String){if action == "interrupt"{speech.cancelAudio()};var fields:[String:Any]=["requestId":miniUI.pendingRequestID ?? ""];if let id=latestState?.approvalThreadId{fields["threadId"]=id};if let id=latestState?.approvalRequestId{fields["approvalRequestId"]=id};bridge.send(action,fields)}
 
     @objc private func previewCompactApproval(){
@@ -1405,7 +1409,7 @@ private final class NotchView:ImageDropView {
             if let voice=state.workspaceVoiceChoice{realtimeVoiceMenu.synchronize(voice)}
             miniUI.setVoiceActive(state.workspaceVoiceActive == true)
             if let levels=state.workspaceVoiceLevels,["listening","speaking"].contains(state.workspaceVoiceScene ?? ""){indicator.setExternalLevels(levels)}
-            if pendingAttachmentSend,!attachmentEncoding,!state.readOnly {
+            if pendingAttachmentSend,!attachmentEncoding,!state.inputBlocked {
                 pendingAttachmentSend=false
                 if state.completedRequestError == nil{DispatchQueue.main.async{[weak self] in self?.sendPrompt()}}
             }

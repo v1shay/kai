@@ -23,7 +23,7 @@ impl Call {
     }
 
     pub fn owns_current_chat(&self, active: Option<&str>) -> bool {
-        same_surface(self.surface.as_deref(), active)
+        voice_owns_surface(self.launched,&self.owner,self.surface.as_deref(),active)
     }
     pub fn scene(&self) -> &'static str {
         if self.stopping {
@@ -36,7 +36,7 @@ impl Call {
             match self.activity {
                 Activity::Listening => "listening",
                 Activity::Thinking => "thinking",
-                Activity::Speaking => "listening",
+                Activity::Speaking => "speaking",
             }
         }
     }
@@ -63,6 +63,9 @@ impl Call {
         }
         Ok(())
     }
+}
+fn voice_owns_surface(launched:bool,owner:&str,source:Option<&str>,active:Option<&str>)->bool{
+    if launched{active==Some(owner)}else{same_surface(source,active)}
 }
 fn same_surface(expected: Option<&str>, active: Option<&str>) -> bool {
     expected == active
@@ -274,6 +277,7 @@ impl Orbit {
             }
         }
         if dirty {
+            self.synchronize_voice_status();
             self.advance_voice(cx);
             cx.notify();
         }
@@ -364,7 +368,7 @@ impl Orbit {
             .find(|a| a.kind == AgentKind::Codex)
             .and_then(|a| a.executable.clone())
             .ok_or_else(|| anyhow::anyhow!("Codex is unavailable"))?;
-        let request = RunRequest { reasoning_effort:None,
+        let request = RunRequest { reasoning_effort:self.unified_effort().map(str::to_owned),
             agent: AgentKind::Codex,
             executable,
             project: project.clone(),
@@ -485,6 +489,9 @@ impl Orbit {
         .detach();
         cx.notify();
     }
+    pub(super) fn synchronize_voice_status(&mut self){
+        if let Some(call)=&self.voice_call{if let Some(run)=self.runs.get_mut(&call.owner){run.status=call.caption().into();}}
+    }
     pub(super) fn handle_voice_signal(&mut self, signal: voice::Signal, cx: &mut Context<Self>) {
         let Some(call) = &mut self.voice_call else {
             return;
@@ -524,7 +531,7 @@ impl Orbit {
             self.stop_voice(cx);
             self.voice_error=Some(error.to_string());self.notice = Some(error.to_string())
         }
-        cx.notify();
+        self.synchronize_voice_status();cx.notify();
     }
     pub(super) fn voice_button(&self, cx: &Context<Self>) -> AnyElement {
         if self.agent != AgentKind::Codex && self.voice_call.is_none() {
@@ -720,6 +727,11 @@ impl Orbit {
 mod tests {
     use super::*;
     use std::prelude::v1::test;
+    #[test]fn voice_keeps_ownership_after_a_draft_becomes_its_native_chat(){
+        assert!(voice_owns_surface(false,"new-voice",None,None));
+        assert!(voice_owns_surface(true,"new-voice",None,Some("new-voice")));
+        assert!(!voice_owns_surface(true,"new-voice",None,Some("another-chat")));
+    }
     #[test]
     fn delayed_voice_offer_cannot_replace_work_or_move_between_chats() {
         let ready = || LaunchGate {

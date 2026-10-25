@@ -151,12 +151,14 @@ pub struct Usage {
     pub cost_usd: Option<f64>,
     pub scope: String,
     pub model: Option<String>,
+    pub reasoning_effort:Option<String>,
     pub limit_used_percent: Option<f64>,
     pub limit_resets_at: Option<i64>,
     pub limit_windows: Vec<LimitWindow>,
 }
 impl Usage {
     pub fn merge(&mut self, mut next: Self) {
+        if next.model.is_some() && next.model!=self.model && next.reasoning_effort.is_none(){self.reasoning_effort=None;}
         let stale_primary = next
             .limit_windows
             .iter()
@@ -181,6 +183,7 @@ impl Usage {
             context_limit,
             cost_usd,
             model,
+            reasoning_effort,
             limit_used_percent,
             limit_resets_at
         );
@@ -287,6 +290,7 @@ impl Usage {
                     &value["usage"]
                 } else if kind == "system" && value["subtype"] == "init" {
                     out.model = model(&value["model"]);
+                    out.reasoning_effort=model(&value["effortLevel"]).or_else(||model(&value["effort"]));
                     &Value::Null
                 } else {
                     return None;
@@ -330,7 +334,7 @@ impl Usage {
                 out.cost_usd = amount(&part["cost"]);
             }
             // This installed protocol does not document token/context counters.
-            AgentKind::Antigravity => return None,
+            AgentKind::Antigravity => {out.model=model(&value["model"]).or_else(||model(&value["message"]["model"]));},
         }
         let has_data = out.input.is_some()
             || out.output.is_some()

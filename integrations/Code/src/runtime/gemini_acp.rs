@@ -689,6 +689,10 @@ impl Session {
                     },
                     "acp.plan",
                 ),
+                "current_model_update"|"config_option_update"=>{
+                    let selection=crate::provider_defaults::acp_selection(update);
+                    vec![RuntimeEvent::Usage(Box::new(crate::usage::Usage{model:selection.model,reasoning_effort:selection.effort,..Default::default()}))]
+                },
                 "current_mode_update" => vec![RuntimeEvent::Status(format!(
                     "Mode · {}",
                     update["currentModeId"].as_str().unwrap_or("default")
@@ -892,6 +896,8 @@ fn run(
     if !models.is_empty() {
         send(&cx.tx, RuntimeEvent::Models(models), &cx.cancelled)?;
     }
+    let selection=crate::provider_defaults::acp_selection(&created);
+    if selection.model.is_some() || selection.effort.is_some(){send(&cx.tx,RuntimeEvent::Usage(Box::new(crate::usage::Usage{model:request.model.clone().or(selection.model),reasoning_effort:selection.effort,..Default::default()})),&cx.cancelled)?;}
     let desired = if request.allow_edits {
         if request.agent == AgentKind::Cursor {
             "agent"

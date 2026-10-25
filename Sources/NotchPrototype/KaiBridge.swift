@@ -22,7 +22,7 @@ struct KaiActiveTask: Decodable, Equatable {
 }
 struct KaiFinishedTask:Decodable,Equatable {let id:String;var runId:String?=nil}
 struct KaiReasoningOption: Decodable { let reasoningEffort: String }
-struct KaiModel: Decodable { let model: String; let displayName: String; let supportedReasoningEfforts: [KaiReasoningOption] }
+struct KaiModel: Decodable { var resolvedModel:String?=nil; let model: String; let displayName: String; let supportedReasoningEfforts: [KaiReasoningOption] }
 struct KaiAgent:Decodable {let id:String;let name:String;let available:Bool}
 struct KaiCodeConnectionState:Decodable {let connected:Bool;let enabled:Bool;let error:String?}
 @propertyWrapper struct EmptyHistory:Decodable {
@@ -58,6 +58,10 @@ struct KaiState: Decodable {
     let canGoBack: Bool?
     let canGoForward: Bool?
     let models: [KaiModel]?
+    let providerDefaultModel:String?
+    let effectiveModel:String?
+    let effectiveReasoningEffort:String?
+    let voiceModel:String?
     let selectedModel: String?
     let reasoningEffort: String?
     let project: String
@@ -73,6 +77,8 @@ struct KaiState: Decodable {
     let historyEarlier:Bool?
     let files: [KaiFile]?
     let readOnly: Bool
+    let composerBusy:Bool?
+    var inputBlocked:Bool{readOnly || composerBusy == true}
     let activeTurnId: String?
     let approval: Bool
     let approvalThreadId: String?

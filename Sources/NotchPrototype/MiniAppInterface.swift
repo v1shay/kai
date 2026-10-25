@@ -601,18 +601,18 @@ private final class AttachmentLayer:CALayer {
     func setContextMode(_ lightweight:Bool){lightweightContext=lightweight;layoutSettings()}
     private func layoutSettings() {
         guard let state=modelState else{return}
-        let model=state.models?.first{$0.model == state.selectedModel}
-        let name=model?.displayName ?? state.selectedModel ?? (state.modelsLoading == true ? "Loading models…":(state.agents?.first{$0.id == state.selectedAgent}?.name ?? "Provider")+" default")
-        let effort=state.reasoningEffort ?? "Effort"
+        let model=state.models?.first{$0.model == state.selectedModel || $0.model == state.effectiveModel || ($0.resolvedModel != nil && $0.resolvedModel == state.effectiveModel)}
+        let name=state.effectiveModel ?? model?.resolvedModel ?? model?.displayName ?? state.selectedModel ?? "…"
+        let effort=state.effectiveReasoningEffort ?? state.reasoningEffort ?? ""
         let key=[state.selectedAgent ?? "",String(Double(settingsBar.bounds.width)),name,effort,String(lightweightContext),String(state.threadId?.hasPrefix("code:") == true),String(Double(renderingScale))]
         guard key != settingsLayoutKey else{return};settingsLayoutKey=key
         settingsBar.sublayers?.forEach{$0.removeFromSuperlayer()};settingsHits.removeAll()
         var x:CGFloat=0
         let codeView=state.threadId?.hasPrefix("code:") == true
         let contextTitle=lightweightContext ? "Context: light":"Context: screen"
-        let settings=EmbeddedCodeRuntime.shared.active ? [("agent",state.agents?.first{$0.id == state.selectedAgent}?.name ?? "Agent"),("model",name)]+((model?.supportedReasoningEfforts.isEmpty == false) ? [("effort",effort.isEmpty ? "Effort":effort)]:[])+[("context",contextTitle)]:codeView ? [("model",name),("context",contextTitle)]:[("model",name),("effort",effort),("context",contextTitle)]
+        let settings=EmbeddedCodeRuntime.shared.active ? [("agent",state.agents?.first{$0.id == state.selectedAgent}?.name ?? "Agent"),("model",name)]+(!effort.isEmpty ? [("effort",effort)]:[])+[("context",contextTitle)]:codeView ? [("model",name),("context",contextTitle)]:[("model",name),("effort",effort),("context",contextTitle)]
         for (id,text) in settings {
-            let width=min(id == "model" ? 100: id == "effort" ? 48:80, min(CGFloat(text.count)*4.5+9,max(0,settingsBar.bounds.width-x)))
+            let width=min(id == "model" ? 200: id == "effort" ? 48:80, min((text as NSString).size(withAttributes:[.font:NSFont.systemFont(ofSize:7.5,weight:.medium)]).width+9,max(0,settingsBar.bounds.width-x)))
             guard width>16 else{break}
             let mask=label(text,7.5,.white,.medium);mask.frame=CGRect(x:0,y:1,width:width,height:11)
             let gradient=CAGradientLayer();gradient.frame=CGRect(x:x,y:0,width:width,height:13);gradient.startPoint=CGPoint(x:0,y:0);gradient.endPoint=CGPoint(x:1,y:1);gradient.mask=mask
@@ -635,13 +635,13 @@ private final class AttachmentLayer:CALayer {
             menu.popUp(positioning:nil,at:NSEvent.mouseLocation,in:nil);return
         }
         if kind == "model" {
-            if EmbeddedCodeRuntime.shared.active{let item=menu.addItem(withTitle:"Use provider default",action:#selector(selectSetting(_:)),keyEquivalent:"");item.target=self;item.representedObject=["",""];item.state=state.selectedModel == nil ? .on:.off}
+            if EmbeddedCodeRuntime.shared.active{let item=menu.addItem(withTitle:"Use provider default"+(state.providerDefaultModel.map{" · "+$0} ?? ""),action:#selector(selectSetting(_:)),keyEquivalent:"");item.target=self;item.representedObject=["",""];item.state=state.selectedModel == nil ? .on:.off}
             for model in models {
                 let item=menu.addItem(withTitle:model.displayName,action:#selector(selectSetting(_:)),keyEquivalent:"");item.target=self;item.representedObject=[model.model,model.model == state.selectedModel ? (state.reasoningEffort ?? ""):""];item.state=model.model == state.selectedModel ? .on:.off
             }
-        } else if let model=models.first(where:{$0.model == state.selectedModel}) {
+        } else if let model=models.first(where:{$0.model == state.selectedModel || $0.model == state.effectiveModel || ($0.resolvedModel != nil && $0.resolvedModel == state.effectiveModel)}) {
             for effort in model.supportedReasoningEfforts {
-                let item=menu.addItem(withTitle:effort.reasoningEffort,action:#selector(selectSetting(_:)),keyEquivalent:"");item.target=self;item.representedObject=[model.model,effort.reasoningEffort];item.state=effort.reasoningEffort == state.reasoningEffort ? .on:.off
+                let item=menu.addItem(withTitle:effort.reasoningEffort,action:#selector(selectSetting(_:)),keyEquivalent:"");item.target=self;item.representedObject=[EmbeddedCodeRuntime.shared.active ? (state.selectedModel ?? ""):model.model,effort.reasoningEffort];item.state=effort.reasoningEffort == (state.effectiveReasoningEffort ?? state.reasoningEffort) ? .on:.off
             }
         }
         menu.popUp(positioning:nil,at:NSEvent.mouseLocation,in:nil)

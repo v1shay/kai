@@ -1154,6 +1154,11 @@ impl Session {
                             self.child_assistant.insert(id.into());
                         }
                     }
+                    if sid==self.id{
+                        if let (Some(provider),Some(model))=(info["providerID"].as_str(),info["modelID"].as_str()){
+                            let model=format!("{provider}/{model}");if super::valid_model_id(&model){send(&cx.tx,RuntimeEvent::Usage(Box::new(crate::usage::Usage{model:Some(model),reasoning_effort:info["variant"].as_str().map(str::to_owned),..Default::default()})),&cx.cancelled)?;}
+                        }
+                    }
                     if sid == self.id {
                         self.started = true;
                         if !info["error"].is_null() {

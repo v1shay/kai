@@ -320,3 +320,70 @@ and exclusive Quick Chat. Earlier locked-display attempts were invalid for
 these checks: macOS deferred capture and animation completion until unlock.
 Native desktop automation remained unavailable, so physical key delivery and the
 experimental bundle's first macOS permission prompt were not automated.
+
+### 0.6.0 voice state, effective models, and windowed collapse
+
+A native voice call launched from an empty draft now retains ownership after
+that draft receives its real chat ID. The call's live caption updates the shared
+run status, including Listening, Thinking and Speaking. Busy text input is
+reported separately as `composerBusy`; it no longer makes an interactive voice
+conversation claim to be read only. Historical views retain their actual input
+restriction. The voice header also identifies the realtime model used by the
+same request.
+
+Kai, Code and Quick Chat display effective model IDs and reasoning effort from
+native runtime reports, project-scoped Codex config, native catalog defaults,
+Claude's resolved aliases, ACP model/config updates, and configured provider
+settings. Explicit model overrides remain separate: resolving a CLI default does
+not pin a model or change the user's settings. The model menu identifies its
+resolved default even when another model is selected. Configured global effort
+continues to apply when changing models; native per-model effort is used when
+there is no configured override. Explicit Claude effort is sent through its
+native `--effort` option, and Codex effort reaches both thread config and turns.
+
+Gemini's installed default is resolved from its settings or the installed build's
+own selected default constant. An Auto router remains its actual Auto ID until
+the provider reports a concrete selection; no Flash/Pro model is inferred from
+catalog order. This discovery does not authenticate or send a prompt. Native
+runtime metadata updates the selected identity when a chat runs.
+
+The continuous workspace contour now renders above the menu bar during a morph,
+then restores the window's previous level on completion or interruption. A resized
+workspace therefore collapses into the screen's physical notch instead of ending
+at a clipped shape underneath it. The packaged double-Command probe now resizes
+the real workspace before dismissal. The animation timing/choreography is kept.
+
+Verification: 736 Code tests passed (12 opt-in tests excluded), 189 Swift tests
+(one optional audio fixture skipped), and the production native view harness.
+The harness asserts live voice header text, actual model/effort settings labels,
+composer-busy semantics, resized-window contour position above the menu bar, and
+restoration of the original window level. Read-only installed metadata checks
+resolved Codex's configured model/effort, Claude's concrete default alias, and
+Gemini's installed Auto selection. A generated-audio packaged owner probe is
+available with `--unified-smoke-test --unified-voice-probe`,
+`KAI_CODE_VOICE_DIAGNOSTIC=1`, and a bounded JSON fixture at
+`KAI_UNIFIED_VOICE_FIXTURE`; it verifies the actual draft-to-live voice ownership,
+transcripts, header state, resolved model/effort, unchanged default selection,
+and native stop in one process. It sends no ambient microphone audio.
+
+Final 0.6.0 verification repeated the full Code suite serially: 736 passed and
+12 opt-in tests excluded; the 98 benchmark-binary tests also passed with one
+opt-in exclusion. The shared idle-service pool allows concurrent fixture tests
+to evict each other's completed services, so the release regression run uses
+`--test-threads=1`. The refreshed model-picker fixture carries its actual project
+scope. Swift again passed 189 tests with one optional fixture skipped, and the
+native view harness passed again.
+
+Installed native metadata also confirms Cursor's combined `(current, default)`
+marker resolves to `auto`, and Grok resolves to `grok-4.6`. OpenCode and Antigravity
+may omit a pre-run default when there is no configured model. Their published
+runtime model identity updates the shared display; unpublished routing decisions
+and effort levels are never fabricated. Cursor metadata uses its native model
+catalog without creating an extra ACP session.
+
+The latest packaged live voice retry stalled while macOS reported both the
+screen locked and the display asleep. It is not recorded as a successful live
+0.6.0 verification. The generated-audio probe and resized-window packaged morph
+probe are ready for an unlocked display. Native state and geometry assertions
+passed independently. Installation preserves the previous experimental bundle
+and does not terminate the running user application or its agents.

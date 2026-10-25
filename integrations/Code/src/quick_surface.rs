@@ -361,10 +361,7 @@ impl Orbit {
                                             ))
                                             .child(
                                                 div().min_w(px(0.)).text_ellipsis().child(
-                                                    self.model
-                                                        .as_deref()
-                                                        .unwrap_or(agent_name(self.agent))
-                                                        .to_owned(),
+                                                    self.effective_model_label(),
                                                 ),
                                             )
                                             .child(icon("chevron-down", 10., MUTED))

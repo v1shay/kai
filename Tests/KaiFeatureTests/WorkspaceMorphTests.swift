@@ -46,3 +46,11 @@ final class WorkspaceMorphTests:XCTestCase {
         XCTAssertEqual(CompactApprovalRequest(state:state)?.thread,"code:background")
     }
 }
+
+extension WorkspaceMorphTests{
+    func testWindowedMorphCanReachThePhysicalNotchAboveTheMenuBar(){
+        XCTAssertGreaterThan(WorkspaceMorph.transitionLevel(.normal).rawValue,NSWindow.Level.statusBar.rawValue)
+        let custom=NSWindow.Level(rawValue:NSWindow.Level.statusBar.rawValue+5)
+        XCTAssertEqual(WorkspaceMorph.transitionLevel(custom),custom)
+    }
+}

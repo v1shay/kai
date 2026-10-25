@@ -2119,6 +2119,7 @@ fn controls_fixture(app: &mut Orbit, kind: AgentKind, models: usize) {
         (
             Instant::now(),
             agent_controls::ControlInfo {
+                defaults:agent_controls::ModelDefaults{project:app.model_project(),..Default::default()},
                 auth: agent_controls::AuthState::VerifiedSignedIn,
                 account: None,
                 limits: Vec::new(),

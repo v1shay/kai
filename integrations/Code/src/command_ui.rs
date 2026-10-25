@@ -738,7 +738,7 @@ impl Orbit {
                 this.controls_pending.remove(kind.key());
                 match result {
                     Ok(items) => {
-                        let (_,info)=this.controls.entry(agent.command()).or_insert_with(||(Instant::now(),agent_controls::ControlInfo {auth:agent_controls::AuthState::Unknown,models:Vec::new(),note:None,account:None,limits:Vec::new(),catalog:None}));
+                        let (_,info)=this.controls.entry(agent.command()).or_insert_with(||(Instant::now(),agent_controls::ControlInfo {defaults:Default::default(),auth:agent_controls::AuthState::Unknown,models:Vec::new(),note:None,account:None,limits:Vec::new(),catalog:None}));
                         info.catalog=Some((catalog_project,kind,items));
                     },
                     Err(_) => this.notice=Some(format!("{} could not be read from the installed Codex. Refresh or inspect it in the native CLI.",kind.title())),
@@ -1150,6 +1150,7 @@ mod status_tests {
 
     fn info() -> agent_controls::ControlInfo {
         agent_controls::ControlInfo {
+            defaults:Default::default(),
             auth: agent_controls::AuthState::Unknown,
             models: vec![],
             note: None,

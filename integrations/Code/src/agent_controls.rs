@@ -44,8 +44,17 @@ pub struct CatalogItem {
     pub detail: String,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct ModelDefaults {
+    pub model:Option<String>,
+    pub effort:Option<String>,
+    pub efforts:std::collections::HashMap<String,String>,
+    pub aliases:std::collections::HashMap<String,String>,
+    pub project:PathBuf,
+}
 #[derive(Clone, Debug)]
 pub struct ControlInfo {
+    pub defaults:ModelDefaults,
     pub auth: AuthState,
     pub models: Vec<ModelChoice>,
     pub note: Option<String>,
@@ -55,8 +64,11 @@ pub struct ControlInfo {
 }
 
 /// Call on a worker only when controls are opened/refreshed. No recurring probe.
-pub fn inspect(kind: AgentKind, executable: &Path, home: &Path) -> ControlInfo {
+#[cfg(test)]
+pub fn inspect(kind: AgentKind, executable: &Path, home: &Path) -> ControlInfo {inspect_project(kind,executable,home,home)}
+pub fn inspect_project(kind:AgentKind,executable:&Path,home:&Path,project:&Path)->ControlInfo{
     let mut info = ControlInfo {
+        defaults:Default::default(),
         auth: AuthState::Unknown,
         models: Vec::new(),
         note: None,
@@ -65,8 +77,8 @@ pub fn inspect(kind: AgentKind, executable: &Path, home: &Path) -> ControlInfo {
         catalog: None,
     };
     if kind == AgentKind::Codex {
-        match codex_metadata(executable, home) {
-            Ok(snapshot) => return snapshot,
+        match codex_metadata(executable, project) {
+            Ok(mut snapshot) => {snapshot.defaults.project=project.into();return snapshot},
             Err(error) => {
                 info.note = Some(format!(
                     "Live Codex metadata unavailable ({error}); showing the last local model catalog. Refresh to try again."
@@ -115,8 +127,8 @@ pub fn inspect(kind: AgentKind, executable: &Path, home: &Path) -> ControlInfo {
             }
         }
         AgentKind::Claude => {
-            if let Ok(models) = claude_models(executable, home) {
-                info.models = models;
+            if let Ok((models,defaults)) = claude_models(executable, project) {
+                info.models = models;info.defaults=defaults;
             }
             // Help aliases are a fallback when this installed SDK handshake is unavailable.
             if info.models.is_empty()
@@ -164,14 +176,22 @@ pub fn inspect(kind: AgentKind, executable: &Path, home: &Path) -> ControlInfo {
                     && output.success
                 {
                     info.models = catalog_lines(kind, &output.stdout);
+                    let native=strip_ansi(&output.stdout);
+                    info.defaults.model=native.lines().find_map(|line|{
+                        let trimmed=line.trim();
+                        let id=trimmed.strip_prefix("* ").and_then(|s|s.split_whitespace().next()).or_else(||(trimmed.rsplit_once('(').is_some_and(|(_,flags)|flags.trim_end_matches(')').split(',').any(|flag|matches!(flag.trim(),"default"|"current")))).then(||trimmed.split_whitespace().next()).flatten());
+                        id.filter(|id|info.models.iter().any(|m|m.id==*id)).map(str::to_owned)
+                    });
                 }
             }
         }
     }
-    info
+    crate::provider_defaults::resolve_configured_defaults(kind,home,project,&mut info);
+    if kind==AgentKind::Gemini && info.defaults.model.is_none(){info.defaults.model=crate::provider_defaults::gemini_build_default(executable);}
+    info.defaults.project=project.into();info
 }
 
-/// Read-only app-server RPCs. No thread is resumed, no inference is requested,
+/// Read-only RPC metadata. No thread is resumed, no inference is requested,
 /// and account email/token values are never retained. RPC failures are isolated:
 /// a missing rate-limit endpoint does not discard a successful model catalog.
 fn codex_metadata(executable: &Path, home: &Path) -> Result<ControlInfo> {
@@ -186,6 +206,7 @@ fn codex_metadata(executable: &Path, home: &Path) -> Result<ControlInfo> {
                 serde_json::json!({"limit":128,"includeHidden":false}),
             ),
             (3, "account/rateLimits/read", Value::Null),
+            (4,"config/read",serde_json::json!({"cwd":home,"includeLayers":false})),
         ],
     )?;
     Ok(codex_snapshot(&responses))
@@ -606,6 +627,7 @@ fn codex_rpc(
 
 fn codex_snapshot(responses: &std::collections::BTreeMap<u64, Value>) -> ControlInfo {
     let mut info = ControlInfo {
+        defaults:Default::default(),
         auth: AuthState::Unknown,
         models: Vec::new(),
         note: None,
@@ -664,6 +686,18 @@ fn codex_snapshot(responses: &std::collections::BTreeMap<u64, Value>) -> Control
             }
         }
     }
+    if let Some(models)=responses.get(&2).and_then(|r|r.pointer("/result/data")).and_then(Value::as_array){
+        for model in models{
+            if let Some(id)=model.get("model").or_else(||model.get("id")).and_then(Value::as_str).filter(|id|valid_model_id(id)){
+                if model["isDefault"]==true{info.defaults.model=Some(id.into());}
+                if let Some(effort)=model["defaultReasoningEffort"].as_str().filter(|v|valid_model_id(v)){info.defaults.efforts.insert(id.into(),effort.into());}
+            }
+        }
+    }
+    if let Some(config)=responses.get(&4).and_then(|r|r.pointer("/result/config")){
+        if let Some(id)=config["model"].as_str().filter(|id|valid_model_id(id)){info.defaults.model=Some(id.into());}
+        info.defaults.effort=config["model_reasoning_effort"].as_str().filter(|v|valid_model_id(v)).map(str::to_owned);
+    }
     if let Some(result) = responses.get(&3).and_then(|v| v.get("result")) {
         info.limits = crate::usage::codex_limit_windows(result, false);
     }
@@ -688,7 +722,7 @@ fn codex_snapshot(responses: &std::collections::BTreeMap<u64, Value>) -> Control
 
 /// Native SDK initialize returns a model catalog without creating a prompt.
 /// Keep this metadata process separate from the active chat's control channel.
-fn claude_models(executable: &Path, home: &Path) -> Result<Vec<ModelChoice>> {
+fn claude_models(executable: &Path, home: &Path) -> Result<(Vec<ModelChoice>,ModelDefaults)> {
     let mut command = Command::new(executable);
     crate::process_env::apply(&mut command);
     command
@@ -756,22 +790,21 @@ fn claude_models(executable: &Path, home: &Path) -> Result<Vec<ModelChoice>> {
                         if value["response"]["subtype"] != "success" {
                             bail!("Claude catalog initialization rejected");
                         }
-                        let mut models = Vec::new();
+                        let mut models = Vec::new();let mut defaults=ModelDefaults::default();
                         if let Some(items) = value
                             .pointer("/response/response/models")
                             .and_then(Value::as_array)
                         {
                             for item in items.iter().take(MODEL_LIMIT) {
                                 if let Some(id) = item["value"].as_str() {
-                                    add_model(
-                                        &mut models,
-                                        id,
-                                        item["displayName"].as_str().unwrap_or(id),
-                                    );
+                                    let resolved=item["resolvedModel"].as_str().filter(|id|valid_model_id(id));
+                                    add_model(&mut models,id,resolved.unwrap_or_else(||item["displayName"].as_str().unwrap_or(id)));
+                                    if let Some(resolved)=resolved{defaults.aliases.insert(id.into(),resolved.into());if id=="default"{defaults.model=Some(resolved.into());}}
+                                    if let Some(choice)=models.iter_mut().find(|m|m.id==id){choice.reasoning_efforts=item["supportedEffortLevels"].as_array().into_iter().flatten().filter_map(Value::as_str).filter(|v|["low","medium","high","xhigh","max"].contains(v)).take(8).map(str::to_owned).collect();}
                                 }
                             }
                         }
-                        return Ok(models);
+                        return Ok((models,defaults));
                     }
                     // No tools, hooks or SDK MCP callbacks are registered by
                     // this metadata client. Never leave unsolicited requests hanging.
@@ -1312,7 +1345,7 @@ if read -r unexpected_prompt; then
 printf '%s' "$unexpected_prompt" > unexpected-prompt
 fi
 "#);
-        let models = claude_models(&cli, &fixture.0).unwrap();
+        let (models,_) = claude_models(&cli, &fixture.0).unwrap();
         assert_eq!(
             models,
             vec![ModelChoice { reasoning_efforts:vec![],
@@ -1449,6 +1482,10 @@ fi
         assert_eq!(info.auth, AuthState::SignedOut);
         assert!(info.models.is_empty());
         assert!(!fixture.0.join("marker").exists());
+        let cli=fixture.cli("if [ \"$1\" = status ]; then printf '{\"status\":\"authenticated\"}'; elif [ \"$1\" = models ]; then printf 'Available models\\nauto - Auto (current, default)\\nconcrete-model - Concrete model\\n'; else touch marker; fi");
+        let info=inspect(AgentKind::Cursor,&cli,&fixture.0);
+        assert_eq!(info.defaults.model.as_deref(),Some("auto"));
+        assert!(!fixture.0.join("marker").exists(),"Model discovery must not create an ACP session");
     }
 
     #[test]
@@ -1565,4 +1602,14 @@ printf '%s\n' '{"id":1,"result":{"account":{"type":"chatgpt","planType":"pro"}}}
         assert_eq!(partial.limits.len(), 1);
         assert_eq!(partial.limits[0].resets_at, Some(1800000000));
     }
+}
+
+#[cfg(test)]mod effective_default_tests{
+ use super::*;
+ #[test]fn project_config_overrides_catalog_defaults_and_preserves_per_model_efforts(){
+  let records=std::collections::BTreeMap::from([
+   (2,serde_json::json!({"result":{"data":[{"model":"catalog-default","isDefault":true,"defaultReasoningEffort":"low"},{"model":"project-model","defaultReasoningEffort":"medium"}]}})),
+   (4,serde_json::json!({"result":{"config":{"model":"project-model","model_reasoning_effort":"high"}}}))]);
+  let info=codex_snapshot(&records);assert_eq!(info.defaults.model.as_deref(),Some("project-model"));assert_eq!(info.defaults.effort.as_deref(),Some("high"));assert_eq!(info.defaults.efforts.get("catalog-default").map(String::as_str),Some("low"));
+ }
 }

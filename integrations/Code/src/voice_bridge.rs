@@ -86,6 +86,14 @@ unsafe extern "C" fn callback(context: *mut c_void, text: *const c_char) {
     if value["sessionId"] != state.session {
         return;
     }
+    if std::env::var("KAI_CODE_VOICE_DIAGNOSTIC").as_deref()==Ok("1"){
+        match value["type"].as_str(){
+            Some("diagnostic")=>eprintln!("Kai media stage: {} status={} visible={} unoccluded={} allowed={}",value["step"].as_str().unwrap_or(""),value["status"],value["hostVisible"],value["unoccluded"],value["allowed"]),
+            Some("offer"|"connected"|"promptSent")=>eprintln!("Kai media event: {}",value["type"].as_str().unwrap_or("")),
+            Some("event") if ["microphoneRequested","microphoneGranted","preparingOffer"].contains(&value["eventType"].as_str().unwrap_or(""))=>eprintln!("Kai media stage: {}",value["eventType"].as_str().unwrap_or("")),
+            _=>{}
+        }
+    }
     let event = match value["type"].as_str() {
         Some("level") => {
             if let Some(level) = value["level"].as_f64().filter(|n| n.is_finite()) {

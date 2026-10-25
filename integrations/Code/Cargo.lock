@@ -3870,6 +3870,7 @@ dependencies = [
  "objc2-foundation",
  "pulldown-cmark",
  "raw-window-handle",
+ "regex",
  "resvg",
  "rusqlite",
  "serde",

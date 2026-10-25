@@ -50,6 +50,10 @@ pub(super) fn launch(request: RunRequest) -> Result<RunHandle> {
     if let Some(model) = &request.model {
         command.arg("--model").arg(model);
     }
+    if let Some(effort)=&request.reasoning_effort{
+        anyhow::ensure!(["low","medium","high","xhigh","max"].contains(&effort.as_str()),"Unsupported Claude reasoning effort");
+        command.arg("--effort").arg(effort);
+    }
     if let Some(id) = &request.resume_id {
         anyhow::ensure!(
             !id.is_empty() && id.len() <= 256 && !id.chars().any(char::is_control),
@@ -305,14 +309,14 @@ fn model_choices(value: &Value) -> Vec<crate::agent_controls::ModelChoice> {
             if models.iter().any(|model| model.id == id) {
                 continue;
             }
-            let label = model["displayName"]
+            let label = model.get("resolvedModel").unwrap_or(&model["displayName"])
                 .as_str()
                 .unwrap_or(id)
                 .chars()
                 .filter(|c| !c.is_control())
                 .take(80)
                 .collect();
-            models.push(crate::agent_controls::ModelChoice { reasoning_efforts:vec![],
+            models.push(crate::agent_controls::ModelChoice { reasoning_efforts:model["supportedEffortLevels"].as_array().into_iter().flatten().filter_map(Value::as_str).filter(|v|["low","medium","high","xhigh","max"].contains(v)).take(8).map(str::to_owned).collect(),
                 id: id.into(),
                 label,
             });

@@ -122,7 +122,7 @@ impl Orbit {
                         && self
                             .controls
                             .get(key)
-                            .is_some_and(|(t, _)| t.elapsed() < Duration::from_secs(60)))
+                            .is_some_and(|(t, info)| t.elapsed() < Duration::from_secs(60) && info.defaults.project==self.model_project()))
                 {
                     return None;
                 }
@@ -133,7 +133,7 @@ impl Orbit {
         for (kind, _) in &jobs {
             self.controls_pending.insert(kind.command());
         }
-        let home = self.controls_home.clone();
+        let home = self.controls_home.clone();let project=self.model_project();
         cx.spawn(async move |this, cx| {
             // One probe at a time: opening controls never launches a burst of CLIs.
             for (kind, path) in jobs {
@@ -150,10 +150,10 @@ impl Orbit {
                     Ok(false) => continue,
                     Err(_) => break,
                 }
-                let home = home.clone();
+                let home = home.clone();let project=project.clone();
                 let task = cx
                     .background_executor()
-                    .spawn(async move { agent_controls::inspect(kind, &path, &home) });
+                    .spawn(async move { agent_controls::inspect_project(kind, &path, &home,&project) });
                 let info = task.await;
                 if this
                     .update(cx, |this, cx| {
@@ -181,6 +181,9 @@ impl Orbit {
     pub(super) fn choose_model(&mut self, model: Option<String>, cx: &mut Context<Self>) {
         if self.loading || self.starting || self.handoff_pending.is_some() {
             return;
+        }
+        if self.active.as_ref().is_none_or(|id|!self.runs.contains_key(id)){
+            if let Some(usage)=self.active.as_ref().and_then(|id|self.usage.get_mut(id)){usage.model=None;usage.reasoning_effort=None;}
         }
         self.model = model.clone();
         if self
@@ -297,7 +300,7 @@ impl Orbit {
             .controls
             .get(self.agent.command())
             .map(|(_, info)| info);
-        let mut models = vec![(None, "CLI default".to_owned())];
+        let mut models = vec![(None, format!("Default · {}",self.provider_default_model().unwrap_or_else(||"…".into())))];
         if let Some(catalog) = self
             .native_models
             .get(&self.agent)
@@ -460,10 +463,10 @@ impl Orbit {
                         .h(px((count as f32 * 30.).min(180.)))
                         .w_full()
                     })
-                    .when_some(self.unified_models().into_iter().find(|m|Some(&m.id)==self.model.as_ref()).filter(|m|!m.reasoning_efforts.is_empty()),|s,model|{
+                    .when_some(self.effort_model_choice().filter(|m|!m.reasoning_efforts.is_empty()),|s,model|{
                         s.child(div().px_2().py_1().text_size(crate::theme::ui_px(10.)).text_color(rgb(MUTED)).child("Reasoning effort"))
                          .child(div().flex().flex_wrap().gap_1().px_2().children(model.reasoning_efforts.into_iter().map(|effort|{
-                            let value=effort.clone();let selected=self.unified_effort()==Some(effort.as_str());
+                            let value=effort.clone();let selected=self.effective_model_settings().1.as_deref()==Some(effort.as_str());
                             div().id(SharedString::from(format!("reasoning-{effort}"))).cursor_pointer().px_2().py_1().rounded_md().text_size(crate::theme::ui_px(11.)).when(selected,|s|s.bg(rgba(GLASS_HOVER))).child(effort).on_click(cx.listener(move|this,_,_,cx|{let key=format!("{}:{}",this.agent.command(),this.model.as_deref().unwrap_or(""));this.reasoning_efforts.insert(key,value.clone());this.queue_workspace_save(cx);cx.notify();}))
                          })))
                     })

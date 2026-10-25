@@ -251,6 +251,7 @@ fn thread_params(request: &RunRequest) -> Value {
         "sandbox":if request.allow_edits{"workspace-write"}else{"read-only"},
         "config":{"features.default_mode_request_user_input":true}});
 
+    if let Some(effort)=&request.reasoning_effort{params["config"]["model_reasoning_effort"]=json!(effort);}
     if let Some(model) = &request.model {
         params["model"] = json!(model);
     }
@@ -1198,6 +1199,7 @@ impl Session {
                         &ctx.tx,
                         RuntimeEvent::Usage(Box::new(crate::usage::Usage {
                             model: Some(model.into()),
+                            reasoning_effort:value["result"]["reasoningEffort"].as_str().map(str::to_owned),
                             ..Default::default()
                         })),
                         &ctx.cancelled,

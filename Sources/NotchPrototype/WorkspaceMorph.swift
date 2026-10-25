@@ -10,6 +10,7 @@ import AppKit
     private var shell:NSPanel?,clip:CAShapeLayer?,previousMask:CALayer?
     private var delayed:DispatchWorkItem?
     private var originalBackground:NSColor?,originalOpaque=false,originalShadow=true,originalIgnores=false
+    private var originalLevel:NSWindow.Level?
     private(set) var expanded=false
     private(set) var transitioning=false
     static let expansionDuration:TimeInterval=0.84
@@ -25,6 +26,7 @@ import AppKit
             window.backgroundColor=originalBackground;window.isOpaque=originalOpaque
             window.hasShadow=originalShadow;window.ignoresMouseEvents=originalIgnores
         }
+        if let window,let originalLevel{window.level=originalLevel};originalLevel=nil
         originalBackground=nil
     }
     private func liveContour()->CGPath?{
@@ -56,8 +58,12 @@ import AppKit
         animation.duration=duration;animation.beginTime=CACurrentMediaTime()+delay;animation.timingFunction=curve
         animation.fillMode = .both;mask.add(animation,forKey:"workspaceShape")
     }
+    nonisolated static func transitionLevel(_ level:NSWindow.Level)->NSWindow.Level{
+        NSWindow.Level(rawValue:max(level.rawValue,NSWindow.Level.statusBar.rawValue+1))
+    }
     private func prepare(_ window:NSWindow,from source:CGRect,to target:CGRect,duration:TimeInterval,delay:TimeInterval=0,expanding:Bool,contour:CGPath?=nil){
         self.window=window
+        originalLevel=window.level;window.level=Self.transitionLevel(window.level)
         originalBackground=window.backgroundColor;originalOpaque=window.isOpaque;originalShadow=window.hasShadow;originalIgnores=window.ignoresMouseEvents
         window.backgroundColor = .clear;window.isOpaque=false;window.hasShadow=false;window.ignoresMouseEvents=true
         guard let host=window.contentView?.superview ?? window.contentView else{return}
