@@ -8,7 +8,10 @@ import AppKit
     private var revision=0
     private weak var window:NSWindow?,host:NSView?
     private var shell:NSPanel?,clip:CAShapeLayer?,previousMask:CALayer?
-    private var delayed:DispatchWorkItem?
+    private var delayed:DispatchWorkItem?,handoff:DispatchWorkItem?
+    private weak var incomingNotch:NSPanel?
+    private var incomingLevel:NSWindow.Level?,originalContentOpacity:Float?
+    private(set) var presentingNotch=false
     private var originalBackground:NSColor?,originalOpaque=false,originalShadow=true,originalIgnores=false
     private var originalLevel:NSWindow.Level?
     private(set) var expanded=false
@@ -19,7 +22,13 @@ import AppKit
     private let curve=CAMediaTimingFunction(controlPoints:0.16,0.84,0.20,1)
 
     private func clearVisuals(){
-        delayed?.cancel();delayed=nil;shell?.orderOut(nil);shell?.contentView=nil;shell=nil
+        delayed?.cancel();delayed=nil;handoff?.cancel();handoff=nil;presentingNotch=false
+        if let incomingNotch,let incomingLevel{incomingNotch.level=incomingLevel};incomingNotch=nil;incomingLevel=nil
+        shell?.orderOut(nil);shell?.contentView=nil;shell=nil
+        if let host,let originalContentOpacity{
+            host.layer?.removeAnimation(forKey:"workspaceContent")
+            CATransaction.begin();CATransaction.setDisableActions(true);host.layer?.opacity=originalContentOpacity;CATransaction.commit()
+        };originalContentOpacity=nil
         if let host,let clip,host.layer?.mask === clip{host.layer?.mask=previousMask}
         clip=nil;previousMask=nil;host=nil
         if let window,let originalBackground{
@@ -84,7 +93,9 @@ import AppKit
     }
     func expand(_ window:NSWindow,from source:CGRect,replay:Bool=false,completion:@escaping()->Void={}){
         if expanded && !transitioning && !replay{window.makeKeyAndOrderFront(nil);completion();return}
+        CATransaction.begin();CATransaction.setDisableActions(true);defer{CATransaction.commit()}
         let contour=transitioning ? liveContour():nil
+        let returningOpacity=originalContentOpacity.map{_ in host?.layer?.presentation()?.opacity ?? host?.layer?.opacity ?? 1}
         let start=contour?.boundingBoxOfPath ?? source
         revision += 1;let token=revision;clearVisuals();self.window=window;expanded=true;transitioning=true
         let screen=NSScreen.screens.first{$0.frame.contains(CGPoint(x:source.midX,y:source.maxY-1))} ?? window.screen ?? NSScreen.main
@@ -92,7 +103,13 @@ import AppKit
         window.setFrame(target,display:true);onPresentation?(replay ? "reopen":"expand")
         let reduce = !motionEnabled || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         window.alphaValue=1
-        if !reduce{prepare(window,from:start,to:target,duration:0.68,expanding:true,contour:contour)}else{
+        if !reduce{
+            prepare(window,from:start,to:target,duration:0.68,expanding:true,contour:contour)
+            if let returningOpacity,let layer=host?.layer{
+                originalContentOpacity=layer.opacity
+                let fade=CABasicAnimation(keyPath:"opacity");fade.fromValue=returningOpacity;fade.toValue=layer.opacity;fade.duration=0.14;fade.timingFunction=curve;layer.add(fade,forKey:"workspaceContent")
+            }
+        }else{
             window.alphaValue=0;window.orderFront(nil)
             NSAnimationContext.runAnimationGroup{context in context.duration=0.12;window.animator().alphaValue=1}
         }
@@ -102,8 +119,10 @@ import AppKit
             self.transitioning=false;self.clearVisuals();window.alphaValue=1;window.makeKeyAndOrderFront(nil);completion()
         };delayed=finish;DispatchQueue.main.asyncAfter(deadline:.now()+(reduce ? 0.12:Self.expansionDuration),execute:finish)
     }
-    func collapse(_ window:NSWindow,to target:CGRect,completion:@escaping()->Void){
+    func collapse(_ window:NSWindow,to target:CGRect,into notch:NSPanel?=nil,revealNotch:(()->Void)?=nil,completion:@escaping()->Void){
         if !expanded && !transitioning && !window.isVisible{completion();return}
+        CATransaction.begin();CATransaction.setDisableActions(true);defer{CATransaction.commit()}
+        let retiringOpacity=originalContentOpacity.map{_ in host?.layer?.presentation()?.opacity ?? host?.layer?.opacity ?? 0}
         let contour=transitioning ? liveContour():nil
         let source=contour?.boundingBoxOfPath ?? window.frame
         revision += 1;let token=revision;clearVisuals();self.window=window;expanded=false;transitioning=true
@@ -111,6 +130,21 @@ import AppKit
         let reduce = !motionEnabled || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         if !reduce{prepare(window,from:source,to:target,duration:0.48,delay:0.10,expanding:false,contour:contour)}else{
             NSAnimationContext.runAnimationGroup{context in context.duration=0.12;window.animator().alphaValue=0}
+        }
+        if let layer=host?.layer,!reduce,(notch != nil || retiringOpacity != nil){
+            originalContentOpacity=layer.opacity
+            let fade=CABasicAnimation(keyPath:"opacity");fade.fromValue=retiringOpacity ?? layer.presentation()?.opacity ?? layer.opacity;fade.toValue=0;fade.duration=0.14;fade.timingFunction=curve
+            layer.opacity=0;layer.add(fade,forKey:"workspaceContent")
+        }
+        if let notch,let revealNotch{
+            // Keep only the continuous glass contour as Code retires. The real
+            // notch grows concurrently above it; no workspace pixels enter it.
+            incomingNotch=notch;incomingLevel=notch.level
+            notch.level=NSWindow.Level(rawValue:window.level.rawValue+1)
+            let reveal=DispatchWorkItem{[weak self] in
+                guard let self,self.revision==token else{return}
+                self.presentingNotch=true;revealNotch()
+            };handoff=reveal;DispatchQueue.main.asyncAfter(deadline:.now()+(reduce ? 0.06:0.16),execute:reveal)
         }
         let finish=DispatchWorkItem{[weak self,weak window] in
             guard let self,self.revision==token,let window else{return}

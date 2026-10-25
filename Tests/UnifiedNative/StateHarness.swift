@@ -116,29 +116,37 @@ private func member(_ object:Any,_ name:String)->Any?{Mirror(reflecting:object).
     let reopened=Date().addingTimeInterval(0.95);while Date()<reopened{RunLoop.current.run(until:Date().addingTimeInterval(0.01))}
     precondition(window.isVisible && window.windowNumber==retainedWindow && window.frame==retainedFrame,"Morph return replaced the workspace")
     foreground=true
-    // Foreground Control–Option hands the workspace to the real compact
-    // notch, then runs the existing native mini morph while that panel is visible.
+    // Direct Code -> extended notch: one contour target, with Code pixels
+    // retired before the real mini UI animates concurrently above the glass.
     let workspaceFrame=window.frame
     let workspaceSprite=member(app,"sprite") as! CALayer,workspaceSpriteFrame=workspaceSprite.frame
+    let nativePanel=member(app,"panel") as! NSPanel,nativeLevel=nativePanel.level
+    let miniHeight=member(app,"canvasHeight") as! CGFloat
+    let compactHeight=member(app,"notchHeight") as! CGFloat
     app.collapseWorkspace()
-    precondition(workspaceSprite.frame==workspaceSpriteFrame,"Preparing the hidden notch moved Code's shared pet")
     guard let handoff=member(app,"workspaceMorph") as? WorkspaceMorph,
           let handoffClip=member(handoff,"clip") as? CAShapeLayer,
-          let handoffNotch=member(app,"panel") as? NSPanel,
-          let height=member(app,"notchHeight") as? CGFloat else{fatalError("Missing native notch handoff")}
-    precondition(window.frame==workspaceFrame,"Folding resized Code into the notch")
-    precondition(abs((handoffClip.path?.boundingBoxOfPath.height ?? 0)-height)<0.1,"Code was clipped into an extended-chat-sized preview")
-    precondition(member(app,"miniOpen") as? Bool == false && !handoffNotch.isVisible,"Mini chat animated offscreen during workspace collapse")
-    let retiring=Date().addingTimeInterval(0.30);while Date()<retiring{RunLoop.current.run(until:Date().addingTimeInterval(0.005))}
-    precondition(window.frame==workspaceFrame && member(app,"miniOpen") as? Bool == false,"Workspace reflowed or mini chat started before the compact handoff")
-    let handed=Date().addingTimeInterval(0.40);while Date()<handed{RunLoop.current.run(until:Date().addingTimeInterval(0.005))}
-    guard let notchMask=member(app,"mask") as? CAShapeLayer,let nativeMorph=notchMask.animation(forKey:"width") as? CABasicAnimation else{fatalError("The real extended notch did not run its original native morph")}
-    precondition(!window.isVisible && handoffNotch.isVisible && member(app,"miniOpen") as? Bool == true,"Mini morph did not own the visible surface")
-    let nativeStart=nativeMorph.fromValue as! CGPath
-    precondition(abs(nativeStart.boundingBoxOfPath.height-height)<0.1,"Mini chat did not start at the actual compact notch")
-    let miniDone=Date().addingTimeInterval(0.3);while Date()<miniDone{RunLoop.current.run(until:Date().addingTimeInterval(0.005))}
+          let codeHost=member(handoff,"host") as? NSView else{fatalError("Missing direct notch handoff")}
+    precondition(window.frame==workspaceFrame && workspaceSprite.frame==workspaceSpriteFrame,"Handoff resized Code or moved its shared pet before retirement")
+    precondition(abs((handoffClip.path?.boundingBoxOfPath.height ?? 0)-miniHeight)<0.1,"Workspace took an extra compact-notch step")
+    precondition(codeHost.layer?.opacity==0 && member(app,"miniOpen") as? Bool == false,"Code content did not begin retirement before mini appeared")
+    let overlap=Date().addingTimeInterval(0.23);while Date()<overlap{RunLoop.current.run(until:Date().addingTimeInterval(0.005))}
+    guard let notchMask=member(app,"mask") as? CAShapeLayer,let nativeMorph=notchMask.animation(forKey:"width") as? CABasicAnimation else{fatalError("The real extended notch did not use its original morph during the workspace collapse")}
+    precondition(handoff.transitioning && window.isVisible && nativePanel.isVisible && member(app,"miniOpen") as? Bool == true,"The native notch did not overlap the direct workspace morph")
+    precondition(nativePanel.level.rawValue>window.level.rawValue && codeHost.layer?.opacity==0,"Code's UI could cover the extended notch")
+    precondition((codeHost.layer?.presentation()?.opacity ?? 0)<0.01,"Workspace pixels remained visible inside the destination notch")
+    let nativeStart=nativeMorph.fromValue as! CGPath,nativeEnd=nativeMorph.toValue as! CGPath
+    precondition(abs(nativeStart.boundingBoxOfPath.height-compactHeight)<0.1 && abs(nativeEnd.boundingBoxOfPath.height-miniHeight)<0.1,"Handoff replaced Kai's original native notch morph")
+    let foldedMini=Date().addingTimeInterval(0.5);while Date()<foldedMini{RunLoop.current.run(until:Date().addingTimeInterval(0.005))}
+    precondition(!window.isVisible && nativePanel.isVisible && nativePanel.level==nativeLevel,"Direct handoff lost its surface or original panel level")
+    precondition(notchMask.animation(forKey:"width")==nil,"A second notch expansion ran after Code had collapsed")
     precondition((member(app,"composerField") as? NSTextField)?.stringValue == "Keep this draft","Native notch handoff lost the selected chat draft")
+    // Reverse after the native mini has begun. No delayed completion may reopen
+    // it over Code, and the workspace content must regain its original opacity.
+    app.revealWorkspace();let reopenedCode=Date().addingTimeInterval(1);while Date()<reopenedCode{RunLoop.current.run(until:Date().addingTimeInterval(0.01))}
+    app.collapseWorkspace();let reverseAt=Date().addingTimeInterval(0.23);while Date()<reverseAt{RunLoop.current.run(until:Date().addingTimeInterval(0.005))}
     app.revealWorkspace();let expandedAgain=Date().addingTimeInterval(1);while Date()<expandedAgain{RunLoop.current.run(until:Date().addingTimeInterval(0.01))}
+    precondition(window.isVisible && !nativePanel.isVisible && codeHost.layer?.opacity==1 && nativePanel.level==nativeLevel,"Reversing the live handoff left a stale notch or invisible workspace")
     let originalLevel=window.level
     window.setFrame(CGRect(x:retainedFrame.minX+90,y:retainedFrame.minY+80,width:850,height:580),display:true)
     app.dismissUnifiedSurface()

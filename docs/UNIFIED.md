@@ -418,3 +418,35 @@ but the native voice session closed with reason `requested` before the full
 transcript assertions completed. It is not counted as a passing voice regression;
 no cause is inferred from that reason alone and this release changes no voice
 runtime behavior.
+
+### 0.6.2 direct extended-notch swap and uninterrupted shortcut morph
+
+This supersedes 0.6.1's extra compact-notch stop. Control–Option now targets the
+extended notch's full rectangle directly with the existing continuous workspace
+contour. Code's real content fades away over 140 ms; after 160 ms, while that
+same contour is still shrinking, the actual native mini chat runs Kai's original
+280 ms notch morph above the glass. Code is never resized or projected onto the
+mini surface. Both complete within the original 600 ms collapse. The incoming
+panel temporarily sits above the retiring workspace, then regains its original
+level. Reversals cancel the pending handoff, restore Code's opacity, and retire
+the incoming panel. Interrupting that handoff with another collapse keeps Code's
+content hidden. Ordinary double-Command keeps its existing dismissal path.
+
+Notch opening now commits layout and the shape animation together, installs the
+animation before ordering its panel front, and uses an explicit start time with
+backwards fill. Same-size layout refreshes preserve the active shape animation
+and its original start time; they no longer remove it and expose the final mask.
+The original curve and duration are retained for shortcut expansion.
+
+Verification passed: 189 Swift tests (one optional audio fixture skipped), the
+native view harness and the production modifier harness. New native assertions
+check a direct extended-size target, no Code pixels at the visible notch handoff,
+overlapping native/outer animations, unchanged workspace frame, restored levels
+and opacity after reversal, no delayed second expansion, and preserved draft.
+The actual Control–Option handler retains the original morph through a layout
+notification and owner refresh without restarting it. The signed packaged smoke
+probe passed reversal, direct notch return, shared pet, repeated open, resized
+window double-Command and exclusive Quick Chat. Installation of 0.6.2 (10)
+verified the signature and executable/library hashes and retained a 0.6.1 backup.
+Running user chats were not stopped. Physical desktop input and subjective visual
+review remain outside these checks because native desktop automation is unavailable.

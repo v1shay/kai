@@ -109,6 +109,19 @@ private func command(_ bytes:UnsafePointer<UInt8>?,_ count:Int)->Bool{
         pump(0.4);modifiers(.command);pump(0.02);modifiers([]);pump(0.03);modifiers(.command);pump(0.02);modifiers([]);pump(1)
         precondition(!window.isVisible,"Double Command no longer dismissed the big form")
         runtime.workspaceFocusProvider={false}
+        // The real Control–Option hold keeps the original compact -> mini
+        // shape animation, including owner updates and a same-size layout pass.
+        app.dismissUnifiedSurface();pump(0.4)
+        modifiers([.control,.option]);pump(1.06)
+        let shortcutMask=member(app,"mask") as! CAShapeLayer
+        guard let opening=shortcutMask.animation(forKey:"width") as? CABasicAnimation else{fatalError("Control–Option did not animate the notch")}
+        let openingStart=opening.fromValue as! CGPath,openingEnd=opening.toValue as! CGPath
+        precondition(openingStart.boundingBoxOfPath.height<openingEnd.boundingBoxOfPath.height && opening.duration==0.28,"Shortcut lost the original expanding notch morph")
+        NotificationCenter.default.post(name:NSApplication.didChangeScreenParametersNotification,object:NSApp)
+        publish();pump(0.02)
+        guard let continued=shortcutMask.animation(forKey:"width") as? CABasicAnimation else{fatalError("A layout/owner refresh snapped the opening notch to its final size")}
+        precondition(continued.beginTime==opening.beginTime && continued.duration==opening.duration,"Refreshing restarted the shortcut morph")
+        modifiers([]);pump(0.3);app.dismissUnifiedSurface();pump(0.3)
         // Release at/after the deadline even when the AppKit timer could not
         // run. The pending audio must own the surface before recorder reset.
         live=false;scene="off";thread="code:existing";request=nil;publish();app.dismissUnifiedSurface();pump(0.4)

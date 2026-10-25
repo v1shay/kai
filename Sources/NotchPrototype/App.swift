@@ -673,8 +673,10 @@ private final class NotchView:ImageDropView {
         status.menu = menu; refreshChecks()
     }
 
-    @objc private func placePanel() {
+    @objc private func placePanel(){layoutPanel(present:true)}
+    private func layoutPanel(present:Bool) {
         defer{floatingTasks.refresh()}
+        let previousMaskSize=mask.bounds.size,previousDestination=mask.path
         guard let screen = NSScreen.screens.first(where: { $0.auxiliaryTopLeftArea != nil && $0.auxiliaryTopRightArea != nil }),
               let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea else { panel?.orderOut(nil); return }
         CATransaction.begin();CATransaction.setDisableActions(true);defer{CATransaction.commit()}
@@ -730,8 +732,7 @@ private final class NotchView:ImageDropView {
             resizeHandles.onEnd={ [weak self] in guard let self else{return};self.panel.invalidateCursorRects(for:self.resizeHandles) }
             sprite.contentsGravity = .resizeAspect; sprite.magnificationFilter = .nearest; notchContent.addSublayer(indicator.leftAccentLayer); notchContent.addSublayer(indicator.accentLayer); notchContent.addSublayer(sprite);mediaArtwork.cornerRadius=7;mediaArtwork.masksToBounds=true;mediaArtwork.contentsGravity = .resizeAspectFill;mediaArtwork.isHidden=true;notchContent.addSublayer(mediaArtwork); notchContent.addSublayer(indicator.layer); notchContent.addSublayer(indicator.fileLayer)
         }
-        mask.removeAnimation(forKey:"width")
-        panel.setFrame(rect, display: true); mask.frame = CGRect(origin: .zero, size: rect.size); notchContent.frame = mask.frame
+        if panel.frame != rect{panel.setFrame(rect,display:true)}; mask.frame = CGRect(origin: .zero, size: rect.size); notchContent.frame = mask.frame
         // The full canvas must never intercept the desktop while compact.
         panel.ignoresMouseEvents = !NotchInputRegion.mainAcceptsInput(expanded:miniOpen,web:experimentalWebMode)
         let dropRect=NotchInputRegion.compactFrame(screen:screen.frame,center:center,width:notchWidth+160,height:approvalPopout ? popoutHeight:notchHeight)
@@ -741,7 +742,7 @@ private final class NotchView:ImageDropView {
         approvalUI.frame=CGRect(x:16,y:12,width:dropRect.width-32,height:CompactApprovalRequest.height(notch:0)-24);approvalUI.isHidden = !approvalPopout
         let compactInput=approvalPopout || NotchInputRegion.compactAcceptsInput(open:open,expanded:miniOpen,web:experimentalWebMode,working:compactWhileWorking,voice:compactVoiceMode)
         dropPanel.ignoresMouseEvents = !compactInput
-        compactInput && showsNotchSurface ? dropPanel.orderFrontRegardless():dropPanel.orderOut(nil)
+        if present{compactInput && showsNotchSurface ? dropPanel.orderFrontRegardless():dropPanel.orderOut(nil)}
         updateGlassBackground()
         let expanded = expandedWidth, kaiLeft = (canvasWidth - expanded) / 2
         let scale = screen.backingScaleFactor, topBandY = canvasHeight-notchHeight
@@ -772,11 +773,15 @@ private final class NotchView:ImageDropView {
         petGallery.layer.frame=miniUI.layer.frame;petGallery.layout(in:petGallery.layer.bounds,selected:petID);NotchSizing.updateTextResolution(petGallery.layer,scale:scale*sizing.scale)
         if experimentalWebMode{ensureBrowser()};browserView?.frame=CGRect(x:px(kaiLeft),y:0,width:px(expanded),height:canvasHeight)
         CATransaction.begin(); CATransaction.setDisableActions(true)
-        mask.path = path(width:(open || experimentalWebMode) ? expanded:notchWidth, height:(open || experimentalWebMode) ? popoutHeight:notchHeight)
+        let destination=path(width:(open || experimentalWebMode) ? expanded:notchWidth,height:(open || experimentalWebMode) ? popoutHeight:notchHeight)
+        if previousMaskSize != mask.bounds.size || previousDestination != destination{mask.removeAnimation(forKey:"width")}
+        mask.path=destination
         notchContent.opacity = experimentalWebMode ? 0:1;miniUI.layer.isHidden=experimentalWebMode;scalableUI.isHidden=experimentalWebMode
         browserView?.isHidden = !experimentalWebMode
         CATransaction.commit()
-        if (open || experimentalWebMode) && showsNotchSurface{panel.orderFrontRegardless()}else if !showsNotchSurface{panel.orderOut(nil);dropPanel?.orderOut(nil);syncWorkspacePet()}
+        if present{
+            if (open || experimentalWebMode) && showsNotchSurface{panel.orderFrontRegardless()}else if !showsNotchSurface{panel.orderOut(nil);dropPanel?.orderOut(nil);syncWorkspacePet()}
+        }
     }
 
     private func path(width: CGFloat, height: CGFloat) -> CGPath {
@@ -1080,6 +1085,7 @@ private final class NotchView:ImageDropView {
         if desired && mini {autoCompact=false}
         if mediaVisible && (mini || compactWhileWorking || dictating || experimentalWebMode){dismissMedia()}
         guard panel != nil, desired != open || (desired && mini != miniOpen) || presentedCompact != compactWhileWorking || presentedApproval != approvalPopout else { refreshChecks();return }
+        CATransaction.begin();CATransaction.setDisableActions(true);defer{CATransaction.commit()}
         presentedApproval=approvalPopout
         if petGalleryVisible && (!desired || !mini){hidePetGallery(restore:false)}
         panelRevision += 1;let revision=panelRevision
@@ -1092,7 +1098,7 @@ private final class NotchView:ImageDropView {
         let oldFileTransform=indicator.fileLayer.presentation()?.transform ?? indicator.fileLayer.transform
         let traveling=[sprite,indicator.fileLayer,indicator.leftAccentLayer,indicator.accentLayer]
         let oldPositions=traveling.map{$0.presentation()?.position ?? $0.position}
-        placePanel()
+        layoutPanel(present:false)
         CATransaction.begin();CATransaction.setDisableActions(true)
         indicator.layer.position.x=oldIndicatorX;indicator.fileLayer.opacity=oldFileOpacity;indicator.fileLayer.transform=oldFileTransform
         for (index,accent) in [indicator.leftAccentLayer,indicator.accentLayer].enumerated(){accent.position.y=oldAccentY[index]}
@@ -1110,7 +1116,10 @@ private final class NotchView:ImageDropView {
         syncConversationTheme()
         if miniOpen && !wasMini { if let state=latestState {renderConversation(state.history,forceBottom:true)};miniListening=false;miniUI.resetFiles(); indicator.setFileOpen(false); currentScene="";if let state=latestState{showActivity(displayActivity(state))};setMotion("waving",replay:true) }
         else if wasMini && !miniOpen { textReveal.finish();mathRenderer.suspend();mathRefreshWork?.cancel();mathRefreshWork=nil;historyControl.update(hasMore:false,loading:false);miniListening=false;if compactWhileWorking,let state=latestState {currentScene="";showActivity(displayActivity(state))}else{applyIndicator()};syncMotion(force:true) }
-        if showsNotchSurface{panel.orderFrontRegardless()}else{panel.orderOut(nil);dropPanel?.orderOut(nil)}; CATransaction.begin(); CATransaction.setDisableActions(true); mask.path = destination; CATransaction.commit(); mask.add(animation, forKey: "width")
+        mask.path=destination
+        animation.beginTime=mask.convertTime(CACurrentMediaTime(),from:nil);animation.fillMode = .backwards
+        mask.add(animation,forKey:"width")
+        if showsNotchSurface{panel.orderFrontRegardless();if !dropPanel.ignoresMouseEvents{dropPanel.orderFrontRegardless()}else{dropPanel.orderOut(nil)}}else{panel.orderOut(nil);dropPanel?.orderOut(nil)}
         if compactVoiceMode{compactVoiceIndicator=nil;renderCompactVoice()}
         if !desired {indicator.hide();currentScene="";mathRefreshWork?.cancel();mathRefreshWork=nil;DispatchQueue.main.asyncAfter(deadline: .now()+animation.duration) { [weak self] in
             guard let self,!self.open,self.panelRevision == revision else { return }; self.panel.orderOut(nil)
@@ -1150,19 +1159,19 @@ private final class NotchView:ImageDropView {
         workspaceNotchOverlay=false
         guard let window=EmbeddedCodeRuntime.shared.workspaceWindow,let panel else{return}
         pinned=true;compactWhileWorking=false;autoCompact=false
-        // Retire Code into the compact contour. Opening the mini chat before
-        // this handoff runs its native morph offscreen and reveals a cropped
-        // piece of Code followed by a snap to the finished mini interface.
-        setOpen(true,mini:false,userInitiated:true)
-        let width=notchWidth+160
-        let target=CGRect(x:panel.frame.midX-width/2,y:panel.frame.maxY-notchHeight,width:width,height:notchHeight)
-        workspaceMorph.collapse(window,to:target){[weak self] in
+        let width=expandedSize?.width ?? notchWidth+160
+        let target=CGRect(x:panel.frame.midX-width/2,y:panel.frame.maxY-canvasHeight,width:width,height:canvasHeight)
+        workspaceMorph.collapse(window,to:target,into:panel,revealNotch:{[weak self] in
             guard let self else{return}
-            self.restoreWorkspacePet();self.floatingTasks.setSuppressed(self.suppressFloatingTasks)
+            self.restoreWorkspacePet()
             self.setOpen(true,mini:true,userInitiated:true)
+        }){[weak self] in
+            guard let self else{return}
+            self.floatingTasks.setSuppressed(self.suppressFloatingTasks)
             self.panel.makeKey();self.reviewNextFloatingTask()
         }
     }
+
     private func dismissWorkspace(){
         guard let window=EmbeddedCodeRuntime.shared.workspaceWindow,let panel else{return}
         let busy=latestState.map{!$0.activeTasks.isEmpty || $0.activeTurnId != nil} ?? false
@@ -1174,7 +1183,7 @@ private final class NotchView:ImageDropView {
         }
     }
     private var workspaceIsForeground:Bool{EmbeddedCodeRuntime.shared.workspaceIsForeground && !quickChatVisible}
-    private var showsNotchSurface:Bool{approvalPopout || (!quickChatVisible && !workspaceMorph.transitioning && (!workspaceMorph.expanded || workspaceNotchOverlay))}
+    private var showsNotchSurface:Bool{approvalPopout || (!quickChatVisible && (workspaceMorph.presentingNotch || (!workspaceMorph.transitioning && (!workspaceMorph.expanded || workspaceNotchOverlay))))}
     private func prepareNotchOverlay(){
         guard workspaceMorph.expanded || workspaceMorph.transitioning else{return}
         workspaceNotchOverlay=true
