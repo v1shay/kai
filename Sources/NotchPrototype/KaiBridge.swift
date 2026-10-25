@@ -2,7 +2,7 @@ import Foundation
 import Darwin
 
 struct KaiProject: Decodable, Equatable { let path: String; let name: String }
-struct KaiChat: Decodable, Equatable { let id: String; let name: String; let status: String }
+struct KaiChat: Decodable, Equatable { let id: String; let name: String; let status: String; var agent:String?=nil }
 struct KaiLine: Decodable, Equatable {
     let text: String
     let style: String
@@ -11,12 +11,13 @@ struct KaiLine: Decodable, Equatable {
         self.text = text; self.style = style; self.mathEnabled = mathEnabled
     }
 }
-struct KaiMessage: Decodable, Equatable { let id: String; let kind: String; let lines: [KaiLine]; let speechText: String?; let activityIcon: String? }
+struct KaiMessage: Decodable, Equatable { let id: String; let kind: String; let lines: [KaiLine]; let speechText: String?; let activityIcon: String?; var agent:String?=nil }
 struct KaiFile: Decodable { let path: String; let name: String; let depth: Int; let directory: Bool; let collapsed: Bool }
 struct KaiActivity: Decodable { let scene: String; let text: String }
 struct KaiActiveTask: Decodable, Equatable {
     let id:String,name:String,scene:String,text:String
     var runId:String?=nil
+    var agent:String?=nil
 }
 struct KaiFinishedTask:Decodable,Equatable {let id:String;var runId:String?=nil}
 struct KaiReasoningOption: Decodable { let reasoningEffort: String }
@@ -24,6 +25,8 @@ struct KaiModel: Decodable { let model: String; let displayName: String; let sup
 struct KaiAgent:Decodable {let id:String;let name:String;let available:Bool}
 struct KaiCodeConnectionState:Decodable {let connected:Bool;let enabled:Bool;let error:String?}
 struct KaiState: Decodable {
+    let modelsLoading:Bool?
+    let historyLoading:Bool?
     let nativeReview:KaiNativeReview?
     let ownerToken:String?
     let composerDraft:String?
@@ -143,6 +146,7 @@ enum KaiBridgeEvent {
     var draftBaseProvider:(()->String)?
     var draftProvider:(()->String)?
     private var ownerToken:String?
+    private var embeddedModelIDs=Set<String>()
     private var selectedRunID:String?
     private var selectedThreadID:String?
     private var generation = UUID()
@@ -154,7 +158,7 @@ enum KaiBridgeEvent {
 
     func start() {
         if EmbeddedCodeRuntime.shared.active {
-            EmbeddedCodeRuntime.shared.onState={ [weak self] state in self?.selectedThreadID=state.threadId;self?.selectedRunID=state.activeTurnId;self?.ownerToken=state.ownerToken;self?.onState?(state) }
+            EmbeddedCodeRuntime.shared.onState={ [weak self] state in self?.selectedThreadID=state.threadId;self?.selectedRunID=state.activeTurnId;self?.ownerToken=state.ownerToken;self?.embeddedModelIDs=Set((state.models ?? []).map(\.model));self?.onState?(state) }
             EmbeddedCodeRuntime.shared.onError={ [weak self] in self?.onError?($0) }
             return
         }
@@ -259,7 +263,7 @@ enum KaiBridgeEvent {
     func send(_ action: String, _ fields: [String: Any] = [:]) {
         if EmbeddedCodeRuntime.shared.active {
             var request=fields;request["action"]=action
-            for (key,value) in DefaultModelPreferences(defaults:.standard).fields(action:action){request[key]=value}
+            for (key,value) in DefaultModelPreferences(defaults:.standard).fields(action:action,availableModels:embeddedModelIDs){request[key]=value}
             if (request["requestId"] as? String ?? "").isEmpty{request["requestId"]=UUID().uuidString}
             request["ownerToken"]=ownerToken
             request["draftBase"]=draftBaseProvider?()

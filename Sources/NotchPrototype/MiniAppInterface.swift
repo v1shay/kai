@@ -158,24 +158,28 @@ private final class FilePreviewLayer:CALayer {
 }
 
 private final class ChatRowLayer:CALayer {
+    private let provider=CALayer()
     private let hide=CATextLayer(),title=CATextLayer(),dots=(0..<3).map{_ in CALayer()},value:String,font=NSFont.systemFont(ofSize:8)
     private var hovered=false,selected=false
     init(_ value:String) {
         self.value=value;super.init();masksToBounds=true;title.string=value;title.font=font;title.fontSize=8;title.foregroundColor=NSColor.white.withAlphaComponent(0.42).cgColor;title.contentsScale=NSScreen.main?.backingScaleFactor ?? 2;title.truncationMode = .end;addSublayer(title)
         hide.string="×";hide.font=font;hide.fontSize=10;hide.foregroundColor=NSColor.white.withAlphaComponent(0.65).cgColor
         hide.backgroundColor=NSColor.black.cgColor;hide.alignmentMode = .center;hide.contentsScale=NSScreen.main?.backingScaleFactor ?? 2;hide.opacity=0;hide.zPosition=1;addSublayer(hide)
-        for dot in dots{dot.backgroundColor=NSColor.white.withAlphaComponent(0.48).cgColor;dot.cornerRadius=0.9;dot.opacity=0.25;addSublayer(dot)}
+        addSublayer(provider)
+        for dot in dots{dot.isHidden=true;dot.backgroundColor=NSColor.white.withAlphaComponent(0.48).cgColor;dot.cornerRadius=0.9;dot.opacity=0.25;addSublayer(dot)}
     }
     required init?(coder:NSCoder){fatalError()}
     override init(layer:Any){let source=layer as? ChatRowLayer;value=source?.value ?? "";super.init(layer:layer)}
-    override func layoutSublayers(){super.layoutSublayers();CATransaction.begin();CATransaction.setDisableActions(true);for(i,dot) in dots.enumerated(){dot.frame=CGRect(x:CGFloat(i)*3.4,y:4.4,width:1.8,height:1.8)};title.frame=CGRect(x:13,y:1,width:max(0,bounds.width-25),height:10);hide.frame=CGRect(x:bounds.width-12,y:0,width:12,height:12);CATransaction.commit()}
+    override func layoutSublayers(){super.layoutSublayers();CATransaction.begin();CATransaction.setDisableActions(true);provider.frame=CGRect(x:0,y:0,width:11,height:11);for(i,dot) in dots.enumerated(){dot.frame=CGRect(x:CGFloat(i)*3.4,y:4.4,width:1.8,height:1.8)};title.frame=CGRect(x:13,y:1,width:max(0,bounds.width-25),height:10);hide.frame=CGRect(x:bounds.width-12,y:0,width:12,height:12);CATransaction.commit()}
     func setHovered(_ active:Bool){guard active != hovered else{return};hovered=active;hide.opacity=active ? 1:0;title.removeAnimation(forKey:"marquee");let available=max(0,bounds.width-25),full=ceil((value as NSString).size(withAttributes:[.font:font]).width);CATransaction.begin();CATransaction.setDisableActions(true);title.setAffineTransform(.identity);title.truncationMode=active ? .none:.end;title.frame=CGRect(x:13,y:1,width:active ? max(available,full):available,height:10);CATransaction.commit();guard active,full>available else{return};let distance=full-available+3,a=CAKeyframeAnimation(keyPath:"transform.translation.x");a.values=[0,0,-distance,-distance,0];a.keyTimes=[0,0.12,0.48,0.72,1];a.duration=max(2.4,Double(distance)/11);a.repeatCount = .infinity;a.timingFunction=CAMediaTimingFunction(name:.easeInEaseOut);title.add(a,forKey:"marquee")}
     func setSelected(_ selected:Bool){guard selected != self.selected else{return};self.selected=selected;title.foregroundColor=NSColor.white.withAlphaComponent(selected ? 0.9:0.42).cgColor}
+    @MainActor func setProvider(_ id:String?){provider.contents=ProviderIcons.image(id ?? "codex")?.cgImage(forProposedRect:nil,context:nil,hints:nil);provider.contentsGravity = .resizeAspect}
     func setRunning(_ running:Bool){
-        guard (dots.first?.animation(forKey:"chatHop") != nil) != running else{return}
-        let now=CACurrentMediaTime()
-        for(i,dot) in dots.enumerated(){dot.opacity=running ? 1:0.25;dot.removeAnimation(forKey:"chatHop");if running{let hop=CAKeyframeAnimation(keyPath:"transform.translation.y");hop.values=[0,0,1.7,0,0];hop.keyTimes=[0,0.16,0.34,0.52,1];hop.duration=1.18;hop.beginTime=now+Double(i)*0.14;hop.repeatCount = .infinity;hop.timingFunction=CAMediaTimingFunction(name:.easeInEaseOut);dot.add(hop,forKey:"chatHop")}}
+        let active=provider.animation(forKey:"workingPulse") != nil
+        guard active != running else{return};provider.removeAnimation(forKey:"workingPulse");provider.opacity=running ? 1:0.55
+        if running && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion{let pulse=CABasicAnimation(keyPath:"opacity");pulse.fromValue=0.5;pulse.toValue=1;pulse.duration=0.75;pulse.autoreverses=true;pulse.repeatCount = .infinity;provider.add(pulse,forKey:"workingPulse")}
     }
+
 }
 
 private final class AttachmentLayer:CALayer {
@@ -198,9 +202,9 @@ private final class AttachmentLayer:CALayer {
     var onNavigate: ((String)->Void)?
     var onContextMode: ((Bool)->Void)?
     var onAgent:((String)->Void)?
-    var onWorkspace:(()->Void)?
     var onVoice:(()->Void)?
     var onFocusComposer:(()->Void)?
+    var onPendingTimeout:((String)->Void)?
     private let voiceButton=CATextLayer()
     private var voiceActive=false
     func setVoiceActive(_ active:Bool){voiceActive=active;voiceButton.string=active ? "■":"◉";voiceButton.foregroundColor=(active ? NSColor.systemRed:NSColor.white.withAlphaComponent(0.7)).cgColor}
@@ -226,6 +230,7 @@ private final class AttachmentLayer:CALayer {
     private var fileGlyphColors=[NSColor.systemBlue.cgColor,NSColor.systemPurple.cgColor,NSColor.white.cgColor]
     private var actionHits=[(CGRect,String)]()
     private weak var hoveredAttachment:AttachmentLayer?
+    private var pendingTimeout:DispatchWorkItem?
     private(set) var pendingRequestID:String?
     private enum PendingSidebarTarget {case chat(String),project(String),newChat,newInProject}
     private var pendingSidebarTarget:PendingSidebarTarget?
@@ -259,7 +264,10 @@ private final class AttachmentLayer:CALayer {
     }
 
     private func beginPending(_ frame:CGRect,sidebarTarget:PendingSidebarTarget?=nil){
-        pendingRequestID=UUID().uuidString
+        pendingTimeout?.cancel();pendingRequestID=UUID().uuidString
+        let id=pendingRequestID
+        let timeout=DispatchWorkItem{[weak self] in guard let self,self.pendingRequestID == id else{return};self.cancelPending();if let id{self.onPendingTimeout?(id)};self.setCodexMessage("The chat could not be opened. Your draft is preserved.")}
+        pendingTimeout=timeout;DispatchQueue.main.asyncAfter(deadline:.now()+12,execute:timeout)
         pendingHighlight.name="loadingHighlight"
         pendingSidebarTarget=sidebarTarget
         CATransaction.begin();CATransaction.setDisableActions(true);layer.addSublayer(pendingHighlight);pendingHighlight.isHidden=false;pendingHighlight.removeAllAnimations();pendingHighlight.frame=frame.insetBy(dx:-2,dy:-2);pendingHighlight.opacity=1;updatePendingSidebarHighlight();pendingRibbon.frame=CGRect(x:-34,y:0,width:34,height:pendingHighlight.bounds.height);CATransaction.commit()
@@ -272,7 +280,7 @@ private final class AttachmentLayer:CALayer {
         return pendingRequestID!
     }
     func finishPending(requestID:String?){guard let requestID,requestID == pendingRequestID else{return};cancelPending()}
-    func cancelPending(){pendingRequestID=nil;pendingSidebarTarget=nil;pendingRibbon.removeAnimation(forKey:"loadingSweep");let fade=CABasicAnimation(keyPath:"opacity");fade.fromValue=pendingHighlight.presentation()?.opacity ?? pendingHighlight.opacity;fade.toValue=0;fade.duration=0.18;CATransaction.begin();CATransaction.setDisableActions(true);pendingHighlight.opacity=0;CATransaction.commit();pendingHighlight.add(fade,forKey:"pendingFade")}
+    func cancelPending(){pendingTimeout?.cancel();pendingTimeout=nil;pendingRequestID=nil;pendingSidebarTarget=nil;pendingRibbon.removeAnimation(forKey:"loadingSweep");let fade=CABasicAnimation(keyPath:"opacity");fade.fromValue=pendingHighlight.presentation()?.opacity ?? pendingHighlight.opacity;fade.toValue=0;fade.duration=0.18;CATransaction.begin();CATransaction.setDisableActions(true);pendingHighlight.opacity=0;CATransaction.commit();pendingHighlight.add(fade,forKey:"pendingFade")}
 
     private func updatePendingSidebarHighlight(){
         guard pendingRequestID != nil,let target=pendingSidebarTarget else{return}
@@ -312,7 +320,9 @@ private final class AttachmentLayer:CALayer {
             let row:ChatRowLayer
             if let existing=oldChats[id],existing.name == name {row=existing}
             else {row=ChatRowLayer(name);row.name=name;left.addSublayer(row)}
-            setFrame(row,rect,animated:animated);row.setSelected(id == selectedThread);row.setRunning(running)
+            setFrame(row,rect,animated:animated);row.setSelected(id == selectedThread)
+            let agent=(chats+standaloneChats+codeChats).first{$0.id==id}?.agent ?? elsewhere.first{$0.id==id}?.agent ?? ProviderIcons.identifier(name) ?? "codex"
+            row.setProvider(agent);row.setRunning(running)
             return (row,id)
         }
         setFrame(newRow,CGRect(x:5,y:cursor-12,width:leftWidth-10,height:11),animated:animated);cursor-=21
@@ -411,7 +421,7 @@ private final class AttachmentLayer:CALayer {
             let frame=inMain(rect.offsetBy(dx:actionBar.frame.minX,dy:actionBar.frame.minY))
             add(frame,limit:main.frame){[self] in
                 beginPending(frame)
-                switch id {case "back":onNavigate?("back");case "forward":onNavigate?("forward");case "workspace":onWorkspace?();case "new":onNew?();case "approve":onApprove?();case "reject":onReject?();case "interrupt":onInterrupt?();default:cancelPending()}
+                switch id {case "back":onNavigate?("back");case "forward":onNavigate?("forward");case "new":onNew?();case "approve":onApprove?();case "reject":onReject?();case "interrupt":onInterrupt?();default:cancelPending()}
             }
         }
         if previewOpen {
@@ -561,7 +571,7 @@ private final class AttachmentLayer:CALayer {
     private func layoutSettings() {
         guard let state=modelState else{return}
         let model=state.models?.first{$0.model == state.selectedModel}
-        let name=model?.displayName ?? state.selectedModel ?? "Models unavailable"
+        let name=model?.displayName ?? state.selectedModel ?? (state.modelsLoading == true ? "Loading models…":(state.agents?.first{$0.id == state.selectedAgent}?.name ?? "Provider")+" default")
         let effort=state.reasoningEffort ?? "Effort"
         let key=[state.selectedAgent ?? "",String(Double(settingsBar.bounds.width)),name,effort,String(lightweightContext),String(state.threadId?.hasPrefix("code:") == true),String(Double(renderingScale))]
         guard key != settingsLayoutKey else{return};settingsLayoutKey=key
@@ -594,6 +604,7 @@ private final class AttachmentLayer:CALayer {
             menu.popUp(positioning:nil,at:NSEvent.mouseLocation,in:nil);return
         }
         if kind == "model" {
+            if EmbeddedCodeRuntime.shared.active{let item=menu.addItem(withTitle:"Use provider default",action:#selector(selectSetting(_:)),keyEquivalent:"");item.target=self;item.representedObject=["",""];item.state=state.selectedModel == nil ? .on:.off}
             for model in models {
                 let item=menu.addItem(withTitle:model.displayName,action:#selector(selectSetting(_:)),keyEquivalent:"");item.target=self;item.representedObject=[model.model,state.reasoningEffort ?? ""];item.state=model.model == state.selectedModel ? .on:.off
             }
@@ -612,7 +623,7 @@ private final class AttachmentLayer:CALayer {
         guard key != actionsLayoutKey else{return};actionsLayoutKey=key
         actionBar.sublayers?.forEach{$0.removeFromSuperlayer()};actionHits.removeAll();var x:CGFloat=0
         var actions=[(String,String)]()
-        if EmbeddedCodeRuntime.shared.active{actions.append(("workspace","↗ IDE"))}
+
         if modelState?.canGoBack == true{actions.append(("back","‹"))}
         if modelState?.canGoForward == true{actions.append(("forward","›"))}
         if approvalNeeded{actions += [("approve","Approve"),("reject","Reject")]}

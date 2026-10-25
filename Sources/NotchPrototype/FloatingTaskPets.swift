@@ -34,6 +34,8 @@ enum FloatingTaskCorner:String,CaseIterable {
     private let defaults:UserDefaults,images=SpriteAssetCache(maxPixelSize:960)
     private var model=FloatingTaskLifecycle(),entries=[String:Entry](),specs=[PetGallerySpec](),profiles=[String:PetGradientProfile](),pets=[String:String](),root:URL?
     private var preview=false,offset=0
+    private var suppressed=false
+    func setSuppressed(_ value:Bool){guard value != suppressed else{return};suppressed=value;refresh()}
     private let enabledItem=NSMenuItem(),textItem=NSMenuItem(),previewItem=NSMenuItem(),finishItem=NSMenuItem(),nextItem=NSMenuItem()
     var enabled:Bool{defaults.bool(forKey:"floatingTasks.enabled")}
     var active:Bool{!model.tasks.isEmpty}
@@ -71,6 +73,7 @@ enum FloatingTaskCorner:String,CaseIterable {
         refresh();ended.forEach{onFinish?($0,false)}
     }
     func refresh(pets:[String:String]?=nil){
+        if suppressed{entries.values.forEach{$0.hide()};return}
         if let pets{if preview{self.pets.merge(pets){_,new in new}}else{self.pets=pets}}
         guard let screen=NSScreen.screens.first(where:{$0.auxiliaryTopLeftArea != nil}) ?? NSScreen.main else{return}
         let area=screen.visibleFrame,stride=size+(showText ? 34:0)+14,capacity=max(1,Int((area.height-36)/stride))

@@ -145,7 +145,7 @@ struct GradientStop: Decodable { let location: Double, color: String }
 
     func showScene(_ id: String,looping:Bool=true) {
         cancelCycle()
-        if let image=IntegrationIcons.image(id) {
+        if let image=ProviderIcons.image(id) ?? IntegrationIcons.image(id) {
             displayScene("tool",looping:looping);primitives.forEach{$0.isHidden=true}
             integrationMask.frame=CGRect(x:5,y:0,width:18,height:18)
             integrationMask.contents=image.cgImage(forProposedRect:nil,context:nil,hints:nil);integrationMask.isHidden=false

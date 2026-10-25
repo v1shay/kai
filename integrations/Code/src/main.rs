@@ -69,6 +69,7 @@ mod theme_controls;
 #[cfg(test)]
 mod ui_tests;
 mod unified;
+mod text_decode;
 mod usage;
 mod voice;
 mod voice_bridge;
@@ -531,6 +532,7 @@ impl ListReveal {
     }
 }
 struct Orbit {
+    unified_text_decode:text_decode::TextDecode,
     unified_successes: std::collections::VecDeque<(String, String)>,
     unified_context: Option<String>,
     unified_voice_context: Option<String>,
@@ -970,6 +972,7 @@ impl Orbit {
             }
             if matches!(event, InputEvent::Changed) {
                 this.composer_revision = this.composer_revision.wrapping_add(1);
+                cx.notify();
                 this.queue_workspace_save(cx);
                 this.update_slash(window, cx);
             }
@@ -1042,6 +1045,7 @@ impl Orbit {
             });
         }));
         Self {
+            unified_text_decode:Default::default(),
             unified_successes: Default::default(),
             unified_context: None,
             unified_voice_context: None,
@@ -4572,7 +4576,7 @@ impl Orbit {
             })
             .unwrap_or(self.agent)
     }
-    fn row(&mut self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
+    fn row(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         #[cfg(test)]
         self.rendered_rows.set(self.rendered_rows.get() + 1);
         if let Some(deferred) = self.deferred_rows.get(&ix) {
@@ -4606,6 +4610,13 @@ impl Orbit {
         {
             self.prefetch_completion_action(ix, cx);
         }
+        let decode_source=self.rows.get(ix).and_then(|row|{
+            if row.role.as_deref().is_some_and(|role|role.starts_with("user")){return None}
+            match &row.block{MessageBlock::Paragraph(text)|MessageBlock::Heading(text)|MessageBlock::Quote(text)|MessageBlock::RichParagraph{text,..}|MessageBlock::ListItem{text,..}=>Some(text.clone()),_=>None}
+        });
+        let decoded=if unified::decode_enabled(self.motion){decode_source.as_ref().map(|source|{
+            let (frame,active)=self.unified_text_decode.frame(ix,source,Instant::now());if active{window.request_animation_frame();}frame
+        })}else{None};
         let Some(row) = self.rows.get(ix) else {
             return div().into_any_element();
         };
@@ -4693,7 +4704,7 @@ impl Orbit {
                             .line_height(theme::ui_line_height(23.))
                             .child(rich_text(
                                 ("voice", ix),
-                                text,
+                                decoded.as_deref().unwrap_or(text),
                                 highlights,
                                 move |url, window, cx| {
                                     let _ = link_owner
@@ -4719,7 +4730,7 @@ impl Orbit {
                             .px_4()
                             .py_3()
                     })
-                    .child(text.clone()),
+                    .child(decoded.clone().unwrap_or_else(||text.clone())),
             ),
             MessageBlock::RichParagraph { text, highlights } => content.child(
                 div()
@@ -4733,7 +4744,7 @@ impl Orbit {
                     })
                     .child(rich_text(
                         ("markdown", ix),
-                        text,
+                        decoded.as_deref().unwrap_or(text),
                         highlights,
                         move |url, window, cx| {
                             let _ = link_owner
@@ -4760,7 +4771,7 @@ impl Orbit {
                     )
                     .child(div().flex_1().min_w(px(0.)).child(rich_text(
                         ("list-text", ix),
-                        text,
+                        decoded.as_deref().unwrap_or(text),
                         highlights,
                         move |url, window, cx| {
                             let _ = list_link_owner
@@ -4845,7 +4856,7 @@ impl Orbit {
                 div()
                     .text_size(theme::ui_px(20.))
                     .font_weight(FontWeight::SEMIBOLD)
-                    .child(text.clone()),
+                    .child(decoded.clone().unwrap_or_else(||text.clone())),
             ),
             MessageBlock::Quote(text) => content.child(
                 div()
@@ -4854,7 +4865,7 @@ impl Orbit {
                     .pl_4()
                     .text_size(theme::ui_px(14.))
                     .text_color(rgb(MUTED))
-                    .child(text.clone()),
+                    .child(decoded.clone().unwrap_or_else(||text.clone())),
             ),
             MessageBlock::Code {
                 language,
@@ -5772,19 +5783,20 @@ impl Render for Orbit {
                             .child(
                                 div()
                                     .debug_selector(|| "live-agent-indicator".into())
-                                    .w(px(28.))
-                                    .h(px(18.))
+                                    .w(px(if unified::active(){48.}else{28.}))
+                                    .h(px(if unified::active(){34.}else{18.}))
                                     .flex_none()
-                                    .when(header_loading_logo, |s| {
+                                    .when(unified::active(),|s|s.child(canvas(|bounds,_,_|unified::pet_slot(bounds),|_,_,_,_|{}).size_full()))
+                                    .when(!unified::active() && header_loading_logo, |s| {
                                         s.flex()
                                             .items_center()
                                             .justify_center()
                                             .child(self.loading_logo.clone())
                                     })
-                                    .when(!live_activity && !header_loading_logo, |s| {
+                                    .when(!unified::active() && !live_activity && !header_loading_logo, |s| {
                                         s.child(self.live_indicator.clone())
                                     })
-                                    .when(live_activity, |s| {
+                                    .when(!unified::active() && live_activity, |s| {
                                         s.flex().items_center().justify_center().child(
                                             svg()
                                                 .path(provider_asset(self.agent))
@@ -5968,7 +5980,7 @@ impl Render for Orbit {
                                 .when(!self.loading, |s| {
                                     let transcript = list(
                                         self.list.clone(),
-                                        cx.processor(|this, ix, _, cx| this.row(ix, cx)),
+                                        cx.processor(|this, ix, window, cx| this.row(ix, window, cx)),
                                     )
                                     .size_full();
                                     s.relative()
@@ -5994,7 +6006,8 @@ impl Render for Orbit {
                                         .w(px(28.))
                                         .h(px(18.))
                                         .flex_none()
-                                        .child(self.live_indicator.clone()),
+                                        .when(unified::active() && self.speech.is_none() && self.voice_call.is_none() && waiting_for_native.is_none(),|s|s.child(icon(agent_icon(self.agent),18.,agent_color(self.agent))))
+                                        .when(!unified::active() || self.speech.is_some() || self.voice_call.is_some() || waiting_for_native.is_some(),|s|s.child(self.live_indicator.clone())),
                                 )
                                 .child(
                                     div()
@@ -6199,6 +6212,7 @@ fn main() {
     unified::prepare_environment();
     let application = Application::new().with_assets(Assets);
     application.on_reopen(|cx| {
+        if unified::active(){unified::reveal();return}
         cx.activate(true);
         if let Some(window) = cx
             .windows()
@@ -6259,10 +6273,7 @@ fn main() {
                     // Order the actual window after creation/restoration and its
                     // first frame, rather than relying on app activation alone.
                     // One launch callback only; background work never raises it.
-                    window.on_next_frame(|window, cx| {
-                        cx.activate(true);
-                        window.activate_window();
-                    });
+                    window.on_next_frame(|window,cx|{if !unified::active(){cx.activate(true);window.activate_window();}});
                     cx.new(|cx| Orbit::new(window, cx, workspace_store))
                 },
             )

@@ -70,6 +70,10 @@ import AppKit
             let content=NSMutableAttributedString(string:"")
             let blockStart=index < ranges.count ? ranges[index].location : storage.length
             for key in Array(mathBlocks.keys) {mathBlocks[key]?.remove(index);if mathBlocks[key]?.isEmpty == true{mathBlocks.removeValue(forKey:key)}}
+            if block.kind=="assistant",let provider=block.agent,index==0 || history[index-1].kind != "assistant" || history[index-1].agent != provider,let image=ProviderIcons.image(provider,color:palette.first ?? .white){
+                let attachment=NSTextAttachment();attachment.image=image;attachment.bounds=CGRect(x:0,y:-2,width:11,height:11)
+                content.append(NSAttributedString(attachment:attachment));content.append(NSAttributedString(string:"\n",attributes:[.font:NSFont.systemFont(ofSize:4)]))
+            }
             let processedLines=ConversationInteraction.lines(block.lines)
             var visualLines=renderMath ? MathExpression.collapsedLines(processedLines) : processedLines
             // Message formatters add empty separators; use one measured gap instead.

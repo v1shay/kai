@@ -10,8 +10,8 @@ struct DefaultModelPreferences {
     func set(_ model:String?){
         if let model,!model.isEmpty{defaults.set(model,forKey:Self.key)}else{defaults.removeObject(forKey:Self.key)}
     }
-    func fields(action:String)->[String:Any] {
-        guard ["new","new_project"].contains(action),let selectedID else{return [:]}
+    func fields(action:String,availableModels:Set<String>?=nil)->[String:Any] {
+        guard ["new","new_project"].contains(action),let selectedID,availableModels?.contains(selectedID) != false else{return [:]}
         return ["defaultModel":selectedID]
     }
 }

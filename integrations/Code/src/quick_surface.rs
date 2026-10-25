@@ -114,7 +114,7 @@ impl Orbit {
         let input = composer.clone();
         let send_focus = composer.clone();
         let rows = (self.rows.len().saturating_sub(8)..self.rows.len())
-            .map(|ix| self.row(ix, cx))
+            .map(|ix| self.row(ix, window, cx))
             .collect::<Vec<_>>();
         let artwork = self
             .background

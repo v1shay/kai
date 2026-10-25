@@ -3,6 +3,15 @@ import XCTest
 @testable import NotchPrototype
 
 final class AutomationSettingsTests:XCTestCase {
+    func testAnotherProvidersSavedModelNeverBlocksNewChats(){
+        let name="ModelScope-"+UUID().uuidString,defaults=UserDefaults(suiteName:name)!
+        defer{defaults.removePersistentDomain(forName:name)}
+        let preferences=DefaultModelPreferences(defaults:defaults);preferences.set("codex-model")
+        XCTAssertTrue(preferences.fields(action:"new",availableModels:["claude-model"]).isEmpty)
+        XCTAssertTrue(preferences.fields(action:"new",availableModels:[]).isEmpty)
+        XCTAssertEqual(preferences.fields(action:"new",availableModels:["codex-model"])["defaultModel"] as? String,"codex-model")
+    }
+
     @MainActor func testDefaultModelMenuPersistsAndRoutesOnlyNewChats()throws {
         _=NSApplication.shared
         let suite="KaiAutomationTests-\(UUID().uuidString)",defaults=try XCTUnwrap(UserDefaults(suiteName:suite))

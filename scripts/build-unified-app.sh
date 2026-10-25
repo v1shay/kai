@@ -8,19 +8,20 @@ if [[ "$configuration" != release && "$configuration" != debug ]]; then
 fi
 export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$root/.build/unified-cargo}
 export CLANG_MODULE_CACHE_PATH=${CLANG_MODULE_CACHE_PATH:-/private/tmp/kai-unified-clang}
-mkdir -p "$root/.build/unified" "$root/.build/unified-swift-cache"
+swift_cache=${KAI_SWIFT_MODULE_CACHE:-/private/tmp/kai-unified-swift-v2}
+mkdir -p "$root/.build/unified" "$swift_cache"
 args=(build --offline --manifest-path "$root/integrations/Code/Cargo.toml" --bin orbit)
 [[ "$configuration" != release ]] || args+=(--release)
 cargo "${args[@]}"
-swiftc -parse-as-library -emit-library -O -D KAI_UNIFIED -module-cache-path "$root/.build/unified-swift-cache" "$root"/Sources/NotchPrototype/*.swift -o "$root/.build/unified/libKaiNotch.dylib"
+swiftc -parse-as-library -emit-library -O -D KAI_UNIFIED -module-cache-path "$swift_cache" "$root"/Sources/NotchPrototype/*.swift -o "$root/.build/unified/libKaiNotch.dylib"
 python3 - "$root/.build/unified/libKaiNotch.dylib" <<'PYABI'
 import ctypes,sys
 library=ctypes.CDLL(sys.argv[1])
-for name in ['start','publish','toggle','collapse','ready','workspace_visible','levels']:
+for name in ['start','publish','toggle','collapse','ready','workspace_visible','levels','diagnostics']:
  getattr(library,'kai_unified_'+name)
-print('Verified all seven native ABI exports')
+print('Verified all eight native ABI exports')
 PYABI
-swiftc -parse-as-library -emit-library -O -module-cache-path "$root/.build/unified-swift-cache" "$root/integrations/Code/native_helpers/CodeVoiceMedia.swift" -framework AppKit -framework WebKit -framework AVFoundation -o "$root/.build/unified/libCodeVoice.dylib"
+swiftc -parse-as-library -emit-library -O -module-cache-path "$swift_cache" "$root/integrations/Code/native_helpers/CodeVoiceMedia.swift" -framework AppKit -framework WebKit -framework AVFoundation -o "$root/.build/unified/libCodeVoice.dylib"
 staging=$(mktemp -d "$root/.build/unified/.package.XXXXXX")
 trap 'rm -rf "$staging"' EXIT
 product="$staging/Kai Unified.app"
@@ -29,7 +30,8 @@ mkdir -p "$product/Contents/MacOS" "$resources/Licenses"
 cp "$CARGO_TARGET_DIR/$configuration/orbit" "$product/Contents/MacOS/kai-unified"
 cp "$root/.build/unified/"*.dylib "$resources/"
 cp -R "$root/Sources/NotchPrototype/Resources/"* "$resources/"
-mkdir -p "$resources/kai_pets"
+mkdir -p "$resources/kai_pets" "$resources/providers"
+for provider in codex claude gemini opencode cursor grok antigravity; do cp "$root/integrations/Code/assets/$provider.svg" "$resources/providers/$provider.svg"; done
 cp "$root/kai_speech.py" "$resources/"
 cp -R "$root/integrations/Code/LICENSES/"* "$resources/Licenses/"
 cp "$root/integrations/Code/native_helpers/KAI-SOURCE.md" "$resources/Licenses/Kai-Voice-Attribution.txt"
@@ -46,7 +48,7 @@ for pet in catalog['pets']:
  source=root/'kai_pets'/pet['spritesheet'];target=resources/'kai_pets'/pet['spritesheet']
  target.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(source,target)
 info=plistlib.loads((root/'integrations/Code/scripts/Info.plist').read_bytes())
-info.update(CFBundleName='Kai Unified',CFBundleDisplayName='Kai Unified',CFBundleIdentifier='com.kai.unified.experimental',CFBundleExecutable='kai-unified',CFBundleVersion='1',CFBundleShortVersionString='0.1.0')
+info.update(CFBundleName='Kai Unified',CFBundleDisplayName='Kai Unified',CFBundleIdentifier='com.kai.unified.experimental',CFBundleExecutable='kai-unified',CFBundleVersion='2',CFBundleShortVersionString='0.2.0')
 icon=root/'integrations/Code/assets/Code.icns'
 if icon.exists():shutil.copy2(icon,resources/'Code-Bonsai.icns')
 info['NSAppleEventsUsageDescription']='Kai reads Spotify playback status for its optional idle media display.'

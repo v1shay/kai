@@ -3,6 +3,13 @@ import XCTest
 @testable import NotchPrototype
 
 final class WorkspaceMorphTests:XCTestCase {
+    func testHiddenNotchPreservesItsDivergentDraftUntilTheOwnerAcceptsIt(){
+        XCTAssertFalse(UnifiedDraftHandoff.shouldAdopt(local:"notch draft",base:"old",remote:"new IDE draft",selectionChanged:false,sendAccepted:false))
+        XCTAssertTrue(UnifiedDraftHandoff.shouldAdopt(local:"notch draft",base:"old",remote:"notch draft",selectionChanged:false,sendAccepted:false))
+        XCTAssertTrue(UnifiedDraftHandoff.shouldAdopt(local:"old",base:"old",remote:"new IDE draft",selectionChanged:false,sendAccepted:false))
+        XCTAssertTrue(UnifiedDraftHandoff.shouldAdopt(local:"sent",base:"old",remote:"",selectionChanged:false,sendAccepted:true))
+    }
+
     func testWorkspaceFitsSmallDisplaysAndKeepsMargin() {
         let screen=CGRect(x:0,y:0,width:800,height:600)
         let frame=WorkspaceMorph.destination(saved:nil,screen:screen)

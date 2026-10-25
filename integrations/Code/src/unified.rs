@@ -21,8 +21,9 @@ struct Host {
     completed: Option<String>,
     error: Option<String>,
     results: std::collections::VecDeque<(String, [u8; 32], Option<String>)>,
-    previous_runs: HashMap<String, String>,
+    reported_successes: std::collections::VecDeque<(String,String)>,
     finished: Vec<Value>,
+    pet_rect:Option<[f32;4]>,
 }
 
 extern "C" fn command(bytes: *const u8, count: usize) -> bool {
@@ -126,8 +127,9 @@ pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Resul
                 completed: None,
                 error: None,
                 results: Default::default(),
-                previous_runs: Default::default(),
+                reported_successes: Default::default(),
                 finished: vec![],
+                pet_rect:None,
             })
         });
         let entity = window.update(cx, |_, window, cx| {
@@ -143,7 +145,7 @@ pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Resul
         })?;
         // Entity notifications include background run, approval and transcript events.
         cx.observe(&entity, move |entity, cx| {
-            entity.read(cx).publish_unified(cx)
+            entity.update(cx,|app,cx|{app.refresh_unified_models(cx);app.publish_unified(cx)});
         })
         .detach();
         entity.read(cx).publish_unified(cx);
@@ -156,12 +158,11 @@ pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Resul
             std::process::id()
         );
         if std::env::args().any(|arg| arg == "--unified-smoke-test") {
-            let body=window.update(cx,|app,_,cx|json!({"action":"workspace_expand","ownerToken":app.unified_token(),"draftBase":app.composer.read(cx).text(),"draft":app.composer.read(cx).text(),"requestId":"smoke-expand"}))?;
-            COMMANDS
-                .get()
-                .unwrap()
-                .try_send(body)
-                .map_err(|_| anyhow::anyhow!("Smoke command queue is full"))?;
+            let diagnostics=unsafe{libc::dlsym(library,c"kai_unified_diagnostics".as_ptr())};
+            anyhow::ensure!(!diagnostics.is_null(),"Missing presentation diagnostics");
+            let diagnostics:unsafe extern "C" fn()->u32=unsafe{std::mem::transmute(diagnostics)};
+            anyhow::ensure!(unsafe{diagnostics()} & 3 == 2,"App did not launch as notch only");
+            reveal();
             let visible =
                 unsafe { libc::dlsym(library, c"kai_unified_workspace_visible".as_ptr()) };
             anyhow::ensure!(!visible.is_null(), "Missing smoke visibility export");
@@ -174,6 +175,11 @@ pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Resul
                 Timer::after(Duration::from_millis(900)).await;
                 let _ = cx.update(|_| {
                     assert!(unsafe { visible() }, "Workspace did not expand");
+                    let state=unsafe{diagnostics()};
+                    assert_eq!(state & 31,9,"Workspace must own the pet with notch and drop panel hidden");
+                    // Reopening an already visible workspace is immediate and never pending.
+                    crate::unified::reveal();
+                    assert_eq!(unsafe{diagnostics()} & 31,9);
                     crate::unified::collapse();
                 });
                 Timer::after(Duration::from_millis(900)).await;
@@ -182,9 +188,10 @@ pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Resul
                         !unsafe { visible() },
                         "Workspace did not return to the notch"
                     );
-                    eprintln!(
-                        "Kai unified smoke: owner handshake, interrupted morph reversal, and round trip passed"
-                    );
+                    let state=unsafe{diagnostics()};
+                    assert_eq!(state & 27,2,"Returning must restore only the notch and its original pet layer");
+                    assert_ne!(state & 32,0,"Compact status indicator must be visible");
+                    eprintln!("Kai unified smoke: owner handshake, notch-only launch, interrupted morph reversal, one visible surface, shared pet, repeat open, and round trip passed");
                     cx.quit();
                 });
             })
@@ -238,16 +245,11 @@ fn scene(status: &str) -> &'static str {
 }
 impl Orbit {
     pub(super) fn unified_token(&self) -> String {
-        format!(
-            "{}:{}:{}:{}",
-            self.active
-                .clone()
-                .unwrap_or_else(|| format!("draft-{}", self.generation)),
-            self.project.display(),
-            self.composer_revision,
-            self.agent.command()
-        )
+        // Composer edits have their own exact draft-base check. They must not
+        // invalidate navigation/model commands before the parent observes input.
+        format!("{}:{}:{}:{}",self.active.clone().unwrap_or_else(||format!("draft-{}",self.generation)),self.project.display(),self.generation,self.agent.command())
     }
+
     pub(super) fn unified_send_ready(&self) -> bool {
         !self.loading
             && !self.loading_earlier
@@ -315,10 +317,7 @@ impl Orbit {
         let action = request["action"].as_str().ok_or("Missing action")?;
         let default_model = if matches!(action, "new" | "new_project") {
             if let Some(model) = request["defaultModel"].as_str() {
-                if !self
-                    .native_models
-                    .get(&self.agent)
-                    .is_some_and(|models| models.iter().any(|m| m.id == model))
+                if !self.unified_models().iter().any(|m|m.id==model)
                 {
                     return Err("Saved default model is unavailable for this agent; choose an available model in Kai’s menu".into());
                 }
@@ -428,7 +427,7 @@ impl Orbit {
                 {
                     return Err("Enter a prompt under 64 KB".into());
                 }
-                // The owner token includes the actual Code composer revision.
+                // Draft contents were checked against the current owner before submission.
                 self.composer
                     .update(cx, |input, cx| input.set_text(text, cx));
                 let supplied = if let Some(context) = self.unified_context.take() {
@@ -458,14 +457,11 @@ impl Orbit {
             }
             "settings" => {
                 let model = request["model"].as_str().ok_or("Missing model")?;
-                let known = self
-                    .native_models
-                    .get(&self.agent)
-                    .is_some_and(|models| models.iter().any(|m| m.id == model));
+                let known=model.is_empty() || self.unified_models().iter().any(|m|m.id==model);
                 if !known {
                     return Err("That model is no longer available".into());
                 }
-                self.choose_model(Some(model.into()), cx);
+                self.choose_model((!model.is_empty()).then(||model.into()), cx);
             }
             "agent" => {
                 let name = request["agent"].as_str().ok_or("Missing agent")?;
@@ -535,6 +531,12 @@ impl Orbit {
                 self.add_attachments(additions, cx);
             }
             "workspace_expand" => reveal(),
+            "draft" => {
+                let text=request["text"].as_str().ok_or("Missing draft")?;
+                if text.len()>input::MAX_DRAFT_BYTES || text.contains('\0'){return Err("Draft is too large".into())}
+                if request["draftBase"].as_str()!=Some(self.composer.read(cx).text().as_str()){return Err("The workspace draft changed; your notch draft is preserved".into())}
+                if self.composer.read(cx).text()!=text{self.composer.update(cx,|input,cx|input.set_text(text,cx));self.queue_workspace_save(cx);}
+            },
             "workspace_settings" => self.show_modal(Modal::Settings, window, cx),
             "workspace_voice" => self.toggle_voice(window, cx),
             "workspace_voice_prompt" => {
@@ -596,7 +598,7 @@ impl Orbit {
             "history_more" => {
                 self.load_history_page(true, cx);
             }
-            "refresh" => {}
+            "refresh" | "models" => {self.refresh_unified_models(cx);}
             // Settings stay explicit: unsupported actions cannot launch another runtime.
             _ => return Err(format!("Open the Code workspace to use {action}")),
         }
@@ -625,33 +627,9 @@ impl Orbit {
         let mut state = self.unified_snapshot(cx);
         HOST.with(|host| {
             if let Some(host) = host.borrow_mut().as_mut() {
-                let now: HashMap<_, _> = self
-                    .runs
-                    .iter()
-                    .map(|(id, run)| (id.clone(), run.parse_epoch.to_string()))
-                    .collect();
-                let finished: Vec<_> = host
-                    .previous_runs
-                    .iter()
-                    .filter(|(id, run)| {
-                        !now.contains_key(*id)
-                            && !self.finalizing.contains(*id)
-                            && !self.settling.contains_key(*id)
-                            && self
-                                .unified_successes
-                                .iter()
-                                .any(|(owner, epoch)| owner == *id && epoch == *run)
-                    })
-                    .map(|(id, run)| json!({"id":format!("code:{id}"),"runId":run}))
-                    .collect();
-                // Keep finalizing runs until their persisted transcript is ready.
-                let mut tracked = now;
-                for (id, run) in &host.previous_runs {
-                    if self.finalizing.contains(id) || self.settling.contains_key(id) {
-                        tracked.insert(id.clone(), run.clone());
-                    }
-                }
-                host.previous_runs = tracked;
+                let finished:Vec<_>=self.unified_successes.iter().filter(|(id,epoch)|!host.reported_successes.iter().any(|(seen,run)|seen==id&&run==epoch) && !self.finalizing.contains(id) && !self.settling.contains_key(id)).cloned().collect();
+                for event in &finished{if host.reported_successes.len()>=128{host.reported_successes.pop_front();}host.reported_successes.push_back(event.clone());}
+                let finished:Vec<_>=finished.iter().map(|(id,run)|json!({"id":format!("code:{id}"),"runId":run})).collect();
                 if !finished.is_empty() {
                     host.finished = finished;
                 }
@@ -683,7 +661,7 @@ impl Orbit {
         let running = self.active.as_ref().and_then(|id| self.runs.get(id));
         let mut tasks:Vec<_>=self.runs.iter().map(|(id,run)|{
             let name=self.sessions.iter().find(|s|s.id==*id).map(|s|s.title.as_str()).unwrap_or("Agent");
-            json!({"id":format!("code:{id}"),"name":name,"runId":run.parse_epoch.to_string(),"scene":self.native_pending.values().find(|p|p.owner==*id&&p.current(&self.runs)).map(|p|p.indicator_scene()).unwrap_or(scene(&run.status)),"text":format!("{} · {}",run.agent.name(),run.status)})
+            json!({"id":format!("code:{id}"),"name":name,"runId":run.parse_epoch.to_string(),"scene":self.native_pending.values().find(|p|p.owner==*id&&p.current(&self.runs)).map(|p|p.indicator_scene()).unwrap_or(scene(&run.status)),"text":format!("{} · {}",run.agent.name(),run.status),"agent":run.agent.command()})
         }).collect();
         tasks.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
         let approval = self.unified_pending();
@@ -712,18 +690,18 @@ impl Orbit {
             .active
             .as_ref()
             .and_then(|id| self.sessions.iter().find(|s| &s.id == id));
-        let chats:Vec<_>=self.sessions.iter().filter(|s|!self.hidden_sessions.contains(&s.id))
-            .filter(|s|self.runs.contains_key(&s.id)||self.active.as_ref()==Some(&s.id))
-            .chain(self.sessions.iter().filter(|s|!self.hidden_sessions.contains(&s.id)&&!self.runs.contains_key(&s.id)&&self.active.as_ref()!=Some(&s.id)).take(80))
-            .map(|s|json!({"id":format!("code:{}",s.id),"name":format!("{} · {}",s.agent.name(),s.title),"status":if self.runs.contains_key(&s.id){"active"}else{"idle"}})).collect();
+        let row=|s:&SessionSummary|json!({"id":format!("code:{}",s.id),"name":s.title,"agent":s.agent.command(),"status":if self.runs.contains_key(&s.id){"active"}else{"idle"}});
+        let chats:Vec<_>=self.sessions.iter().filter(|s|!self.hidden_sessions.contains(&s.id)&&s.project_path==self.project).take(100).map(row).collect();
+        let standalone:Vec<_>=self.sessions.iter().filter(|s|!self.hidden_sessions.contains(&s.id)&&s.project_path==self.unprojected_root()&&s.project_path!=self.project).take(60).map(row).collect();
+        let models=self.unified_models();
         json!({"project":self.project,"projects":self.projects.iter().take(80).map(|p|json!({"path":p.path,"name":p.name})).collect::<Vec<_>>(),"projectsLoading":false,
-            "chats":[],"standaloneChats":[],"standalone":true,"codeChats":chats,"codeConnection":{"connected":true,"enabled":true},
+            "chats":chats,"standaloneChats":standalone,"standalone":self.project==self.unprojected_root(),"codeChats":[],"codeConnection":{"connected":true,"enabled":true},
             "threadId":selected,"threadName":chat.map(|s|s.title.as_str()).unwrap_or("New chat"),"ownerToken":self.unified_token(),"composerDraft":self.composer.read(cx).text(),
-            "history":self.unified_history(),"historyHasMore":self.has_older,"files":self.unified_file_rows(cx),
+            "historyLoading":self.loading,"history":if self.loading{Vec::<Value>::new()}else{self.unified_history()},"historyHasMore":self.has_older,"files":self.unified_file_rows(cx),
             "readOnly":!self.unified_send_ready(),"activeTurnId":running.map(|r|r.parse_epoch.to_string()),
             "nativeReview":self.unified_review(),"approval":approval.is_some(),"approvalThreadId":approval.as_ref().map(|a|format!("code:{}",a.0)),"approvalRequestId":approval.as_ref().map(|a|a.1.clone()),"approvalSummary":approval.as_ref().map(|a|a.2.clone()),
             "activity":if tasks.is_empty(){selected_activity.clone()}else{activity},"sessionActivity":self.voice_call.as_ref().filter(|v|v.owns_current_chat(self.active.as_deref())).map(|v|json!({"scene":v.scene(),"text":v.caption()})).unwrap_or(selected_activity),"activeTasks":tasks,"focusThreadId":approval.as_ref().map(|a|format!("code:{}",a.0)).or_else(||tasks.first().and_then(|t|t["id"].as_str().map(str::to_owned))),
-            "notice":self.notice.as_deref().unwrap_or("Kai · Code"),"attachments":[],"models":self.native_models.get(&self.agent).into_iter().flatten().map(|m|json!({"model":m.id,"displayName":m.label,"supportedReasoningEfforts":[]})).collect::<Vec<_>>(),
+            "notice":self.notice.as_deref().unwrap_or("Kai · Code"),"attachments":[],"modelsLoading":self.controls_pending.contains(self.agent.command()),"models":models.iter().map(|m|json!({"model":m.id,"displayName":m.label,"supportedReasoningEfforts":[]})).collect::<Vec<_>>(),
             "selectedModel":self.model,"reasoningEffort":"","canGoBack":false,"canGoForward":false,
             "agents":self.agents.iter().map(|a|json!({"id":a.kind.command(),"name":a.kind.name(),"available":a.available&&a.executable.is_some()})).collect::<Vec<_>>(),"selectedAgent":self.agent.command(),"workspaceVoiceChoice":self.voice_choice,"workspaceVoiceActive":self.voice_call.is_some(),"workspaceVoiceScene":self.voice_call.as_ref().map(|v|v.scene())})
     }
@@ -798,7 +776,7 @@ impl Orbit {
                     }
                 },
             };
-            history.push(json!({"id":format!("row-{index}"),"kind":if kind.starts_with("user"){"user"}else if kind=="activity"{"activity"}else{"assistant"},"lines":[{"text":bounded(&text,4000),"style":style}],"speechText":if kind.starts_with("user") || kind=="activity" || style=="code" {String::new()}else{bounded(&text,4000)}}));
+            history.push(json!({"id":format!("row-{index}"),"kind":if kind.starts_with("user"){"user"}else if kind=="activity"{"activity"}else{"assistant"},"lines":[{"text":bounded(&text,4000),"style":style}],"agent":role.split(':').nth(1).unwrap_or(self.agent.command()),"speechText":if kind.starts_with("user") || kind=="activity" || style=="code" {String::new()}else{bounded(&text,4000)}}));
         }
         history
     }
@@ -1094,5 +1072,108 @@ mod final_regressions {
             match answers.try_recv().unwrap(){runtime::NativeControl::Respond{id,answer:runtime::NativeAnswer::Answers(value)}=>{assert_eq!(id,"form");assert_eq!(value["q"],vec!["a"]);},_=>panic!("Expected native form response")}
             assert!(app.unified_command(&body,window,cx).is_err());assert!(answers.try_recv().is_err());
         });
+    }
+}
+
+impl Orbit {
+    fn unified_models(&self)->Vec<agent_controls::ModelChoice>{
+        let mut models=self.native_models.get(&self.agent).cloned().unwrap_or_default();
+        if let Some((_,info))=self.controls.get(self.agent.command()){
+            for model in &info.models{if !models.iter().any(|m|m.id==model.id){models.push(model.clone());}}
+        }
+        models
+    }
+    fn refresh_unified_models(&mut self,cx:&mut Context<Self>){
+        if !active() || self.controls_pending.contains(self.agent.command()) || !self.unified_models().is_empty(){return}
+        if self.controls.get(self.agent.command()).is_some_and(|(at,_)|at.elapsed()<Duration::from_secs(60)){return}
+        let kind=self.agent;
+        let Some(path)=self.agents.iter().find(|a|a.kind==kind&&a.available).and_then(|a|a.executable.clone())else{return};
+        self.controls_pending.insert(kind.command());let home=self.controls_home.clone();
+        cx.spawn(async move|this,cx|{
+            let info=cx.background_executor().spawn(async move{agent_controls::inspect(kind,&path,&home)}).await;
+            let _=this.update(cx,|app,cx|{app.controls_pending.remove(kind.command());app.controls.insert(kind.command(),(Instant::now(),info));cx.notify();});
+        }).detach();
+    }
+}
+
+pub(super) fn decode_enabled(motion:bool)->bool{
+    #[cfg(not(test))]{active()&&motion&&!native::reduced_motion()}
+    #[cfg(test)]{let _=motion;false}
+}
+pub(super) fn pet_slot(bounds:Bounds<Pixels>){
+    let rect=[f32::from(bounds.origin.x),f32::from(bounds.origin.y),f32::from(bounds.size.width),f32::from(bounds.size.height)];
+    let changed=HOST.with(|host|{let mut host=host.borrow_mut();let Some(host)=host.as_mut()else{return false};if host.pet_rect==Some(rect){return false}host.pet_rect=Some(rect);true});
+    if changed{emit(&json!({"type":"workspacePetSlot","rect":rect}));}
+}
+
+#[cfg(test)]
+mod regression_tests {
+    use super::*;
+    use gpui::TestAppContext;
+    use std::prelude::v1::test;
+    fn request(app:&Orbit,action:&str,cx:&App)->Value{json!({"action":action,"ownerToken":app.unified_token(),"draftBase":app.composer.read(cx).text()})}
+
+    #[gpui::test]
+    fn project_snapshot_and_models_follow_the_actual_owner(cx:&mut TestAppContext){
+        let(view,cx)=crate::ui_tests::fixture(cx);
+        view.update(cx,|app,cx|{
+            let mut other=app.sessions[0].clone();other.id="other".into();other.project_path=app.unprojected_root();app.sessions.push(other);
+            let first=app.unified_snapshot(cx);
+            assert_eq!(first["chats"].as_array().unwrap().len(),1);
+            assert_eq!(first["chats"][0]["id"],"code:fixture-session");
+            assert_eq!(first["standaloneChats"][0]["id"],"code:other");assert_eq!(first["standalone"],false);
+            app.project=app.unprojected_root();let second=app.unified_snapshot(cx);
+            assert_eq!(second["chats"][0]["id"],"code:other");assert_eq!(second["standalone"],true);
+            let choice=|id:&str|agent_controls::ModelChoice{id:id.into(),label:id.into()};
+            app.controls.insert(app.agent.command(),(Instant::now(),agent_controls::ControlInfo{auth:agent_controls::AuthState::Unknown,models:vec![choice("catalog-model")],note:None,account:None,limits:vec![],catalog:None}));
+            assert_eq!(app.unified_snapshot(cx)["models"][0]["model"],"catalog-model");
+            app.native_models.insert(app.agent,vec![choice("catalog-model"),choice("live-model")]);
+            assert_eq!(app.unified_snapshot(cx)["models"].as_array().unwrap().len(),2);
+            app.agent=AgentKind::Gemini;assert!(app.unified_snapshot(cx)["models"].as_array().unwrap().is_empty());
+        });
+    }
+    #[gpui::test]
+    fn draft_changes_preserve_selection_token_but_reject_divergent_base(cx:&mut TestAppContext){
+        let(view,cx)=crate::ui_tests::fixture(cx);
+        view.update_in(cx,|app,window,cx|{
+            let token=app.unified_token();let mut body=request(app,"draft",cx);body["text"]=json!("Notch draft");
+            app.unified_command(&body,window,cx).unwrap();assert_eq!(app.unified_token(),token);
+            let base=app.composer.read(cx).text();assert_eq!(base,"Notch draft");
+            body["text"]=json!("Stale write");assert!(app.unified_command(&body,window,cx).is_err());assert_eq!(app.composer.read(cx).text(),base);
+            let mut settings=request(app,"settings",cx);settings["model"]=json!("");app.unified_command(&settings,window,cx).unwrap();
+        });
+    }
+    #[gpui::test]
+    fn two_notch_submissions_reach_the_native_provider_and_finish(cx:&mut TestAppContext){
+        use std::os::unix::fs::PermissionsExt;
+        let(view,cx)=crate::ui_tests::fixture(cx);
+        view.update_in(cx,|app,_,cx|{
+            let executable=app.controls_home.parent().unwrap().join("claude-unified-fixture.py");
+            std::fs::write(&executable,r#"#!/usr/bin/python3
+import json,os,sys
+def emit(value): print(json.dumps(value),flush=True)
+v=json.loads(sys.stdin.readline())
+emit({'type':'control_response','response':{'subtype':'success','request_id':v['request_id'],'response':{'commands':[]}}})
+v=json.loads(sys.stdin.readline())
+with open('requests.jsonl','a') as f: f.write(json.dumps(v)+'\n')
+emit({'type':'system','subtype':'init','session_id':'unified-native','slash_commands':[]})
+emit({'type':'assistant','message':{'id':'reply','content':[{'type':'text','text':'Native fixture reply'}]}})
+emit({'type':'result','subtype':'success','is_error':False,'result':'Native fixture reply'})
+"#).unwrap();std::fs::set_permissions(&executable,std::fs::Permissions::from_mode(0o700)).unwrap();
+            app.active=None;app.loading=false;app.agent=AgentKind::Claude;app.agents=vec![Agent{kind:AgentKind::Claude,name:"Fixture".into(),executable:Some(executable),available:true}];
+            app.composer.update(cx,|input,cx|input.set_text("",cx));
+        });
+        for prompt in ["First notch prompt","Second notch prompt"]{
+            view.update_in(cx,|app,window,cx|{let mut body=request(app,"send",cx);body["text"]=json!(prompt);app.unified_command(&body,window,cx).unwrap();});
+            let deadline=Instant::now()+Duration::from_secs(15);
+            loop{
+                cx.run_until_parked();
+                view.update(cx,|app,cx|{while let Ok(event)=app.engine.events.try_recv(){if matches!(event,Event::Parsed(_,_)|Event::PagedFinished(_)|Event::FinishError(_,_)){app.receive(event,cx);}}});
+                if cx.update(|_,cx|{let app=view.read(cx);!app.starting&&app.runs.is_empty()&&app.finalizing.is_empty()}){break}
+                assert!(Instant::now()<deadline,"Native provider failed to finish");std::thread::sleep(Duration::from_millis(10));
+            }
+            view.update(cx,|app,cx|{assert!(!app.unified_successes.is_empty());assert!(app.unified_snapshot(cx)["history"].to_string().contains("Native fixture reply"));});
+        }
+        view.update(cx,|app,_|{let captured=std::fs::read_to_string(app.project.join("requests.jsonl")).unwrap();assert_eq!(captured.lines().count(),2);assert!(captured.contains("First notch prompt"));assert!(captured.contains("Second notch prompt"));});
     }
 }

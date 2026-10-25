@@ -3,6 +3,7 @@ import Foundation
 /// Coordinates capture, navigation and context attachment before input is sent.
 /// Dictation can run while a new chat loads, but sending waits for its exact ack.
 @MainActor final class ShortcutPreparation {
+    var supportsOwnedVoice=false
     var onCommand: ((String, [String: Any]) -> Void)?
     var onDictation: ((DictationTrigger, Bool) -> Void)?
     var onReady: ((ShortcutAction, String, ApplicationContext?) -> Void)?
@@ -24,7 +25,7 @@ import Foundation
     func start(action: ShortcutAction, trigger: DictationTrigger, selected: String?, target: String?, lightweight: Bool, context:ApplicationContext?=nil) {
         cancel()
         guard action.createsChat || target != nil else { onFailure?("Open a chat before using this shortcut"); return }
-        if action.isVoice, !action.createsChat, target?.hasPrefix("code:") == true {
+        if action.isVoice, !action.createsChat, target?.hasPrefix("code:") == true,!supportsOwnedVoice {
             onFailure?("Codex voice requires a Codex chat; select one in the sidebar");return
         }
         let id=UUID()
