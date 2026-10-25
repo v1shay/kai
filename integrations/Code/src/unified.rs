@@ -1,0 +1,1098 @@
+//! In-process adapter: GPUI owns sessions, consent, persistence and every run.
+//! Swift owns the notch's existing AppKit views. Commands wake an async receiver;
+//! state is pushed only on owner notifications, with no polling or second server.
+use super::*;
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+use std::{cell::RefCell, ffi::c_void, sync::OnceLock};
+
+type Publish = unsafe extern "C" fn(*const u8, usize);
+type Collapse = unsafe extern "C" fn();
+type Start = unsafe extern "C" fn(*mut c_void, extern "C" fn(*const u8, usize) -> bool);
+static COMMANDS: OnceLock<async_channel::Sender<Value>> = OnceLock::new();
+thread_local! {static HOST:RefCell<Option<Host>>=const{RefCell::new(None)};}
+struct Host {
+    _library: *mut c_void,
+    publish: Publish,
+    levels: unsafe extern "C" fn(*const f32, usize),
+    collapse: Collapse,
+    toggle: Collapse,
+    last: Vec<u8>,
+    completed: Option<String>,
+    error: Option<String>,
+    results: std::collections::VecDeque<(String, [u8; 32], Option<String>)>,
+    previous_runs: HashMap<String, String>,
+    finished: Vec<Value>,
+}
+
+extern "C" fn command(bytes: *const u8, count: usize) -> bool {
+    if bytes.is_null() || count == 0 || count > 32 * 1024 * 1024 {
+        return false;
+    }
+    // Swift lends these bytes for this call only; decode/copy before returning.
+    let data = unsafe { std::slice::from_raw_parts(bytes, count) };
+    let Ok(request) = serde_json::from_slice::<Value>(data) else {
+        return false;
+    };
+    if !request.is_object() || count > 128 * 1024 && request["action"] != "workspace_voice_prompt" {
+        return false;
+    }
+    COMMANDS
+        .get()
+        .is_some_and(|queue| queue.try_send(request).is_ok())
+}
+pub(super) fn active() -> bool {
+    HOST.with(|host| host.borrow().is_some())
+}
+pub(super) fn toggle() {
+    HOST.with(|host| {
+        if let Some(host) = host.borrow().as_ref() {
+            unsafe { (host.toggle)() }
+        }
+    })
+}
+pub(super) fn collapse() {
+    HOST.with(|host| {
+        if let Some(host) = host.borrow().as_ref() {
+            unsafe { (host.collapse)() }
+        }
+    })
+}
+pub(super) fn reveal() {
+    emit(&json!({"type":"workspaceReveal"}));
+}
+fn emit(value: &Value) {
+    let Ok(data) = serde_json::to_vec(value) else {
+        return;
+    };
+    if data.len() > 2 * 1024 * 1024 {
+        return;
+    }
+    HOST.with(|host| {
+        if let Some(host) = host.borrow().as_ref() {
+            unsafe { (host.publish)(data.as_ptr(), data.len()) }
+        }
+    });
+}
+
+pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::{msg_send, runtime::AnyObject};
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        let path = std::env::current_exe()?
+            .parent()
+            .unwrap()
+            .join("../Resources/libKaiNotch.dylib");
+        // An unbundled Code test/development run retains the normal Code UI.
+        if !path.exists() {
+            return Ok(());
+        }
+        let path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())?;
+        let library = unsafe { libc::dlopen(path.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
+        anyhow::ensure!(!library.is_null(), "Could not load the native Kai library");
+        let start = unsafe { libc::dlsym(library, c"kai_unified_start".as_ptr()) };
+        let publish = unsafe { libc::dlsym(library, c"kai_unified_publish".as_ptr()) };
+        let collapse = unsafe { libc::dlsym(library, c"kai_unified_collapse".as_ptr()) };
+        let toggle = unsafe { libc::dlsym(library, c"kai_unified_toggle".as_ptr()) };
+        let ready = unsafe { libc::dlsym(library, c"kai_unified_ready".as_ptr()) };
+        let levels = unsafe { libc::dlsym(library, c"kai_unified_levels".as_ptr()) };
+        anyhow::ensure!(
+            !start.is_null()
+                && !publish.is_null()
+                && !collapse.is_null()
+                && !toggle.is_null()
+                && !ready.is_null()
+                && !levels.is_null(),
+            "Incompatible Kai library"
+        );
+        let levels: unsafe extern "C" fn(*const f32, usize) =
+            unsafe { std::mem::transmute(levels) };
+        let ready: unsafe extern "C" fn() -> bool = unsafe { std::mem::transmute(ready) };
+        let start: Start = unsafe { std::mem::transmute(start) };
+        let publish: Publish = unsafe { std::mem::transmute(publish) };
+        let toggle: Collapse = unsafe { std::mem::transmute(toggle) };
+        let collapse: Collapse = unsafe { std::mem::transmute(collapse) };
+        let (sender, receiver) = async_channel::bounded(32);
+        anyhow::ensure!(COMMANDS.set(sender).is_ok(), "Kai is already attached");
+        HOST.with(|host| {
+            *host.borrow_mut() = Some(Host {
+                _library: library,
+                publish,
+                levels,
+                collapse,
+                toggle,
+                last: vec![],
+                completed: None,
+                error: None,
+                results: Default::default(),
+                previous_runs: Default::default(),
+                finished: vec![],
+            })
+        });
+        let entity = window.update(cx, |_, window, cx| {
+            let RawWindowHandle::AppKit(handle) =
+                HasWindowHandle::window_handle(window).unwrap().as_raw()
+            else {
+                unreachable!()
+            };
+            let native: *mut AnyObject =
+                unsafe { msg_send![handle.ns_view.as_ptr().cast::<AnyObject>(), window] };
+            unsafe { start(native.cast(), command) };
+            cx.entity()
+        })?;
+        // Entity notifications include background run, approval and transcript events.
+        cx.observe(&entity, move |entity, cx| {
+            entity.read(cx).publish_unified(cx)
+        })
+        .detach();
+        entity.read(cx).publish_unified(cx);
+        anyhow::ensure!(
+            unsafe { ready() },
+            "Kai did not accept the initial owner state"
+        );
+        eprintln!(
+            "Kai unified: native layer and owner state ready in process {}",
+            std::process::id()
+        );
+        if std::env::args().any(|arg| arg == "--unified-smoke-test") {
+            let body=window.update(cx,|app,_,cx|json!({"action":"workspace_expand","ownerToken":app.unified_token(),"draftBase":app.composer.read(cx).text(),"draft":app.composer.read(cx).text(),"requestId":"smoke-expand"}))?;
+            COMMANDS
+                .get()
+                .unwrap()
+                .try_send(body)
+                .map_err(|_| anyhow::anyhow!("Smoke command queue is full"))?;
+            let visible =
+                unsafe { libc::dlsym(library, c"kai_unified_workspace_visible".as_ptr()) };
+            anyhow::ensure!(!visible.is_null(), "Missing smoke visibility export");
+            let visible: unsafe extern "C" fn() -> bool = unsafe { std::mem::transmute(visible) };
+            cx.spawn(async move |cx| {
+                Timer::after(Duration::from_millis(100)).await;
+                let _=cx.update(|_|crate::unified::collapse());
+                Timer::after(Duration::from_millis(100)).await;
+                let _=cx.update(|_|crate::unified::reveal());
+                Timer::after(Duration::from_millis(900)).await;
+                let _ = cx.update(|_| {
+                    assert!(unsafe { visible() }, "Workspace did not expand");
+                    crate::unified::collapse();
+                });
+                Timer::after(Duration::from_millis(900)).await;
+                let _ = cx.update(|cx| {
+                    assert!(
+                        !unsafe { visible() },
+                        "Workspace did not return to the notch"
+                    );
+                    eprintln!(
+                        "Kai unified smoke: owner handshake, interrupted morph reversal, and round trip passed"
+                    );
+                    cx.quit();
+                });
+            })
+            .detach();
+        }
+        cx.spawn(async move |cx| {
+            while let Ok(request) = receiver.recv().await {
+                if cx
+                    .update(|cx| {
+                        window.update(cx, |this, window, cx| {
+                            this.dispatch_unified(request, window, cx);
+                        })
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+    Ok(())
+}
+
+fn native_id(value: &Value, key: &str) -> Option<String> {
+    value[key]
+        .as_str()
+        .and_then(|id| id.strip_prefix("code:"))
+        .map(str::to_owned)
+}
+fn bounded(text: &str, limit: usize) -> String {
+    text.chars().take(limit).collect()
+}
+fn scene(status: &str) -> &'static str {
+    let value = status.to_lowercase();
+    if value.contains("error") || value.contains("fail") {
+        "failure"
+    } else if value.contains("permission") || value.contains("approval") {
+        "permission"
+    } else if value.contains("search") {
+        "search"
+    } else if value.contains("file") || value.contains("edit") {
+        "files"
+    } else if value.contains("command") || value.contains("terminal") {
+        "terminal"
+    } else if value.contains("tool") {
+        "tool"
+    } else {
+        "thinking"
+    }
+}
+impl Orbit {
+    pub(super) fn unified_token(&self) -> String {
+        format!(
+            "{}:{}:{}:{}",
+            self.active
+                .clone()
+                .unwrap_or_else(|| format!("draft-{}", self.generation)),
+            self.project.display(),
+            self.composer_revision,
+            self.agent.command()
+        )
+    }
+    pub(super) fn unified_send_ready(&self) -> bool {
+        !self.loading
+            && !self.loading_earlier
+            && !self.starting
+            && !self.quit_pending
+            && self.active.as_ref().is_none_or(|id| {
+                !self.runs.contains_key(id)
+                    && !self.finalizing.contains(id)
+                    && !self.settling.contains_key(id)
+            })
+            && self.history_offset == 0
+            && self.attachment_pending == 0
+            && self.handoff_pending.is_none()
+            && self.workspace_trust.is_none()
+            && self.session_conflict.is_none()
+    }
+    fn dispatch_unified(&mut self, request: Value, window: &mut Window, cx: &mut Context<Self>) {
+        let request_id = request["requestId"].as_str().unwrap_or("").to_owned();
+        let fingerprint: [u8; 32] =
+            Sha256::digest(serde_json::to_vec(&request).unwrap_or_default()).into();
+        let cached = HOST.with(|host| {
+            host.borrow().as_ref().and_then(|host| {
+                host.results
+                    .iter()
+                    .find(|(id, _, _)| id == &request_id)
+                    .cloned()
+            })
+        });
+        let error = if let Some((_, body, error)) = cached {
+            if body == fingerprint {
+                error
+            } else {
+                Some("This request ID was already used for another action".into())
+            }
+        } else {
+            self.unified_command(&request, window, cx).err()
+        };
+        HOST.with(|host| {
+            if let Some(host) = host.borrow_mut().as_mut() {
+                host.completed = (!request_id.is_empty()).then_some(request_id.clone());
+                host.error = error.clone();
+                if !request_id.is_empty()
+                    && !host.results.iter().any(|(id, _, _)| id == &request_id)
+                {
+                    if host.results.len() >= 128 {
+                        host.results.pop_front();
+                    }
+                    host.results
+                        .push_back((request_id, fingerprint, error.clone()));
+                }
+            }
+        });
+        if let Some(error) = error {
+            self.notice = Some(error)
+        }
+        self.publish_unified(cx);
+        cx.notify();
+    }
+    pub(super) fn unified_command(
+        &mut self,
+        request: &Value,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let action = request["action"].as_str().ok_or("Missing action")?;
+        let default_model = if matches!(action, "new" | "new_project") {
+            if let Some(model) = request["defaultModel"].as_str() {
+                if !self
+                    .native_models
+                    .get(&self.agent)
+                    .is_some_and(|models| models.iter().any(|m| m.id == model))
+                {
+                    return Err("Saved default model is unavailable for this agent; choose an available model in Kai’s menu".into());
+                }
+                Some(model.to_owned())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let navigates = matches!(
+            action,
+            "chat" | "project" | "new" | "new_project" | "workspace_expand"
+        );
+        // An approval carries its own owner/generation; it may belong to another chat.
+        if !matches!(
+            action,
+            "approve"
+                | "reject"
+                | "approval_stop"
+                | "native_answer"
+                | "refresh"
+                | "workspace_settings"
+        ) {
+            if request["ownerToken"].as_str() != Some(self.unified_token().as_str()) {
+                return Err("The workspace changed; your input is preserved. Try again.".into());
+            }
+        }
+        if action == "chat" {
+            let id = native_id(request, "id").ok_or("Invalid chat")?;
+            if !self
+                .sessions
+                .iter()
+                .any(|s| s.id == id && !self.hidden_sessions.contains(&id))
+            {
+                return Err("Chat is unavailable".into());
+            }
+        }
+        if action == "project" {
+            let path = PathBuf::from(request["path"].as_str().ok_or("Missing project")?);
+            if !self.projects.iter().any(|p| p.path == path) {
+                return Err("Project is unavailable".into());
+            }
+        }
+        if navigates || action == "send" {
+            if request["draftBase"].as_str() != Some(self.composer.read(cx).text().as_str()) {
+                return Err("The IDE has a different draft. Both drafts are preserved; review the workspace before continuing.".into());
+            }
+        }
+        if navigates {
+            if action != "workspace_expand" {
+                self.unified_context = None;
+                self.unified_attachment_expected = None;
+                self.unified_notch_sources.clear();
+            }
+            if let Some(draft) = request["draft"].as_str() {
+                if draft.len() > input::MAX_DRAFT_BYTES || draft.contains('\0') {
+                    return Err("The draft is too large".into());
+                }
+                let draft = if action == "workspace_expand" {
+                    self.unified_context
+                        .take()
+                        .map(|context| {
+                            format!("Context captured for this prompt:\n{context}\n\n{draft}")
+                        })
+                        .unwrap_or_else(|| draft.to_owned())
+                } else {
+                    draft.to_owned()
+                };
+                self.composer
+                    .update(cx, |input, cx| input.set_text(&draft, cx));
+            }
+        }
+        match action {
+            "chat" => {
+                let id = native_id(request, "id").ok_or("Invalid chat")?;
+                let session = self
+                    .sessions
+                    .iter()
+                    .find(|s| s.id == id && !self.hidden_sessions.contains(&id))
+                    .cloned()
+                    .ok_or("Chat is unavailable")?;
+                if self.active.as_ref() != Some(&session.id) {
+                    self.open_session(session, window, cx);
+                }
+            }
+            "project" => {
+                let path = PathBuf::from(request["path"].as_str().ok_or("Missing project")?);
+                if !self.projects.iter().any(|p| p.path == path) {
+                    return Err("Project is unavailable".into());
+                }
+                self.select_project(path, window, cx);
+            }
+            "new" => self.new_unprojected_conversation(window, cx),
+            "new_project" => self.new_conversation(window, cx),
+            "send" => {
+                if !self.unified_send_ready() {
+                    return Err(
+                        "The chat is busy or awaiting confirmation; your prompt is preserved."
+                            .into(),
+                    );
+                }
+                let text = request["text"].as_str().ok_or("Missing prompt")?;
+                if text.len() > input::MAX_DRAFT_BYTES
+                    || text.contains('\0')
+                    || text.trim().is_empty() && self.attachments.is_empty()
+                {
+                    return Err("Enter a prompt under 64 KB".into());
+                }
+                // The owner token includes the actual Code composer revision.
+                self.composer
+                    .update(cx, |input, cx| input.set_text(text, cx));
+                let supplied = if let Some(context) = self.unified_context.take() {
+                    format!("Context captured when dictation began:\n{context}\n\n{text}")
+                } else {
+                    text.to_owned()
+                };
+                self.composer
+                    .update(cx, |input, cx| input.set_text(&supplied, cx));
+                self.send(window, cx);
+                if !self.starting && self.composer.read(cx).text() == supplied {
+                    return Err(self.notice.clone().unwrap_or_else(|| {
+                        "Prompt staged in the workspace; review its native confirmation".into()
+                    }));
+                }
+            }
+            "interrupt" => {
+                let id = native_id(request, "targetThreadId").ok_or("Select a running chat")?;
+                let run = self.runs.get(&id).ok_or("The run has finished")?;
+                if request["runId"].as_str() != Some(run.parse_epoch.to_string().as_str()) {
+                    return Err("The run changed; refresh before stopping".into());
+                }
+                run.handle.cancel();
+            }
+            "approve" | "reject" | "approval_stop" | "native_answer" => {
+                self.unified_approval(request, cx)?
+            }
+            "settings" => {
+                let model = request["model"].as_str().ok_or("Missing model")?;
+                let known = self
+                    .native_models
+                    .get(&self.agent)
+                    .is_some_and(|models| models.iter().any(|m| m.id == model));
+                if !known {
+                    return Err("That model is no longer available".into());
+                }
+                self.choose_model(Some(model.into()), cx);
+            }
+            "agent" => {
+                let name = request["agent"].as_str().ok_or("Missing agent")?;
+                let agent = self
+                    .agents
+                    .iter()
+                    .find(|a| a.kind.command() == name && a.available && a.executable.is_some())
+                    .map(|a| a.kind)
+                    .ok_or("Agent is unavailable")?;
+                self.request_handoff(agent, window, cx);
+            }
+            "context" => {
+                if !self.unified_send_ready() {
+                    return Err("Wait for the current work before adding context".into());
+                }
+                let text = request["text"].as_str().unwrap_or("");
+                if let Some(paths) = request["paths"].as_array() {
+                    if paths.len() + self.attachments.len() > attachments::MAX_ATTACHMENTS {
+                        return Err("Image slots are full".into());
+                    }
+                }
+                self.unified_context = Some(bounded(text, 12000));
+                if let Some(paths) = request["paths"].as_array().filter(|v| !v.is_empty()) {
+                    if paths.len() + self.attachments.len() > attachments::MAX_ATTACHMENTS {
+                        return Err("Image slots are full".into());
+                    }
+                    self.add_attachments(
+                        paths
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(PathBuf::from)
+                            .collect(),
+                        cx,
+                    );
+                }
+            }
+            "attachments" => {
+                if !self.unified_send_ready() {
+                    return Err("Wait for this chat before attaching images".into());
+                }
+                let paths = request["paths"].as_array().ok_or("Missing images")?;
+                if paths.len() > attachments::MAX_ATTACHMENTS {
+                    return Err("Attach up to four images".into());
+                }
+                let paths: Vec<PathBuf> = paths
+                    .iter()
+                    .filter_map(|v| v.as_str())
+                    .map(PathBuf::from)
+                    .collect();
+                let removed: HashSet<_> = self
+                    .unified_notch_sources
+                    .iter()
+                    .filter(|p| !paths.contains(p))
+                    .filter_map(|p| self.unified_attachment_sources.get(p).copied())
+                    .collect();
+                self.attachments.retain(|a| !removed.contains(&a.id));
+                let additions: Vec<_> = paths
+                    .iter()
+                    .filter(|p| !self.unified_notch_sources.contains(p))
+                    .cloned()
+                    .collect();
+                if additions.len() + self.attachments.len() > attachments::MAX_ATTACHMENTS {
+                    return Err("Image slots are full".into());
+                }
+                self.unified_attachment_expected = Some(self.attachments.len() + additions.len());
+                self.unified_notch_sources = paths;
+                self.add_attachments(additions, cx);
+            }
+            "workspace_expand" => reveal(),
+            "workspace_settings" => self.show_modal(Modal::Settings, window, cx),
+            "workspace_voice" => self.toggle_voice(window, cx),
+            "workspace_voice_prompt" => {
+                if self.voice_call.is_some() {
+                    return Err("A voice conversation is already running".into());
+                }
+                self.unified_voice_context = None;
+                if let Some(context) = request["appshot"].as_object() {
+                    let mut text = bounded(
+                        context.get("text").and_then(Value::as_str).unwrap_or(""),
+                        12000,
+                    );
+                    if let Some(paths) = context.get("paths").and_then(Value::as_array) {
+                        if paths.len() > 4 {
+                            return Err("Too many screen captures".into());
+                        }
+                        for path in paths {
+                            let path = path
+                                .as_str()
+                                .filter(|p| {
+                                    p.starts_with('/') && p.len() < 4096 && !p.contains('\0')
+                                })
+                                .ok_or("Invalid captured image path")?;
+                            text.push_str(&format!("\nCaptured image file (available to your native image-viewing tool): {path}"));
+                        }
+                    }
+                    if !text.is_empty() {
+                        self.unified_voice_context = Some(format!(
+                            "Screen context captured for this voice conversation:\n{text}"
+                        ));
+                    }
+                }
+                let prompt = request["audio"]
+                    .as_str()
+                    .filter(|v| v.len() <= 32 * 1024 * 1024)
+                    .map(str::to_owned);
+                if self.active.is_none() {
+                    self.request_handoff(AgentKind::Codex, window, cx);
+                }
+                self.start_voice_prompt(prompt, window, cx);
+            }
+            "workspace_voice_choice" => {
+                let voice = request["voice"].as_str().ok_or("Missing voice")?;
+                if ![
+                    "default", "arbor", "breeze", "cove", "ember", "juniper", "maple", "sol",
+                    "spruce", "vale",
+                ]
+                .contains(&voice)
+                {
+                    return Err("Unknown voice".into());
+                }
+                self.voice_choice = voice.into();
+                self.queue_workspace_save(cx);
+            }
+            "voice_stop" => self.stop_voice(cx),
+            "files" | "folder" => {
+                self.unified_files(request, window, cx)?;
+            }
+            "history_more" => {
+                self.load_history_page(true, cx);
+            }
+            "refresh" => {}
+            // Settings stay explicit: unsupported actions cannot launch another runtime.
+            _ => return Err(format!("Open the Code workspace to use {action}")),
+        }
+        if let Some(model) = default_model {
+            self.choose_model(Some(model), cx);
+        }
+        Ok(())
+    }
+    fn publish_unified(&self, cx: &App) {
+        if !active() {
+            return;
+        }
+        if let Some(call) = &self.voice_call {
+            let values: Vec<f32> = call
+                .media
+                .levels
+                .iter()
+                .map(|l| f32::from_bits(l.load(std::sync::atomic::Ordering::Relaxed)))
+                .collect();
+            HOST.with(|host| {
+                if let Some(host) = host.borrow().as_ref() {
+                    unsafe { (host.levels)(values.as_ptr(), values.len()) }
+                }
+            });
+        }
+        let mut state = self.unified_snapshot(cx);
+        HOST.with(|host| {
+            if let Some(host) = host.borrow_mut().as_mut() {
+                let now: HashMap<_, _> = self
+                    .runs
+                    .iter()
+                    .map(|(id, run)| (id.clone(), run.parse_epoch.to_string()))
+                    .collect();
+                let finished: Vec<_> = host
+                    .previous_runs
+                    .iter()
+                    .filter(|(id, run)| {
+                        !now.contains_key(*id)
+                            && !self.finalizing.contains(*id)
+                            && !self.settling.contains_key(*id)
+                            && self
+                                .unified_successes
+                                .iter()
+                                .any(|(owner, epoch)| owner == *id && epoch == *run)
+                    })
+                    .map(|(id, run)| json!({"id":format!("code:{id}"),"runId":run}))
+                    .collect();
+                // Keep finalizing runs until their persisted transcript is ready.
+                let mut tracked = now;
+                for (id, run) in &host.previous_runs {
+                    if self.finalizing.contains(id) || self.settling.contains_key(id) {
+                        tracked.insert(id.clone(), run.clone());
+                    }
+                }
+                host.previous_runs = tracked;
+                if !finished.is_empty() {
+                    host.finished = finished;
+                }
+                state["finishedTasks"] = json!(host.finished);
+                state["completedRequestId"] = json!(host.completed);
+                state["completedRequestError"] = json!(host.error);
+                if self.attachment_pending > 0 {
+                    state["completedRequestId"] = Value::Null;
+                } else if self
+                    .unified_attachment_expected
+                    .is_some_and(|expected| expected != self.attachments.len())
+                {
+                    state["completedRequestError"] = json!(self.notice.as_deref().unwrap_or(
+                        "An image could not be imported. Review the draft before sending."
+                    ));
+                }
+                let Ok(data) = serde_json::to_vec(&state) else {
+                    return;
+                };
+                if data == host.last || data.len() > 2 * 1024 * 1024 {
+                    return;
+                }
+                host.last = data;
+                unsafe { (host.publish)(host.last.as_ptr(), host.last.len()) };
+            }
+        });
+    }
+    pub(super) fn unified_snapshot(&self, cx: &App) -> Value {
+        let running = self.active.as_ref().and_then(|id| self.runs.get(id));
+        let mut tasks:Vec<_>=self.runs.iter().map(|(id,run)|{
+            let name=self.sessions.iter().find(|s|s.id==*id).map(|s|s.title.as_str()).unwrap_or("Agent");
+            json!({"id":format!("code:{id}"),"name":name,"runId":run.parse_epoch.to_string(),"scene":self.native_pending.values().find(|p|p.owner==*id&&p.current(&self.runs)).map(|p|p.indicator_scene()).unwrap_or(scene(&run.status)),"text":format!("{} · {}",run.agent.name(),run.status)})
+        }).collect();
+        tasks.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+        let approval = self.unified_pending();
+        let activity=approval.as_ref().map(|(owner,token,summary)|json!({"scene":"permission","text":summary,"owner":owner,"request":token})).or_else(||tasks.first().map(|t|json!({"scene":t["scene"],"text":t["text"]}))).unwrap_or(json!({"scene":"off","text":"Ready"}));
+        let terminal = self
+            .indicator_terminal
+            .as_ref()
+            .filter(|(id, _)| self.active.as_ref() == Some(id))
+            .map(|(_, scene)| *scene);
+        let selected_activity = running
+            .map(|run| json!({"scene":scene(&run.status),"text":run.status}))
+            .unwrap_or_else(|| match terminal {
+                Some("failure") => {
+                    json!({"scene":"failure","text":"Agent failed — review the workspace"})
+                }
+                Some("declined") => json!({"scene":"declined","text":"Stopped"}),
+                _ => json!({"scene":"off","text":"Ready"}),
+            });
+        let selected = Some(
+            self.active
+                .as_ref()
+                .map(|id| format!("code:{id}"))
+                .unwrap_or_else(|| format!("code:draft-{}", self.generation)),
+        );
+        let chat = self
+            .active
+            .as_ref()
+            .and_then(|id| self.sessions.iter().find(|s| &s.id == id));
+        let chats:Vec<_>=self.sessions.iter().filter(|s|!self.hidden_sessions.contains(&s.id))
+            .filter(|s|self.runs.contains_key(&s.id)||self.active.as_ref()==Some(&s.id))
+            .chain(self.sessions.iter().filter(|s|!self.hidden_sessions.contains(&s.id)&&!self.runs.contains_key(&s.id)&&self.active.as_ref()!=Some(&s.id)).take(80))
+            .map(|s|json!({"id":format!("code:{}",s.id),"name":format!("{} · {}",s.agent.name(),s.title),"status":if self.runs.contains_key(&s.id){"active"}else{"idle"}})).collect();
+        json!({"project":self.project,"projects":self.projects.iter().take(80).map(|p|json!({"path":p.path,"name":p.name})).collect::<Vec<_>>(),"projectsLoading":false,
+            "chats":[],"standaloneChats":[],"standalone":true,"codeChats":chats,"codeConnection":{"connected":true,"enabled":true},
+            "threadId":selected,"threadName":chat.map(|s|s.title.as_str()).unwrap_or("New chat"),"ownerToken":self.unified_token(),"composerDraft":self.composer.read(cx).text(),
+            "history":self.unified_history(),"historyHasMore":self.has_older,"files":self.unified_file_rows(cx),
+            "readOnly":!self.unified_send_ready(),"activeTurnId":running.map(|r|r.parse_epoch.to_string()),
+            "nativeReview":self.unified_review(),"approval":approval.is_some(),"approvalThreadId":approval.as_ref().map(|a|format!("code:{}",a.0)),"approvalRequestId":approval.as_ref().map(|a|a.1.clone()),"approvalSummary":approval.as_ref().map(|a|a.2.clone()),
+            "activity":if tasks.is_empty(){selected_activity.clone()}else{activity},"sessionActivity":self.voice_call.as_ref().filter(|v|v.owns_current_chat(self.active.as_deref())).map(|v|json!({"scene":v.scene(),"text":v.caption()})).unwrap_or(selected_activity),"activeTasks":tasks,"focusThreadId":approval.as_ref().map(|a|format!("code:{}",a.0)).or_else(||tasks.first().and_then(|t|t["id"].as_str().map(str::to_owned))),
+            "notice":self.notice.as_deref().unwrap_or("Kai · Code"),"attachments":[],"models":self.native_models.get(&self.agent).into_iter().flatten().map(|m|json!({"model":m.id,"displayName":m.label,"supportedReasoningEfforts":[]})).collect::<Vec<_>>(),
+            "selectedModel":self.model,"reasoningEffort":"","canGoBack":false,"canGoForward":false,
+            "agents":self.agents.iter().map(|a|json!({"id":a.kind.command(),"name":a.kind.name(),"available":a.available&&a.executable.is_some()})).collect::<Vec<_>>(),"selectedAgent":self.agent.command(),"workspaceVoiceChoice":self.voice_choice,"workspaceVoiceActive":self.voice_call.is_some(),"workspaceVoiceScene":self.voice_call.as_ref().map(|v|v.scene())})
+    }
+    fn unified_history(&self) -> Vec<Value> {
+        let mut history = Vec::new();
+        let mut role = "assistant".to_owned();
+        let end = self.rows.len();
+        let start = end.saturating_sub(100);
+        for row in self.rows.iter().take(start) {
+            if let Some(r) = &row.role {
+                role = r.clone()
+            }
+        }
+        for (index, row) in self.rows.iter().enumerate().skip(start) {
+            if let Some(r) = &row.role {
+                role = r.clone()
+            }
+            let (kind, text, style) = match &row.block {
+                MessageBlock::Paragraph(t) | MessageBlock::Quote(t) => {
+                    (role.as_str(), t.clone(), "text")
+                }
+                MessageBlock::Heading(t) => (role.as_str(), t.clone(), "heading"),
+                MessageBlock::RichParagraph { text, highlights }
+                | MessageBlock::ListItem {
+                    text, highlights, ..
+                } => (role.as_str(), unified_links(text, highlights), "text"),
+                MessageBlock::Code { text, .. } => (role.as_str(), text.clone(), "code"),
+                MessageBlock::Voice { speaker, text, .. } => (
+                    if *speaker == chat_interactions::Speaker::User {
+                        "user"
+                    } else {
+                        "assistant"
+                    },
+                    text.clone(),
+                    "text",
+                ),
+                MessageBlock::Activity { label, .. } => ("activity", label.clone(), "activity"),
+                MessageBlock::TableRow { cells, .. } => (role.as_str(), cells.join(" | "), "text"),
+                MessageBlock::Attachment { name, target } => (
+                    role.as_str(),
+                    unified_links(
+                        name,
+                        &[(
+                            0..name.len(),
+                            InlineStyle::Link(std::sync::Arc::from(target.as_str())),
+                        )],
+                    ),
+                    "text",
+                ),
+                MessageBlock::Interaction(card) => match card {
+                    chat_interactions::ChatInteraction::Speaker { speaker, text } => (
+                        if *speaker == chat_interactions::Speaker::User {
+                            "user"
+                        } else {
+                            "assistant"
+                        },
+                        text.clone(),
+                        "text",
+                    ),
+                    chat_interactions::ChatInteraction::Status { title, details, .. }
+                    | chat_interactions::ChatInteraction::Delegation { title, details, .. } => {
+                        ("activity", format!("{title} · {details}"), "activity")
+                    }
+                    chat_interactions::ChatInteraction::Question(q) => {
+                        ("assistant", q.prompt.clone(), "heading")
+                    }
+                    chat_interactions::ChatInteraction::Answer { answer, .. } => {
+                        ("assistant", answer.clone(), "text")
+                    }
+                    chat_interactions::ChatInteraction::NativeRequest(r) => {
+                        ("activity", r.title.clone(), "activity")
+                    }
+                },
+            };
+            history.push(json!({"id":format!("row-{index}"),"kind":if kind.starts_with("user"){"user"}else if kind=="activity"{"activity"}else{"assistant"},"lines":[{"text":bounded(&text,4000),"style":style}],"speechText":if kind.starts_with("user") || kind=="activity" || style=="code" {String::new()}else{bounded(&text,4000)}}));
+        }
+        history
+    }
+}
+
+impl Orbit {
+    fn unified_file_rows(&self, cx: &App) -> Vec<Value> {
+        self.file_browser
+            .as_ref()
+            .map(|b| b.read(cx).unified_rows())
+            .unwrap_or_default()
+    }
+    fn unified_files(
+        &mut self,
+        request: &Value,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        self.files_visible = true;
+        self.sync_file_root(window, cx);
+        if request["action"] == "folder" {
+            let path = PathBuf::from(request["path"].as_str().ok_or("Missing folder")?);
+            if let Some(browser) = &self.file_browser {
+                browser.update(cx, |b, cx| b.unified_folder(path, cx))?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A separate app identity and data store protect the user's current Code build.
+/// Provider login files stay with their CLIs; no credentials are copied.
+pub(super) fn prepare_environment() {
+    let Ok(executable) = std::env::current_exe() else {
+        return;
+    };
+    if !executable
+        .parent()
+        .is_some_and(|p| p.join("../Resources/libKaiNotch.dylib").exists())
+    {
+        return;
+    }
+    if std::env::args().any(|arg| arg == "--unified-smoke-test") {
+        let path = std::env::temp_dir().join(format!("kai-unified-smoke-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&path);
+        unsafe { std::env::set_var("ORBIT_DATA_DIR", path) };
+        return;
+    }
+    if std::env::var_os("ORBIT_DATA_DIR").is_some() {
+        return;
+    }
+    let Some(home) = dirs::home_dir() else { return };
+    let source = home.join("Library/Application Support/Orbit");
+    let destination = home.join("Library/Application Support/Kai Unified");
+    if let Err(error) = std::fs::create_dir_all(&destination) {
+        eprintln!("Kai data directory: {error}");
+        return;
+    }
+    // One-time, bounded import of UI preferences, never the live SQLite database.
+    let marker = destination.join(".seeded");
+    if !marker.exists() {
+        for name in ["workspace.json", "projects.json"] {
+            let from = source.join(name);
+            let to = destination.join(name);
+            if !to.exists()
+                && std::fs::metadata(&from).is_ok_and(|m| m.is_file() && m.len() <= 2 * 1024 * 1024)
+            {
+                let _ = std::fs::copy(from, to);
+            }
+        }
+        let _ = std::fs::write(marker, b"1\n");
+    }
+    // Called before GPUI, workers, or any other application threads start.
+    unsafe { std::env::set_var("ORBIT_DATA_DIR", destination) };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::prelude::v1::test;
+    fn request(app: &Orbit, action: &str, cx: &App) -> Value {
+        json!({"action":action,"ownerToken":app.unified_token(),"draftBase":app.composer.read(cx).text(),"targetThreadId":app.active.as_ref().map(|id|format!("code:{id}")),"requestId":uuid::Uuid::new_v4().to_string()})
+    }
+    #[gpui::test]
+    fn unified_send_during_run_never_cancels_or_replaces_draft(cx: &mut TestAppContext) {
+        let (view, cx) = crate::ui_tests::fixture(cx);
+        view.update_in(cx, |app, window, cx| {
+            app.active = Some("fixture-session".into());
+            app.loading = false;
+            app.composer
+                .update(cx, |input, cx| input.set_text("IDE draft", cx));
+            app.runs.insert(
+                "fixture-session".into(),
+                crate::ui_tests::idle_run("Working".into()),
+            );
+            let mut body = request(app, "send", cx);
+            body["text"] = json!("New prompt");
+            assert!(app.unified_command(&body, window, cx).is_err());
+            assert_eq!(app.composer.read(cx).text(), "IDE draft");
+            assert!(!app.runs["fixture-session"].handle.is_cancelled());
+        });
+    }
+    #[gpui::test]
+    fn unified_draft_handoff_rejects_a_newer_ide_draft(cx: &mut TestAppContext) {
+        let (view, cx) = crate::ui_tests::fixture(cx);
+        view.update_in(cx, |app, window, cx| {
+            let mut body = request(app, "workspace_expand", cx);
+            body["draft"] = json!("Notch draft");
+            app.composer
+                .update(cx, |input, cx| input.set_text("New IDE draft", cx));
+            // Even with an updated selection token, a divergent draft is preserved.
+            body["ownerToken"] = json!(app.unified_token());
+            assert!(app.unified_command(&body, window, cx).is_err());
+            assert_eq!(app.composer.read(cx).text(), "New IDE draft");
+        });
+    }
+    #[gpui::test]
+    fn unified_stop_is_bound_to_the_exact_run(cx: &mut TestAppContext) {
+        let (view, cx) = crate::ui_tests::fixture(cx);
+        view.update_in(cx, |app, window, cx| {
+            app.active = Some("fixture-session".into());
+            app.runs.insert(
+                "fixture-session".into(),
+                crate::ui_tests::idle_run("Working".into()),
+            );
+            let mut body = request(app, "interrupt", cx);
+            body["runId"] = json!("old-run");
+            assert!(app.unified_command(&body, window, cx).is_err());
+            assert!(!app.runs["fixture-session"].handle.is_cancelled());
+            body["runId"] = json!(app.runs["fixture-session"].parse_epoch.to_string());
+            app.unified_command(&body, window, cx).unwrap();
+            assert!(app.runs["fixture-session"].handle.is_cancelled());
+        });
+    }
+    #[gpui::test]
+    fn unified_background_approval_routes_once_and_rejects_stale_epoch(cx: &mut TestAppContext) {
+        let (view, cx) = crate::ui_tests::fixture(cx);
+        let (handle, decisions) = RunHandle::interactive_test_handle();
+        view.update_in(cx,|app,window,cx|{
+            app.active=Some("other-chat".into());
+            let mut run=crate::ui_tests::idle_run("Approval".into());run.handle=handle;
+            let native=runtime::NativeRequest{id:"opaque".into(),method:"test".into(),title:"Run tests".into(),detail:"cargo test".into(),kind:runtime::NativeRequestKind::Approval{choices:vec![runtime::NativeOption{id:"accept".into(),label:"Allow once".into()}]}};
+            app.native_pending.insert("opaque".into(),native_request_ui::LiveRequest::new("fixture-session",run.parse_epoch,native));
+            app.runs.insert("fixture-session".into(),run);
+            let pending=app.unified_pending().unwrap();
+            let mut body=json!({"action":"approve","threadId":"code:fixture-session","approvalRequestId":"old:opaque"});
+            assert!(app.unified_command(&body,window,cx).is_err());assert!(decisions.try_recv().is_err());
+            body["approvalRequestId"]=json!(pending.1);
+            app.unified_command(&body,window,cx).unwrap();
+            assert!(matches!(decisions.try_recv().unwrap(),runtime::NativeControl::Respond{id,answer:runtime::NativeAnswer::Choice(choice)}if id=="opaque"&&choice=="accept"));
+            assert!(app.unified_command(&body,window,cx).is_err());assert!(decisions.try_recv().is_err());
+            assert_eq!(app.active.as_deref(),Some("other-chat"));
+        });
+    }
+    #[gpui::test]
+    fn unified_new_chat_and_selection_keep_the_previous_draft(cx: &mut TestAppContext) {
+        let (view, cx) = crate::ui_tests::fixture(cx);
+        view.update_in(cx, |app, window, cx| {
+            app.active = Some("fixture-session".into());
+            app.loading = false;
+            let mut body = request(app, "new", cx);
+            body["draft"] = json!("Keep my draft");
+            app.unified_command(&body, window, cx).unwrap();
+            assert_eq!(app.drafts["fixture-session"], "Keep my draft");
+            assert!(app.active.is_none());
+            assert!(app.runs.is_empty());
+            assert!(
+                app.unified_snapshot(cx)["threadId"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("code:draft-")
+            );
+        });
+    }
+    #[gpui::test]
+    fn unified_snapshot_preserves_roles_and_has_bounded_native_history(cx: &mut TestAppContext) {
+        let (view, cx) = crate::ui_tests::fixture(cx);
+        view.update(cx, |app, cx| {
+            app.rows = (0..150)
+                .map(|n| Row {
+                    role: Some(
+                        if n % 2 == 0 {
+                            "user:codex"
+                        } else {
+                            "assistant:claude"
+                        }
+                        .into(),
+                    ),
+                    block: MessageBlock::Paragraph(format!("Message {n}")),
+                })
+                .collect();
+            let value = app.unified_snapshot(cx);
+            assert_eq!(value["history"].as_array().unwrap().len(), 100);
+            assert_eq!(value["history"][0]["kind"], "user");
+            assert_eq!(value["history"][1]["kind"], "assistant");
+            assert_eq!(value["history"][0]["speechText"], "");
+            assert_eq!(value["history"][1]["speechText"], "Message 51");
+            assert_eq!(value["codeConnection"]["connected"], true);
+            assert!(value["agents"].is_array());
+        });
+    }
+}
+
+fn unified_links(text: &str, highlights: &[(std::ops::Range<usize>, InlineStyle)]) -> String {
+    let mut rendered = text.to_owned();
+    let mut spans = Vec::new();
+    for (range, style) in highlights {
+        if let InlineStyle::Link(target) = style {
+            if (target.starts_with("https://")
+                || target.starts_with("http://")
+                || target.starts_with('/'))
+                && !target.contains(['"', '\n', '\r'])
+                && range.start < range.end
+                && range.end <= text.len()
+                && text.is_char_boundary(range.start)
+                && text.is_char_boundary(range.end)
+            {
+                spans.push((range.clone(), target.clone()))
+            }
+        }
+    }
+    spans.sort_by_key(|(r, _)| r.start);
+    let mut boundary = text.len();
+    for (range, target) in spans.into_iter().rev() {
+        if range.end <= boundary {
+            rendered.replace_range(
+                range.clone(),
+                &format!(":codex-file-citation{{path=\"{target}\" purpose=\"output\"}}"),
+            );
+            boundary = range.start
+        }
+    }
+    rendered
+}
+
+#[cfg(test)]
+mod final_regressions {
+    use super::*;
+    use std::prelude::v1::test;
+
+    #[gpui::test]
+    fn unified_completion_uses_the_runtime_outcome_and_keeps_failures_visible(
+        cx: &mut TestAppContext,
+    ) {
+        let (view, cx) = crate::ui_tests::fixture(cx);
+        view.update(cx, |app, cx| {
+            app.active = Some("fixture-session".into());
+            for outcome in ["failed", "stopped", "complete"] {
+                let events = if outcome == "failed" {
+                    vec![RuntimeEvent::Failed("Fixture failure".into())]
+                } else {
+                    vec![RuntimeEvent::Finished]
+                };
+                let mut run = crate::ui_tests::idle_run("Saved result".into());
+                run.handle = RunHandle::test_events(events);
+                if outcome == "stopped" {
+                    run.handle.cancel();
+                }
+                let epoch = run.parse_epoch.to_string();
+                app.runs.insert("fixture-session".into(), run);
+                app.poll("fixture-session", cx);
+                let successful = app
+                    .unified_successes
+                    .iter()
+                    .any(|(id, run)| id == "fixture-session" && run == &epoch);
+                assert_eq!(successful, outcome == "complete");
+                let snapshot = app.unified_snapshot(cx);
+                if outcome == "failed" {
+                    assert_eq!(snapshot["sessionActivity"]["scene"], "failure")
+                }
+                if outcome == "stopped" {
+                    assert_eq!(snapshot["sessionActivity"]["scene"], "declined")
+                }
+            }
+        });
+    }
+
+    #[gpui::test]
+    fn unified_question_form_checks_required_answers_and_sends_once(cx: &mut TestAppContext) {
+        let (view, cx) = crate::ui_tests::fixture(cx);
+        let (handle, answers) = RunHandle::interactive_test_handle();
+        view.update_in(cx,|app,window,cx|{
+            let mut run=crate::ui_tests::idle_run("Question".into());run.handle=handle;
+            let request=runtime::NativeRequest{id:"form".into(),method:"question".into(),title:"Choose".into(),detail:"".into(),kind:runtime::NativeRequestKind::Questions{questions:vec![runtime::NativeQuestion{id:"q".into(),header:"Choice".into(),question:"Pick one".into(),options:vec![runtime::NativeOption{id:"a".into(),label:"A".into()}],secret:false,multiple:false,required:true}]}};
+            app.native_pending.insert("form".into(),native_request_ui::LiveRequest::new("fixture-session",run.parse_epoch,request));
+            app.runs.insert("fixture-session".into(),run);
+            let token=app.unified_pending().unwrap().1;
+            let mut body=json!({"action":"native_answer","threadId":"code:fixture-session","approvalRequestId":token,"answers":{"q":[]}});
+            assert!(app.unified_command(&body,window,cx).is_err());assert!(answers.try_recv().is_err());
+            body["answers"]=json!({"q":["a","another"]});
+            assert!(app.unified_command(&body,window,cx).is_err());assert!(answers.try_recv().is_err());
+            body["answers"]=json!({"q":["a"]});app.unified_command(&body,window,cx).unwrap();
+            match answers.try_recv().unwrap(){runtime::NativeControl::Respond{id,answer:runtime::NativeAnswer::Answers(value)}=>{assert_eq!(id,"form");assert_eq!(value["q"],vec!["a"]);},_=>panic!("Expected native form response")}
+            assert!(app.unified_command(&body,window,cx).is_err());assert!(answers.try_recv().is_err());
+        });
+    }
+}

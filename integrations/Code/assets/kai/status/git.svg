@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 18" width="112" height="72" role="img" aria-label="git indicator">
+  <defs><linearGradient id="paint" x1="0" y1="0" x2="28" y2="18" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#fafafa"/><stop offset="0.5" stop-color="#d5d6d8"/><stop offset="1" stop-color="#8a8d92"/></linearGradient></defs>
+  <rect transform="translate(6.000 14.000) rotate(-0.000) translate(-2.000 -2.000)" width="4.000" height="4.000" rx="2.000" fill="url(#paint)" opacity="1.000"/>
+  <rect transform="translate(6.000 4.000) rotate(-0.000) translate(-2.000 -2.000)" width="4.000" height="4.000" rx="2.000" fill="url(#paint)" opacity="1.000"/>
+  <rect transform="translate(22.000 9.000) rotate(-0.000) translate(-2.250 -2.250)" width="4.500" height="4.500" rx="2.250" fill="url(#paint)" opacity="1.000"/>
+  <rect transform="translate(6.000 9.000) rotate(-0.000) translate(-0.750 -3.500)" width="1.500" height="7.000" rx="0.750" fill="url(#paint)" opacity="1.000"/>
+  <rect transform="translate(14.000 9.000) rotate(-17.762) translate(-7.500 -0.750)" width="15.000" height="1.500" rx="0.750" fill="url(#paint)" opacity="1.000"/>
+</svg>

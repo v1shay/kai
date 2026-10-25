@@ -16,6 +16,13 @@
 
 </div>
 
+### native Kai + Code experiment
+
+The `v1shay/kai-code-unified` branch builds a separate **Kai Unified.app** with
+Code's native IDE and Kai's notch in one process. The existing Kai target remains
+available. Run `./scripts/build-unified-app.sh`; see [the integration guide](docs/UNIFIED.md)
+for controls, architecture, ownership, and validation limits.
+
 ### setup
 
 requires macOS 13+, Git, Swift 5.9+, Python 3.11+, and a signed-in Codex CLI
@@ -66,6 +73,15 @@ kai uses your existing local Codex login and requires no separate account or API
 `KAI_BUILD_CONFIGURATION=debug ./scripts/build-app.sh`.
 
 [Performance changes and verification](docs/performance-audit.txt)
+
+**海 → Appearance → Morphing text** enables a brief decode/dissolve effect for
+streaming assistant text and the visible text when a chat loads. It starts off
+and your choice persists. Text is available immediately for selection, copying,
+links and accessibility. Reduce Motion bypasses the effect. Only visible changed
+text is animated (up to 512 glyphs / 24 small tiles); each sequence lasts 280 ms
+with a small stagger on chat load. There are no per-frame timers, blur effects,
+or transcript rewrites; completed animations release their snapshots. Loading
+older history keeps its existing viewport behavior without replaying the effect.
 
 **海 → Appearance → Floating task pets** optionally shows concurrent chats as a
 vertical stack of pets with small native glass status pills. Choose any screen

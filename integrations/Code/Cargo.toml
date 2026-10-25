@@ -1,0 +1,40 @@
+[package]
+name = "orbit"
+version = "0.1.0"
+edition = "2024"
+description = "A quiet, native home for coding agents"
+
+[dependencies]
+gpui = "=0.2.2"
+anyhow = "1"
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = "1"
+rusqlite = { version = "0.37", features = ["bundled", "blob"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+dirs = "6"
+chrono = { version = "0.4", features = ["serde"] }
+walkdir = "2"
+libc = "0.2"
+pulldown-cmark = "0.13"
+unicode-segmentation = "1"
+async-channel = "2"
+alacritty_terminal = { version = "=0.26.0", default-features = false }
+sha2 = "=0.10.9"
+globset = "=0.4.20"
+image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "tiff"] }
+resvg = { version = "=0.45.1", default-features = false, features = ["raster-images"] }
+raw-window-handle = "=0.6.2"
+zstd = { version = "=0.13.3", default-features = false }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "=0.6.5"
+block2 = "=0.6.2"
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSString"] }
+
+[dev-dependencies]
+gpui = { version = "=0.2.2", features = ["test-support"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

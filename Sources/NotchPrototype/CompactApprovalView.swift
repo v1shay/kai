@@ -2,10 +2,11 @@ import AppKit
 
 struct CompactApprovalRequest:Equatable {
     let id:String,thread:String,summary:String
+    var review:KaiNativeReview?
     var preview=false
     init?(state:KaiState){
         guard state.approval,let id=state.approvalRequestId,let thread=state.approvalThreadId else{return nil}
-        self.id=id;self.thread=thread;summary=state.approvalSummary ?? state.activity.text
+        self.review=state.nativeReview;self.id=id;self.thread=thread;summary=state.approvalSummary ?? state.activity.text
     }
     init(preview:Bool){id="preview";thread="preview";summary="swift test --filter CompactApprovalTests";self.preview=preview}
     var command:String {
@@ -20,6 +21,8 @@ struct CompactApprovalRequest:Equatable {
 }
 
 @MainActor final class CompactApprovalView:NSView {
+    var onReview:((KaiNativeReview)->Void)?
+    private let reviewButton=NSButton(title:"Review…",target:nil,action:nil)
     var onDecision:((String,CompactApprovalRequest)->Void)?
     private(set) var request:CompactApprovalRequest?
     private(set) var pendingID:String?
@@ -33,6 +36,7 @@ struct CompactApprovalRequest:Equatable {
         command.isEditable=false;command.isSelectable=true;command.drawsBackground=false;command.font = .monospacedSystemFont(ofSize:11,weight:.regular);command.textColor=NSColor.white.withAlphaComponent(0.92);command.textContainerInset = .zero
         command.isVerticallyResizable=true;command.autoresizingMask = .width;command.textContainer?.widthTracksTextView=true;command.setAccessibilityLabel("Requested approval command")
         scroll.documentView=command;addSubview(scroll)
+        reviewButton.target=self;reviewButton.action=#selector(openReview);reviewButton.bezelStyle = .rounded;reviewButton.isHidden=true
         for button in buttons{button.target=self;button.action=#selector(decide(_:));addSubview(button)}
     }
     required init?(coder:NSCoder){fatalError()}
@@ -42,10 +46,13 @@ struct CompactApprovalRequest:Equatable {
         scroll.frame=CGRect(x:0,y:36,width:bounds.width,height:max(20,bounds.height-55))
         command.setFrameSize(CGSize(width:scroll.contentSize.width,height:scroll.contentSize.height));command.textContainer?.containerSize=CGSize(width:scroll.contentSize.width,height:.greatestFiniteMagnitude)
         if let container=command.textContainer{command.layoutManager?.ensureLayout(for:container);command.setFrameSize(CGSize(width:scroll.contentSize.width,height:max(scroll.contentSize.height,(command.layoutManager?.usedRect(for:container).height ?? 0)+2)))}
+        reviewButton.frame=CGRect(x:bounds.width-78,y:0,width:76,height:28)
         for (index,button) in buttons.enumerated(){button.frame=CGRect(x:bounds.midX-58+CGFloat(index)*42,y:0,width:32,height:28)}
     }
     func show(_ request:CompactApprovalRequest){
         guard self.request != request else{return};self.request=request;timeout?.cancel();pendingID=nil
+        if request.review != nil,reviewButton.superview == nil{addSubview(reviewButton)}
+        reviewButton.isHidden=request.review == nil
         command.string=request.command;command.toolTip=request.summary;scroll.contentView.scroll(to:.zero)
         heading.stringValue="";heading.toolTip=nil;heading.isHidden=true
         buttons.forEach{$0.isEnabled=true;$0.alphaValue=1;$0.animate()};needsLayout=true
@@ -60,6 +67,7 @@ struct CompactApprovalRequest:Equatable {
         guard let id,pendingID == id else{return};timeout?.cancel();pendingID=nil
         heading.stringValue=error ?? "";heading.toolTip=error;heading.isHidden=error == nil;buttons.forEach{$0.isEnabled=true;$0.alphaValue=1}
     }
+    @objc private func openReview(){if let review=request?.review{onReview?(review)}}
     @objc private func decide(_ sender:ApprovalButton){guard pendingID == nil,let request else{return};onDecision?(sender.decision,request)}
 }
 

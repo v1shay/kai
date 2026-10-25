@@ -1,0 +1,46 @@
+Kai Unified verification — 2026-10-24
+====================================
+
+Branch: v1shay/kai-code-unified
+Code source: v1shay/code, b497c10b0e175513e8426fb38cba891dd9ebbc7a
+Bundle identity: com.kai.unified.experimental
+Delivery: /Users/vishayagarwal/Documents/ChatGPT/notchdex/.build/Kai Unified.app
+
+Passed:
+- Optimized Rust and Swift release build.
+- Seven public native ABI exports checked by loading the compiled library.
+- Deep, strict code-signature verification of the packaged and copied bundle.
+- Swift suite: 171 tests, one skipped, no failures.
+- Full Code suite, serial: 706 passed, 11 ignored, no failures.
+- Final focused Code checks: 10 passed, including added completion-outcome,
+  required question-form, and default-voice regressions.
+- Legacy Python suite: 126 passed.
+- Packaged native app: the Swift notch accepted Code's initial owner state.
+- Real native window: expansion, reversal in flight, and collapse passed.
+  The smoke app then quit itself, without submitting a provider prompt.
+- Release bundle footprint: approximately 71 MiB on this filesystem.
+- Original Kai checkout retains its original pending edits; original Code
+  checkout retains only its pre-existing untracked docs/stories.
+
+Native smoke result:
+  Kai unified: native layer and owner state ready in process 26154
+  Kai unified smoke: owner handshake, interrupted morph reversal, and round trip passed
+
+Validation notes:
+The native GUI automation service could not start, so no subjective visual QA
+or real microphone, permissions, or live-provider run is claimed. The smoke
+probe exercises the application's own real windows and uses a temporary data
+store. The original installed apps were not quit or replaced.
+
+An upstream provider child-reaping test failed in a parallel full run. It passed
+when rerun alone and in the complete serial run. The guide uses the serial
+command for reproducible lifecycle verification.
+
+The mini projection is bounded and does not replace Code's full transcript.
+Nested child pets, mini back/forward navigation, and explicit reasoning-effort
+selection remain integration gaps, described in UNIFIED.md.
+
+Runtime memory and battery use have not been benchmarked against both original
+apps. The verified architectural change is one application process, one Code
+runtime owner, no Kai bridge/app-server helper, direct owner notifications, and
+a separate small waveform callback. Optional local speech retains its helper.

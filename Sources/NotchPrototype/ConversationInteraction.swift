@@ -93,6 +93,18 @@ extension NSAttributedString.Key {
 /// Draw each card once in text layout coordinates, without adding backdrop
 /// views or rebuilding the conversation's view hierarchy during streaming.
 final class InteractionLayoutManager:NSLayoutManager {
+    var revealGlyphRanges=[NSRange]()
+    override func drawGlyphs(forGlyphRange glyphs:NSRange,at origin:NSPoint){
+        guard !revealGlyphRanges.isEmpty else{super.drawGlyphs(forGlyphRange:glyphs,at:origin);return}
+        var cursor=glyphs.location
+        for hidden in revealGlyphRanges.sorted(by:{$0.location<$1.location}) {
+            let overlap=NSIntersectionRange(hidden,glyphs)
+            guard overlap.length>0 else{continue}
+            if overlap.location>cursor{super.drawGlyphs(forGlyphRange:NSRange(location:cursor,length:overlap.location-cursor),at:origin)}
+            cursor=max(cursor,NSMaxRange(overlap))
+        }
+        if cursor<NSMaxRange(glyphs){super.drawGlyphs(forGlyphRange:NSRange(location:cursor,length:NSMaxRange(glyphs)-cursor),at:origin)}
+    }
     weak var cardHost:NSClipView?
     private var surfaces=[Int:NSView]()
     override func drawBackground(forGlyphRange glyphs:NSRange,at origin:NSPoint){

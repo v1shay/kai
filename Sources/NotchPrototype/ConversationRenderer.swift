@@ -12,6 +12,8 @@ import AppKit
     private(set) var prependedCharacterCount=0
     private(set) var mappedAnchorCharacter:Int?
     private(set) var didChange=false
+    var willChange:(()->Void)?
+    private(set) var revealRanges=[NSRange](),didChangeThread=false
     var hasDirtyMath:Bool {!dirtyMathBlocks.isEmpty}
     init(mathRenderer:MathRenderer){self.mathRenderer=mathRenderer}
     func invalidateMath(_ latex:String){dirtyMathBlocks.formUnion(mathBlocks[latex] ?? [])}
@@ -27,14 +29,17 @@ import AppKit
             }
         }
     }
-    func render(_ history:[KaiMessage],threadID:String?,in view:NSTextView,scroll:NSScrollView,renderMath:Bool,palette assistantPalette:[NSColor],anchorCharacter:Int?=nil)->Bool {
+    func render(_ history:[KaiMessage],threadID:String?,in view:NSTextView,scroll:NSScrollView,renderMath:Bool,palette assistantPalette:[NSColor],anchorCharacter:Int?=nil,collectRevealRanges:Bool=false)->Bool {
         lastReplacedBlockCount=0;prependedCharacterCount=0;mappedAnchorCharacter=anchorCharacter;didChange=false
         let changedThread=threadID != renderedThreadID
+        revealRanges=[];didChangeThread=changedThread || (renderedBlocks.isEmpty && !history.isEmpty)
+        if changedThread{willChange?()}
         if changedThread {mathRenderer.beginDocument();renderedThreadID=threadID;renderedBlocks.removeAll();renderedRanges.removeAll();mathBlocks.removeAll();dirtyMathBlocks.removeAll();view.textStorage?.setAttributedString(NSAttributedString(string:""))}
         // Swift arrays and strings share storage. Compare the decoded models
         // directly instead of copying the entire transcript into signatures.
         let signatures=history
         guard signatures != renderedBlocks || !dirtyMathBlocks.isEmpty else{return false}
+        if !changedThread{willChange?()}
         didChange=true
         (view as? FileActionHoverTextView)?.clearFileActionHover()
         // Keep the already displayed blocks intact when older exchanges arrive.
@@ -194,6 +199,10 @@ import AppKit
                 content.insert(prefix,at:0)
             }
             let oldRange=index < ranges.count ? ranges[index] : NSRange(location:blockStart,length:0)
+            if collectRevealRanges,prependCount == 0,!dirtyMathBlocks.contains(index),didChangeThread || block.kind == "assistant",
+               let suffix=TextRevealChange.suffix(old:storage.attributedSubstring(from:oldRange).string,new:content.string){
+                revealRanges.append(NSRange(location:blockStart+suffix.location,length:suffix.length))
+            }
             lastReplacedBlockCount += 1
             let delta=content.length-oldRange.length
             if let anchor=mappedAnchorCharacter,anchor>=NSMaxRange(oldRange) {

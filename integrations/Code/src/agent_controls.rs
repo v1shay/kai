@@ -1,0 +1,1564 @@
+//! On-demand native account and model controls. Never opens credential files.
+//! Uses bounded, read-only status/catalog commands and App Server metadata RPCs.
+use crate::{discovery::AgentKind, runtime::valid_model_id};
+use anyhow::{Context, Result, bail};
+use serde_json::Value;
+use std::{
+    fs::{self, File, OpenOptions},
+    io::{Read, Write},
+    os::{
+        fd::AsRawFd,
+        unix::{fs::OpenOptionsExt, process::CommandExt},
+    },
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
+    time::{Duration, Instant},
+};
+
+const PROBE_BYTES: usize = 64 * 1024;
+const METADATA_BYTES: u64 = 2 * 1024 * 1024;
+const MODEL_LIMIT: usize = 128;
+const PROBE_TIMEOUT: Duration = Duration::from_secs(4);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuthState {
+    VerifiedSignedIn,
+    SignedOut,
+    /// The native CLI reports stored credentials, without validating them.
+    Configured,
+    Unknown,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModelChoice {
+    pub id: String,
+    pub label: String,
+}
+
+pub use crate::usage::LimitWindow;
+
+#[derive(Clone, Debug)]
+pub struct CatalogItem {
+    pub label: String,
+    pub detail: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct ControlInfo {
+    pub auth: AuthState,
+    pub models: Vec<ModelChoice>,
+    pub note: Option<String>,
+    pub account: Option<String>,
+    pub limits: Vec<LimitWindow>,
+    pub catalog: Option<(PathBuf, CatalogKind, Vec<CatalogItem>)>,
+}
+
+/// Call on a worker only when controls are opened/refreshed. No recurring probe.
+pub fn inspect(kind: AgentKind, executable: &Path, home: &Path) -> ControlInfo {
+    let mut info = ControlInfo {
+        auth: AuthState::Unknown,
+        models: Vec::new(),
+        note: None,
+        account: None,
+        limits: Vec::new(),
+        catalog: None,
+    };
+    if kind == AgentKind::Codex {
+        match codex_metadata(executable, home) {
+            Ok(snapshot) => return snapshot,
+            Err(error) => {
+                info.note = Some(format!(
+                    "Live Codex metadata unavailable ({error}); showing the last local model catalog. Refresh to try again."
+                ))
+            }
+        }
+    }
+    let status_args: Option<&[&str]> = match kind {
+        AgentKind::Codex => None,
+        AgentKind::Claude => Some(&["auth", "status", "--json"]),
+        AgentKind::Cursor => Some(&["status", "--format", "json"]),
+        AgentKind::OpenCode => Some(&["auth", "list", "--pure"]),
+        _ => None,
+    };
+    if let Some(args) = status_args {
+        match probe(executable, args, home, PROBE_TIMEOUT) {
+            Ok(output) => info.auth = auth_state(kind, &output),
+            Err(_) => {
+                info.note =
+                    Some("Account status could not be checked. Open the CLI to inspect it.".into())
+            }
+        }
+    } else if kind != AgentKind::Codex {
+        info.note = Some("This CLI does not expose a safe account-status command. Your existing CLI sign-in is used.".into());
+    }
+    match kind {
+        AgentKind::Codex => {
+            if let Some(cache) = metadata(&home.join(".codex/models_cache.json"))
+                && let Some(models) = cache.get("models").and_then(Value::as_array)
+            {
+                for model in models.iter().take(512) {
+                    if model.get("visibility").and_then(Value::as_str) == Some("hide") {
+                        continue;
+                    }
+                    if let Some(id) = model.get("slug").and_then(Value::as_str) {
+                        add_model(
+                            &mut info.models,
+                            id,
+                            model
+                                .get("display_name")
+                                .and_then(Value::as_str)
+                                .unwrap_or(id),
+                        );
+                    }
+                }
+            }
+        }
+        AgentKind::Claude => {
+            if let Ok(models) = claude_models(executable, home) {
+                info.models = models;
+            }
+            // Help aliases are a fallback when this installed SDK handshake is unavailable.
+            if info.models.is_empty()
+                && let Ok(output) = probe(executable, &["--help"], home, PROBE_TIMEOUT)
+                && output.success
+            {
+                let text = strip_ansi(&output.stdout);
+                if let Some(line) = text
+                    .lines()
+                    .find(|line| line.trim_start().starts_with("--model "))
+                {
+                    for id in advertised_model_names(line) {
+                        add_model(&mut info.models, &id, &id);
+                    }
+                }
+            }
+            configured_model(
+                &mut info.models,
+                &home.join(".claude/settings.json"),
+                &["/model"],
+            );
+        }
+        AgentKind::Gemini => configured_model(
+            &mut info.models,
+            &home.join(".gemini/settings.json"),
+            &["/model/name"],
+        ),
+        AgentKind::Antigravity => {
+            // `agy models` can initiate automatic sign-in. Read configuration only.
+            configured_model(
+                &mut info.models,
+                &home.join(".gemini/antigravity-cli/settings.json"),
+                &["/model"],
+            );
+        }
+        AgentKind::Cursor | AgentKind::OpenCode | AgentKind::Grok => {
+            // Cursor's models command starts login when credentials are absent.
+            if kind != AgentKind::Cursor || info.auth == AuthState::VerifiedSignedIn {
+                let args: &[&str] = if kind == AgentKind::OpenCode {
+                    &["models", "--pure"]
+                } else {
+                    &["models"]
+                };
+                if let Ok(output) = probe(executable, args, home, PROBE_TIMEOUT)
+                    && output.success
+                {
+                    info.models = catalog_lines(kind, &output.stdout);
+                }
+            }
+        }
+    }
+    info
+}
+
+/// Read-only app-server RPCs. No thread is resumed, no inference is requested,
+/// and account email/token values are never retained. RPC failures are isolated:
+/// a missing rate-limit endpoint does not discard a successful model catalog.
+fn codex_metadata(executable: &Path, home: &Path) -> Result<ControlInfo> {
+    let responses = codex_rpc(
+        executable,
+        home,
+        &[
+            (1, "account/read", serde_json::json!({"refreshToken":false})),
+            (
+                2,
+                "model/list",
+                serde_json::json!({"limit":128,"includeHidden":false}),
+            ),
+            (3, "account/rateLimits/read", Value::Null),
+        ],
+    )?;
+    Ok(codex_snapshot(&responses))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CatalogKind {
+    Skills,
+    Mcp,
+    Plugins,
+    Tools,
+    Hooks,
+    Apps,
+}
+impl CatalogKind {
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Skills => "codex-skills",
+            Self::Mcp => "codex-mcp",
+            Self::Plugins => "codex-plugins",
+            Self::Tools => "codex-tools",
+            Self::Hooks => "codex-hooks",
+            Self::Apps => "codex-apps",
+        }
+    }
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Skills => "Skills",
+            Self::Mcp => "MCP servers",
+            Self::Plugins => "Local plugins",
+            Self::Tools => "Configured MCP tools",
+            Self::Hooks => "Lifecycle hooks",
+            Self::Apps => "Connected apps",
+        }
+    }
+}
+/// Explicit, on-demand discovery scoped to the selected project. Local plugin
+/// discovery does not fetch marketplaces or install/enable anything.
+pub fn inspect_catalog(
+    executable: &Path,
+    project: &Path,
+    kind: CatalogKind,
+) -> Result<Vec<CatalogItem>> {
+    let (method, params) = match kind {
+        CatalogKind::Skills => (
+            "skills/list",
+            serde_json::json!({"cwds":[project],"forceReload":false}),
+        ),
+        CatalogKind::Mcp | CatalogKind::Tools => (
+            "mcpServerStatus/list",
+            serde_json::json!({"limit":128,"detail":"toolsAndAuthOnly"}),
+        ),
+        CatalogKind::Plugins => (
+            "plugin/list",
+            serde_json::json!({"cwds":[project],"forceRefetch":false,"marketplaceKinds":["local"]}),
+        ),
+        CatalogKind::Hooks => ("hooks/list", serde_json::json!({"cwds":[project]})),
+        CatalogKind::Apps => (
+            "app/list",
+            serde_json::json!({"limit":128,"forceRefetch":false}),
+        ),
+    };
+    let responses = codex_rpc(executable, project, &[(1, method, params)])?;
+    let result = responses
+        .get(&1)
+        .and_then(|r| r.get("result"))
+        .context("The installed Codex did not provide this catalog")?;
+    let mut items = Vec::new();
+    let clean = |value: &str| {
+        value
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(512)
+            .collect::<String>()
+    };
+    let mut add = |value: &Value, detail: String| {
+        if items.len() < 128
+            && let Some(name) = value.get("name").and_then(Value::as_str)
+        {
+            items.push(CatalogItem {
+                label: clean(name),
+                detail: clean(&detail),
+            });
+        }
+    };
+    match kind {
+        CatalogKind::Skills => {
+            if let Some(data) = result.get("data").and_then(Value::as_array) {
+                for entry in data.iter().take(16) {
+                    if let Some(skills) = entry.get("skills").and_then(Value::as_array) {
+                        for skill in skills.iter().take(128) {
+                            let description = skill
+                                .get("shortDescription")
+                                .or_else(|| skill.get("description"))
+                                .and_then(Value::as_str)
+                                .unwrap_or("");
+                            add(
+                                skill,
+                                format!(
+                                    "{} · {description}",
+                                    if skill.get("enabled") == Some(&Value::Bool(true)) {
+                                        "Enabled"
+                                    } else {
+                                        "Disabled"
+                                    }
+                                ),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        CatalogKind::Mcp => {
+            if let Some(data) = result.get("data").and_then(Value::as_array) {
+                for server in data.iter().take(128) {
+                    let tools = server
+                        .get("tools")
+                        .and_then(Value::as_object)
+                        .map_or(0, |v| v.len());
+                    add(
+                        server,
+                        format!(
+                            "{} · {tools} tools",
+                            server
+                                .get("authStatus")
+                                .and_then(Value::as_str)
+                                .unwrap_or("Auth unknown")
+                        ),
+                    );
+                }
+            }
+        }
+        CatalogKind::Tools => {
+            for server in result["data"].as_array().into_iter().flatten().take(128) {
+                let server_name = server["name"].as_str().unwrap_or("MCP");
+                for (name, tool) in server["tools"].as_object().into_iter().flatten().take(128) {
+                    let label = format!("{} · {}", clean(server_name), clean(name));
+                    let description = tool["description"].as_str().unwrap_or("");
+                    let properties = tool
+                        .pointer("/inputSchema/properties")
+                        .and_then(Value::as_object);
+                    let fields = properties
+                        .map(|fields| {
+                            fields
+                                .keys()
+                                .take(12)
+                                .map(|name| clean(name))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        })
+                        .unwrap_or_default();
+                    let detail = format!(
+                        "{}{}{}",
+                        clean(description),
+                        if fields.is_empty() {
+                            ""
+                        } else {
+                            " · Inputs: "
+                        },
+                        fields
+                    );
+                    add(&serde_json::json!({"name":label}), detail);
+                }
+            }
+        }
+        CatalogKind::Hooks => {
+            for entry in result["data"].as_array().into_iter().flatten().take(16) {
+                for hook in entry["hooks"].as_array().into_iter().flatten().take(128) {
+                    let label = format!(
+                        "{} · {}",
+                        clean(hook["eventName"].as_str().unwrap_or("Hook")),
+                        clean(hook["key"].as_str().unwrap_or("Configured"))
+                    );
+                    let detail = format!(
+                        "{} · {} · {}",
+                        if hook["enabled"] == true {
+                            "Enabled"
+                        } else {
+                            "Disabled"
+                        },
+                        clean(hook["trustStatus"].as_str().unwrap_or("Trust unknown")),
+                        clean(
+                            hook["statusMessage"]
+                                .as_str()
+                                .or_else(|| hook["handlerType"].as_str())
+                                .unwrap_or("")
+                        )
+                    );
+                    add(&serde_json::json!({"name":label}), detail);
+                }
+            }
+        }
+        CatalogKind::Apps => {
+            for app in result["data"].as_array().into_iter().flatten().take(128) {
+                add(
+                    app,
+                    format!(
+                        "{} · {} · {}",
+                        if app["isAccessible"] == true {
+                            "Accessible"
+                        } else {
+                            "Access not available"
+                        },
+                        if app["isEnabled"] == true {
+                            "Enabled"
+                        } else {
+                            "Disabled"
+                        },
+                        clean(app["description"].as_str().unwrap_or(""))
+                    ),
+                );
+            }
+        }
+        CatalogKind::Plugins => {
+            if let Some(marketplaces) = result.get("marketplaces").and_then(Value::as_array) {
+                for market in marketplaces.iter().take(16) {
+                    if let Some(plugins) = market.get("plugins").and_then(Value::as_array) {
+                        for plugin in plugins.iter().take(128) {
+                            add(
+                                plugin,
+                                if plugin.get("installed") == Some(&Value::Bool(true)) {
+                                    if plugin.get("enabled") == Some(&Value::Bool(true)) {
+                                        "Installed · enabled"
+                                    } else {
+                                        "Installed · disabled"
+                                    }
+                                } else {
+                                    "Available locally"
+                                }
+                                .into(),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let discovery_errors = match kind {
+        CatalogKind::Skills | CatalogKind::Hooks => result
+            .get("data")
+            .and_then(Value::as_array)
+            .is_some_and(|entries| {
+                entries.iter().any(|entry| {
+                    entry
+                        .get("errors")
+                        .and_then(Value::as_array)
+                        .is_some_and(|errors| !errors.is_empty())
+                })
+            }),
+        CatalogKind::Plugins => result
+            .get("marketplaceLoadErrors")
+            .and_then(Value::as_array)
+            .is_some_and(|errors| !errors.is_empty()),
+        CatalogKind::Mcp | CatalogKind::Tools => result
+            .get("data")
+            .and_then(Value::as_array)
+            .is_some_and(|servers| {
+                servers.iter().any(|server| {
+                    server
+                        .get("toolsError")
+                        .is_some_and(|error| !error.is_null())
+                })
+            }),
+        CatalogKind::Apps => false,
+    };
+    if discovery_errors {
+        if items.is_empty() {
+            bail!("Native catalog discovery reported errors");
+        }
+        items.push(CatalogItem {
+            label: "Partial inventory".into(),
+            detail:
+                "Codex reported discovery errors for some entries. Other entries are preserved."
+                    .into(),
+        });
+    }
+    if items.len() >= 128 || result.get("nextCursor").is_some_and(|v| !v.is_null()) {
+        items.push(CatalogItem {
+            label: "Bounded inventory".into(),
+            detail: "Showing at most 128 entries. Additional entries remain available in the native CLI.".into(),
+        });
+    }
+    Ok(items)
+}
+
+fn codex_rpc(
+    executable: &Path,
+    home: &Path,
+    requests: &[(u64, &str, Value)],
+) -> Result<std::collections::BTreeMap<u64, Value>> {
+    let mut command = Command::new(executable);
+    crate::process_env::apply(&mut command);
+    command
+        .args(["app-server", "--listen", "stdio://"])
+        .current_dir(home)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .process_group(0);
+    let mut child = ProbeChild(command.spawn().context("Codex metadata unavailable")?);
+    let mut input = child
+        .0
+        .stdin
+        .take()
+        .context("Codex RPC input unavailable")?;
+    let mut output = child
+        .0
+        .stdout
+        .take()
+        .context("Codex RPC output unavailable")?;
+    let fd = output.as_raw_fd();
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags == -1 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1 {
+        bail!("Codex RPC output unavailable");
+    }
+    let write = |input: &mut std::process::ChildStdin, value: Value| -> Result<()> {
+        serde_json::to_writer(&mut *input, &value)?;
+        input.write_all(b"\n")?;
+        input.flush()?;
+        Ok(())
+    };
+    write(
+        &mut input,
+        serde_json::json!({"id":0,"method":"initialize","params":{
+        "clientInfo":{"name":"code_native_controls","version":env!("CARGO_PKG_VERSION")},
+        "capabilities":{"experimentalApi":true}}}),
+    )?;
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let mut pending = Vec::<u8>::new();
+    let mut total = 0usize;
+    let mut initialized = false;
+    let mut closed = false;
+    let mut responses = std::collections::BTreeMap::<u64, Value>::new();
+    while Instant::now() < deadline {
+        let mut buffer = [0u8; 8192];
+        match output.read(&mut buffer) {
+            Ok(0) => {
+                closed = true;
+                break;
+            }
+            Ok(count) => {
+                total += count;
+                if total > METADATA_BYTES as usize {
+                    if !responses.is_empty() {
+                        break;
+                    }
+                    bail!("Codex metadata exceeded bounds");
+                }
+                pending.extend_from_slice(&buffer[..count]);
+                while let Some(end) = pending.iter().position(|b| *b == b'\n') {
+                    let record = serde_json::from_slice::<Value>(&pending[..end]);
+                    pending.drain(..=end);
+                    let Ok(record) = record else {
+                        continue;
+                    };
+                    // Never execute server requests while inspecting metadata.
+                    if record.get("method").is_some() {
+                        if let Some(id) = record.get("id").filter(|id| {
+                            id.is_u64() || id.as_str().is_some_and(|id| id.len() <= 128)
+                        }) {
+                            write(
+                                &mut input,
+                                serde_json::json!({"id":id,"error":{"code":-32601,"message":"Metadata client does not execute tools"}}),
+                            )?;
+                        }
+                        continue;
+                    }
+                    let Some(id) = record.get("id").and_then(Value::as_u64) else {
+                        continue;
+                    };
+                    if id == 0 && !initialized {
+                        if record.get("error").is_some() {
+                            bail!("Codex metadata handshake rejected");
+                        }
+                        initialized = true;
+                        write(&mut input, serde_json::json!({"method":"initialized"}))?;
+                        for (id, method, params) in requests {
+                            write(
+                                &mut input,
+                                serde_json::json!({"id":id,"method":method,"params":params}),
+                            )?;
+                        }
+                    } else if requests.iter().any(|(expected, _, _)| *expected == id) {
+                        responses.insert(id, record);
+                    }
+                }
+                if responses.len() == requests.len() {
+                    break;
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                let mut poll = libc::pollfd {
+                    fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                unsafe {
+                    libc::poll(&mut poll, 1, 100);
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => {
+                if !responses.is_empty() {
+                    break;
+                }
+                return Err(error.into());
+            }
+        }
+    }
+    if !initialized || responses.is_empty() {
+        if closed {
+            bail!("Codex App Server closed before returning metadata");
+        }
+        bail!("Codex metadata check timed out");
+    }
+    Ok(responses)
+}
+
+fn codex_snapshot(responses: &std::collections::BTreeMap<u64, Value>) -> ControlInfo {
+    let mut info = ControlInfo {
+        auth: AuthState::Unknown,
+        models: Vec::new(),
+        note: None,
+        account: None,
+        limits: Vec::new(),
+        catalog: None,
+    };
+    if let Some(account) = responses.get(&1).and_then(|v| v.get("result")) {
+        info.auth = match account.pointer("/account/type").and_then(Value::as_str) {
+            Some("chatgpt" | "apiKey" | "amazonBedrock") => AuthState::VerifiedSignedIn,
+            _ if account.get("account").is_some_and(Value::is_null)
+                && account.get("requiresOpenaiAuth") == Some(&Value::Bool(false)) =>
+            {
+                AuthState::Configured
+            }
+            _ if account.get("account").is_some_and(Value::is_null) => AuthState::SignedOut,
+            _ => AuthState::Unknown,
+        };
+        info.account = account
+            .pointer("/account/planType")
+            .or_else(|| account.pointer("/account/type"))
+            .and_then(Value::as_str)
+            .map(|v| {
+                v.chars()
+                    .filter(|c| !c.is_control())
+                    .take(80)
+                    .collect::<String>()
+            })
+            .filter(|value| !value.trim().is_empty() && value != "unknown");
+    }
+    if let Some(models) = responses
+        .get(&2)
+        .and_then(|v| v.pointer("/result/data"))
+        .and_then(Value::as_array)
+    {
+        for model in models.iter().take(128) {
+            if model.get("hidden").and_then(Value::as_bool) == Some(true) {
+                continue;
+            }
+            if let Some(id) = model
+                .get("model")
+                .or_else(|| model.get("id"))
+                .and_then(Value::as_str)
+            {
+                add_model(
+                    &mut info.models,
+                    id,
+                    model
+                        .get("displayName")
+                        .and_then(Value::as_str)
+                        .unwrap_or(id),
+                );
+            }
+        }
+    }
+    if let Some(result) = responses.get(&3).and_then(|v| v.get("result")) {
+        info.limits = crate::usage::codex_limit_windows(result, false);
+    }
+
+    let missing: Vec<_> = [(1, "account"), (2, "models"), (3, "rate limits")]
+        .into_iter()
+        .filter(|(id, _)| {
+            responses
+                .get(id)
+                .is_none_or(|v| v.get("result").is_none_or(Value::is_null))
+        })
+        .map(|(_, label)| label)
+        .collect();
+    if !missing.is_empty() {
+        info.note = Some(format!(
+            "Codex did not return {}. Other live metadata remains available.",
+            missing.join(", ")
+        ));
+    }
+    info
+}
+
+/// Native SDK initialize returns a model catalog without creating a prompt.
+/// Keep this metadata process separate from the active chat's control channel.
+fn claude_models(executable: &Path, home: &Path) -> Result<Vec<ModelChoice>> {
+    let mut command = Command::new(executable);
+    crate::process_env::apply(&mut command);
+    command
+        .args([
+            "--print",
+            "--verbose",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+            "--permission-prompt-tool",
+            "stdio",
+            "--permission-mode",
+            "default",
+        ])
+        .current_dir(home)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .process_group(0);
+    let mut child = ProbeChild(
+        command
+            .spawn()
+            .context("Claude model catalog unavailable")?,
+    );
+    let mut input = child
+        .0
+        .stdin
+        .take()
+        .context("Claude catalog input unavailable")?;
+    input.write_all(b"{\"type\":\"control_request\",\"request_id\":\"code-models\",\"request\":{\"subtype\":\"initialize\",\"hooks\":null}}\n")?;
+    input.flush()?;
+    let mut output = child
+        .0
+        .stdout
+        .take()
+        .context("Claude catalog output unavailable")?;
+    let fd = output.as_raw_fd();
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        bail!("Claude catalog output unavailable");
+    }
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let mut pending = Vec::new();
+    let mut total = 0usize;
+    let mut buffer = [0u8; 8192];
+    loop {
+        if Instant::now() >= deadline {
+            bail!("Claude model catalog timed out");
+        }
+        match output.read(&mut buffer) {
+            Ok(0) => bail!("Claude catalog closed before initialization"),
+            Ok(n) => {
+                total += n;
+                if total > METADATA_BYTES as usize {
+                    bail!("Claude catalog exceeded bounds");
+                }
+                pending.extend_from_slice(&buffer[..n]);
+                while let Some(end) = pending.iter().position(|byte| *byte == b'\n') {
+                    let value: Value = serde_json::from_slice(&pending[..end])?;
+                    pending.drain(..=end);
+                    if value["type"] == "control_response"
+                        && value["response"]["request_id"] == "code-models"
+                    {
+                        if value["response"]["subtype"] != "success" {
+                            bail!("Claude catalog initialization rejected");
+                        }
+                        let mut models = Vec::new();
+                        if let Some(items) = value
+                            .pointer("/response/response/models")
+                            .and_then(Value::as_array)
+                        {
+                            for item in items.iter().take(MODEL_LIMIT) {
+                                if let Some(id) = item["value"].as_str() {
+                                    add_model(
+                                        &mut models,
+                                        id,
+                                        item["displayName"].as_str().unwrap_or(id),
+                                    );
+                                }
+                            }
+                        }
+                        return Ok(models);
+                    }
+                    // No tools, hooks or SDK MCP callbacks are registered by
+                    // this metadata client. Never leave unsolicited requests hanging.
+                    if value["type"] == "control_request"
+                        && let Some(id) = value["request_id"].as_str().filter(|id| id.len() <= 128)
+                    {
+                        serde_json::to_writer(
+                            &mut input,
+                            &serde_json::json!({"type":"control_response","response":{"subtype":"error","request_id":id,"error":"Metadata inspection does not execute tools"}}),
+                        )?;
+                        input.write_all(b"\n")?;
+                        input.flush()?;
+                    }
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                let mut poll = libc::pollfd {
+                    fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                unsafe {
+                    libc::poll(&mut poll, 1, 100);
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+fn metadata(path: &Path) -> Option<Value> {
+    let file = File::open(path).ok()?;
+    if file.metadata().ok()?.len() > METADATA_BYTES {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    file.take(METADATA_BYTES + 1).read_to_end(&mut bytes).ok()?;
+    if bytes.len() as u64 > METADATA_BYTES {
+        return None;
+    }
+    serde_json::from_slice(&bytes).ok()
+}
+
+/// CLI help is versioned evidence. Import its quoted examples/aliases instead
+/// of maintaining a list of model names that goes stale with CLI releases.
+fn advertised_model_names(line: &str) -> Vec<String> {
+    let mut values = Vec::new();
+    let mut rest = line;
+    while let Some(start) = rest.find(['\'', '\"']) {
+        let quote = rest.as_bytes()[start] as char;
+        rest = &rest[start + 1..];
+        let Some(end) = rest.find(quote) else {
+            break;
+        };
+        let id = &rest[..end];
+        if valid_model_id(id) && !values.iter().any(|value| value == id) {
+            values.push(id.to_owned());
+        }
+        rest = &rest[end + 1..];
+        if values.len() == MODEL_LIMIT {
+            break;
+        }
+    }
+    values
+}
+
+fn configured_model(models: &mut Vec<ModelChoice>, path: &Path, pointers: &[&str]) {
+    if let Some(settings) = metadata(path) {
+        for pointer in pointers {
+            if let Some(id) = settings.pointer(pointer).and_then(Value::as_str) {
+                add_model(models, id, id);
+            }
+        }
+    }
+}
+
+fn add_model(models: &mut Vec<ModelChoice>, id: &str, label: &str) {
+    if models.len() < MODEL_LIMIT && valid_model_id(id) && !models.iter().any(|m| m.id == id) {
+        let label: String = label.chars().filter(|c| !c.is_control()).take(80).collect();
+        models.push(ModelChoice {
+            id: id.into(),
+            label: if label.is_empty() { id.into() } else { label },
+        });
+    }
+}
+
+fn catalog_lines(kind: AgentKind, bytes: &[u8]) -> Vec<ModelChoice> {
+    let text = strip_ansi(bytes);
+    let mut models = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        let line = if kind == AgentKind::Grok {
+            let Some(line) = line.strip_prefix("* ").or_else(|| line.strip_prefix("- ")) else {
+                continue;
+            };
+            line
+        } else {
+            line
+        };
+        let Some(id) = line.split_whitespace().next() else {
+            continue;
+        };
+        let accepted = match kind {
+            AgentKind::OpenCode => line == id && id.contains('/'),
+            AgentKind::Cursor => line.contains(" - "),
+            AgentKind::Grok => id.starts_with("grok-"),
+            _ => false,
+        };
+        if accepted {
+            let label = if kind == AgentKind::Cursor {
+                line.split_once(" - ").map(|(_, label)| label).unwrap_or(id)
+            } else {
+                id
+            };
+            add_model(&mut models, id, label);
+        }
+    }
+    models
+}
+
+fn auth_state(kind: AgentKind, output: &ProbeOutput) -> AuthState {
+    let json: Option<Value> = serde_json::from_slice(&output.stdout).ok();
+    match kind {
+        AgentKind::Claude => match json
+            .as_ref()
+            .and_then(|v| v.get("loggedIn"))
+            .and_then(Value::as_bool)
+        {
+            Some(true) if output.success => AuthState::VerifiedSignedIn,
+            Some(false) => AuthState::SignedOut,
+            _ => AuthState::Unknown,
+        },
+        AgentKind::Cursor => match json
+            .as_ref()
+            .and_then(|v| v.get("status"))
+            .and_then(Value::as_str)
+        {
+            Some("authenticated") if output.success => AuthState::VerifiedSignedIn,
+            Some("unauthenticated") => AuthState::SignedOut,
+            Some("partially-authenticated") => AuthState::Configured,
+            _ => AuthState::Unknown,
+        },
+        AgentKind::Codex => {
+            let text = format!(
+                "{}{}",
+                strip_ansi(&output.stdout),
+                strip_ansi(&output.stderr)
+            )
+            .to_lowercase();
+            if text.contains("not logged in") {
+                AuthState::SignedOut
+            } else if output.success && text.contains("logged in") {
+                AuthState::VerifiedSignedIn
+            } else {
+                AuthState::Unknown
+            }
+        }
+        AgentKind::OpenCode if output.success => {
+            let text = strip_ansi(&output.stdout).to_lowercase();
+            // Native list summarizes counts; no provider names/credentials retained.
+            let mut found_count = false;
+            for line in text.lines() {
+                let words: Vec<_> = line.split_whitespace().collect();
+                for pair in words.windows(2) {
+                    if (pair[1].starts_with("credential") || pair[1] == "environment")
+                        && let Ok(count) = pair[0].parse::<usize>()
+                    {
+                        found_count = true;
+                        if count > 0 {
+                            return AuthState::Configured;
+                        }
+                    }
+                }
+            }
+            if found_count {
+                AuthState::SignedOut
+            } else {
+                AuthState::Unknown
+            }
+        }
+        _ => AuthState::Unknown,
+    }
+}
+
+fn strip_ansi(bytes: &[u8]) -> String {
+    let text = String::from_utf8_lossy(bytes);
+    let mut result = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            if chars.next() == Some('[') {
+                for c in chars.by_ref() {
+                    if ('@'..='~').contains(&c) {
+                        break;
+                    }
+                }
+            }
+        } else if !c.is_control() || c == '\n' || c == '\t' {
+            result.push(c);
+        }
+    }
+    result
+}
+
+struct ProbeOutput {
+    success: bool,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+
+/// Kill the entire probe group before reaping, including children holding pipes.
+struct ProbeChild(std::process::Child);
+impl Drop for ProbeChild {
+    fn drop(&mut self) {
+        unsafe {
+            libc::kill(-(self.0.id() as i32), libc::SIGKILL);
+        }
+        let _ = self.0.wait();
+    }
+}
+
+fn probe(executable: &Path, args: &[&str], home: &Path, timeout: Duration) -> Result<ProbeOutput> {
+    let mut command = Command::new(executable);
+    crate::process_env::apply(&mut command);
+    command
+        .args(args)
+        .current_dir(home)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0);
+    // Catalog lookups need neither downloads nor project plugin initialization.
+    command
+        .env("NO_COLOR", "1")
+        .env("OPENCODE_DISABLE_MODELS_FETCH", "true");
+    let mut child = ProbeChild(command.spawn().context("CLI status unavailable")?);
+    let mut stdout = child.0.stdout.take().context("CLI output unavailable")?;
+    let mut stderr = child
+        .0
+        .stderr
+        .take()
+        .context("CLI diagnostics unavailable")?;
+    for fd in [stdout.as_raw_fd(), stderr.as_raw_fd()] {
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        if flags == -1 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1
+        {
+            bail!("CLI output unavailable");
+        }
+    }
+    let deadline = Instant::now() + timeout;
+    let mut output = ProbeOutput {
+        success: false,
+        stdout: Vec::new(),
+        stderr: Vec::new(),
+    };
+    let mut eof = [false, false];
+    loop {
+        for (index, (reader, bytes)) in [
+            (&mut stdout as &mut dyn Read, &mut output.stdout),
+            (&mut stderr as &mut dyn Read, &mut output.stderr),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if eof[index] {
+                continue;
+            }
+            let mut buffer = [0_u8; 8192];
+            for _ in 0..4 {
+                match reader.read(&mut buffer) {
+                    Ok(0) => {
+                        eof[index] = true;
+                        break;
+                    }
+                    Ok(count) => {
+                        if bytes.len() + count > PROBE_BYTES {
+                            bail!("CLI status exceeded its output limit");
+                        }
+                        bytes.extend_from_slice(&buffer[..count]);
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => bail!("CLI status output unavailable"),
+                }
+            }
+        }
+        // Use waitid(WNOWAIT) so the PID cannot be reused before group cleanup.
+        let mut status: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        if unsafe {
+            libc::waitid(
+                libc::P_PID,
+                child.0.id(),
+                &mut status,
+                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+            )
+        } == 0
+            && status.si_pid != 0
+            && eof.iter().all(|eof| *eof)
+        {
+            output.success = status.si_code == libc::CLD_EXITED && status.si_status == 0;
+            return Ok(output);
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            bail!("CLI status check timed out");
+        }
+        let mut fds = [
+            libc::pollfd {
+                fd: if eof[0] { -1 } else { stdout.as_raw_fd() },
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: if eof[1] { -1 } else { stderr.as_raw_fd() },
+                events: libc::POLLIN,
+                revents: 0,
+            },
+        ];
+        let wait_ms = (deadline - now).as_millis().clamp(1, 100) as i32;
+        unsafe {
+            libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, wait_ms);
+        }
+    }
+}
+
+/// Creates a private, safely quoted command for Terminal; never starts it here.
+/// A verified sign-in is left alone. No logout command exists in this module.
+pub fn login_script(
+    kind: AgentKind,
+    executable: &Path,
+    cache_dir: &Path,
+    auth: AuthState,
+) -> Result<Option<PathBuf>> {
+    if auth == AuthState::VerifiedSignedIn {
+        return Ok(None);
+    }
+    if !executable.is_absolute() || !executable.is_file() {
+        bail!("Agent executable is unavailable");
+    }
+    let args: &[&str] = match kind {
+        AgentKind::Codex | AgentKind::Cursor | AgentKind::Grok => &["login"],
+        AgentKind::Claude => &["auth", "login"],
+        AgentKind::OpenCode => &["auth", "login"],
+        // Native interactive startup owns their browser authentication flow.
+        AgentKind::Gemini | AgentKind::Antigravity => &[],
+    };
+    let executable = executable
+        .to_str()
+        .context("Agent executable path is not UTF-8")?;
+    if executable.chars().any(|c| c.is_control()) {
+        bail!("Agent executable path is invalid");
+    }
+    let mut native_command = Command::new(executable);
+    crate::process_env::apply(&mut native_command);
+    let native_path = native_command
+        .get_envs()
+        .find(|(key, _)| *key == std::ffi::OsStr::new("PATH"))
+        .and_then(|(_, value)| value)
+        .and_then(std::ffi::OsStr::to_str)
+        .context("Native CLI PATH is unavailable")?;
+    fs::create_dir_all(cache_dir)?;
+    let path = cache_dir.join(format!(
+        "{}-{}.command",
+        kind.command(),
+        uuid::Uuid::new_v4()
+    ));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o700)
+        .open(&path)?;
+    writeln!(
+        file,
+        "#!/bin/sh\n# Authentication stays in the native CLI.\nPATH={}\nexport PATH\ncd \"$HOME\" || exit 1\nexec {} {}",
+        shell_quote(native_path),
+        shell_quote(executable),
+        args.iter()
+            .map(|arg| shell_quote(arg))
+            .collect::<Vec<_>>()
+            .join(" ")
+    )?;
+    Ok(Some(path))
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    struct Fixture(PathBuf);
+    impl Fixture {
+        fn new() -> Self {
+            let path =
+                std::env::temp_dir().join(format!("orbit-controls-{}", uuid::Uuid::new_v4()));
+            fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+        fn cli(&self, body: &str) -> PathBuf {
+            let path = self.0.join("native ' fixture");
+            fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+            path
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn codex_metadata_uses_rpc_auth_catalog_and_all_rate_limit_windows() {
+        let fixture = Fixture::new();
+        let cli=fixture.cli(r#"
+read -r initialize
+printf '%s\n' '{"id":0,"result":{"userAgent":"fixture"}}'
+read -r initialized
+read -r account
+read -r models
+read -r limits
+printf '%s\n' '{"id":2,"result":{"data":[{"id":"picker-id","model":"native-id","displayName":"Native model","hidden":false},{"model":"hidden-id","hidden":true}]}}'
+printf '%s\n' '{"id":1,"result":{"account":{"type":"chatgpt","email":"private@example.test","planType":"pro"}}}'
+printf '%s\n' '{"id":3,"result":{"rateLimits":{"primary":{"usedPercent":99}},"rateLimitsByLimitId":{"codex":{"primary":{"usedPercent":0,"windowDurationMins":300,"resetsAt":1800000000},"secondary":{"usedPercent":42,"windowDurationMins":10080}}}}}'
+"#);
+        let info = inspect(AgentKind::Codex, &cli, &fixture.0);
+        assert_eq!(info.auth, AuthState::VerifiedSignedIn);
+        assert_eq!(info.account.as_deref(), Some("pro"));
+        assert_eq!(
+            info.models,
+            vec![ModelChoice {
+                id: "native-id".into(),
+                label: "Native model".into()
+            }]
+        );
+        assert_eq!(info.limits.len(), 2);
+        assert_eq!(info.limits[0].used_percent, 0.);
+        assert_eq!(info.limits[1].duration_minutes, Some(10080));
+        assert!(!format!("{info:?}").contains("private@example"));
+        assert!(info.note.is_none());
+    }
+
+    #[test]
+    fn codex_catalogs_use_genuine_rpc_shapes_and_keep_project_scope() {
+        let fixture = Fixture::new();
+        for (kind, result, expected) in [
+            (
+                CatalogKind::Skills,
+                r#"{"data":[{"cwd":"/project","skills":[{"name":"review","enabled":true,"description":"Inspect a change"}]}]}"#,
+                "review",
+            ),
+            (
+                CatalogKind::Mcp,
+                r#"{"data":[{"name":"native-tools","authStatus":"oAuth","tools":{"inspect":{}}}]}"#,
+                "native-tools",
+            ),
+            (
+                CatalogKind::Plugins,
+                r#"{"marketplaces":[{"name":"local","plugins":[{"name":"helper","installed":true,"enabled":false}]}]}"#,
+                "helper",
+            ),
+            (
+                CatalogKind::Tools,
+                r#"{"data":[{"name":"native-tools","tools":{"inspect":{"description":"Inspect safely","inputSchema":{"properties":{"path":{"type":"string"}}}}}}]}"#,
+                "native-tools · inspect",
+            ),
+            (
+                CatalogKind::Hooks,
+                r#"{"data":[{"hooks":[{"eventName":"preToolUse","key":"check","enabled":true,"trustStatus":"trusted","handlerType":"command"}],"errors":[] }]}"#,
+                "preToolUse · check",
+            ),
+            (
+                CatalogKind::Apps,
+                r#"{"data":[{"name":"Connected app","isEnabled":true,"isAccessible":true,"description":"Native app"}],"nextCursor":null}"#,
+                "Connected app",
+            ),
+        ] {
+            let body = format!(
+                "read -r initialize\nprintf '%s\\n' '{{\"id\":0,\"result\":{{}}}}'\nread -r initialized\nread -r query\nprintf '%s\\n' '{{\"id\":1,\"result\":{result}}}'"
+            );
+            let cli = fixture.cli(&body);
+            let items = inspect_catalog(&cli, &fixture.0, kind).unwrap();
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0].label, expected);
+        }
+    }
+
+    #[test]
+    fn codex_rpc_partial_failures_preserve_successes_and_reject_invalid_quotas() {
+        let responses=[(1,serde_json::json!({"result":{"account":null}})),
+            (2,serde_json::json!({"result":{"data":[{"model":"real-model","displayName":"Real"}]}})),
+            (3,serde_json::json!({"error":{"message":"private-token"}}))].into_iter().collect();
+        let info = codex_snapshot(&responses);
+        assert_eq!(info.auth, AuthState::SignedOut);
+        assert_eq!(info.models.len(), 1);
+        assert!(info.note.unwrap().contains("rate limits"));
+        let responses=[(3,serde_json::json!({"result":{"rateLimits":{"primary":{"usedPercent":-1},"secondary":{"usedPercent":101}}}}))].into_iter().collect();
+        assert!(codex_snapshot(&responses).limits.is_empty());
+    }
+
+    #[test]
+    #[ignore = "Read-only installed Codex metadata probe; opt in explicitly"]
+    fn installed_codex_metadata_returns_native_catalog_and_account() {
+        let executable = std::env::var_os("CODE_METADATA_CLI")
+            .map(PathBuf::from)
+            .expect("CODE_METADATA_CLI");
+        let home = std::env::var_os("CODE_METADATA_HOME")
+            .map(PathBuf::from)
+            .expect("CODE_METADATA_HOME");
+        let info = codex_metadata(&executable, &home).unwrap();
+        assert!(
+            !info.models.is_empty(),
+            "installed model/list returned no models"
+        );
+        assert_ne!(
+            info.auth,
+            AuthState::Unknown,
+            "installed account/read returned no account state"
+        );
+        eprintln!(
+            "Native Codex metadata: {} models, {} limit windows; no account identifier logged",
+            info.models.len(),
+            info.limits.len()
+        );
+    }
+
+    #[test]
+    fn claude_catalog_uses_live_sdk_model_values_without_inference() {
+        let fixture = Fixture::new();
+        let cli=fixture.cli(r#"read -r initialize
+case "$initialize" in *'"subtype":"initialize"'*) ;; *) exit 8;; esac
+printf '%s\n' '{"type":"control_response","response":{"request_id":"code-models","subtype":"success","response":{"models":[{"value":"future-model","displayName":"Future"},{"value":"--invalid"},{"value":"future-model"}]}}}'
+if read -r unexpected_prompt; then
+printf '%s' "$unexpected_prompt" > unexpected-prompt
+fi
+"#);
+        let models = claude_models(&cli, &fixture.0).unwrap();
+        assert_eq!(
+            models,
+            vec![ModelChoice {
+                id: "future-model".into(),
+                label: "Future".into()
+            }]
+        );
+        assert!(!fixture.0.join("unexpected-prompt").exists());
+    }
+
+    #[test]
+    fn model_aliases_follow_installed_help_instead_of_a_static_vendor_list() {
+        assert_eq!(
+            advertised_model_names(
+                "--model <model> latest alias 'new-alias' or \"fresh-model\"; 'two words' and '--flag' rejected"
+            ),
+            ["new-alias", "fresh-model"]
+        );
+    }
+
+    #[test]
+    fn status_requires_native_evidence_and_never_treats_failures_as_signed_in() {
+        let output = |success, stdout: &str, stderr: &str| ProbeOutput {
+            success,
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: stderr.as_bytes().to_vec(),
+        };
+        assert_eq!(
+            auth_state(
+                AgentKind::Codex,
+                &output(true, "", "Logged in using ChatGPT")
+            ),
+            AuthState::VerifiedSignedIn
+        );
+        assert_eq!(
+            auth_state(AgentKind::Codex, &output(false, "", "Not logged in")),
+            AuthState::SignedOut
+        );
+        assert_eq!(
+            auth_state(AgentKind::Codex, &output(false, "Logged in", "failed")),
+            AuthState::Unknown
+        );
+        assert_eq!(
+            auth_state(AgentKind::Claude, &output(true, r#"{"loggedIn":true}"#, "")),
+            AuthState::VerifiedSignedIn
+        );
+        assert_eq!(
+            auth_state(
+                AgentKind::Claude,
+                &output(false, r#"{"loggedIn":false}"#, "")
+            ),
+            AuthState::SignedOut
+        );
+        assert_eq!(
+            auth_state(
+                AgentKind::Cursor,
+                &output(
+                    true,
+                    r#"{"status":"unauthenticated","isAuthenticated":false}"#,
+                    ""
+                )
+            ),
+            AuthState::SignedOut
+        );
+        assert_eq!(
+            auth_state(
+                AgentKind::Cursor,
+                &output(
+                    true,
+                    r#"{"status":"authenticated","isAuthenticated":true}"#,
+                    ""
+                )
+            ),
+            AuthState::VerifiedSignedIn
+        );
+        assert_eq!(
+            auth_state(AgentKind::OpenCode, &output(true, "└  2 credentials\n", "")),
+            AuthState::Configured
+        );
+        assert_eq!(
+            auth_state(AgentKind::OpenCode, &output(true, "└  0 credentials\n", "")),
+            AuthState::SignedOut
+        );
+        assert_eq!(
+            auth_state(
+                AgentKind::OpenCode,
+                &output(true, "└  0 credentials\n└  1 environment variable\n", "")
+            ),
+            AuthState::Configured
+        );
+        assert_eq!(
+            auth_state(
+                AgentKind::OpenCode,
+                &output(false, "└  2 credentials\n", "")
+            ),
+            AuthState::Unknown
+        );
+    }
+
+    #[test]
+    fn bounded_probe_times_out_and_kills_descendants_holding_pipes() {
+        let fixture = Fixture::new();
+        let cli = fixture.cli("sleep 30 &\nwait");
+        let start = Instant::now();
+        let error = probe(&cli, &[], &fixture.0, Duration::from_millis(70))
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("timed out"));
+        assert!(start.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn probe_output_is_bounded_and_sensitive_diagnostics_do_not_escape() {
+        let fixture = Fixture::new();
+        let cli = fixture.cli("while :; do printf 'private-secret-00000000000000000000000000000000000000000000000000000'; done");
+        // Deadline behavior has a separate test. Leave scheduling headroom
+        // while this test competes with large history fixtures.
+        let error = probe(&cli, &[], &fixture.0, Duration::from_secs(5))
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("output limit"));
+        assert!(!error.to_string().contains("private-secret"));
+        let cli = fixture.cli("printf 'private-secret' >&2\nexit 7");
+        let info = inspect(AgentKind::Codex, &cli, &fixture.0);
+        assert_eq!(info.auth, AuthState::Unknown);
+        assert!(!format!("{info:?}").contains("private-secret"));
+    }
+
+    #[test]
+    fn cursor_signed_out_does_not_initiate_model_login() {
+        let fixture = Fixture::new();
+        let cli = fixture.cli("if [ \"$1\" = status ]; then printf '{\"status\":\"unauthenticated\"}'; else printf 'unexpected command' > marker; fi");
+        let info = inspect(AgentKind::Cursor, &cli, &fixture.0);
+        assert_eq!(info.auth, AuthState::SignedOut);
+        assert!(info.models.is_empty());
+        assert!(!fixture.0.join("marker").exists());
+    }
+
+    #[test]
+    fn only_visible_native_models_are_imported_with_ids_and_bounds() {
+        let fixture = Fixture::new();
+        fs::create_dir_all(fixture.0.join(".codex")).unwrap();
+        fs::write(fixture.0.join(".codex/models_cache.json"), r#"{"models":[{"slug":"native-model","display_name":"Native Model","visibility":"list"},{"slug":"hidden-model","visibility":"hide"},{"slug":"--invalid"},{"slug":"native-model"}]}"#).unwrap();
+        let cli = fixture.cli("printf 'Logged in' >&2");
+        let info = inspect(AgentKind::Codex, &cli, &fixture.0);
+        assert_eq!(info.auth, AuthState::Unknown);
+        assert!(info.note.as_ref().unwrap().contains("local model catalog"));
+        assert_eq!(
+            info.models,
+            vec![ModelChoice {
+                id: "native-model".into(),
+                label: "Native Model".into()
+            }]
+        );
+        let bytes = (0..200)
+            .map(|i| format!("provider/model-{i}\n"))
+            .collect::<String>();
+        assert_eq!(
+            catalog_lines(AgentKind::OpenCode, bytes.as_bytes()).len(),
+            MODEL_LIMIT
+        );
+        assert_eq!(
+            catalog_lines(
+                AgentKind::Grok,
+                b"Default model: grok-current\n  * grok-current (default)\n  - grok-other\n"
+            )
+            .len(),
+            2
+        );
+        assert_eq!(
+            catalog_lines(
+                AgentKind::Cursor,
+                b"Available models\n\x1b[32mmodel-id\x1b[0m - Model name\nTip: use --model\n"
+            )[0]
+            .id,
+            "model-id"
+        );
+    }
+
+    #[test]
+    fn gemini_and_agy_use_only_configured_models_without_auth_probes() {
+        let fixture = Fixture::new();
+        fs::create_dir_all(fixture.0.join(".gemini/antigravity-cli")).unwrap();
+        fs::write(
+            fixture.0.join(".gemini/settings.json"),
+            r#"{"model":{"name":"native-gemini"}}"#,
+        )
+        .unwrap();
+        fs::write(
+            fixture.0.join(".gemini/antigravity-cli/settings.json"),
+            r#"{"model":"native-agy"}"#,
+        )
+        .unwrap();
+        let cli = fixture.cli("touch marker");
+        for (kind, id) in [
+            (AgentKind::Gemini, "native-gemini"),
+            (AgentKind::Antigravity, "native-agy"),
+        ] {
+            let info = inspect(kind, &cli, &fixture.0);
+            assert_eq!(info.auth, AuthState::Unknown);
+            assert_eq!(info.models[0].id, id);
+        }
+        assert!(!fixture.0.join("marker").exists());
+    }
+
+    #[test]
+    fn login_scripts_quote_paths_remain_private_and_preserve_verified_accounts() {
+        let fixture = Fixture::new();
+        let cli = fixture.cli("printf '%s\\n' \"$@\"");
+        assert!(
+            login_script(
+                AgentKind::Codex,
+                &cli,
+                &fixture.0,
+                AuthState::VerifiedSignedIn
+            )
+            .unwrap()
+            .is_none()
+        );
+        let script = login_script(AgentKind::Claude, &cli, &fixture.0, AuthState::SignedOut)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            fs::metadata(&script).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        let output = Command::new(&script).output().unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"auth\nlogin\n");
+        assert!(!fs::read_to_string(&script).unwrap().contains("logout"));
+    }
+    #[test]
+    fn partial_metadata_survives_malformed_later_records_and_missing_rpc_results() {
+        let fixture = Fixture::new();
+        let cli = fixture.cli(r#"read -r initialize
+printf '%s\n' '{"id":0,"result":{}}'
+read -r initialized
+read -r account
+read -r models
+read -r limits
+printf '%s\n' '{"id":1,"result":{"account":{"type":"chatgpt","planType":"pro"}}}' '{"id":2,"result":{"data":[{"model":"native-model"}]}}' 'not JSON' '{"id":3,"result":null}'
+"#);
+        let info = inspect(AgentKind::Codex, &cli, &fixture.0);
+        assert_eq!(info.auth, AuthState::VerifiedSignedIn);
+        assert_eq!(info.models.len(), 1);
+        assert!(info.limits.is_empty());
+        assert!(info.note.unwrap().contains("rate limits"));
+        let partial = codex_snapshot(&[(1,serde_json::json!({"result":{"account":{"type":"chatgpt","planType":""}}})),(3,serde_json::json!({"result":{"rateLimits":{"primary":null,"secondary":{"usedPercent":0,"resetsAt":1800000000}}}}))].into_iter().collect());
+        assert!(partial.account.is_none());
+        assert_eq!(partial.limits.len(), 1);
+        assert_eq!(partial.limits[0].resets_at, Some(1800000000));
+    }
+}

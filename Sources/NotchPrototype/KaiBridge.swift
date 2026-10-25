@@ -21,8 +21,18 @@ struct KaiActiveTask: Decodable, Equatable {
 struct KaiFinishedTask:Decodable,Equatable {let id:String;var runId:String?=nil}
 struct KaiReasoningOption: Decodable { let reasoningEffort: String }
 struct KaiModel: Decodable { let model: String; let displayName: String; let supportedReasoningEfforts: [KaiReasoningOption] }
+struct KaiAgent:Decodable {let id:String;let name:String;let available:Bool}
 struct KaiCodeConnectionState:Decodable {let connected:Bool;let enabled:Bool;let error:String?}
 struct KaiState: Decodable {
+    let nativeReview:KaiNativeReview?
+    let ownerToken:String?
+    let composerDraft:String?
+    let agents:[KaiAgent]?
+    let selectedAgent:String?
+    let workspaceVoiceChoice:String?
+    let workspaceVoiceScene:String?
+    let workspaceVoiceLevels:[CGFloat]?
+    let workspaceVoiceActive:Bool?
     let voice:KaiVoiceState?
     let sessionActivity:KaiActivity?
     let codeAcceptedRequestId:String?
@@ -130,6 +140,10 @@ enum KaiBridgeEvent {
     private let writeQueue=DispatchQueue(label:"kai.bridge-write",qos:.userInitiated)
     private let audioWrites=DispatchSemaphore(value:16)
     private let decodeQueue=DispatchQueue(label:"kai.state-decode",qos:.userInitiated)
+    var draftBaseProvider:(()->String)?
+    var draftProvider:(()->String)?
+    private var ownerToken:String?
+    private var selectedRunID:String?
     private var selectedThreadID:String?
     private var generation = UUID()
     private var stopping = false
@@ -139,6 +153,11 @@ enum KaiBridgeEvent {
     private var lastStderr = ""
 
     func start() {
+        if EmbeddedCodeRuntime.shared.active {
+            EmbeddedCodeRuntime.shared.onState={ [weak self] state in self?.selectedThreadID=state.threadId;self?.selectedRunID=state.activeTurnId;self?.ownerToken=state.ownerToken;self?.onState?(state) }
+            EmbeddedCodeRuntime.shared.onError={ [weak self] in self?.onError?($0) }
+            return
+        }
         guard !stopping,process?.isRunning != true else { return }
         retryWork?.cancel(); retryWork = nil
         launch()
@@ -238,6 +257,18 @@ enum KaiBridgeEvent {
     }
 
     func send(_ action: String, _ fields: [String: Any] = [:]) {
+        if EmbeddedCodeRuntime.shared.active {
+            var request=fields;request["action"]=action
+            for (key,value) in DefaultModelPreferences(defaults:.standard).fields(action:action){request[key]=value}
+            if (request["requestId"] as? String ?? "").isEmpty{request["requestId"]=UUID().uuidString}
+            request["ownerToken"]=ownerToken
+            request["draftBase"]=draftBaseProvider?()
+            if action == "interrupt"{request["runId"]=selectedRunID}
+            if ["chat","project","new","new_project","workspace_expand"].contains(action){request["draft"]=draftProvider?() ?? ""}
+            if request["targetThreadId"] == nil{request["targetThreadId"]=selectedThreadID}
+            if let data=try? JSONSerialization.data(withJSONObject:request){EmbeddedCodeRuntime.shared.send(data)}
+            return
+        }
         guard process?.isRunning == true,let input else { onError?("Kai is reconnecting; your prompt is preserved"); return }
         var request = fields
         for (key,value) in DefaultModelPreferences(defaults:.standard).fields(action:action){request[key]=value}

@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 18" width="112" height="72" role="img" aria-label="files indicator">
+  <defs><linearGradient id="paint" x1="0" y1="0" x2="28" y2="18" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#fafafa"/><stop offset="0.5" stop-color="#d5d6d8"/><stop offset="1" stop-color="#8a8d92"/></linearGradient></defs>
+  <rect transform="translate(4.000 10.000) rotate(-0.000) translate(-0.750 -5.500)" width="1.500" height="11.000" rx="0.750" fill="url(#paint)" opacity="1.000"/>
+  <rect transform="translate(24.000 10.000) rotate(-0.000) translate(-0.750 -5.500)" width="1.500" height="11.000" rx="0.750" fill="url(#paint)" opacity="1.000"/>
+  <rect transform="translate(14.000 15.500) rotate(-0.000) translate(-10.500 -0.750)" width="21.000" height="1.500" rx="0.750" fill="url(#paint)" opacity="1.000"/>
+  <rect transform="translate(15.500 4.500) rotate(-0.000) translate(-9.000 -0.750)" width="18.000" height="1.500" rx="0.750" fill="url(#paint)" opacity="1.000"/>
+  <rect transform="translate(8.000 2.500) rotate(-0.000) translate(-4.000 -0.750)" width="8.000" height="1.500" rx="0.750" fill="url(#paint)" opacity="1.000"/>
+  <rect transform="translate(11.000 10.000) rotate(-0.000) translate(-0.600 -3.000)" width="1.200" height="6.000" rx="0.600" fill="url(#paint)" opacity="1.000"/>
+  <rect transform="translate(15.000 9.000) rotate(-0.000) translate(-0.600 -3.500)" width="1.200" height="7.000" rx="0.600" fill="url(#paint)" opacity="1.000"/>
+  <rect transform="translate(19.000 10.000) rotate(-0.000) translate(-0.600 -2.500)" width="1.200" height="5.000" rx="0.600" fill="url(#paint)" opacity="1.000"/>
+</svg>

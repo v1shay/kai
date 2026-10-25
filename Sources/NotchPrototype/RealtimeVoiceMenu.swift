@@ -31,6 +31,7 @@ enum RealtimeVoiceChoice:String,CaseIterable {
         hint.isEnabled=false
         refresh()
     }
+    func synchronize(_ raw:String){guard let voice=RealtimeVoiceChoice(rawValue:raw),voice != selection else{return};defaults.set(raw,forKey:Self.key);refresh()}
     private func refresh(){
         for item in menu.items {
             item.state=(item.representedObject as? String) == selection.rawValue ? .on:.off

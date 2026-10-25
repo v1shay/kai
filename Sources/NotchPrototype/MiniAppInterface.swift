@@ -197,6 +197,8 @@ private final class AttachmentLayer:CALayer {
     var onSettings: ((String,String)->Void)?
     var onNavigate: ((String)->Void)?
     var onContextMode: ((Bool)->Void)?
+    var onAgent:((String)->Void)?
+    var onWorkspace:(()->Void)?
     var onVoice:(()->Void)?
     var onFocusComposer:(()->Void)?
     private let voiceButton=CATextLayer()
@@ -409,7 +411,7 @@ private final class AttachmentLayer:CALayer {
             let frame=inMain(rect.offsetBy(dx:actionBar.frame.minX,dy:actionBar.frame.minY))
             add(frame,limit:main.frame){[self] in
                 beginPending(frame)
-                switch id {case "back":onNavigate?("back");case "forward":onNavigate?("forward");case "new":onNew?();case "approve":onApprove?();case "reject":onReject?();case "interrupt":onInterrupt?();default:cancelPending()}
+                switch id {case "back":onNavigate?("back");case "forward":onNavigate?("forward");case "workspace":onWorkspace?();case "new":onNew?();case "approve":onApprove?();case "reject":onReject?();case "interrupt":onInterrupt?();default:cancelPending()}
             }
         }
         if previewOpen {
@@ -561,13 +563,13 @@ private final class AttachmentLayer:CALayer {
         let model=state.models?.first{$0.model == state.selectedModel}
         let name=model?.displayName ?? state.selectedModel ?? "Models unavailable"
         let effort=state.reasoningEffort ?? "Effort"
-        let key=[String(Double(settingsBar.bounds.width)),name,effort,String(lightweightContext),String(state.threadId?.hasPrefix("code:") == true),String(Double(renderingScale))]
+        let key=[state.selectedAgent ?? "",String(Double(settingsBar.bounds.width)),name,effort,String(lightweightContext),String(state.threadId?.hasPrefix("code:") == true),String(Double(renderingScale))]
         guard key != settingsLayoutKey else{return};settingsLayoutKey=key
         settingsBar.sublayers?.forEach{$0.removeFromSuperlayer()};settingsHits.removeAll()
         var x:CGFloat=0
         let codeView=state.threadId?.hasPrefix("code:") == true
         let contextTitle=lightweightContext ? "Context: light":"Context: screen"
-        let settings=codeView ? [("model",name),("context",contextTitle)]:[("model",name),("effort",effort),("context",contextTitle)]
+        let settings=EmbeddedCodeRuntime.shared.active ? [("agent",state.agents?.first{$0.id == state.selectedAgent}?.name ?? "Agent"),("model",name),("context",contextTitle)]:codeView ? [("model",name),("context",contextTitle)]:[("model",name),("effort",effort),("context",contextTitle)]
         for (id,text) in settings {
             let width=min(id == "model" ? 100: id == "effort" ? 48:80, min(CGFloat(text.count)*4.5+9,max(0,settingsBar.bounds.width-x)))
             guard width>16 else{break}
@@ -578,12 +580,19 @@ private final class AttachmentLayer:CALayer {
             let levels=["none","minimal","low","medium","high","xhigh","max","ultra"]
             let intensity=CGFloat(levels.firstIndex(of:effort) ?? 3)/7
             gradient.colors=(id == "effort" ? [NSColor.white.withAlphaComponent(0.45+intensity*0.55),NSColor.systemPurple.withAlphaComponent(0.4+intensity*0.6),NSColor.systemPink.withAlphaComponent(0.4+intensity*0.6)]:colors).map(\.cgColor)
-            settingsBar.addSublayer(gradient);if !codeView || id == "context"{settingsHits.append((gradient.frame,id))};x+=width+6
+            settingsBar.addSublayer(gradient);if EmbeddedCodeRuntime.shared.active || !codeView || id == "context"{settingsHits.append((gradient.frame,id))};x+=width+6
         }
     }
     private func showSettingsMenu(_ kind:String) {
         guard let state=modelState,let models=state.models else{return}
         let menu=NSMenu()
+        if kind == "agent" {
+            for agent in state.agents ?? [] {
+                let item=menu.addItem(withTitle:agent.name,action:#selector(selectAgent(_:)),keyEquivalent:"")
+                item.target=self;item.representedObject=agent.id;item.isEnabled=agent.available;item.state=agent.id == state.selectedAgent ? .on:.off
+            }
+            menu.popUp(positioning:nil,at:NSEvent.mouseLocation,in:nil);return
+        }
         if kind == "model" {
             for model in models {
                 let item=menu.addItem(withTitle:model.displayName,action:#selector(selectSetting(_:)),keyEquivalent:"");item.target=self;item.representedObject=[model.model,state.reasoningEffort ?? ""];item.state=model.model == state.selectedModel ? .on:.off
@@ -595,13 +604,21 @@ private final class AttachmentLayer:CALayer {
         }
         menu.popUp(positioning:nil,at:NSEvent.mouseLocation,in:nil)
     }
+    @objc private func selectAgent(_ item:NSMenuItem){if let id=item.representedObject as? String{onAgent?(id)}}
     @objc private func selectSetting(_ item:NSMenuItem) {guard let values=item.representedObject as? [String],values.count == 2 else{return};onSettings?(values[0],values[1])}
 
     private func layoutActions(){
         let key=[String(Double(actionBar.bounds.width)),String(modelState?.canGoBack == true),String(modelState?.canGoForward == true),String(approvalNeeded),String(turnActive),String(modelState?.threadId?.hasPrefix("code:") == true),String(Double(renderingScale))]
         guard key != actionsLayoutKey else{return};actionsLayoutKey=key
         actionBar.sublayers?.forEach{$0.removeFromSuperlayer()};actionHits.removeAll();var x:CGFloat=0
-        let actions:[(String,String)]=((modelState?.canGoBack == true ? [("back","‹")]:[])+(modelState?.canGoForward == true ? [("forward","›")]:[]))+(approvalNeeded ? [("approve","Approve"),("reject","Reject")]:[])+(turnActive ? [("interrupt","Stop")]:[])+[("new",modelState?.threadId?.hasPrefix("code:") == true ? "+ Codex chat":"+ New")]
+        var actions=[(String,String)]()
+        if EmbeddedCodeRuntime.shared.active{actions.append(("workspace","↗ IDE"))}
+        if modelState?.canGoBack == true{actions.append(("back","‹"))}
+        if modelState?.canGoForward == true{actions.append(("forward","›"))}
+        if approvalNeeded{actions += [("approve","Approve"),("reject","Reject")]}
+        if turnActive{actions.append(("interrupt","Stop"))}
+        let externalCode = !EmbeddedCodeRuntime.shared.active && modelState?.threadId?.hasPrefix("code:") == true
+        actions.append(("new",externalCode ? "+ Codex chat":"+ New"))
         for (id,title) in actions {let width=CGFloat(title.count)*5+10;if x+width>actionBar.bounds.width{break};let item=label(title,7.5,.white.withAlphaComponent(0.74),.medium);item.frame=CGRect(x:x+4,y:1,width:width-8,height:11);actionBar.addSublayer(item);actionHits.append((CGRect(x:x,y:0,width:width,height:13),id));x+=width+3}
     }
     func previewFile(_ url:URL){openPreview(url)}

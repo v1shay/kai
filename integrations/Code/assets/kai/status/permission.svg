@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 18" width="112" height="72" role="img" aria-label="permission indicator">
+  <defs><linearGradient id="paint" x1="0" y1="0" x2="28" y2="18" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#fafafa"/><stop offset="0.5" stop-color="#d5d6d8"/><stop offset="1" stop-color="#8a8d92"/></linearGradient></defs>
+  <g transform="translate(14.000 7.500) rotate(-0.000) translate(-5.000 -5.500)" opacity="1.000"><path transform="translate(0 11.000) scale(1 -1)" d="M 1.000 7.920 C 1.600 11.000, 4.600 11.000, 5.200 10.560 C 7.800 10.340, 9.000 9.020, 8.800 7.260 C 8.600 5.500, 5.300 5.940, 5.000 4.180 L 5.000 2.420" fill="none" stroke="url(#paint)" stroke-width="1.900" stroke-linecap="round" stroke-linejoin="round"/></g>
+  <rect transform="translate(14.000 14.500) rotate(-0.000) translate(-1.200 -1.200)" width="2.400" height="2.400" rx="1.200" fill="url(#paint)" opacity="1.000"/>
+</svg>
