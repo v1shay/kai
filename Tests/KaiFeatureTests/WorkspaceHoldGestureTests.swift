@@ -2,6 +2,17 @@ import XCTest
 @testable import NotchPrototype
 
 final class WorkspaceHoldGestureTests:XCTestCase {
+    func testDoubleCommandDismissesAnyVisibleSurfaceAndRequiresRelease(){
+        var gesture=ModifierDoubleTap()
+        XCTAssertFalse(gesture.update(down:true,eligible:true,at:1))
+        XCTAssertFalse(gesture.update(down:true,eligible:true,at:1.1))
+        XCTAssertFalse(gesture.update(down:false,eligible:true,at:1.15))
+        XCTAssertTrue(gesture.update(down:true,eligible:true,at:1.2))
+        gesture.cancel();XCTAssertFalse(gesture.update(down:true,eligible:true,at:2))
+        XCTAssertFalse(gesture.update(down:false,eligible:false,at:2.1))
+        XCTAssertFalse(gesture.update(down:true,eligible:true,at:2.2))
+    }
+
     func testOneContinuousHoldOpensMiniThenWorkspaceOnlyOnce(){
         var hold=WorkspaceHoldGesture();hold.begin(at:10,workspace:false)
         XCTAssertNil(hold.advance(at:10.99));XCTAssertEqual(hold.advance(at:11),.mini)
@@ -30,7 +41,7 @@ final class WorkspaceHoldGestureTests:XCTestCase {
         let morph=WorkspaceMorph(),notch=CGRect(x:500,y:800,width:400,height:300)
         morph.expand(window,from:notch);morph.collapse(window,to:notch){}
         morph.expand(window,from:notch)
-        try await Task.sleep(nanoseconds:900_000_000)
+        try await Task.sleep(nanoseconds:1_100_000_000)
         XCTAssertTrue(morph.expanded);XCTAssertFalse(morph.transitioning);XCTAssertTrue(window.isVisible);XCTAssertEqual(window.alphaValue,1)
         morph.collapse(window,to:notch){}
         try await Task.sleep(nanoseconds:800_000_000)

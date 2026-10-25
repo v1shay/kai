@@ -70,6 +70,7 @@ mod theme_controls;
 mod ui_tests;
 mod unified;
 mod text_decode;
+mod workspace_motion;
 mod usage;
 mod voice;
 mod voice_bridge;
@@ -4614,7 +4615,7 @@ impl Orbit {
             if row.role.as_deref().is_some_and(|role|role.starts_with("user")){return None}
             match &row.block{MessageBlock::Paragraph(text)|MessageBlock::Heading(text)|MessageBlock::Quote(text)|MessageBlock::RichParagraph{text,..}|MessageBlock::ListItem{text,..}=>Some(text.clone()),_=>None}
         });
-        let decoded=if unified::decode_enabled(self.motion){decode_source.as_ref().map(|source|{
+        let decoded=if unified::decode_enabled(self.motion)&&unified::workspace_frame(self.motion).content_visible(){decode_source.as_ref().map(|source|{
             let (frame,active)=self.unified_text_decode.frame(ix,source,Instant::now());if active{window.request_animation_frame();}frame
         })}else{None};
         let Some(row) = self.rows.get(ix) else {
@@ -5381,6 +5382,9 @@ impl Orbit {
 }
 impl Render for Orbit {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        use workspace_motion::Part as WorkspacePart;
+        let entrance=unified::workspace_frame(self.motion);
+        if entrance.animating(){request_motion_frame(window,cx);}
         let broker_project = self
             .broker_panel
             .as_ref()
@@ -5700,6 +5704,7 @@ impl Render for Orbit {
             }))
             .on_action(cx.listener(|this, _: &Send, window, cx| this.send(window, cx)))
             .on_action(cx.listener(|this, _: &CloseWindow, window, cx| {
+                if unified::active(){unified::dismiss();return}
                 this.stop_dictation(cx);
                 this.stop_voice(cx);
                 this.window_state = Some(workspace_ui::capture_window(window));
@@ -5713,7 +5718,7 @@ impl Render for Orbit {
             .on_action(cx.listener(|_, _: &MinimizeWindow, window, _| window.minimize_window()))
             .when(self.sidebar_width > 0., |s| {
                 s.child(
-                    div()
+                    entrance.container(WorkspacePart::Sidebar)
                         .w(px(self.sidebar_width))
                         .h_full()
                         .overflow_hidden()
@@ -5727,7 +5732,7 @@ impl Render for Orbit {
                     && (!inspector_open || window.viewport_size().width >= px(1180.)),
                 |s| {
                     s.child(
-                        div()
+                        entrance.container(WorkspacePart::Sidebar)
                             .w(px(260. * self.sidebar_layout_progress()))
                             .opacity(self.sidebar_layout_progress())
                             .h_full()
@@ -5749,9 +5754,9 @@ impl Render for Orbit {
                     .relative()
                     .overflow_hidden()
                     .child(div().absolute().inset_0().child(self.background.clone()))
-                    .child(self.tabs(cx))
+                    .child(entrance.container(WorkspacePart::Header).flex_none().child(self.tabs(cx)))
                     .child(
-                        div()
+                        entrance.container(WorkspacePart::Header)
                             .h(px(36.))
                             .flex_none()
                             .flex()
@@ -5965,10 +5970,10 @@ impl Render for Orbit {
                             )
                         },
                     )
-                    .when(self.active.is_none(), |s| s.child(self.home(cx)))
+                    .when(self.active.is_none(), |s| s.child(entrance.container(WorkspacePart::Content).flex_1().min_h(px(0.)).child(self.home(cx))))
                     .when(self.active.is_some(), |s| {
                         s.child(
-                            div()
+                            entrance.container(WorkspacePart::Content)
                                 .flex_1()
                                 .min_h(px(0.))
                                 .w_full()
@@ -6006,8 +6011,7 @@ impl Render for Orbit {
                                         .w(px(28.))
                                         .h(px(18.))
                                         .flex_none()
-                                        .when(unified::active() && self.speech.is_none() && self.voice_call.is_none() && waiting_for_native.is_none(),|s|s.child(icon(agent_icon(self.agent),18.,agent_color(self.agent))))
-                                        .when(!unified::active() || self.speech.is_some() || self.voice_call.is_some() || waiting_for_native.is_some(),|s|s.child(self.live_indicator.clone())),
+                                        .child(self.live_indicator.clone()),
                                 )
                                 .child(
                                     div()
@@ -6039,7 +6043,7 @@ impl Render for Orbit {
                                 ),
                         )
                     })
-                    .child(self.composer(window, cx))
+                    .child(entrance.container(WorkspacePart::Composer).flex_none().child(self.composer(window, cx)))
                     .when(self.terminal_visible, |s| {
                         s.when_some(self.terminal_panel.clone(), |s, panel| s.child(panel))
                     }),
@@ -6047,7 +6051,7 @@ impl Render for Orbit {
             .when(self.files_visible, |s| {
                 s.when_some(self.file_browser.clone(), |s, browser| {
                     s.child(
-                        div()
+                        entrance.container(WorkspacePart::Inspector)
                             .debug_selector(|| "files-inspector".into())
                             .w(px(360.))
                             .h_full()
@@ -6088,7 +6092,7 @@ impl Render for Orbit {
             })
             .when_some(self.diff_view.clone(), |s, review| {
                 s.child(
-                    div()
+                    entrance.container(WorkspacePart::Inspector)
                         .debug_selector(|| "changes-inspector".into())
                         .w(px(440. * diff_progress))
                         .h_full()

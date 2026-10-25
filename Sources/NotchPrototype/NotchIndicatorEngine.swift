@@ -41,6 +41,7 @@ struct GradientStop: Decodable { let location: Double, color: String }
     private let content = CALayer(), maskLayer = CALayer(), base = CAGradientLayer(), shine = CAGradientLayer(), fileBase = CAGradientLayer(), fileShine = CAGradientLayer(), fileMask = FileGlyphLayer()
     private let softAccent=CALayer(), softLeftAccent=CALayer(), compactAccent=CALayer(), compactLeftAccent=CALayer(), accentMaskLayer=CAGradientLayer(), leftAccentMaskLayer=CAGradientLayer(), compactMaskLayer=CALayer(), compactLeftMaskLayer=CALayer()
     private let integrationMask=CALayer()
+    private var retiringMask:CALayer?
     private let primitives = (0..<8).map { _ in CAShapeLayer() }, meter = VoiceMeter()
     private let centers: [CGFloat] = [3.5, 10.5, 17.5, 24.5]
     private var poses = IndicatorScenes.listening.firstPoses
@@ -67,6 +68,7 @@ struct GradientStop: Decodable { let location: Double, color: String }
         softAccent.mask=accentMaskLayer; softLeftAccent.mask=leftAccentMaskLayer; compactAccent.mask=compactMaskLayer; compactLeftAccent.mask=compactLeftMaskLayer
         accentLayer.addSublayer(softAccent); accentLayer.addSublayer(compactAccent); leftAccentLayer.addSublayer(softLeftAccent); leftAccentLayer.addSublayer(compactLeftAccent)
         softAccent.opacity=0; softLeftAccent.opacity=0
+        base.colors=[NSColor.white.cgColor,NSColor.white.cgColor]
         layer.addSublayer(content); content.addSublayer(base); content.addSublayer(shine); content.mask = maskLayer
         fileLayer.addSublayer(fileBase); fileLayer.addSublayer(fileShine); fileLayer.mask=fileMask
         primitives.forEach { maskLayer.addSublayer($0) };maskLayer.addSublayer(integrationMask);integrationMask.isHidden=true
@@ -146,9 +148,15 @@ struct GradientStop: Decodable { let location: Double, color: String }
     func showScene(_ id: String,looping:Bool=true) {
         cancelCycle()
         if let image=ProviderIcons.image(id) ?? IntegrationIcons.image(id) {
+            let old=CALayer()
+            for primitive in primitives where !primitive.isHidden{
+                let source=primitive.presentation() ?? primitive,copy=CAShapeLayer();copy.bounds=source.bounds;copy.position=source.position;copy.path=source.path;copy.fillColor=source.fillColor;copy.strokeColor=source.strokeColor;copy.lineWidth=source.lineWidth;copy.opacity=source.opacity;copy.transform=source.transform;old.addSublayer(copy)
+            }
+            retire(old)
             displayScene("tool",looping:looping);primitives.forEach{$0.isHidden=true}
             integrationMask.frame=CGRect(x:5,y:0,width:18,height:18)
             integrationMask.contents=image.cgImage(forProposedRect:nil,context:nil,hints:nil);integrationMask.isHidden=false
+            let fade=CABasicAnimation(keyPath:"opacity");fade.fromValue=0;fade.toValue=1;fade.duration=0.24;integrationMask.add(fade,forKey:"providerIn")
         }else{displayScene(id,looping:looping)}
     }
 
@@ -166,7 +174,18 @@ struct GradientStop: Decodable { let location: Double, color: String }
         DispatchQueue.main.asyncAfter(deadline: .now()+delay) { [weak self] in self?.runCycle(ids, index:index+1, token:token) }
     }
 
-    private func cancelCycle() { cycleToken += 1;integrationMask.isHidden=true;primitives.forEach{$0.isHidden=false} }
+    private func retire(_ previous:CALayer){
+        retiringMask?.removeFromSuperlayer();retiringMask=previous;maskLayer.addSublayer(previous)
+        let fade=CABasicAnimation(keyPath:"opacity");fade.fromValue=1;fade.toValue=0;fade.duration=0.24;fade.fillMode = .forwards;fade.isRemovedOnCompletion=false;previous.add(fade,forKey:"providerOut")
+        DispatchQueue.main.asyncAfter(deadline:.now()+0.25){[weak self,weak previous] in previous?.removeFromSuperlayer();if self?.retiringMask === previous{self?.retiringMask=nil}}
+    }
+    private func cancelCycle(){
+        cycleToken += 1
+        if !integrationMask.isHidden,let contents=integrationMask.contents{
+            let previous=CALayer();previous.frame=integrationMask.frame;previous.contents=contents;retire(previous)
+        }
+        integrationMask.isHidden=true;primitives.forEach{$0.isHidden=false}
+    }
 
     private func displayScene(_ id: String,looping:Bool=true) {
         guard let scene = IndicatorScenes.all[id] else { return }

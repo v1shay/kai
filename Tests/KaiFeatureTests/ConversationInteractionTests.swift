@@ -24,6 +24,14 @@ final class ConversationInteractionTests:XCTestCase {
         _=renderer.render([message],threadID:"thread",in:view,scroll:scroll,renderMath:false,palette:[.systemPink])
         let range=(view.string as NSString).range(of:"Webby-research-report.md")
         XCTAssertNotEqual(range.location,NSNotFound)
+        XCTAssertEqual(view.textStorage?.attribute(.underlineStyle,at:range.location,effectiveRange:nil) as? Int,NSUnderlineStyle.single.rawValue)
+        let label=(view.string as NSString).substring(to:range.location)
+        if let attachment=label.range(of:"\u{fffc}",options:.backwards){
+            let index=(label[..<attachment.lowerBound] as NSString).length
+            XCTAssertNil(view.textStorage?.attribute(.underlineStyle,at:index,effectiveRange:nil))
+            XCTAssertNil(view.textStorage?.attribute(.underlineStyle,at:index+1,effectiveRange:nil))
+            XCTAssertNotNil(view.textStorage?.attribute(.link,at:index,effectiveRange:nil))
+        }
         XCTAssertFalse(view.string.contains("Application Support"))
         let url=try XCTUnwrap(view.textStorage?.attribute(.link,at:range.location,effectiveRange:nil) as? URL)
         XCTAssertTrue(url.isFileURL)
@@ -37,6 +45,15 @@ final class ConversationInteractionTests:XCTestCase {
             XCTAssertEqual(URLComponents(url:link,resolvingAgainstBaseURL:false)?.queryItems?.first{$0.name == "path"}?.value,path)
         }
         XCTAssertEqual(view.textStorage?.attribute(.toolTip,at:range.location,effectiveRange:nil) as? String,path)
+        if let directory=ProcessInfo.processInfo.environment["KAI_UI_FIXES_RENDER"]{
+            try FileManager.default.createDirectory(atPath:directory,withIntermediateDirectories:true)
+            view.linkTextAttributes=[.cursor:NSCursor.pointingHand]
+            view.drawsBackground=true;view.backgroundColor = .black;view.textContainerInset=CGSize(width:12,height:12)
+            view.textContainer?.replaceLayoutManager(InteractionLayoutManager());view.layoutManager?.ensureLayout(for:view.textContainer!)
+            let bitmap=try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes:nil,pixelsWide:900,pixelsHigh:900,bitsPerSample:8,samplesPerPixel:4,hasAlpha:true,isPlanar:false,colorSpaceName:.deviceRGB,bytesPerRow:0,bitsPerPixel:0));bitmap.size=view.bounds.size
+            view.cacheDisplay(in:view.bounds,to:bitmap)
+            try XCTUnwrap(bitmap.representation(using:.png,properties:[:])).write(to:URL(fileURLWithPath:directory).appendingPathComponent("citation.png"))
+        }
         let code=ConversationInteraction.lines([KaiLine(text:"<\(path)>",style:"code")])
         XCTAssertEqual(code.first?.text,"<\(path)>")
         XCTAssertEqual(code.first?.style,"code")

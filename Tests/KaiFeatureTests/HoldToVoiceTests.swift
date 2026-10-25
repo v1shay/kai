@@ -11,6 +11,44 @@ import AVFoundation
 }
 
 @MainActor final class HoldToVoiceTests:XCTestCase {
+    func testRecorderResetNeverPublishesAnOffGapBeforeRecordingOrAudioHandoff(){
+        let recorder=PromptRecorderStub(),hold=HoldToVoiceController(recorder:recorder,minimumHold:0)
+        var surfaceOwned=true,backendQueued=false,delivered=0,phases=[HoldToVoiceController.Phase]()
+        hold.onChange={
+            phases.append(hold.phase)
+            if hold.phase == .off && !backendQueued{surfaceOwned=false}
+        }
+        hold.onReady={_,audio,_ in
+            XCTAssertTrue(surfaceOwned,"A recorder reset must not retire the shortcut UI")
+            XCTAssertEqual(audio,Data([1,2,3]));backendQueued=true;delivered += 1
+        }
+        hold.begin(.realtimeVoice,trigger:.command,lightweight:false)
+        XCTAssertTrue(surfaceOwned);XCTAssertEqual(phases,[.recording])
+        hold.release(.command)
+        XCTAssertTrue(surfaceOwned);XCTAssertEqual(delivered,1);XCTAssertTrue(backendQueued)
+    }
+    func testEveryOwnedVoiceShortcutDeliversAudioAfterItsExactNavigationAck(){
+        for action in ShortcutAction.allCases where action.isVoice{
+            let recorder=PromptRecorderStub(),hold=HoldToVoiceController(recorder:recorder,minimumHold:0),prep=ShortcutPreparation()
+            prep.supportsOwnedVoice=true
+            var surfaceOwned=true,backendQueued=false,audio:Data?,deliveries=0,destination:String?,contextText:String?
+            hold.onChange={if hold.phase == .off && !backendQueued{surfaceOwned=false}}
+            hold.capture={_,done in done(ApplicationContext(text:"Captured editor",imagePath:nil))}
+            prep.onCommand={name,fields in
+                XCTAssertEqual(name,"new");prep.receive(thread:"code:new",request:fields["requestId"] as? String,error:nil)
+            }
+            prep.onReady={_,target,context in
+                XCTAssertTrue(surfaceOwned);XCTAssertEqual(audio,Data([1,2,3]));deliveries += 1;destination=target;contextText=context?.text;backendQueued=true
+            }
+            hold.onReady={selected,recorded,context in
+                audio=recorded;prep.start(action:selected,trigger:.command,selected:"code:current",target:"code:current",lightweight:false,context:context)
+            }
+            hold.begin(action,trigger:.command,lightweight:false);hold.release(.command)
+            XCTAssertEqual(deliveries,1,action.rawValue);XCTAssertTrue(backendQueued,action.rawValue)
+            XCTAssertEqual(destination,action.createsChat ? "code:new":"code:current")
+            XCTAssertEqual(contextText,action.capturesContext ? "Captured editor":nil)
+        }
+    }
     func testAdjustedMinimumHoldStillRecordsImmediatelyAndSnapshotsEachGesture() {
         var now:TimeInterval=0,starts=0,discarded=0
         let recorder=PromptRecorderStub(),hold=HoldToVoiceController(recorder:recorder,clock:{now})

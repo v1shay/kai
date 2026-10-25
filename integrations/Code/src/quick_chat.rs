@@ -68,10 +68,6 @@ impl Controller {
         Ok(())
     }
     pub fn toggle(&mut self, cx: &mut App) -> anyhow::Result<()> {
-        if unified::active() {
-            unified::toggle();
-            return Ok(());
-        }
         if let Some(window) = self.window {
             if window
                 .update(cx, |panel, window, cx| {
@@ -88,6 +84,9 @@ impl Controller {
             self.window = None;
         }
         self.open(cx)
+    }
+    pub(super) fn dismiss(&mut self,cx:&mut App){
+        if let Some(window)=self.window{let _=window.update(cx,|panel,window,cx|panel.hide(window,cx));}
     }
     pub fn open(&mut self, cx: &mut App) -> anyhow::Result<()> {
         if let Some(window) = self.window
@@ -243,6 +242,7 @@ impl QuickChat {
         }
     }
     pub(super) fn show(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        unified::quick_visibility(true);
         self.sync_from_main(cx);
         self.visible = true;
         self.show_generation = self.show_generation.wrapping_add(1);
@@ -274,6 +274,7 @@ impl QuickChat {
         });
         window.blur();
         native_panel::hide(window);
+        unified::quick_visibility(false);
     }
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.sync_to_main(cx);

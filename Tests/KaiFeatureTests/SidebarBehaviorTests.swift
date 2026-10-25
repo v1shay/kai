@@ -3,6 +3,25 @@ import XCTest
 @testable import NotchPrototype
 
 final class SidebarBehaviorTests:XCTestCase {
+    @MainActor func testProviderLogoHasAConsistentGutterAndCenteredLabel()throws{
+        let suite="KaiSidebarVisual-"+UUID().uuidString,defaults=try XCTUnwrap(UserDefaults(suiteName:suite))
+        defer{defaults.removePersistentDomain(forName:suite)}
+        let ui=MiniAppInterface(defaults:defaults);ui.layout(in:CGRect(x:0,y:0,width:450,height:300));ui.setState(try state());ui.setVisible(true,duration:0)
+        let left=try XCTUnwrap(ui.layer.sublayers?.first),row=try XCTUnwrap(left.sublayers?.first{$0.name == "Idle"})
+        row.setNeedsLayout();row.layoutIfNeeded()
+        let title=try XCTUnwrap(row.sublayers?.compactMap{$0 as? CATextLayer}.first)
+        let mark=try XCTUnwrap(row.sublayers?.first{!($0 is CATextLayer) && $0.contents != nil})
+        XCTAssertGreaterThanOrEqual(title.frame.minX-mark.frame.maxX,8)
+        XCTAssertLessThanOrEqual(abs(title.frame.midY-mark.frame.midY),0.5)
+        if let directory=ProcessInfo.processInfo.environment["KAI_UI_FIXES_RENDER"]{
+            try FileManager.default.createDirectory(atPath:directory,withIntermediateDirectories:true)
+            let bitmap=try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes:nil,pixelsWide:1350,pixelsHigh:900,bitsPerSample:8,samplesPerPixel:4,hasAlpha:true,isPlanar:false,colorSpaceName:.deviceRGB,bytesPerRow:0,bitsPerPixel:0))
+            let context=try XCTUnwrap(NSGraphicsContext(bitmapImageRep:bitmap)).cgContext
+            context.scaleBy(x:3,y:3);context.setFillColor(NSColor.black.cgColor);context.fill(ui.layer.bounds);ui.layer.displayIfNeeded();ui.layer.render(in:context)
+            try XCTUnwrap(bitmap.representation(using:.png,properties:[:])).write(to:URL(fileURLWithPath:directory).appendingPathComponent("sidebar.png"))
+        }
+    }
+
     @MainActor func testRowPaddingOpensTheNearestChatWithoutHidingIt()throws {
         let suite="KaiSidebarPadding-\(UUID().uuidString)",defaults=try XCTUnwrap(UserDefaults(suiteName:suite))
         defer{defaults.removePersistentDomain(forName:suite)}

@@ -1,90 +1,108 @@
 import AppKit
 
-/// A finite native glass/fragment transition between one notch and one workspace.
-/// Code is laid out once at its final size; its renderer is never resized per frame.
+/// The actual workspace is clipped by one continuous native shape. GPUI paints
+/// its real components at their final size; no tiles or per-frame window resize.
 @MainActor final class WorkspaceMorph {
+    var onPresentation:((String)->Void)?
     private var revision=0
-    private var expandedFrame:CGRect?
-    private weak var window:NSWindow?
-    private var shell:NSPanel?,surface:NSVisualEffectView?
+    private weak var window:NSWindow?,host:NSView?
+    private var shell:NSPanel?,clip:CAShapeLayer?,previousMask:CALayer?
     private var delayed:DispatchWorkItem?
+    private var originalBackground:NSColor?,originalOpaque=false,originalShadow=true,originalIgnores=false
     private(set) var expanded=false
     private(set) var transitioning=false
-    nonisolated static func destination(saved:CGRect?,screen:CGRect)->CGRect {
-        let usable=screen.insetBy(dx:24,dy:24)
-        let requested=saved ?? CGRect(x:usable.midX-600,y:usable.midY-390,width:1200,height:780)
-        let width=min(max(940,requested.width),usable.width),height=min(max(620,requested.height),usable.height)
-        return CGRect(x:min(max(requested.minX,usable.minX),usable.maxX-width),y:min(max(requested.minY,usable.minY),usable.maxY-height),width:width,height:height)
-    }
-    static func image(of view:NSView,in rect:CGRect)->CGImage?{
-        guard rect.width>0,rect.height>0,let context=CGContext(data:nil,width:Int(ceil(rect.width*2)),height:Int(ceil(rect.height*2)),bitsPerComponent:8,bytesPerRow:0,space:CGColorSpaceCreateDeviceRGB(),bitmapInfo:CGImageAlphaInfo.premultipliedLast.rawValue)else{return nil}
-        context.scaleBy(x:2,y:2);context.translateBy(x:-rect.minX,y:-rect.minY)
-        (view.layer?.presentation() ?? view.layer)?.render(in:context)
-        return context.makeImage()
-    }
-    private func clearVisuals(){delayed?.cancel();delayed=nil;shell?.orderOut(nil);shell?.contentView=nil;shell=nil;surface=nil}
-    private func veil(from source:CGRect,to target:CGRect,image:CGImage?,expanding:Bool){
-        let union=source.union(target).insetBy(dx:-12,dy:-12)
-        let panel=NSPanel(contentRect:union,styleMask:[.borderless,.nonactivatingPanel],backing:.buffered,defer:false)
-        panel.isOpaque=false;panel.backgroundColor = .clear;panel.hasShadow=false;panel.ignoresMouseEvents=true;panel.level = .popUpMenu;panel.collectionBehavior=[.canJoinAllSpaces,.fullScreenAuxiliary]
-        let effect=NSVisualEffectView(frame:CGRect(origin:.zero,size:union.size));effect.wantsLayer=true;effect.material = .hudWindow;effect.blendingMode = .behindWindow;effect.state = .active
-        effect.layer?.backgroundColor=NSColor(calibratedWhite:0.035,alpha:0.88).cgColor
-        panel.contentView=effect;shell=panel;surface=effect
-        let a=source.offsetBy(dx:-union.minX,dy:-union.minY),b=target.offsetBy(dx:-union.minX,dy:-union.minY)
-        let mask=CAShapeLayer();effect.layer?.mask=mask
-        let first=CGPath(roundedRect:a,cornerWidth:expanding ? 17:22,cornerHeight:expanding ? 17:22,transform:nil)
-        let last=CGPath(roundedRect:b,cornerWidth:expanding ? 22:17,cornerHeight:expanding ? 22:17,transform:nil)
-        mask.path=last
-        let duration=0.62,curve=CAMediaTimingFunction(controlPoints:0.16,0.84,0.22,1)
-        let shape=CABasicAnimation(keyPath:"path");shape.fromValue=first;shape.toValue=last;shape.duration=duration;shape.timingFunction=curve;mask.add(shape,forKey:"surfaceMorph")
-        let rim=CAShapeLayer();rim.path=last;rim.fillColor=nil;rim.strokeColor=NSColor.white.withAlphaComponent(0.18).cgColor;rim.lineWidth=0.8;effect.layer?.addSublayer(rim);rim.add(shape,forKey:"rimMorph")
-        let sheen=CAGradientLayer();sheen.frame=CGRect(origin:.zero,size:union.size);sheen.colors=[NSColor.clear.cgColor,NSColor.white.withAlphaComponent(0.1).cgColor,NSColor.clear.cgColor];sheen.locations=[0,0.48,1];sheen.startPoint=CGPoint(x:0,y:0);sheen.endPoint=CGPoint(x:1,y:1);effect.layer?.addSublayer(sheen)
-        let sweep=CABasicAnimation(keyPath:"transform.translation.x");sweep.fromValue = -union.width*0.5;sweep.toValue=union.width*0.6;sweep.duration=duration;sheen.add(sweep,forKey:"lightSweep")
-        if let image,expanding {
-            // One shared texture, 32 bounded fragments, no timers or readbacks.
-            let cols=8,rows=4
-            for y in 0..<rows{for x in 0..<cols{
-                let tile=CALayer(),u=CGFloat(x)/CGFloat(cols),v=CGFloat(y)/CGFloat(rows)
-                tile.contents=image;tile.contentsRect=CGRect(x:u,y:v,width:1/CGFloat(cols),height:1/CGFloat(rows))
-                tile.frame=CGRect(x:a.minX+u*a.width,y:a.minY+v*a.height,width:a.width/CGFloat(cols)+0.5,height:a.height/CGFloat(rows)+0.5)
-                effect.layer?.addSublayer(tile)
-                let position=CABasicAnimation(keyPath:"position");position.fromValue=tile.position;position.toValue=CGPoint(x:b.minX+(u+0.0625)*b.width,y:b.minY+(v+0.125)*b.height);position.duration=duration;position.timingFunction=curve;position.isRemovedOnCompletion=false;position.fillMode = .forwards;tile.add(position,forKey:"fragmentTravel")
-                let fade=CABasicAnimation(keyPath:"opacity");fade.fromValue=1;fade.toValue=0;fade.beginTime=CACurrentMediaTime()+0.06+Double(x+y)*0.012;fade.duration=0.3;fade.fillMode = .forwards;fade.isRemovedOnCompletion=false;tile.add(fade,forKey:"fragmentDissolve")
-            }}
+    static let expansionDuration:TimeInterval=0.84
+    static let collapseDuration:TimeInterval=0.60
+    nonisolated static func destination(saved:CGRect?,screen:CGRect)->CGRect {screen}
+    private let curve=CAMediaTimingFunction(controlPoints:0.16,0.84,0.20,1)
+
+    private func clearVisuals(){
+        delayed?.cancel();delayed=nil;shell?.orderOut(nil);shell?.contentView=nil;shell=nil
+        if let host,let clip,host.layer?.mask === clip{host.layer?.mask=previousMask}
+        clip=nil;previousMask=nil;host=nil
+        if let window,let originalBackground{
+            window.backgroundColor=originalBackground;window.isOpaque=originalOpaque
+            window.hasShadow=originalShadow;window.ignoresMouseEvents=originalIgnores
         }
-        panel.orderFrontRegardless()
+        originalBackground=nil
     }
-    func expand(_ window:NSWindow,from source:CGRect,image:CGImage?=nil,completion:@escaping()->Void={}) {
+    private func liveRectangle(fallback:CGRect)->CGRect{
+        guard let window,let host,let path=clip?.presentation()?.path ?? clip?.path else{return fallback}
+        let rect=host.convert(path.boundingBoxOfPath,to:nil)
+        return window.convertToScreen(rect)
+    }
+    private func local(_ rect:CGRect,in host:NSView,window:NSWindow)->CGRect{host.convert(window.convertFromScreen(rect),from:nil)}
+    /// Same segment order and shoulder geometry as NotchSizing.path. Negative
+    /// shoulders become ordinary app corners, so Core Animation interpolates
+    /// one continuous contour rather than crossfading unrelated outlines.
+    nonisolated static func outline(_ rect:CGRect,notch:Bool,radius:CGFloat)->CGPath{
+        let x=rect.minX,right=rect.maxX,top=rect.maxY,bottom=rect.minY
+        let r=min(max(0,radius),min(rect.width/2,rect.height/2)),sx:CGFloat=notch ? 7:-r,sy:CGFloat=notch ? 9:r,k:CGFloat=1-0.5523
+        let p=CGMutablePath();p.move(to:CGPoint(x:x-sx,y:top));p.addLine(to:CGPoint(x:right+sx,y:top))
+        p.addCurve(to:CGPoint(x:right,y:top-sy),control1:CGPoint(x:right+sx*k,y:top),control2:CGPoint(x:right,y:top-sy*k))
+        p.addLine(to:CGPoint(x:right,y:bottom+r));p.addCurve(to:CGPoint(x:right-r,y:bottom),control1:CGPoint(x:right,y:bottom+r*k),control2:CGPoint(x:right-r*k,y:bottom))
+        p.addLine(to:CGPoint(x:x+r,y:bottom));p.addCurve(to:CGPoint(x:x,y:bottom+r),control1:CGPoint(x:x+r*k,y:bottom),control2:CGPoint(x:x,y:bottom+r*k))
+        p.addLine(to:CGPoint(x:x,y:top-sy));p.addCurve(to:CGPoint(x:x-sx,y:top),control1:CGPoint(x:x,y:top-sy*k),control2:CGPoint(x:x-sx*k,y:top));p.closeSubpath();return p
+    }
+    private func animate(_ mask:CAShapeLayer,from:CGPath,to:CGPath,duration:TimeInterval,delay:TimeInterval=0){
+        CATransaction.begin();CATransaction.setDisableActions(true);mask.path=to;CATransaction.commit()
+        let animation=CABasicAnimation(keyPath:"path");animation.fromValue=from;animation.toValue=to
+        animation.duration=duration;animation.beginTime=CACurrentMediaTime()+delay;animation.timingFunction=curve
+        animation.fillMode = .both;mask.add(animation,forKey:"workspaceShape")
+    }
+    private func prepare(_ window:NSWindow,from source:CGRect,to target:CGRect,duration:TimeInterval,delay:TimeInterval=0,expanding:Bool){
+        self.window=window
+        originalBackground=window.backgroundColor;originalOpaque=window.isOpaque;originalShadow=window.hasShadow;originalIgnores=window.ignoresMouseEvents
+        window.backgroundColor = .clear;window.isOpaque=false;window.hasShadow=false;window.ignoresMouseEvents=true
+        guard let host=window.contentView?.superview ?? window.contentView else{return}
+        self.host=host;host.wantsLayer=true
+        let mask=CAShapeLayer();mask.frame=host.bounds;previousMask=host.layer?.mask;host.layer?.mask=mask;clip=mask
+        animate(mask,from:Self.outline(local(source,in:host,window:window),notch:expanding,radius:expanding ? 14:10),to:Self.outline(local(target,in:host,window:window),notch:!expanding,radius:expanding ? 10:14),duration:duration,delay:delay)
+        // A single glass backdrop bridges the menu-bar gap. It sits UNDER the
+        // live workspace, so each real UI component is visible as it arrives.
+        let union=source.union(target)
+        let panel=NSPanel(contentRect:union,styleMask:[.borderless,.nonactivatingPanel],backing:.buffered,defer:false)
+        panel.isOpaque=false;panel.backgroundColor = .clear;panel.hasShadow=false;panel.ignoresMouseEvents=true;panel.level=window.level
+        panel.collectionBehavior=[.fullScreenAuxiliary,.canJoinAllSpaces]
+        let glass=NSVisualEffectView(frame:CGRect(origin:.zero,size:union.size));glass.wantsLayer=true;glass.material = .underWindowBackground;glass.blendingMode = .behindWindow;glass.state = .active
+        panel.contentView=glass;shell=panel
+        let glassMask=CAShapeLayer();glass.layer?.mask=glassMask
+        animate(glassMask,from:Self.outline(source.offsetBy(dx:-union.minX,dy:-union.minY),notch:expanding,radius:expanding ? 14:10),to:Self.outline(target.offsetBy(dx:-union.minX,dy:-union.minY),notch:!expanding,radius:expanding ? 10:14),duration:duration,delay:delay)
+        window.makeKeyAndOrderFront(nil);panel.order(.below,relativeTo:window.windowNumber)
+    }
+    func expand(_ window:NSWindow,from source:CGRect,completion:@escaping()->Void={}){
         if expanded && !transitioning{window.makeKeyAndOrderFront(nil);completion();return}
-        revision += 1;let token=revision;clearVisuals();expanded=true;transitioning=true;self.window=window
-        let screen=window.screen ?? NSScreen.main
-        let target=Self.destination(saved:expandedFrame ?? window.frame,screen:screen?.visibleFrame ?? window.frame);expandedFrame=target
-        window.setFrame(target,display:true);window.alphaValue=0;window.orderFront(nil);NSApp.activate(ignoringOtherApps:true)
+        let start=transitioning ? liveRectangle(fallback:source):source
+        revision += 1;let token=revision;clearVisuals();self.window=window;expanded=true;transitioning=true
+        let screen=NSScreen.screens.first{$0.frame.contains(CGPoint(x:source.midX,y:source.maxY-1))} ?? window.screen ?? NSScreen.main
+        let target=Self.destination(saved:nil,screen:screen?.visibleFrame ?? window.frame)
+        window.setFrame(target,display:true);onPresentation?("expand")
         let reduce=NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        if !reduce{veil(from:source,to:target,image:image,expanding:true)}
-        let work=DispatchWorkItem{[weak self,weak window] in
+        window.alphaValue=1
+        if !reduce{prepare(window,from:start,to:target,duration:0.68,expanding:true)}else{
+            window.alphaValue=0;window.orderFront(nil)
+            NSAnimationContext.runAnimationGroup{context in context.duration=0.12;window.animator().alphaValue=1}
+        }
+        NSApp.activate(ignoringOtherApps:true)
+        let finish=DispatchWorkItem{[weak self,weak window] in
             guard let self,self.revision==token,let window else{return}
-            NSAnimationContext.runAnimationGroup{context in context.duration=reduce ? 0.1:0.29;window.animator().alphaValue=1}
-            // AppKit may omit animator completions for interrupted or inactive
-            // windows. A finite owner timer always settles the presentation.
-            let finish=DispatchWorkItem{[weak self,weak window] in
-                guard let self,self.revision==token,let window else{return}
-                window.alphaValue=1;self.transitioning=false;self.clearVisuals();window.makeKeyAndOrderFront(nil);completion()
-            };self.delayed=finish;DispatchQueue.main.asyncAfter(deadline:.now()+(reduce ? 0.1:0.30),execute:finish)
-        };delayed=work;DispatchQueue.main.asyncAfter(deadline:.now()+(reduce ? 0:0.32),execute:work)
+            self.transitioning=false;self.clearVisuals();window.alphaValue=1;window.makeKeyAndOrderFront(nil);completion()
+        };delayed=finish;DispatchQueue.main.asyncAfter(deadline:.now()+(reduce ? 0.12:Self.expansionDuration),execute:finish)
     }
-    func collapse(_ window:NSWindow,to target:CGRect,completion:@escaping()->Void) {
+    func collapse(_ window:NSWindow,to target:CGRect,completion:@escaping()->Void){
         if !expanded && !transitioning && !window.isVisible{completion();return}
-        revision += 1;let token=revision
-        if !transitioning{expandedFrame=window.frame}
-        let source=window.frame;clearVisuals();expanded=false;transitioning=true;self.window=window
+        let source=transitioning ? liveRectangle(fallback:window.frame):window.frame
+        revision += 1;let token=revision;clearVisuals();self.window=window;expanded=false;transitioning=true
+        onPresentation?("collapse")
         let reduce=NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        if !reduce{veil(from:source,to:target,image:nil,expanding:false)}
-        NSAnimationContext.runAnimationGroup{context in context.duration=reduce ? 0.1:0.24;window.animator().alphaValue=0}
-        let work=DispatchWorkItem{[weak self,weak window] in
-            guard let self,self.revision==token,let window else{return};window.orderOut(nil);window.alphaValue=1;self.transitioning=false;self.clearVisuals();completion()
-        };delayed=work;DispatchQueue.main.asyncAfter(deadline:.now()+(reduce ? 0.1:0.62),execute:work)
+        if !reduce{prepare(window,from:source,to:target,duration:0.48,delay:0.10,expanding:false)}else{
+            NSAnimationContext.runAnimationGroup{context in context.duration=0.12;window.animator().alphaValue=0}
+        }
+        let finish=DispatchWorkItem{[weak self,weak window] in
+            guard let self,self.revision==token,let window else{return}
+            window.orderOut(nil);self.transitioning=false;self.clearVisuals();window.alphaValue=1;self.onPresentation?("hidden");completion()
+        };delayed=finish;DispatchQueue.main.asyncAfter(deadline:.now()+(reduce ? 0.12:Self.collapseDuration),execute:finish)
     }
-    func park(_ window:NSWindow){revision += 1;clearVisuals();if !transitioning{expandedFrame=window.frame};expanded=false;transitioning=false;window.orderOut(nil);window.alphaValue=1}
+    func park(_ window:NSWindow){revision += 1;clearVisuals();expanded=false;transitioning=false;window.orderOut(nil);window.alphaValue=1;onPresentation?("hidden")}
     func cancel(){revision += 1;transitioning=false;clearVisuals();window?.alphaValue=1}
 }

@@ -20,7 +20,7 @@ import Foundation
         self.recorder.onError={ [weak self] error in guard let self,self.active else{return};self.fail(error) }
     }
     func begin(_ action:ShortcutAction,trigger:DictationTrigger,lightweight:Bool,minimumHold:TimeInterval?=nil){
-        cancel();guard action.isVoice else{return}
+        reset(notify:false);guard action.isVoice else{return}
         self.minimumHold=minimumHold.flatMap{$0.isFinite ? min(5,max(0,$0)):nil} ?? defaultMinimumHold
         self.action=action;self.trigger=trigger;startedAt=clock();phase = .recording
         captureDone = !action.capturesContext
@@ -52,16 +52,17 @@ import Foundation
         guard audio != nil else{cancel();onDiscard?();return}
         onChange?();finishIfReady()
     }
-    func cancel(){
+    func cancel(){reset(notify:true)}
+    private func reset(notify:Bool){
         generation=UUID();armWork?.cancel();armWork=nil;timeout?.cancel();timeout=nil
         recorder.cancel();phase = .off;trigger=nil;action=nil;audio=nil;captureDone=false
         if let path=context?.imagePath{try? FileManager.default.removeItem(atPath:path)};context=nil
-        onChange?()
+        if notify{onChange?()}
     }
     private func finishIfReady(){
         guard phase == .finishing,captureDone,let action,let audio else{return}
         let retained=context;context=nil
-        cancel();onReady?(action,audio,retained)
+        reset(notify:false);onReady?(action,audio,retained);onChange?()
     }
     private func fail(_ error:String){cancel();onError?(error)}
 }

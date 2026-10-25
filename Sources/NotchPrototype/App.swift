@@ -191,6 +191,8 @@ private final class NotchView:ImageDropView {
     private let nativeReview=NativeRequestReview()
     private var unifiedDraftBase=""
     private let workspaceMorph=WorkspaceMorph()
+    private var quickChatVisible=false,workspaceVoiceRequest:String?
+    private var completionIndicatorWork:DispatchWorkItem?
     private var workspaceHold=WorkspaceHoldGesture(),workspaceHoldJobs=[DispatchWorkItem]()
     private let workspacePet=WorkspacePetView(frame:.zero)
     private var workspacePetMenu:NSMenu?,workspacePetSlot=CGRect(x:215,y:36,width:48,height:34)
@@ -279,7 +281,8 @@ private final class NotchView:ImageDropView {
     private var miniListening = false,dictating=false,finalizingDictation=false,dictationPrefix=""
     private var approachImages=[NSImage](),approachActive=false,lastImageDrop=0.0
     private var imageExpandWork:DispatchWorkItem?
-    private var lastCommandTap = 0.0, lastControlTap = 0.0
+    private var lastControlTap = 0.0
+    private var commandDismissGesture=ModifierDoubleTap()
     private var holdWork: DispatchWorkItem?
     private let scalableUI=NSView(),resizeHandles=NotchResizeHandles()
     private var expandedSize:CGSize?,resizeInitial=CGSize.zero,resizeMode=NotchResizeMode.both
@@ -326,6 +329,7 @@ private final class NotchView:ImageDropView {
         }
         petGallery.configure(gallerySpecs,at:assetRoot)
         shortcutPreparation.supportsOwnedVoice=EmbeddedCodeRuntime.shared.active
+        workspaceMorph.onPresentation={phase in EmbeddedCodeRuntime.shared.presentation(phase)}
         workspacePet.onClick={ [weak self] in guard let self else{return};self.workspacePetMenu?.popUp(positioning:nil,at:NSEvent.mouseLocation,in:nil) }
         petAppIcon.onCompletion={ [weak self] in self?.syncMotion(force:true) }
         floatingTasks.configure(gallerySpecs,profiles:gradientCatalog.profileByPetID,root:assetRoot)
@@ -340,7 +344,7 @@ private final class NotchView:ImageDropView {
         }
         floatingTasks.onChange={ [weak self] in guard let self else{return};if !self.floatingTasks.enabled{self.floatingReviews=[];self.floatingFocus=nil};if let state=self.latestState{self.floatingTasks.update(state.activeTasks,finished:[],pets:self.taskPets)} }
         dictation.onText={ [weak self] text in guard let self,self.dictating else{return};self.setPrompt(self.dictationPrefix+text,dictation:true) };dictation.onLevels={ [weak self] levels in self?.indicator.setExternalLevels(levels) }
-        dictation.onError={ [weak self] error in guard let self else{return};self.cancelShortcutInput();self.miniListening=false;self.indicator.showScene("failure");self.miniUI.setCodexMessage(error);self.syncMotion(force:true) }
+        dictation.onError={ [weak self] error in guard let self else{return};self.cancelShortcutInput();self.miniListening=false;self.pinned=true;self.setOpen(true,mini:true);self.indicator.showScene("failure");self.miniUI.setCodexMessage(error);self.syncMotion(force:true) }
         buildMenu(); applyAccentSide(); placePanel(); play(); indicator.hide()
         miniUI.onProject={ [weak self] path in guard let self else{return};self.cancelShortcutHold();self.cancelShortcutInput();self.bridge.send("project",["path":path,"requestId":self.miniUI.pendingRequestID ?? ""]) }
         miniUI.onChat={ [weak self] id in guard let self else{return};self.cancelShortcutHold();self.cancelShortcutInput();self.bridge.send("chat",["id":id,"requestId":self.miniUI.pendingRequestID ?? ""]) }
@@ -396,7 +400,7 @@ private final class NotchView:ImageDropView {
         shortcutPreparation.onFailure={ [weak self] error in
             guard let self else{return}
             if self.compactVoiceMode {self.failCompactVoice(error)}
-            else {self.cancelShortcutInput();self.miniUI.setCodexMessage(error)}
+            else {self.failCompactVoice(error)}
         }
         voicePrompt.capture=shortcutPreparation.capture
         voicePrompt.onLevels={ [weak self] levels in
@@ -467,7 +471,7 @@ private final class NotchView:ImageDropView {
         localMonitor = NSEvent.addLocalMonitorForEvents(matching:[.flagsChanged,.keyDown]) { [weak self] e in
             if e.type == .flagsChanged {self?.flags(e)}
             else {
-                self?.cancelShortcutHold();self?.cancelWorkspaceHold();self?.lastCommandTap=0;self?.lastControlTap=0
+                self?.cancelShortcutHold();self?.cancelWorkspaceHold();self?.commandDismissGesture.cancel();self?.lastControlTap=0
                 if e.keyCode == 53,self?.panel.isKeyWindow == true,self?.open == true {self?.dismissNotchView();return nil}
                 if self?.voicePrompt.phase == .recording {self?.endCompactVoice()}
             }
@@ -475,7 +479,7 @@ private final class NotchView:ImageDropView {
         }
         globalMonitor = NSEvent.addGlobalMonitorForEvents(matching:[.flagsChanged,.keyDown]) { [weak self] e in
             if e.type == .flagsChanged {self?.flags(e)}
-            else {self?.cancelShortcutHold();self?.cancelWorkspaceHold();self?.lastCommandTap=0;self?.lastControlTap=0;if self?.voicePrompt.phase == .recording {self?.endCompactVoice()}}
+            else {self?.cancelShortcutHold();self?.cancelWorkspaceHold();self?.commandDismissGesture.cancel();self?.lastControlTap=0;if self?.voicePrompt.phase == .recording {self?.endCompactVoice()}}
         }
         dragMonitor=NSEvent.addGlobalMonitorForEvents(matching:[.leftMouseDragged,.leftMouseUp]){[weak self] event in DispatchQueue.main.async{self?.globalDrag(event)}}
         NotificationCenter.default.addObserver(self, selector: #selector(placePanel),
@@ -721,7 +725,7 @@ private final class NotchView:ImageDropView {
         approvalUI.frame=CGRect(x:16,y:12,width:dropRect.width-32,height:CompactApprovalRequest.height(notch:0)-24);approvalUI.isHidden = !approvalPopout
         let compactInput=approvalPopout || NotchInputRegion.compactAcceptsInput(open:open,expanded:miniOpen,web:experimentalWebMode,working:compactWhileWorking,voice:compactVoiceMode)
         dropPanel.ignoresMouseEvents = !compactInput
-        compactInput && !workspaceMorph.expanded && !workspaceMorph.transitioning ? dropPanel.orderFrontRegardless():dropPanel.orderOut(nil)
+        compactInput && !workspaceMorph.expanded && !workspaceMorph.transitioning && !quickChatVisible ? dropPanel.orderFrontRegardless():dropPanel.orderOut(nil)
         updateGlassBackground()
         let expanded = expandedWidth, kaiLeft = (canvasWidth - expanded) / 2
         let scale = screen.backingScaleFactor, topBandY = canvasHeight-notchHeight
@@ -756,7 +760,7 @@ private final class NotchView:ImageDropView {
         notchContent.opacity = experimentalWebMode ? 0:1;miniUI.layer.isHidden=experimentalWebMode;scalableUI.isHidden=experimentalWebMode
         browserView?.isHidden = !experimentalWebMode
         CATransaction.commit()
-        if (open || experimentalWebMode) && !workspaceMorph.expanded && !workspaceMorph.transitioning{panel.orderFrontRegardless()}else if workspaceMorph.expanded || workspaceMorph.transitioning{panel.orderOut(nil);dropPanel?.orderOut(nil);syncWorkspacePet()}
+        if (open || experimentalWebMode) && !workspaceMorph.expanded && !workspaceMorph.transitioning && !quickChatVisible{panel.orderFrontRegardless()}else if workspaceMorph.expanded || workspaceMorph.transitioning || quickChatVisible{panel.orderOut(nil);dropPanel?.orderOut(nil);syncWorkspacePet()}
     }
 
     private func path(width: CGFloat, height: CGFloat) -> CGPath {
@@ -778,12 +782,9 @@ private final class NotchView:ImageDropView {
             if open && now-lastControlTap < 0.36 {lastControlTap=0;cancelShortcutHold();holdWork?.cancel();dismissNotchView();return}
             lastControlTap=now
         }
-        // Double-Command closes for every assignment, including voice. Consume
-        // it before scheduling a hold so the second tap cannot start listening.
-        if down && !commandDown {
-            if open && now-lastCommandTap < 0.36 {lastCommandTap=0;cancelShortcutHold();holdWork?.cancel();dismissNotchView();return}
-            lastCommandTap=now
-        }
+        // One dismissal path for mini chat, Quick Chat, expansion in flight,
+        // and the large workspace. Bare taps must never arm a voice hold.
+        if handleCommandDismiss(down:down,bare:!option && !control && !function && !event.modifierFlags.contains(.shift),at:now){return}
         let change=shortcutGesture.update(command:down,option:option,control:control,function:function,shift:event.modifierFlags.contains(.shift))
         if change != .unchanged {
             cancelShortcutHold()
@@ -819,7 +820,7 @@ private final class NotchView:ImageDropView {
                         let job=DispatchWorkItem{[weak self] in
                             guard let self,self.optionDown,self.controlDown else{return}
                             guard let action=self.workspaceHold.advance(at:ProcessInfo.processInfo.systemUptime) else{return}
-                            switch action{case .mini:self.expandToRunningChat();case .workspace:self.expandWorkspace();case .fold:self.collapseWorkspace()}
+                            switch action{case .mini:if !self.miniOpen{self.expandToRunningChat()};case .workspace:self.expandWorkspace();case .fold:self.collapseWorkspace()}
                         };workspaceHoldJobs.append(job);DispatchQueue.main.asyncAfter(deadline:.now()+delay,execute:job)
                     }
                 }else{
@@ -828,6 +829,18 @@ private final class NotchView:ImageDropView {
                 }
             }
         }
+    }
+    private func handleCommandDismiss(down:Bool,bare:Bool,at time:TimeInterval)->Bool{
+        guard commandDismissGesture.update(down:down,eligible:bare && (open || workspaceMorph.expanded || workspaceMorph.transitioning || quickChatVisible),at:time) else{return false}
+        cancelShortcutHold();cancelWorkspaceHold();holdWork?.cancel();dismissNotchView();return true
+    }
+    func probeDoubleCommand(){
+        guard CommandLine.arguments.contains("--unified-smoke-test") else{return}
+        commandDismissGesture.cancel();let time=ProcessInfo.processInfo.systemUptime
+        _=handleCommandDismiss(down:true,bare:true,at:time)
+        _=handleCommandDismiss(down:false,bare:true,at:time+0.05)
+        precondition(handleCommandDismiss(down:true,bare:true,at:time+0.1),"Double Command did not reach surface dismissal")
+        _=handleCommandDismiss(down:false,bare:true,at:time+0.15)
     }
     private func cancelWorkspaceHold(){workspaceHold.cancel();workspaceHoldJobs.forEach{$0.cancel()};workspaceHoldJobs=[]}
 
@@ -852,6 +865,7 @@ private final class NotchView:ImageDropView {
         // recorder would require two holds and discard a prompt released at
         // the slider's displayed duration.
         voicePrompt.begin(action,trigger:trigger,lightweight:contextLightweight,minimumHold:0)
+        guard voicePrompt.active else{return}
         setOpen(true,mini:false);renderCompactVoice()
     }
     private func prepareRecordedVoice(){
@@ -863,6 +877,7 @@ private final class NotchView:ImageDropView {
     private func renderCompactVoice(){
         guard compactVoiceMode else{return}
         if EmbeddedCodeRuntime.shared.active,voicePrompt.phase == .off,pendingVoiceStart == nil,!shortcutPreparation.busy {
+            if workspaceVoiceRequest != nil{currentScene="workspace-voice:connecting";indicator.showThinking();return}
             guard latestState?.workspaceVoiceActive == true else{compactVoiceMode=false;currentScene="";return}
             let scene=latestState?.workspaceVoiceScene ?? "thinking"
             if let levels=latestState?.workspaceVoiceLevels{indicator.setExternalLevels(levels)}
@@ -893,10 +908,9 @@ private final class NotchView:ImageDropView {
         }
     }
     private func failCompactVoice(_ message:String){
-        // A failed call is over. Retain its message, not ownership of the
-        // notch: otherwise every new chat keeps rendering the old voice X.
-        closeNotch(keepExpanded:miniOpen)
-        miniUI.setCodexMessage(message);featureStatusItem?.title=message
+        workspaceVoiceRequest=nil;cancelShortcutInput();pinned=true;compactWhileWorking=false
+        setOpen(true,mini:true);miniUI.setCodexMessage(message);featureStatusItem?.title=message
+        currentScene="";indicator.showScene("failure")
     }
     private func endCompactVoice(){closeNotch()}
     private func handleCompactVoiceClick(){
@@ -906,7 +920,11 @@ private final class NotchView:ImageDropView {
         pinned=true;autoCompact=false;compactWhileWorking=false
         setOpen(true,mini:true,userInitiated:true)
     }
+    func dismissUnifiedSurface(){dismissNotchView()}
     private func dismissNotchView(){
+        cancelWorkspaceHold()
+        if quickChatVisible{EmbeddedCodeRuntime.shared.sendAction("quick_dismiss");return}
+        if workspaceMorph.expanded || workspaceMorph.transitioning{dismissWorkspace();return}
         if approvalPopout{dismissCompactApproval();return}
         if compactVoiceMode {setOpen(true,mini:false,userInitiated:true)}else{closeNotch()}
     }
@@ -961,7 +979,7 @@ private final class NotchView:ImageDropView {
             voiceCaptureSource=nil;voiceApprovalMenuItem?.isHidden=true;currentScene=""
             chatVoice.stop()
         }
-        voicePrompt.cancel();voiceLaunchTimeout?.cancel();voiceLaunchTimeout=nil
+        workspaceVoiceRequest=nil;voicePrompt.cancel();voiceLaunchTimeout?.cancel();voiceLaunchTimeout=nil
         if let path=pendingVoiceStart?.context?.imagePath {attachmentFiles.append(URL(fileURLWithPath:path))}
         pendingVoiceStart=nil
         shortcutPreparation.cancel();pendingAutoSend=false;dictationDestination=nil
@@ -1050,7 +1068,7 @@ private final class NotchView:ImageDropView {
         syncConversationTheme()
         if miniOpen && !wasMini { if let state=latestState {renderConversation(state.history,forceBottom:true)};miniListening=false;miniUI.resetFiles(); indicator.setFileOpen(false); currentScene="";if let state=latestState{showActivity(displayActivity(state))};setMotion("waving",replay:true) }
         else if wasMini && !miniOpen { textReveal.finish();mathRenderer.suspend();mathRefreshWork?.cancel();mathRefreshWork=nil;historyControl.update(hasMore:false,loading:false);miniListening=false;if compactWhileWorking,let state=latestState {currentScene="";showActivity(displayActivity(state))}else{applyIndicator()};syncMotion(force:true) }
-        if !workspaceMorph.expanded && !workspaceMorph.transitioning{panel.orderFrontRegardless()}else{panel.orderOut(nil);dropPanel?.orderOut(nil)}; CATransaction.begin(); CATransaction.setDisableActions(true); mask.path = destination; CATransaction.commit(); mask.add(animation, forKey: "width")
+        if !workspaceMorph.expanded && !workspaceMorph.transitioning && !quickChatVisible{panel.orderFrontRegardless()}else{panel.orderOut(nil);dropPanel?.orderOut(nil)}; CATransaction.begin(); CATransaction.setDisableActions(true); mask.path = destination; CATransaction.commit(); mask.add(animation, forKey: "width")
         if compactVoiceMode{compactVoiceIndicator=nil;renderCompactVoice()}
         if !desired {indicator.hide();currentScene="";mathRefreshWork?.cancel();mathRefreshWork=nil;DispatchQueue.main.asyncAfter(deadline: .now()+animation.duration) { [weak self] in
             guard let self,!self.open,self.panelRevision == revision else { return }; self.panel.orderOut(nil)
@@ -1075,12 +1093,11 @@ private final class NotchView:ImageDropView {
     func revealWorkspace(){
         guard let window=EmbeddedCodeRuntime.shared.workspaceWindow,let panel else{return}
         if workspaceMorph.expanded{window.makeKeyAndOrderFront(nil);return}
+        if quickChatVisible{EmbeddedCodeRuntime.shared.sendAction("quick_dismiss");quickChatVisible=false}
         let width=open ? expandedWidth:notchWidth,height=open ? popoutHeight:notchHeight
         let source=CGRect(x:panel.frame.midX-width/2,y:panel.frame.maxY-height,width:width,height:height)
-        let crop=CGRect(x:(canvasWidth-width)/2,y:canvasHeight-height,width:width,height:height)
-        let texture=panel.contentView.flatMap{WorkspaceMorph.image(of:$0,in:crop)}
         miniUI.cancelPending();compactWhileWorking=true;compactThreadID=latestState?.threadId;autoCompact=false;pinned=true
-        workspaceMorph.expand(window,from:source,image:texture){[weak self] in self?.syncWorkspacePet()}
+        workspaceMorph.expand(window,from:source){[weak self] in self?.syncWorkspacePet()}
         setOpen(true,mini:false);panel.orderOut(nil);dropPanel?.orderOut(nil);floatingTasks.setSuppressed(true);syncWorkspacePet()
     }
     @objc func collapseWorkspace(){
@@ -1088,11 +1105,31 @@ private final class NotchView:ImageDropView {
         pinned=true;compactWhileWorking=false;autoCompact=false
         let width=expandedSize?.width ?? notchWidth+160
         let target=CGRect(x:panel.frame.midX-width/2,y:panel.frame.maxY-canvasHeight,width:width,height:canvasHeight)
+        setOpen(true,mini:true,userInitiated:true)
         workspaceMorph.collapse(window,to:target){[weak self] in
-            guard let self else{return};self.restoreWorkspacePet();self.floatingTasks.setSuppressed(false);self.setOpen(true,mini:true,userInitiated:true);self.panel.makeKey();self.reviewNextFloatingTask()
+            guard let self else{return};self.restoreWorkspacePet();self.floatingTasks.setSuppressed(false);self.placePanel();self.panel.makeKey();self.reviewNextFloatingTask()
         }
     }
+    private func dismissWorkspace(){
+        guard let window=EmbeddedCodeRuntime.shared.workspaceWindow,let panel else{return}
+        let busy=latestState.map{!$0.activeTasks.isEmpty || $0.activeTurnId != nil} ?? false
+        let width=busy ? notchWidth+160:notchWidth
+        let target=CGRect(x:panel.frame.midX-width/2,y:panel.frame.maxY-notchHeight,width:width,height:notchHeight)
+        closeNotch()
+        workspaceMorph.collapse(window,to:target){[weak self] in
+            guard let self else{return};self.restoreWorkspacePet();self.floatingTasks.setSuppressed(false);if self.open{self.placePanel()}
+        }
+    }
+    func setQuickChatVisible(_ visible:Bool){
+        quickChatVisible=visible
+        if visible{
+            cancelWorkspaceHold();cancelShortcutHold()
+            if let window=EmbeddedCodeRuntime.shared.workspaceWindow{workspaceMorph.park(window)}
+            restoreWorkspacePet();panel?.orderOut(nil);dropPanel?.orderOut(nil);floatingTasks.setSuppressed(true)
+        }else{floatingTasks.setSuppressed(false);if open{placePanel()}}
+    }
     private func revealNotchForInput(){
+        if quickChatVisible{EmbeddedCodeRuntime.shared.sendAction("quick_dismiss");quickChatVisible=false}
         guard EmbeddedCodeRuntime.shared.active,workspaceMorph.expanded || workspaceMorph.transitioning,let window=EmbeddedCodeRuntime.shared.workspaceWindow else{return}
         workspaceMorph.park(window);restoreWorkspacePet();floatingTasks.setSuppressed(false);setOpen(true,mini:false,userInitiated:true)
     }
@@ -1103,6 +1140,8 @@ private final class NotchView:ImageDropView {
         if dropPanel?.isVisible == true{value |= 4}
         if sprite.superlayer === workspacePet.layer && !workspacePet.isHidden{value |= 8}
         if workspaceMorph.transitioning{value |= 16}
+        if let window=EmbeddedCodeRuntime.shared.workspaceWindow,let screen=window.screen,window.frame == screen.visibleFrame{value |= 64}
+        if quickChatVisible{value |= 128}
         if indicator.mode != .off && indicator.layer.opacity>0{value |= 32}
         return value
     }
@@ -1268,6 +1307,10 @@ private final class NotchView:ImageDropView {
         defer{refreshMedia()}
         nativeReview.update(state)
         if EmbeddedCodeRuntime.shared.active {
+            if let request=workspaceVoiceRequest,state.completedRequestId == request || state.workspaceVoiceActive == true{
+                workspaceVoiceRequest=nil;voiceLaunchTimeout?.cancel();voiceLaunchTimeout=nil
+                if let error=state.completedRequestError{failCompactVoice(error)}
+            }
             if let voice=state.workspaceVoiceChoice{realtimeVoiceMenu.synchronize(voice)}
             miniUI.setVoiceActive(state.workspaceVoiceActive == true)
             if let levels=state.workspaceVoiceLevels,state.workspaceVoiceScene == "listening"{indicator.setExternalLevels(levels)}
@@ -1287,6 +1330,7 @@ private final class NotchView:ImageDropView {
         }
         if let connection=state.codeConnection{codeConnectionItem?.toolTip=connection.error;codeConnectionItem?.title=EmbeddedCodeRuntime.shared.active ? "Code runtime · in this app":connection.enabled ? "Connect to Code · \(connection.connected ? "connected":"waiting")":"Connect to Code"}
         let previous=latestState,previousNotice=previous?.notice,wasFloating=floatingTasks.tracking;latestState=state
+        var confirmedCompletion=false
         if let models=state.models{defaultModelMenu.update(models)}
         let prepending=previous?.threadId == state.threadId && earlierHistoryRequest != nil && state.completedRequestId == earlierHistoryRequest
         if prepending || previous?.threadId != state.threadId{earlierHistoryRequest=nil}
@@ -1304,7 +1348,7 @@ private final class NotchView:ImageDropView {
             for done in state.finishedTasks ?? []{
                 let key=done.id+":"+(done.runId ?? "")
                 guard !reviewedFinished.contains(key) else{continue}
-                reviewedFinished.append(key);if reviewedFinished.count>128{reviewedFinished.removeFirst()}
+                confirmedCompletion=true;reviewedFinished.append(key);if reviewedFinished.count>128{reviewedFinished.removeFirst()}
                 let task=previous?.activeTasks.first{$0.id==done.id} ?? KaiActiveTask(id:done.id,name:done.id==state.threadId ? state.threadName:"Completed chat",scene:"success",text:"Completed",runId:done.runId)
                 if !floatingReviews.contains(where:{$0.id==task.id&&$0.runId==task.runId}){floatingReviews.append(task)}
             }
@@ -1319,7 +1363,14 @@ private final class NotchView:ImageDropView {
         if !dictating && !miniListening && !chatVoice.listening {showActivity(displayActivity(state))}
         if state.approval{updateCompactApproval(state)}
         let finishedTasks=Set(previous?.activeTasks.map(\.id) ?? []).subtracting(state.activeTasks.map(\.id))
-        if completed || !finishedTasks.isEmpty {sounds.playScene("success");setMotion("jumping",replay:true)}
+        if completed || !finishedTasks.isEmpty || confirmedCompletion {
+            sounds.playScene("success");setMotion("jumping",replay:true)
+            if !dictating && !voicePrompt.active{
+                completionIndicatorWork?.cancel();currentScene="success";indicator.showScene("success",looping:false)
+                let finish=DispatchWorkItem{[weak self] in guard let self,self.currentScene == "success",let state=self.latestState else{return};self.currentScene="";self.showActivity(self.displayActivity(state))}
+                completionIndicatorWork=finish;DispatchQueue.main.asyncAfter(deadline:.now()+1.05,execute:finish)
+            }
+        }
         else if previous?.activity.scene != "failure" && state.activity.scene == "failure" {setMotion("failed",replay:true)}
         else {syncMotion()}
         if !floatingTransition,!approvalPopout,compactWhileWorking,state.threadId == compactThreadID {
@@ -1411,7 +1462,11 @@ private final class NotchView:ImageDropView {
             var fields:[String:Any]=[:]
             if let initialPrompt{fields["audio"]=initialPrompt.base64EncodedString()}
             if let appshot{fields["appshot"]=["text":appshot.text,"paths":appshot.imagePath.map{[$0]} ?? []]}
-            bridge.send("workspace_voice_prompt",fields);return
+            let request=UUID().uuidString;workspaceVoiceRequest=request;fields["requestId"]=request
+            voiceLaunchTimeout?.cancel()
+            let timeout=DispatchWorkItem{[weak self] in guard let self,self.workspaceVoiceRequest == request else{return};self.failCompactVoice("Voice did not start. Open the workspace to check the provider connection.")}
+            voiceLaunchTimeout=timeout;DispatchQueue.main.asyncAfter(deadline:.now()+20,execute:timeout)
+            bridge.send("workspace_voice_prompt",fields);renderCompactVoice();return
         }
         guard let state=latestState else{miniUI.setCodexMessage("Codex is still connecting");return}
         guard !dictating,!finalizingDictation,!shortcutPreparation.busy,sendingPrompt == nil,expandedChatRequest == nil else{miniUI.setCodexMessage("Finish the current input before starting voice");return}
@@ -1561,10 +1616,11 @@ private final class NotchView:ImageDropView {
         if compactVoiceMode{renderCompactVoice();return}
         guard open else{return}
         if mediaVisible && activity.scene == "off"{return}
+        if currentScene == "success" && activity.scene == "off"{return}
         let provider=latestState?.activeTasks.first{$0.id == latestState?.threadId}?.agent ?? latestState?.selectedAgent ?? "codex"
-        let scene=EmbeddedCodeRuntime.shared.active && ["off","thinking"].contains(activity.scene) ? provider:IntegrationIcons.id(for:activity.text) ?? activity.scene
+        let scene=EmbeddedCodeRuntime.shared.active && activity.scene == "off" ? provider:IntegrationIcons.id(for:activity.text) ?? activity.scene
         guard currentScene != scene else{return};currentScene=scene;sounds.playScene(activity.scene)
-        if EmbeddedCodeRuntime.shared.active && ["off","thinking"].contains(activity.scene){indicator.showScene(provider,looping:activity.scene != "off")}
+        if EmbeddedCodeRuntime.shared.active && activity.scene == "off"{indicator.showScene(provider,looping:false)}
         else{switch activity.scene{case "off":indicator.hide();case "listening":indicator.startListening(useMicrophone:false);case "thinking":indicator.showThinking();default:indicator.showScene(scene)}}
     }
 
@@ -1599,14 +1655,14 @@ private final class NotchView:ImageDropView {
         let anchor=ConversationViewport.anchor(view,in:scroll)
         historyControl.update(hasMore:latestState?.historyHasMore == true,loading:earlierHistoryRequest != nil)
         let followBottom=forceBottom || ConversationViewport.isAtBottom(view,in:scroll)
-        let changed=conversationRenderer.render(history,threadID:latestState?.threadId,in:view,scroll:scroll,renderMath:renderMath,palette:assistantPalette,anchorCharacter:anchor?.character,collectRevealRanges:morphingText && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+        let changed=conversationRenderer.render(history,threadID:latestState?.threadId,in:view,scroll:scroll,renderMath:renderMath,palette:assistantPalette,anchorCharacter:anchor?.character,collectRevealRanges:morphingText && !EmbeddedCodeRuntime.shared.active && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
         guard conversationRenderer.didChange || forceBottom else{return}
         ConversationViewport.layout(view,in:scroll)
         if preserveViewport {ConversationViewport.revealOlderText(view,characters:conversationRenderer.prependedCharacterCount)}
         if !forceBottom,let anchor,(preserveViewport || !followBottom) {
             ConversationViewport.restore(anchor,adding:(conversationRenderer.mappedAnchorCharacter ?? anchor.character)-anchor.character,text:view,scroll:scroll)
         } else if changed && followBottom || forceBottom {scrollConversationToBottom(threadID:latestState?.threadId)}
-        if morphingText,!preserveViewport{ textReveal.reveal(conversationRenderer.revealRanges,in:view,loading:conversationRenderer.didChangeThread) }
+        if morphingText,!EmbeddedCodeRuntime.shared.active,!preserveViewport{ textReveal.reveal(conversationRenderer.revealRanges,in:view,loading:conversationRenderer.didChangeThread) }
     }
     private func scheduleMathRefresh(){
         guard renderMath,miniOpen,conversationRenderer.hasDirtyMath,mathRefreshWork == nil else{return}

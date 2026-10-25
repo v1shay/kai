@@ -30,7 +30,6 @@ enum UnifiedDraftHandoff {
             for (key,value) in defaults.persistentDomain(forName:"com.kai.notchprototype") ?? [:] where defaults.object(forKey:key) == nil && key != "experimentalWebMode"{defaults.set(value,forKey:key)}
             defaults.set(true,forKey:"unifiedPreferencesSeeded")
         }
-        if !defaults.bool(forKey:"unifiedPresentationV2"){defaults.set(true,forKey:"morphingConversationText");defaults.set(true,forKey:"unifiedPresentationV2")}
         window.orderOut(nil)
         let app=KaiPetApp();self.app=app
         app.applicationDidFinishLaunching(Notification(name:NSApplication.didFinishLaunchingNotification))
@@ -48,12 +47,17 @@ enum UnifiedDraftHandoff {
         guard data != lastState else{return}
         if let object=try? JSONSerialization.jsonObject(with:data) as? [String:Any],let type=object["type"] as? String{
             if type=="workspaceReveal"{app?.revealWorkspace();return}
+            if type=="workspaceDismiss"{app?.dismissUnifiedSurface();return}
+            if type=="probeDoubleCommand",CommandLine.arguments.contains("--unified-smoke-test"){app?.probeDoubleCommand();return}
+            if type=="quickVisibility",let visible=object["visible"] as? Bool{app?.setQuickChatVisible(visible);return}
             if type=="workspacePetSlot",let frame=object["rect"] as? [Double],frame.count==4{app?.workspacePetGeometry(CGRect(x:frame[0],y:frame[1],width:frame[2],height:frame[3]));return}
         }
         guard let state=try? JSONDecoder().decode(KaiState.self,from:data) else{onError?("Could not read Code’s owner state");fputs("Kai unified state decode failed\n",stderr);return}
         lastState=data;onState?(state)
     }
     var ready:Bool{active && onState != nil && lastState != nil}
+    func presentation(_ phase:String){sendAction("workspace_presentation",["phase":phase])}
+    func sendAction(_ action:String,_ fields:[String:Any]=[:]){var value=fields;value["action"]=action;if let data=try? JSONSerialization.data(withJSONObject:value){send(data)}}
     func diagnostics()->UInt32{app?.unifiedPresentationDiagnostics() ?? 0}
     func toggle(){app?.toggleUnifiedSurface()}
     func collapse(){app?.collapseWorkspace()}

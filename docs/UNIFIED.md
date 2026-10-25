@@ -20,8 +20,12 @@ before signing the bundle. On a fresh development machine, first run
 - Hold **Control–Option** for one second to open the mini chat. Continue the
   same hold to 1.8 seconds to morph the notch into the Code workspace. Hold it
   again in the workspace to return to the mini chat. Releasing cancels the hold.
-- Code's Quick Chat shortcut opens the mini chat. **↗ Notch** in the conversation
-  header, **Command–Option–N**, and the **海** menu also return to the notch.
+- Code's Quick Chat shortcut opens only Code's floating mini chat. Its show/hide
+  lifecycle suppresses the notch and cancels competing Control–Option holds.
+  **↗ Notch**, **Command–Option–N**, and the **海** menu return to the extended notch.
+- Double-Command dismisses the extended notch, floating Quick Chat, or large
+  workspace. The large view reverses its component/shape choreography into the
+  compact notch. Agent work continues while these views are dismissed.
 - The native glass transition hides the notch while Code is expanded. Kai's
   existing pet animation moves into the workspace header, sharing the same
   sprite layer. Reduced Motion uses a short fade.
@@ -105,19 +109,32 @@ remain available in the standalone Kai target.
 
 ## Window continuity
 
-`WorkspaceMorph` expands one temporary native glass mask from the visible notch
-rectangle into the saved workspace rectangle. Thirty-two fragments share one
-snapshot texture and dissolve during the expansion. The real Code window lays
-out once at its destination and fades through the glass; its renderer is never
-resized per frame. The notch, drop panel, and floating pets are hidden while
-Code owns the surface. The same Kai sprite layer moves into the workspace header.
+`WorkspaceMorph` clips the actual native Code window with a continuous contour
+whose initial shoulders exactly match `NotchSizing.path`. Both endpoint paths
+have corresponding segments, so the original notch outline interpolates into
+normal app corners. One glass backdrop bridges the surfaces behind the live UI.
+There are no fragmented snapshots. Code lays out once at `NSScreen.visibleFrame`,
+filling the working area between the menu bar and Dock without entering a
+separate fullscreen Space.
 
-Transitions are finite and reversible. Generation checks cancel stale work;
-an independent settling timer prevents an omitted AppKit animation callback
-from leaving the surface stuck. Display changes constrain the saved rectangle.
-Reduced Motion uses a short fade. Code's existing top-down transcript entrance
-is combined with a bounded text decode that settles to the original text and
-preserves UTF-8/link byte offsets. Idle text needs no animation frames.
+The real header, sidebar, transcript, inspectors, and composer enter in sequence
+using finite opacity and paint-offset transitions. Existing list entrances and
+text decode run inside that sequence. Dismissal retires the lower components
+first while the contour retracts into the notch. Revision checks retire stale
+work after interruptions; Reduced Motion uses a short fade. The original
+compact-to-extended notch animation remains intact, and its conversation does
+not receive the added workspace text overlay.
+
+Idle provider logos transition into Kai's native thinking scene. A done mark is
+shown only for a confirmed successful run. Sidebar labels share a consistent
+gutter and baseline; file-citation underlines cover the filename, leaving the
+icon, gutter, and file-action buttons clear.
+
+Voice shortcuts record first, then pass the exact audio/context through the
+matching navigation acknowledgement to Code's native voice session. Recorder
+resets do not publish an intermediate off state before recording or handoff.
+The compact surface retains ownership during backend startup. Refused startup
+returns an error acknowledgement and visible feedback rather than an empty notch.
 
 Project rows show their own chats in the notch. Model discovery runs off-thread
 for the selected available provider without requiring Code's picker to be open;
@@ -145,20 +162,20 @@ to the notch, and
 quits. Its log reports the owner handshake and morph result. It does not submit
 an agent prompt or answer a real approval.
 
-Recorded checks on 2026-10-24 for 0.2.0:
+Recorded checks on 2026-10-24 for 0.3.0:
 
-- Swift: 178 tests, one optional local-audio test skipped, zero failures.
-- Code: 714 checks verified, 11 ignored. The restricted full run passed 707;
-  seven clipboard/loopback-server checks passed when rerun with native access.
-- Two consecutive notch submissions reached a local Claude-protocol fixture,
-  produced native replies, and recorded confirmed successful outcomes.
-- Regression coverage includes project-filtered chats, provider model catalogs,
-  draft handoff/conflicts, exact run cancellation, background approvals,
-  native question forms, long-hold timing, and interrupted morph reversal.
+- Swift: 183 tests, one optional local-audio test skipped, zero failures.
+- Code: complete serial run, 718 passed and 11 ignored.
+- Every voice-shortcut action is covered through recording, context capture,
+  exact chat-selection acknowledgement, and first-audio handoff.
+- Runtime checks cover refused voice startup, two consecutive local-provider
+  submissions, draft conflicts, approvals, and native question forms.
+- Rendered native sidebar/citation fixtures verify icon gutters and filename-only
+  underlines using the production link attributes.
 - Release bundle: signature and all eight public native ABI exports verified.
-- Packaged 0.2.0 probe: owner handshake, notch-only launch, interrupted reversal,
-  only one visible surface, shared pet layer, repeat-open behavior, return to
-  notch, and visible compact indicator passed.
+- Packaged probe: morph reversal, maximized working area, shared pet,
+  repeat-open behavior, extended-notch return, the double-Command dismissal
+  handler, and exclusive native Quick Chat passed.
 
 Automated verification cannot establish subjective animation quality, actual
 microphone/TCC behavior, or every installed provider's live behavior. Those need

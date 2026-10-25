@@ -141,7 +141,12 @@ import AppKit
                 prefix.addAttributes(attributes,range:NSRange(location:0,length:prefix.length));content.insert(prefix,at:start)
             }
             characterOffset += 1
-            for (range,url) in rendered.1 {content.addAttributes([.link:url,.underlineStyle:NSUnderlineStyle.single.rawValue,.toolTip:url.isFileURL ? url.path:url.absoluteString],range:NSRange(location:start+range.location,length:range.length))}
+            for (range,url) in rendered.1 {
+                let linkRange=NSRange(location:start+range.location,length:range.length)
+                content.addAttributes([.link:url,.toolTip:url.isFileURL ? url.path:url.absoluteString],range:linkRange)
+                let gutter=(displayText as NSString).substring(with:range).hasPrefix("▧  ") ? 3:0
+                if range.length>gutter{content.addAttribute(.underlineStyle,value:NSUnderlineStyle.single.rawValue,range:NSRange(location:linkRange.location+gutter,length:linkRange.length-gutter))}
+            }
             for match in (block.kind == "activity" ? [] : pathRegex?.matches(in:displayText,range:NSRange(displayText.startIndex...,in:displayText)) ?? []) {
                 let raw=(displayText as NSString).substring(with:match.range).trimmingCharacters(in:CharacterSet(charactersIn:".,;:"))
                 let path=raw.hasPrefix("Users/") ? "/"+raw:raw

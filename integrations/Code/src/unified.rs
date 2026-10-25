@@ -16,7 +16,7 @@ struct Host {
     publish: Publish,
     levels: unsafe extern "C" fn(*const f32, usize),
     collapse: Collapse,
-    toggle: Collapse,
+    _toggle: Collapse,
     last: Vec<u8>,
     completed: Option<String>,
     error: Option<String>,
@@ -24,6 +24,7 @@ struct Host {
     reported_successes: std::collections::VecDeque<(String,String)>,
     finished: Vec<Value>,
     pet_rect:Option<[f32;4]>,
+    workspace_motion:workspace_motion::Transition,
 }
 
 extern "C" fn command(bytes: *const u8, count: usize) -> bool {
@@ -44,13 +45,6 @@ extern "C" fn command(bytes: *const u8, count: usize) -> bool {
 }
 pub(super) fn active() -> bool {
     HOST.with(|host| host.borrow().is_some())
-}
-pub(super) fn toggle() {
-    HOST.with(|host| {
-        if let Some(host) = host.borrow().as_ref() {
-            unsafe { (host.toggle)() }
-        }
-    })
 }
 pub(super) fn collapse() {
     HOST.with(|host| {
@@ -122,7 +116,7 @@ pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Resul
                 publish,
                 levels,
                 collapse,
-                toggle,
+                _toggle:toggle,
                 last: vec![],
                 completed: None,
                 error: None,
@@ -130,6 +124,7 @@ pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Resul
                 reported_successes: Default::default(),
                 finished: vec![],
                 pet_rect:None,
+                workspace_motion:Default::default(),
             })
         });
         let entity = window.update(cx, |_, window, cx| {
@@ -163,44 +158,52 @@ pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Resul
             let diagnostics:unsafe extern "C" fn()->u32=unsafe{std::mem::transmute(diagnostics)};
             anyhow::ensure!(unsafe{diagnostics()} & 3 == 2,"App did not launch as notch only");
             reveal();
-            let visible =
-                unsafe { libc::dlsym(library, c"kai_unified_workspace_visible".as_ptr()) };
-            anyhow::ensure!(!visible.is_null(), "Missing smoke visibility export");
-            let visible: unsafe extern "C" fn() -> bool = unsafe { std::mem::transmute(visible) };
             cx.spawn(async move |cx| {
-                Timer::after(Duration::from_millis(100)).await;
+                Timer::after(Duration::from_millis(120)).await;
                 let _=cx.update(|_|crate::unified::collapse());
-                Timer::after(Duration::from_millis(100)).await;
+                Timer::after(Duration::from_millis(80)).await;
                 let _=cx.update(|_|crate::unified::reveal());
-                Timer::after(Duration::from_millis(900)).await;
-                let _ = cx.update(|_| {
-                    assert!(unsafe { visible() }, "Workspace did not expand");
+                Timer::after(Duration::from_millis(1100)).await;
+                let _=cx.update(|_|{
                     let state=unsafe{diagnostics()};
-                    assert_eq!(state & 31,9,"Workspace must own the pet with notch and drop panel hidden");
-                    // Reopening an already visible workspace is immediate and never pending.
-                    crate::unified::reveal();
-                    assert_eq!(unsafe{diagnostics()} & 31,9);
+                    assert_eq!(state & 31,9,"Only the live workspace and shared pet may be visible");
+                    assert_ne!(state & 64,0,"Workspace must fill the menu-bar/Dock working area");
+                    crate::unified::reveal();assert_eq!(unsafe{diagnostics()} & 31,9);
                     crate::unified::collapse();
                 });
-                Timer::after(Duration::from_millis(900)).await;
-                let _ = cx.update(|cx| {
-                    assert!(
-                        !unsafe { visible() },
-                        "Workspace did not return to the notch"
-                    );
-                    let state=unsafe{diagnostics()};
-                    assert_eq!(state & 27,2,"Returning must restore only the notch and its original pet layer");
-                    assert_ne!(state & 32,0,"Compact status indicator must be visible");
-                    eprintln!("Kai unified smoke: owner handshake, notch-only launch, interrupted morph reversal, one visible surface, shared pet, repeat open, and round trip passed");
-                    cx.quit();
+                Timer::after(Duration::from_millis(850)).await;
+                let _=cx.update(|_|{
+                    assert_eq!(unsafe{diagnostics()} & 27,2,"Fold must restore the extended notch and pet");
+                    crate::unified::reveal();
                 });
-            })
-            .detach();
+                Timer::after(Duration::from_millis(1000)).await;
+                let _=cx.update(|_|emit(&json!({"type":"probeDoubleCommand"})));
+                Timer::after(Duration::from_millis(950)).await;
+                let _=cx.update(|cx|{
+                    assert_eq!(unsafe{diagnostics()} & 3,0,"Double Command must dismiss the large workspace without reopening mini chat");
+                    cx.update_global::<quick_chat::Controller,_>(|service,cx|service.toggle(cx).expect("Open native Quick Chat"));
+                });
+                Timer::after(Duration::from_millis(250)).await;
+                let _=cx.update(|cx|{
+                    let state=unsafe{diagnostics()};assert_ne!(state & 128,0,"Quick Chat was not opened");
+                    assert_eq!(state & 3,0,"Quick Chat must not also open the notch or workspace");
+                    cx.update_global::<quick_chat::Controller,_>(|service,cx|service.dismiss(cx));
+                });
+                Timer::after(Duration::from_millis(200)).await;
+                let _=cx.update(|cx|{
+                    assert_eq!(unsafe{diagnostics()} & 131,0,"Quick Chat dismissal must retire only its own surface");
+                    eprintln!("Kai unified smoke: continuous morph reversal, maximized working area, shared pet, repeat open, extended-notch return, double-Command dismissal, and exclusive native Quick Chat passed");cx.quit();
+                });
+            }).detach();
         }
         cx.spawn(async move |cx| {
             while let Ok(request) = receiver.recv().await {
                 if cx
                     .update(|cx| {
+                        if request["action"] == "quick_dismiss"{
+                            if cx.has_global::<quick_chat::Controller>(){cx.update_global::<quick_chat::Controller,_>(|service,cx|service.dismiss(cx));}
+                            return Ok(())
+                        }
                         window.update(cx, |this, window, cx| {
                             this.dispatch_unified(request, window, cx);
                         })
@@ -267,6 +270,16 @@ impl Orbit {
             && self.session_conflict.is_none()
     }
     fn dispatch_unified(&mut self, request: Value, window: &mut Window, cx: &mut Context<Self>) {
+        if request["action"] == "workspace_presentation"{
+            HOST.with(|host|{if let Some(host)=host.borrow_mut().as_mut(){host.workspace_motion.set(request["phase"].as_str().unwrap_or("hidden"))}});
+            if request["phase"] == "expand"{
+                self.project_reveal=self.motion.then(||ListReveal::new(Some(0)));
+                self.sessions_reveal=self.motion.then(||ListReveal::new(Some(0)));
+                self.transcript_reveal=self.motion.then(||ListReveal::new(None));
+                self.unified_text_decode=Default::default();
+            }
+            cx.notify();return
+        }
         let request_id = request["requestId"].as_str().unwrap_or("").to_owned();
         let fingerprint: [u8; 32] =
             Sha256::digest(serde_json::to_vec(&request).unwrap_or_default()).into();
@@ -577,6 +590,7 @@ impl Orbit {
                     self.request_handoff(AgentKind::Codex, window, cx);
                 }
                 self.start_voice_prompt(prompt, window, cx);
+                if self.voice_call.is_none(){return Err(self.notice.clone().unwrap_or_else(||"The native voice session could not start".into()))}
             }
             "workspace_voice_choice" => {
                 let voice = request["voice"].as_str().ok_or("Missing voice")?;
@@ -1176,4 +1190,26 @@ emit({'type':'result','subtype':'success','is_error':False,'result':'Native fixt
         }
         view.update(cx,|app,_|{let captured=std::fs::read_to_string(app.project.join("requests.jsonl")).unwrap();assert_eq!(captured.lines().count(),2);assert!(captured.contains("First notch prompt"));assert!(captured.contains("Second notch prompt"));});
     }
+}
+
+
+pub(super) fn workspace_frame(motion:bool)->workspace_motion::Frame{
+    HOST.with(|host|host.borrow().as_ref().map_or_else(workspace_motion::Frame::identity,|host|host.workspace_motion.frame(motion&&!native::reduced_motion())))
+}
+pub(super) fn quick_visibility(visible:bool){if active(){emit(&json!({"type":"quickVisibility","visible":visible}));}}
+pub(super) fn dismiss(){emit(&json!({"type":"workspaceDismiss"}));}
+
+#[cfg(test)]mod shortcut_start_tests{
+ use super::*;
+ use std::prelude::v1::test;
+ use gpui::TestAppContext;
+ #[gpui::test]fn refused_voice_start_is_an_error_acknowledgement(cx:&mut TestAppContext){
+  let(view,cx)=crate::ui_tests::fixture(cx);
+  view.update_in(cx,|app,window,cx|{
+   app.active=None;app.loading=false;app.agent=AgentKind::Codex;
+   let request=json!({"action":"workspace_voice_prompt","ownerToken":app.unified_token(),"requestId":"voice"});
+   let error=app.unified_command(&request,window,cx).unwrap_err();
+   assert!(error.contains("Install Codex"));assert!(app.voice_call.is_none());
+  });
+ }
 }

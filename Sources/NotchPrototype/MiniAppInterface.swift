@@ -158,28 +158,54 @@ private final class FilePreviewLayer:CALayer {
 }
 
 private final class ChatRowLayer:CALayer {
-    private let provider=CALayer()
-    private let hide=CATextLayer(),title=CATextLayer(),dots=(0..<3).map{_ in CALayer()},value:String,font=NSFont.systemFont(ofSize:8)
-    private var hovered=false,selected=false
-    init(_ value:String) {
-        self.value=value;super.init();masksToBounds=true;title.string=value;title.font=font;title.fontSize=8;title.foregroundColor=NSColor.white.withAlphaComponent(0.42).cgColor;title.contentsScale=NSScreen.main?.backingScaleFactor ?? 2;title.truncationMode = .end;addSublayer(title)
-        hide.string="×";hide.font=font;hide.fontSize=10;hide.foregroundColor=NSColor.white.withAlphaComponent(0.65).cgColor
-        hide.backgroundColor=NSColor.black.cgColor;hide.alignmentMode = .center;hide.contentsScale=NSScreen.main?.backingScaleFactor ?? 2;hide.opacity=0;hide.zPosition=1;addSublayer(hide)
-        addSublayer(provider)
-        for dot in dots{dot.isHidden=true;dot.backgroundColor=NSColor.white.withAlphaComponent(0.48).cgColor;dot.cornerRadius=0.9;dot.opacity=0.25;addSublayer(dot)}
+    private let provider=CALayer(),statusHost=CALayer(),hide=CATextLayer(),title=CATextLayer()
+    private let value:String,font=NSFont.systemFont(ofSize:8)
+    private var hovered=false,selected=false,running=false,lastRun:String?
+    private var statusEngine:NotchIndicatorEngine?,profile:PetGradientProfile?,settle:DispatchWorkItem?
+    init(_ value:String){
+        self.value=value;super.init();masksToBounds=true
+        title.string=value;title.font=font;title.fontSize=8;title.foregroundColor=NSColor.white.withAlphaComponent(0.42).cgColor;title.contentsScale=NSScreen.main?.backingScaleFactor ?? 2;title.truncationMode = .end;addSublayer(title)
+        hide.string="×";hide.font=font;hide.fontSize=10;hide.foregroundColor=NSColor.white.withAlphaComponent(0.65).cgColor;hide.backgroundColor=NSColor.black.cgColor;hide.alignmentMode = .center;hide.contentsScale=NSScreen.main?.backingScaleFactor ?? 2;hide.opacity=0;hide.zPosition=1
+        provider.opacity=0.65;statusHost.opacity=0;addSublayer(provider);addSublayer(statusHost);addSublayer(hide)
     }
     required init?(coder:NSCoder){fatalError()}
     override init(layer:Any){let source=layer as? ChatRowLayer;value=source?.value ?? "";super.init(layer:layer)}
-    override func layoutSublayers(){super.layoutSublayers();CATransaction.begin();CATransaction.setDisableActions(true);provider.frame=CGRect(x:0,y:0,width:11,height:11);for(i,dot) in dots.enumerated(){dot.frame=CGRect(x:CGFloat(i)*3.4,y:4.4,width:1.8,height:1.8)};title.frame=CGRect(x:13,y:1,width:max(0,bounds.width-25),height:10);hide.frame=CGRect(x:bounds.width-12,y:0,width:12,height:12);CATransaction.commit()}
-    func setHovered(_ active:Bool){guard active != hovered else{return};hovered=active;hide.opacity=active ? 1:0;title.removeAnimation(forKey:"marquee");let available=max(0,bounds.width-25),full=ceil((value as NSString).size(withAttributes:[.font:font]).width);CATransaction.begin();CATransaction.setDisableActions(true);title.setAffineTransform(.identity);title.truncationMode=active ? .none:.end;title.frame=CGRect(x:13,y:1,width:active ? max(available,full):available,height:10);CATransaction.commit();guard active,full>available else{return};let distance=full-available+3,a=CAKeyframeAnimation(keyPath:"transform.translation.x");a.values=[0,0,-distance,-distance,0];a.keyTimes=[0,0.12,0.48,0.72,1];a.duration=max(2.4,Double(distance)/11);a.repeatCount = .infinity;a.timingFunction=CAMediaTimingFunction(name:.easeInEaseOut);title.add(a,forKey:"marquee")}
-    func setSelected(_ selected:Bool){guard selected != self.selected else{return};self.selected=selected;title.foregroundColor=NSColor.white.withAlphaComponent(selected ? 0.9:0.42).cgColor}
-    @MainActor func setProvider(_ id:String?){provider.contents=ProviderIcons.image(id ?? "codex")?.cgImage(forProposedRect:nil,context:nil,hints:nil);provider.contentsGravity = .resizeAspect}
-    func setRunning(_ running:Bool){
-        let active=provider.animation(forKey:"workingPulse") != nil
-        guard active != running else{return};provider.removeAnimation(forKey:"workingPulse");provider.opacity=running ? 1:0.55
-        if running && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion{let pulse=CABasicAnimation(keyPath:"opacity");pulse.fromValue=0.5;pulse.toValue=1;pulse.duration=0.75;pulse.autoreverses=true;pulse.repeatCount = .infinity;provider.add(pulse,forKey:"workingPulse")}
+    override func layoutSublayers(){super.layoutSublayers();CATransaction.begin();CATransaction.setDisableActions(true)
+        provider.frame=CGRect(x:0,y:0,width:11,height:11);statusHost.frame=provider.frame
+        title.frame=CGRect(x:19,y:1,width:max(0,bounds.width-32),height:10);hide.frame=CGRect(x:bounds.width-12,y:0,width:12,height:12);CATransaction.commit()
     }
-
+    func setHovered(_ active:Bool){
+        guard active != hovered else{return};hovered=active;hide.opacity=active ? 1:0;title.removeAnimation(forKey:"marquee")
+        let available=max(0,bounds.width-32),full=ceil((value as NSString).size(withAttributes:[.font:font]).width)
+        CATransaction.begin();CATransaction.setDisableActions(true);title.setAffineTransform(.identity);title.truncationMode=active ? .none:.end;title.frame=CGRect(x:19,y:1,width:active ? max(available,full):available,height:10);CATransaction.commit()
+        guard active,full>available else{return};let distance=full-available+3,a=CAKeyframeAnimation(keyPath:"transform.translation.x");a.values=[0,0,-distance,-distance,0];a.keyTimes=[0,0.12,0.48,0.72,1];a.duration=max(2.4,Double(distance)/11);a.repeatCount = .infinity;a.timingFunction=CAMediaTimingFunction(name:.easeInEaseOut);title.add(a,forKey:"marquee")
+    }
+    func setSelected(_ selected:Bool){guard selected != self.selected else{return};self.selected=selected;title.foregroundColor=NSColor.white.withAlphaComponent(selected ? 0.9:0.42).cgColor}
+    @MainActor func setProvider(_ id:String?,profile:PetGradientProfile?){
+        self.profile=profile;provider.contents=ProviderIcons.image(id ?? "codex")?.cgImage(forProposedRect:nil,context:nil,hints:nil);provider.contentsGravity = .resizeAspect
+        if let profile{statusEngine?.setProfile(profile,wave:false)}
+    }
+    private func fade(_ layer:CALayer,to value:Float){
+        let animation=CABasicAnimation(keyPath:"opacity");animation.fromValue=layer.presentation()?.opacity ?? layer.opacity;animation.toValue=value;animation.duration=NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0.1:0.24;animation.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.84,0.2,1)
+        CATransaction.begin();CATransaction.setDisableActions(true);layer.opacity=value;CATransaction.commit();layer.add(animation,forKey:"statusTransition")
+    }
+    @MainActor func setRunning(_ running:Bool,runID:String?,successfulRuns:[String]){
+        if running{lastRun=runID}
+        guard running != self.running else{return};self.running=running;settle?.cancel();settle=nil
+        if statusEngine == nil{
+            let engine=NotchIndicatorEngine();engine.setAccentVisibility(left:false,right:false)
+            if let profile{engine.setProfile(profile,wave:false)}
+            engine.layer.position=CGPoint(x:5.5,y:5.5);engine.layer.setAffineTransform(CGAffineTransform(scaleX:11/28,y:11/28));statusHost.addSublayer(engine.layer);statusEngine=engine
+        }
+        fade(provider,to:0);fade(statusHost,to:1)
+        if running{statusEngine?.showThinking()}
+        else{
+            guard let lastRun,successfulRuns.contains(lastRun) else{statusEngine?.hide();fade(statusHost,to:0);fade(provider,to:0.65);return}
+            statusEngine?.showScene("success",looping:false)
+            let work=DispatchWorkItem{[weak self] in guard let self,!self.running else{return};self.fade(self.statusHost,to:0);self.fade(self.provider,to:0.65);self.statusEngine?.hide()}
+            settle=work;DispatchQueue.main.asyncAfter(deadline:.now()+1.05,execute:work)
+        }
+    }
 }
 
 private final class AttachmentLayer:CALayer {
@@ -227,6 +253,7 @@ private final class AttachmentLayer:CALayer {
     private var sidebarContentHeight:CGFloat=0
     private var elsewhere=[KaiActiveTask]()
     var renderedSidebarRowCount:Int {projectRows.count+chatRows.count+standaloneRows.count+activeRows.count+codeRows.count}
+    private var rowProfile:PetGradientProfile?
     private var fileGlyphColors=[NSColor.systemBlue.cgColor,NSColor.systemPurple.cgColor,NSColor.white.cgColor]
     private var actionHits=[(CGRect,String)]()
     private weak var hoveredAttachment:AttachmentLayer?
@@ -322,7 +349,7 @@ private final class AttachmentLayer:CALayer {
             else {row=ChatRowLayer(name);row.name=name;left.addSublayer(row)}
             setFrame(row,rect,animated:animated);row.setSelected(id == selectedThread)
             let agent=(chats+standaloneChats+codeChats).first{$0.id==id}?.agent ?? elsewhere.first{$0.id==id}?.agent ?? ProviderIcons.identifier(name) ?? "codex"
-            row.setProvider(agent);row.setRunning(running)
+            row.setProvider(agent,profile:rowProfile);row.setRunning(running,runID:modelState?.activeTasks.first{$0.id == id}?.runId,successfulRuns:(modelState?.finishedTasks ?? []).filter{$0.id == id}.compactMap(\.runId))
             return (row,id)
         }
         setFrame(newRow,CGRect(x:5,y:cursor-12,width:leftWidth-10,height:11),animated:animated);cursor-=21
@@ -666,6 +693,7 @@ private final class AttachmentLayer:CALayer {
     func setVisible(_ visible:Bool,duration:Double) { if !visible{handleHover(nil)};let fade=CABasicAnimation(keyPath:"opacity");fade.fromValue=layer.presentation()?.opacity ?? layer.opacity;fade.toValue=visible ? 1:0;fade.duration=duration*0.72;fade.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.65,0.25,1);CATransaction.begin();CATransaction.setDisableActions(true);layer.opacity=visible ? 1:0;CATransaction.commit();layer.add(fade,forKey:"visibility");notifyPreviewContent() }
 
     func setProfile(_ profile:PetGradientProfile,animated:Bool) {
+        rowProfile=profile
         let s=profile.gradients.ambient.stops;guard !s.isEmpty else{return};let c=[s.first!,s[s.count/2],s.last!].map{color($0.color)},radial=c.sorted{brightness($0)<brightness($1)};fileGlyphColors=c.map{readable($0)};fileRows.forEach{$0.setColors(fileGlyphColors,animated:animated)};animate(input,to:[alpha(c[0],0.15),alpha(c[1],0.065),alpha(c[2],0.1)],animated ? 0.72:0);animate(response,to:c.map{alpha(readable($0),0.92)},animated ? 0.72:0);animate(send,to:[mix(radial[2],NSColor.white.cgColor,0.2),mix(radial[1],NSColor.black.cgColor,0.16),mix(radial[0],NSColor.black.cgColor,0.58)],animated ? 0.72:0)
         CATransaction.begin();CATransaction.setDisableActions(true);input.borderColor=alpha(c[2],0.22);command.backgroundColor=alpha(c[0],0.14);command.borderColor=alpha(c[2],0.22);send.borderColor=NSColor.white.withAlphaComponent(0.36).cgColor;CATransaction.commit()
     }
