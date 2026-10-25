@@ -19,7 +19,11 @@ before signing the bundle. On a fresh development machine, first run
 
 - Hold **Control–Option** for one second to open the mini chat. Continue the
   same hold to 1.8 seconds to morph the notch into the Code workspace. Hold it
-  again in the workspace to return to the mini chat. Releasing cancels the hold.
+  again in the foreground workspace to fold to the mini chat. With Code open
+  behind another application, the normal hold overlays the extended notch while
+  retaining Code’s existing window and selected chat. The next hold brings that
+  same window forward through the original morph and staged UI entrance.
+  Releasing cancels the hold.
 - Code's Quick Chat shortcut opens only Code's floating mini chat. Its show/hide
   lifecycle suppresses the notch and cancels competing Control–Option holds.
   **↗ Notch**, **Command–Option–N**, and the **海** menu return to the extended notch.
@@ -36,8 +40,10 @@ before signing the bundle. On a fresh development machine, first run
   approvals can be approved once, declined, or stopped in the compact popout.
   **Review…** opens native controls for the provider's exact choices and question
   forms, including multiple selections and secure text fields. Pending requests
-  automatically open Kai’s native controls above the notch, workspace, or Quick
-  Chat. The inbox’s Next control cycles requests without changing chats.
+  automatically open Kai’s native controls while the Code workspace is in the
+  background. Foreground Code retains its native review UI. Window/application
+  focus notifications route an already-pending request without waiting for a
+  new agent event. The inbox’s Next control cycles requests without changing chats.
 - Existing Command/Fn/Option dictation shortcuts remain available. Image drops
   and screen context use Code's attachment import and native submission path.
   The voice button uses Code's single Codex call. Hold-to-voice passes the
@@ -227,3 +233,22 @@ Final 0.4.0 checks: 185 Swift tests (one optional local-audio fixture skipped),
 727 Code tests (11 opt-in tests excluded), the isolated native event harness,
 and the signed release morph/Quick Chat probe. The three installed native sandbox
 checks and scoped installed Codex/Claude checks passed separately.
+
+### 0.4.1 background continuity
+
+Opening the extended notch from another application retains the actual Code
+window in place. It does not order Code out, activate it, reload the selected
+chat, or rebuild its workspace. Dismissing the overlay leaves Code open.
+Returning uses the same live window and existing continuous contour, with real
+components replaying their entrance from top to bottom. Foreground folding and
+double-Command dismissal retain their original animations.
+
+Automatic Kai approval popouts follow workspace keyboard/application focus.
+Foreground Code keeps its own review surface; switching away presents a pending
+request in Kai, even with no new owner event. Returning to Code retires the
+popout. Review forms retain their local input if reopened for the same request.
+The isolated native harness verifies retained window identity/frame, overlay
+dismissal, replayed morph, foreground approval suppression, background approval
+routing through activation notifications, and repeated focus changes for the
+same pending request. Swift: 187 tests, one optional audio fixture skipped.
+Rust: six motion regressions and the native owner regression suite.

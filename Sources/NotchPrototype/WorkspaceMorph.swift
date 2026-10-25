@@ -76,14 +76,14 @@ import AppKit
         animate(glassMask,from:contour.map{Self.convert($0){CGPoint(x:$0.x-union.minX,y:$0.y-union.minY)}} ?? Self.outline(source.offsetBy(dx:-union.minX,dy:-union.minY),notch:expanding,radius:expanding ? 14:10),to:Self.outline(target.offsetBy(dx:-union.minX,dy:-union.minY),notch:!expanding,radius:expanding ? 10:14),duration:duration,delay:delay)
         window.makeKeyAndOrderFront(nil);panel.order(.below,relativeTo:window.windowNumber)
     }
-    func expand(_ window:NSWindow,from source:CGRect,completion:@escaping()->Void={}){
-        if expanded && !transitioning{window.makeKeyAndOrderFront(nil);completion();return}
+    func expand(_ window:NSWindow,from source:CGRect,replay:Bool=false,completion:@escaping()->Void={}){
+        if expanded && !transitioning && !replay{window.makeKeyAndOrderFront(nil);completion();return}
         let contour=transitioning ? liveContour():nil
         let start=contour?.boundingBoxOfPath ?? source
         revision += 1;let token=revision;clearVisuals();self.window=window;expanded=true;transitioning=true
         let screen=NSScreen.screens.first{$0.frame.contains(CGPoint(x:source.midX,y:source.maxY-1))} ?? window.screen ?? NSScreen.main
         let target=Self.destination(saved:nil,screen:screen?.visibleFrame ?? window.frame)
-        window.setFrame(target,display:true);onPresentation?("expand")
+        window.setFrame(target,display:true);onPresentation?(replay ? "reopen":"expand")
         let reduce = !motionEnabled || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         window.alphaValue=1
         if !reduce{prepare(window,from:start,to:target,duration:0.68,expanding:true,contour:contour)}else{
@@ -110,6 +110,12 @@ import AppKit
             guard let self,self.revision==token,let window else{return}
             window.orderOut(nil);self.transitioning=false;self.clearVisuals();window.alphaValue=1;self.onPresentation?("hidden");completion()
         };delayed=finish;DispatchQueue.main.asyncAfter(deadline:.now()+(reduce ? 0.12:Self.collapseDuration),execute:finish)
+    }
+    /// Restore the real workspace in place without ordering or activating it.
+    /// A notch overlay must not close a window behind another application.
+    func retainOpen(_ window:NSWindow){
+        if expanded && !transitioning{return}
+        revision += 1;clearVisuals();self.window=window;expanded=true;transitioning=false;window.alphaValue=1;onPresentation?("visible")
     }
     func park(_ window:NSWindow){revision += 1;clearVisuals();expanded=false;transitioning=false;window.orderOut(nil);window.alphaValue=1;onPresentation?("hidden")}
     func cancel(){revision += 1;transitioning=false;clearVisuals();window?.alphaValue=1}

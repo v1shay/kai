@@ -285,7 +285,7 @@ impl Orbit {
     fn dispatch_unified(&mut self, request: Value, window: &mut Window, cx: &mut Context<Self>) {
         if request["action"] == "workspace_presentation"{
             HOST.with(|host|{if let Some(host)=host.borrow_mut().as_mut(){host.workspace_motion.set_at(request["phase"].as_str().unwrap_or("hidden"),request["started"].as_f64().filter(|t|t.is_finite()&&*t>0.).unwrap_or_else(workspace_motion::now))}});
-            if request["phase"] == "expand"{
+            if matches!(request["phase"].as_str(),Some("expand"|"reopen")){
                 self.project_reveal=self.motion.then(||ListReveal::new(Some(0)));
                 self.sessions_reveal=self.motion.then(||ListReveal::new(Some(0)));
                 self.transcript_reveal=self.motion.then(||ListReveal::new(None));

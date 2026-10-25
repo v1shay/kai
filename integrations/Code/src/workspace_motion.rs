@@ -9,7 +9,7 @@ pub(super) fn now()->f64{let mut t:libc::timespec=unsafe{std::mem::zeroed()};uns
 #[derive(Clone,Copy,Default)]enum Phase{#[default] Hidden,Opening,Closing}
 #[derive(Clone,Copy)]pub(super) struct Frame{elapsed:f32,phase:Phase,from:[f32;5],enabled:bool,motion:bool}
 impl Transition{
- pub fn set_at(&mut self,phase:&str,started:f64){let old=self.frame(true);self.from=PARTS.map(|part|old.progress(part));self.phase=match phase{"expand"=>Phase::Opening,"collapse"=>Phase::Closing,_=>Phase::Hidden};self.started=started;}
+ pub fn set_at(&mut self,phase:&str,started:f64){let old=self.frame(true);self.from=PARTS.map(|part|old.progress(part));self.phase=match phase{"expand"|"reopen"|"visible"=>Phase::Opening,"collapse"=>Phase::Closing,_=>Phase::Hidden};if phase=="reopen"{self.from=[0.;5];}if phase=="visible"{self.from=[1.;5];}self.started=started;}
  pub fn frame(&self,motion:bool)->Frame{Frame{elapsed:(now()-self.started).max(0.) as f32,phase:self.phase,from:self.from,enabled:true,motion}}
 }
 impl Frame{
@@ -30,5 +30,6 @@ impl Frame{
  #[test]fn dismissal_retires_composer_before_header(){let f=Frame{elapsed:0.08,phase:Phase::Closing,from:[1.;5],enabled:true,motion:true};assert!(f.progress(Part::Composer)<f.progress(Part::Header));}
  #[test]fn reversal_starts_at_each_components_current_progress(){let mut t=Transition::default();t.set_at("expand",now()-0.3);let before=t.frame(true);t.set_at("collapse",now());let after=t.frame(true);for p in PARTS{assert!((after.progress(p)-before.progress(p)).abs()<0.001);}}
  #[test]fn receiver_delay_uses_origin_clock(){let mut t=Transition::default();t.set_at("expand",now()-1.);assert!(!t.frame(true).animating());assert_eq!(t.frame(true).progress(Part::Composer),1.);}
+ #[test]fn retained_workspace_is_full_and_reopening_replays_component_entrances(){let mut t=Transition::default();t.set_at("visible",now());for p in PARTS{assert_eq!(t.frame(true).progress(p),1.);}t.set_at("reopen",now());for p in PARTS{assert_eq!(t.frame(true).progress(p),0.);}assert!(t.frame(true).animating());}
  #[test]fn reduced_motion_and_standalone_have_no_choreography_loop(){let mut f=Frame::identity();assert!(!f.animating());assert_eq!(f.progress(Part::Content),1.);f.enabled=true;f.phase=Phase::Hidden;assert_eq!(f.progress(Part::Header),0.);assert!(!f.animating());}
 }

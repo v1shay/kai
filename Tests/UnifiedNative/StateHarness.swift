@@ -22,7 +22,9 @@ private func member(_ object:Any,_ name:String)->Any?{Mirror(reflecting:object).
     defaults.set(false,forKey:"youtubeMedia");defaults.set(false,forKey:"spotifyMedia")
     let window=NSWindow(contentRect:CGRect(x:100,y:100,width:1000,height:700),styleMask:[.titled],backing:.buffered,defer:false)
     window.isReleasedWhenClosed=false
-    let runtime=EmbeddedCodeRuntime.shared;runtime.start(window:window,command:auditCommand)
+    let runtime=EmbeddedCodeRuntime.shared
+    var foreground=false;runtime.workspaceFocusProvider={foreground}
+    runtime.start(window:window,command:auditCommand)
     guard let app=member(runtime,"app") as? KaiPetApp,let pets=member(app,"floatingTasks") as? FloatingTaskPets else{fatalError("Audit reflection failed")}
     defer{
         app.applicationWillTerminate(Notification(name:NSApplication.willTerminateNotification))
@@ -77,16 +79,33 @@ private func member(_ object:Any,_ name:String)->Any?{Mirror(reflecting:object).
     ui.setState(viewState(run:nil,success:true))
     precondition(engine.mode != .off,"Late confirmed outcome lost its done badge")
 
-    // Critical approval state must show the native, clickable controls even when
-    // the workspace or floating Quick Chat owns ordinary presentation.
+    // A workspace behind another application stays open while its notch overlays
+    // that application. Returning reuses the same window and native morph.
     app.revealWorkspace()
     let until=Date().addingTimeInterval(0.95);while Date()<until{RunLoop.current.run(until:Date().addingTimeInterval(0.01))}
+    let retainedFrame=window.frame,retainedWindow=window.windowNumber
+    app.collapseWorkspace()
+    precondition(window.isVisible && window.frame==retainedFrame && window.windowNumber==retainedWindow,"Overlay hid or replaced Code")
+    precondition(member(app,"workspaceNotchOverlay") as? Bool == true && member(app,"miniOpen") as? Bool == true,"Background shortcut did not open extended notch")
+    app.dismissUnifiedSurface();precondition(window.isVisible,"Dismissing the overlay closed Code")
+    app.collapseWorkspace();app.expandWorkspace()
+    precondition(commands.last?["phase"] as? String == "reopen","Returning to Code skipped the native morph")
+    let reopened=Date().addingTimeInterval(0.95);while Date()<reopened{RunLoop.current.run(until:Date().addingTimeInterval(0.01))}
+    precondition(window.isVisible && window.windowNumber==retainedWindow && window.frame==retainedFrame,"Morph return replaced the workspace")
+    foreground=true
     var approval=try JSONSerialization.jsonObject(with:packet(scene:"permission",run:"5")) as! [String:Any]
     approval["approval"]=true;approval["approvalThreadId"]="code:fixture";approval["approvalRequestId"]="5:opaque";approval["approvalSummary"]="Run cargo test";approval["approvalCount"]=2
     approval["nativeReview"]=["owner":"code:fixture","token":"5:opaque","title":"Permission","detail":"cargo test","choices":[["id":"accept","label":"Allow once"],["id":"decline","label":"Decline"]],"questions":[]]
     runtime.receive(try JSONSerialization.data(withJSONObject:approval))
     guard let controls=member(app,"approvalUI") as? CompactApprovalView else{fatalError("Missing approval UI")}
-    precondition(controls.window?.isVisible == true && controls.window?.ignoresMouseEvents == false,"Workspace hid approval controls")
+    precondition(member(app,"approvalPopout") as? Bool == false,"Foreground Code approval stole the native review surface")
+    foreground=false;NotificationCenter.default.post(name:NSApplication.didResignActiveNotification,object:NSApp)
+    RunLoop.current.run(until:Date().addingTimeInterval(0.03))
+    precondition(controls.window?.isVisible == true && controls.window?.ignoresMouseEvents == false,"Background approval never reached Kai")
+    foreground=true;app.workspaceFocusChanged()
+    precondition(member(app,"approvalPopout") as? Bool == false,"Returning to Code left a duplicate notch approval")
+    foreground=false;app.workspaceFocusChanged()
+    precondition(controls.window?.isVisible == true,"Same pending approval did not follow Code back into the background")
     precondition(controls.request?.thread == "code:fixture" && controls.request?.id == "5:opaque")
     controls.onDecision?("approve",controls.request!)
     precondition(commands.last?["action"] as? String == "approve" && commands.last?["approvalRequestId"] as? String == "5:opaque","Native UI lost exact approval token")
@@ -118,6 +137,6 @@ private func member(_ object:Any,_ name:String)->Any?{Mirror(reflecting:object).
     precondition(commands.filter{$0["action"] as? String == "attachments"}.count == beforeImports,"Owner thumbnail reimported its original")
     guard let mini=member(app,"miniUI") as? MiniAppInterface else{fatalError("Missing mini UI")}
     mini.onSend?();precondition(commands.last?["action"] as? String == "send" && commands.last?["text"] as? String == "","Image-only draft could not send from notch")
-    print("Native state regression: failure/cancellation, late success, exclusive Quick Chat, visible clickable approvals over both surfaces, exact approval decisions, inbox cycling, incremental history, and image-only owner drafts passed")
+    print("Native state regression: failure/cancellation, late success, exclusive Quick Chat, retained background workspace, replayed morph, focus-aware clickable approvals, exact approval decisions, inbox cycling, incremental history, and image-only owner drafts passed")
  }
 }

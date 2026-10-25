@@ -17,6 +17,8 @@ enum UnifiedDraftHandoff {
     private var command:Command?
     private var app:KaiPetApp?
     weak var workspaceWindow:NSWindow?
+    var workspaceFocusProvider:(()->Bool)?
+    var workspaceIsForeground:Bool{workspaceFocusProvider?() ?? (NSApp.isActive && workspaceWindow?.isVisible == true && workspaceWindow?.isKeyWindow == true)}
     var onLevels:(([CGFloat])->Void)?
     var onState:((KaiState)->Void)?
     var onError:((String)->Void)?

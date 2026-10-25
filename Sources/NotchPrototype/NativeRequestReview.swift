@@ -23,6 +23,9 @@ struct KaiNativeReview:Decodable,Equatable {
     private let status=NSTextField(wrappingLabelWithString:"")
     private var send:((String,[String:Any])->Void)?
     func present(_ review:KaiNativeReview,from anchor:NSView,send:@escaping(String,[String:Any])->Void) {
+        if self.review?.token == review.token,self.review?.owner == review.owner,popover.contentViewController != nil{
+            self.send=send;popover.show(relativeTo:anchor.bounds,of:anchor,preferredEdge:.minY);return
+        }
         popover.close();self.review=review;self.send=send;pending=nil
         fields.removeAll();options.removeAll();buttons=[];choiceIDs=[:]
         let controller=NSViewController(),effect=NSVisualEffectView()
@@ -85,6 +88,7 @@ struct KaiNativeReview:Decodable,Equatable {
         var fields=answer;fields["requestId"]=id;fields["threadId"]=review.owner;fields["approvalRequestId"]=review.token
         send?("native_answer",fields)
     }
+    func dismiss(){popover.close()}
     func update(_ state:KaiState){
         guard let review else{return}
         if state.nativeReview?.token != review.token{popover.close();self.review=nil;return}

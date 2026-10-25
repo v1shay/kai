@@ -25,6 +25,26 @@ final class WorkspaceHoldGestureTests:XCTestCase {
         XCTAssertNil(hold.advance(at:5));XCTAssertEqual(hold.advance(at:5.81),.fold)
         XCTAssertNil(hold.advance(at:7))
     }
+    func testBackgroundWorkspaceOpensMiniAndNextHoldReturnsToWorkspace(){
+        var hold=WorkspaceHoldGesture();hold.begin(at:0,workspace:false)
+        XCTAssertEqual(hold.advance(at:1),.mini)
+        hold.cancel();hold.begin(at:2,workspace:false,overlay:true)
+        XCTAssertEqual(hold.advance(at:3),.workspace);XCTAssertNil(hold.advance(at:4))
+    }
+    @MainActor func testExistingBackgroundWindowReplaysTheSameMorphWithoutClosing()async throws{
+        _=NSApplication.shared
+        let window=NSWindow(contentRect:CGRect(x:50,y:100,width:700,height:500),styleMask:[.titled],backing:.buffered,defer:false);window.isReleasedWhenClosed=false
+        defer{window.orderOut(nil)}
+        let morph=WorkspaceMorph(),notch=CGRect(x:500,y:800,width:400,height:300)
+        var phases=[String]();morph.onPresentation={phases.append($0)}
+        morph.expand(window,from:notch);try await Task.sleep(nanoseconds:950_000_000)
+        let frame=window.frame;morph.retainOpen(window)
+        XCTAssertTrue(window.isVisible);XCTAssertTrue(morph.expanded);XCTAssertEqual(window.frame,frame)
+        morph.expand(window,from:notch,replay:true)
+        XCTAssertTrue(morph.transitioning);XCTAssertEqual(phases.last,"reopen")
+        try await Task.sleep(nanoseconds:950_000_000)
+        XCTAssertTrue(window.isVisible);XCTAssertEqual(window.frame,frame);XCTAssertFalse(morph.transitioning)
+    }
     func testDelayedMainThreadCannotOpenMiniAfterWorkspace(){
         var hold=WorkspaceHoldGesture();hold.begin(at:0,workspace:false)
         XCTAssertEqual(hold.advance(at:3),.workspace);XCTAssertNil(hold.advance(at:3.1))

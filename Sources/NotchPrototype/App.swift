@@ -193,6 +193,8 @@ private final class NotchView:ImageDropView {
     private let workspaceMorph=WorkspaceMorph()
     private var quickChatVisible=false,workspaceVoiceRequest:String?
     private var completionIndicatorWork:DispatchWorkItem?
+    private var workspaceFocusRefreshPending=false
+    private var workspaceNotchOverlay=false
     private var workspaceHold=WorkspaceHoldGesture(),workspaceHoldJobs=[DispatchWorkItem]()
     private let workspacePet=WorkspacePetView(frame:.zero)
     private var workspacePetMenu:NSMenu?,workspacePetSlot=CGRect(x:215,y:36,width:48,height:34)
@@ -483,6 +485,8 @@ private final class NotchView:ImageDropView {
             if e.type == .flagsChanged {self?.flags(e)}
             else {self?.cancelShortcutHold();self?.cancelWorkspaceHold();self?.commandDismissGesture.cancel();self?.lastControlTap=0;if self?.voicePrompt.phase == .recording {self?.endCompactVoice()}}
         }
+        for name in [NSWindow.didBecomeKeyNotification,NSWindow.didResignKeyNotification,NSApplication.didBecomeActiveNotification,NSApplication.didResignActiveNotification]{NotificationCenter.default.addObserver(self,selector:#selector(scheduleWorkspaceFocusRefresh),name:name,object:nil)}
+        NSWorkspace.shared.notificationCenter.addObserver(self,selector:#selector(scheduleWorkspaceFocusRefresh),name:NSWorkspace.didActivateApplicationNotification,object:nil)
         dragMonitor=NSEvent.addGlobalMonitorForEvents(matching:[.leftMouseDragged,.leftMouseUp]){[weak self] event in DispatchQueue.main.async{self?.globalDrag(event)}}
         NotificationCenter.default.addObserver(self, selector: #selector(placePanel),
             name: NSApplication.didChangeScreenParametersNotification, object: nil)
@@ -491,7 +495,7 @@ private final class NotchView:ImageDropView {
         DistributedNotificationCenter.default().addObserver(self,selector:#selector(previewCompactApproval),name:NSNotification.Name("com.kai.approval.preview"),object:nil)
     }
 
-    func applicationWillTerminate(_ notification:Notification){cancelWorkspaceHold();workspaceMorph.cancel();textReveal.finish();petAppIcon.stop();floatingTasks.stop();imageEncodingWork?.cancel();voicePrompt.cancel();voiceLaunchTimeout?.cancel();shortcutPreparation.cancel();cancelShortcutHold();mediaReleaseWork?.cancel();chatVoice.stop();dictation.cancel();speech.stop();media.stop();artworkTask?.cancel();bridge.stop();attachmentFiles.forEach{try? FileManager.default.removeItem(at:$0)}}
+    func applicationWillTerminate(_ notification:Notification){NSWorkspace.shared.notificationCenter.removeObserver(self);NotificationCenter.default.removeObserver(self);cancelWorkspaceHold();workspaceMorph.cancel();textReveal.finish();petAppIcon.stop();floatingTasks.stop();imageEncodingWork?.cancel();voicePrompt.cancel();voiceLaunchTimeout?.cancel();shortcutPreparation.cancel();cancelShortcutHold();mediaReleaseWork?.cancel();chatVoice.stop();dictation.cancel();speech.stop();media.stop();artworkTask?.cancel();bridge.stop();attachmentFiles.forEach{try? FileManager.default.removeItem(at:$0)}}
     @objc private func codexPreview(_ note:Notification){guard let path=note.userInfo?["path"] as? String else{return};pinned=true;setOpen(true,mini:true,userInitiated:true);miniUI.previewFile(URL(fileURLWithPath:(path as NSString).expandingTildeInPath))}
 
     private func buildMenu() {
@@ -818,7 +822,7 @@ private final class NotchView:ImageDropView {
             holdWork?.cancel();holdWork=nil;cancelWorkspaceHold()
             if miniChord {
                 if EmbeddedCodeRuntime.shared.active {
-                    workspaceHold.begin(at:now,workspace:workspaceMorph.expanded)
+                    workspaceHold.begin(at:now,workspace:workspaceMorph.expanded && workspaceIsForeground,overlay:workspaceNotchOverlay && miniOpen)
                     for delay in [WorkspaceHoldGesture.miniDelay,WorkspaceHoldGesture.workspaceDelay]{
                         let job=DispatchWorkItem{[weak self] in
                             guard let self,self.optionDown,self.controlDown else{return}
@@ -834,7 +838,7 @@ private final class NotchView:ImageDropView {
         }
     }
     private func handleCommandDismiss(down:Bool,bare:Bool,at time:TimeInterval)->Bool{
-        guard commandDismissGesture.update(down:down,eligible:bare && (open || workspaceMorph.expanded || workspaceMorph.transitioning || quickChatVisible),at:time) else{return false}
+        guard commandDismissGesture.update(down:down,eligible:bare && (open || (workspaceMorph.expanded && workspaceIsForeground) || workspaceMorph.transitioning || quickChatVisible),at:time) else{return false}
         cancelShortcutHold();cancelWorkspaceHold();holdWork?.cancel();dismissNotchView();return true
     }
     func probeDoubleCommand(){
@@ -926,6 +930,9 @@ private final class NotchView:ImageDropView {
     func dismissUnifiedSurface(){dismissNotchView()}
     private func dismissNotchView(){
         cancelWorkspaceHold()
+        if workspaceNotchOverlay{
+            closeNotch();return
+        }
         if quickChatVisible{EmbeddedCodeRuntime.shared.sendAction("quick_dismiss");return}
         if workspaceMorph.expanded || workspaceMorph.transitioning{dismissWorkspace();return}
         if approvalPopout{dismissCompactApproval();return}
@@ -991,7 +998,9 @@ private final class NotchView:ImageDropView {
     }
 
     private func expandToRunningChat(){
+        prepareNotchOverlay()
         if compactVoiceMode {expandVoiceChat();return}
+        if workspaceNotchOverlay{pinned=true;compactWhileWorking=false;setOpen(true,mini:true,userInitiated:true);return}
         let preferred=latestState?.activeTasks.first(where:{$0.id == floatingFocus})
         let target=preferred.map{(id:$0.id,name:$0.name)} ?? latestState.flatMap{RunningChatSelection.target(in:$0)}
         pinned=true;setOpen(true,mini:true)
@@ -1083,28 +1092,33 @@ private final class NotchView:ImageDropView {
 
     func showUnifiedNotchOnLaunch(){pinned=true;setOpen(true,mini:false,userInitiated:true)}
     func toggleUnifiedSurface(){
-        if workspaceMorph.expanded{collapseWorkspace()}
+        if workspaceNotchOverlay && miniOpen{expandWorkspace()}
+        else if workspaceMorph.expanded{collapseWorkspace()}
         else{pinned=true;compactWhileWorking=false;setOpen(true,mini:true,userInitiated:true)}
     }
     @objc func expandWorkspace(){
         guard EmbeddedCodeRuntime.shared.active,let window=EmbeddedCodeRuntime.shared.workspaceWindow,panel != nil else{return}
         miniUI.cancelPending();finishExpandedChatLoading()
-        if workspaceMorph.expanded{window.makeKeyAndOrderFront(nil);return}
+        if workspaceMorph.expanded && workspaceIsForeground && !workspaceNotchOverlay && !workspaceMorph.transitioning{window.makeKeyAndOrderFront(nil);return}
         let draft=composerField?.stringValue ?? ""
         if draft != unifiedDraftBase{bridge.send("draft",["text":draft])}
         revealWorkspace()
     }
     func revealWorkspace(){
         guard let window=EmbeddedCodeRuntime.shared.workspaceWindow,let panel else{return}
-        if workspaceMorph.expanded{window.makeKeyAndOrderFront(nil);return}
+        let replay=workspaceMorph.expanded && (workspaceNotchOverlay || !workspaceIsForeground)
+        if workspaceMorph.expanded && !replay && !workspaceMorph.transitioning{window.makeKeyAndOrderFront(nil);return}
         if quickChatVisible{EmbeddedCodeRuntime.shared.sendAction("quick_dismiss");quickChatVisible=false}
         let width=open ? expandedWidth:notchWidth,height=open ? popoutHeight:notchHeight
         let source=CGRect(x:panel.frame.midX-width/2,y:panel.frame.maxY-height,width:width,height:height)
         miniUI.cancelPending();compactWhileWorking=true;compactThreadID=latestState?.threadId;autoCompact=false;pinned=true
-        workspaceMorph.expand(window,from:source){[weak self] in self?.syncWorkspacePet()}
+        workspaceNotchOverlay=false
+        workspaceMorph.expand(window,from:source,replay:replay){[weak self] in self?.syncWorkspacePet()}
         setOpen(true,mini:false);if !approvalPopout{panel.orderOut(nil);dropPanel?.orderOut(nil)};floatingTasks.setSuppressed(true);syncWorkspacePet()
     }
     @objc func collapseWorkspace(){
+        if workspaceMorph.expanded && !workspaceIsForeground{expandToRunningChat();return}
+        workspaceNotchOverlay=false
         guard let window=EmbeddedCodeRuntime.shared.workspaceWindow,let panel else{return}
         pinned=true;compactWhileWorking=false;autoCompact=false
         let width=expandedSize?.width ?? notchWidth+160
@@ -1124,11 +1138,31 @@ private final class NotchView:ImageDropView {
             guard let self else{return};self.restoreWorkspacePet();self.floatingTasks.setSuppressed(self.suppressFloatingTasks);if self.open{self.placePanel()}
         }
     }
-    private var showsNotchSurface:Bool{approvalPopout || (!quickChatVisible && !workspaceMorph.expanded && !workspaceMorph.transitioning)}
+    private var workspaceIsForeground:Bool{EmbeddedCodeRuntime.shared.workspaceIsForeground && !quickChatVisible}
+    private var showsNotchSurface:Bool{approvalPopout || (!quickChatVisible && !workspaceMorph.transitioning && (!workspaceMorph.expanded || workspaceNotchOverlay))}
+    private func prepareNotchOverlay(){
+        guard workspaceMorph.expanded || workspaceMorph.transitioning else{return}
+        workspaceNotchOverlay=true
+        if workspaceMorph.transitioning,let window=EmbeddedCodeRuntime.shared.workspaceWindow{workspaceMorph.retainOpen(window)}
+        restoreWorkspacePet()
+    }
+    @objc private func scheduleWorkspaceFocusRefresh(){
+        guard !workspaceFocusRefreshPending else{return};workspaceFocusRefreshPending=true
+        DispatchQueue.main.async{[weak self] in guard let self else{return};self.workspaceFocusRefreshPending=false;self.workspaceFocusChanged()}
+    }
+    @objc func workspaceFocusChanged(){
+        // The same process owns the notch and Code. App activation alone does
+        // not identify the workspace; keyboard focus on its real window does.
+        if EmbeddedCodeRuntime.shared.workspaceIsForeground,!workspaceMorph.transitioning,!quickChatVisible,workspaceNotchOverlay{
+            workspaceNotchOverlay=false;panel?.orderOut(nil);dropPanel?.orderOut(nil);syncWorkspacePet()
+        }
+        if let state=latestState{updateCompactApproval(state)}
+    }
     private var suppressFloatingTasks:Bool{quickChatVisible || workspaceMorph.expanded || workspaceMorph.transitioning || approvalPopout}
     func setQuickChatVisible(_ visible:Bool){
         quickChatVisible=visible
         if visible{
+            workspaceNotchOverlay=false
             cancelWorkspaceHold();cancelShortcutHold()
             if let window=EmbeddedCodeRuntime.shared.workspaceWindow{workspaceMorph.park(window)}
             restoreWorkspacePet();if !approvalPopout{panel?.orderOut(nil);dropPanel?.orderOut(nil)};floatingTasks.setSuppressed(true)
@@ -1137,7 +1171,7 @@ private final class NotchView:ImageDropView {
     private func revealNotchForInput(){
         if quickChatVisible{EmbeddedCodeRuntime.shared.sendAction("quick_dismiss");quickChatVisible=false}
         guard EmbeddedCodeRuntime.shared.active,workspaceMorph.expanded || workspaceMorph.transitioning,let window=EmbeddedCodeRuntime.shared.workspaceWindow else{return}
-        workspaceMorph.park(window);restoreWorkspacePet();floatingTasks.setSuppressed(suppressFloatingTasks);setOpen(true,mini:false,userInitiated:true)
+        workspaceNotchOverlay=true;workspaceMorph.retainOpen(window);restoreWorkspacePet();floatingTasks.setSuppressed(suppressFloatingTasks);setOpen(true,mini:false,userInitiated:true)
     }
     func unifiedPresentationDiagnostics()->UInt32{
         var value:UInt32=0
@@ -1153,7 +1187,7 @@ private final class NotchView:ImageDropView {
     }
     func workspacePetGeometry(_ frame:CGRect){workspacePetSlot=frame;syncWorkspacePet()}
     private func syncWorkspacePet(){
-        guard workspaceMorph.expanded,let host=EmbeddedCodeRuntime.shared.workspaceWindow?.contentView else{return}
+        guard workspaceMorph.expanded,!workspaceNotchOverlay,let host=EmbeddedCodeRuntime.shared.workspaceWindow?.contentView else{return}
         if workspacePet.superview !== host{workspacePet.removeFromSuperview();host.addSubview(workspacePet)}
         let slot=workspacePetSlot
         workspacePet.frame=CGRect(x:slot.minX,y:host.bounds.height-slot.maxY,width:slot.width,height:slot.height)
@@ -1248,12 +1282,17 @@ private final class NotchView:ImageDropView {
         autoCompact=working && !beforeApproval.mini && (beforeApproval.automatic || !beforeApproval.open)
         setOpen((beforeApproval.open && !beforeApproval.automatic) || working,mini:beforeApproval.mini)
         floatingTasks.setSuppressed(suppressFloatingTasks)
-        if quickChatVisible || workspaceMorph.expanded || workspaceMorph.transitioning{panel.orderOut(nil);dropPanel?.orderOut(nil)}
+        if !showsNotchSurface{panel.orderOut(nil);dropPanel?.orderOut(nil)}
     }
     private func updateCompactApproval(_ state:KaiState){
+        if EmbeddedCodeRuntime.shared.active,workspaceIsForeground{
+            lastApproval=nil
+            if approvalPopout,approvalUI.request?.preview != true{nativeReview.dismiss();dismissCompactApproval()}
+            return
+        }
         guard let request=CompactApprovalRequest(state:state) else{
             lastApproval=nil
-            if approvalPopout,approvalUI.request?.preview != true{dismissCompactApproval()}
+            if approvalPopout,approvalUI.request?.preview != true{nativeReview.dismiss();dismissCompactApproval()}
             return
         }
         if approvalPopout,approvalUI.request?.matches(state) == true{
@@ -1886,7 +1925,7 @@ private final class NotchView:ImageDropView {
         guard let previous else{return};var translation=CGAffineTransform(translationX:(canvasWidth-oldWidth)/2,y:canvasHeight-oldHeight)
         let animation=CABasicAnimation(keyPath:"path");animation.fromValue=previous.copy(using:&translation);animation.toValue=mask.path;animation.duration=0.42;animation.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.65,0.25,1);mask.add(animation,forKey:"width")
     }
-    @objc private func toggleFromMenu() { cancelSizeTest();if compactVoiceMode{setOpen(true,mini:!miniOpen,userInitiated:true);return};if compactWhileWorking {compactWhileWorking=false;compactThreadID=nil;pinned=true;setOpen(true,mini:true)}else if open{closeNotch()}else{pinned=true;setOpen(true,mini:true)} }
+    @objc private func toggleFromMenu() { cancelSizeTest();if EmbeddedCodeRuntime.shared.active,workspaceMorph.expanded,!miniOpen{prepareNotchOverlay();pinned=true;compactWhileWorking=false;setOpen(true,mini:true,userInitiated:true);return};if compactVoiceMode{setOpen(true,mini:!miniOpen,userInitiated:true);return};if compactWhileWorking {compactWhileWorking=false;compactThreadID=nil;pinned=true;setOpen(true,mini:true)}else if open{closeNotch()}else{pinned=true;setOpen(true,mini:true)} }
     @objc private func toggleExperimentalWebMode(){
         if !experimentalWebMode{modeBeforeExperimental=(open,miniOpen,pinned);experimentalWebMode=true;open=false;miniOpen=false;pinned=true;panel?.ignoresMouseEvents=false;composerField?.isHidden=true;conversationScroll?.isHidden=true}
         else{experimentalWebMode=false;browserView?.stopLoading();browserView?.removeFromSuperview();browserView=nil;open=modeBeforeExperimental.open;miniOpen=modeBeforeExperimental.mini;pinned=modeBeforeExperimental.pinned;panel?.ignoresMouseEvents = !miniOpen;composerField?.isHidden = !miniOpen;conversationScroll?.isHidden = !miniOpen}
