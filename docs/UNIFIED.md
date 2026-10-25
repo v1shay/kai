@@ -35,7 +35,9 @@ before signing the bundle. On a fresh development machine, first run
 - Running chats supply Kai's activity indicators and floating task pets. Native
   approvals can be approved once, declined, or stopped in the compact popout.
   **Review…** opens native controls for the provider's exact choices and question
-  forms, including multiple selections and secure text fields.
+  forms, including multiple selections and secure text fields. Pending requests
+  automatically open Kai’s native controls above the notch, workspace, or Quick
+  Chat. The inbox’s Next control cycles requests without changing chats.
 - Existing Command/Fn/Option dictation shortcuts remain available. Image drops
   and screen context use Code's attachment import and native submission path.
   The voice button uses Code's single Codex call. Hold-to-voice passes the
@@ -73,18 +75,31 @@ is loaded only when Code starts a voice call. Optional local speech playback
 retains its existing separate speech helper.
 
 The mini transcript contains at most 100 rendered blocks, with 4,000 characters
-per block. Projects and recent chats are bounded too. The full conversation,
+per block and a 512 KiB total encoded JSON budget, including speech text and JSON
+escapes. The newest complete blocks are retained. Load more pages through the earlier
+blocks within that same budget; Latest returns to the live/native tail. An unchanged transcript is
+omitted from subsequent owner updates and retained by Swift for that exact chat;
+switching owners clears it. Voice levels still use their separate callback.
+Projects and recent chats are bounded too. The full conversation,
 editing, terminal, files, diffs, checkpoints, queues, teams, delegated-child
 inspector, and provider settings remain in the real Code workspace. No second
 copy of the IDE is embedded into a web view.
 
-The pet list currently follows Code's top-level run handles, including team
-member sessions. Nested provider children remain available in Code's native
-child inspector; their live permission requests use the shared notch review
-path. They do not yet receive individual floating pets. Mini-view back/forward and
-explicit per-turn reasoning-effort selection are also not wired to Code yet;
-use the workspace navigation and provider configuration for now. These controls
-remain available in the standalone Kai target.
+The pet list includes Code’s top-level runs, team members, and live provider
+children, preserving each child’s parent, provider, and native turn epoch. Clicking
+a child opens its existing native inspector. Child permissions use the same
+request inbox and broker response channel as the Code workspace.
+
+Mini-view back/forward uses the owner’s session navigation and draft storage.
+Model effort options come from the installed provider’s catalog and reach Codex’s
+native `turn/start.effort`; the Code picker and Kai share the same setting. Effort,
+workspace motion, and text decode preferences are persisted by Code. Kai’s text
+morph menu controls workspace text decode without adding a second mini-notch
+entrance. Code-owned attachment previews and image-only drafts roundtrip to Kai;
+canonical images are retained without reimporting their thumbnail pixels.
+
+Conversational realtime voice uses Code’s Codex WebRTC session. Apple Speech
+input can submit to the other providers through their normal native turn path.
 
 ## Safe handoff
 
@@ -120,13 +135,18 @@ separate fullscreen Space.
 The real header, sidebar, transcript, inspectors, and composer enter in sequence
 using finite opacity and paint-offset transitions. Existing list entrances and
 text decode run inside that sequence. Dismissal retires the lower components
-first while the contour retracts into the notch. Revision checks retire stale
+first while the contour retracts into the notch. Reversals capture the exact presentation-layer bezier contour and each real
+component’s current progress. Swift and Rust use the same system monotonic epoch,
+so command-queue delay does not restart component timing. Revision checks retire stale
 work after interruptions; Reduced Motion uses a short fade. The original
 compact-to-extended notch animation remains intact, and its conversation does
 not receive the added workspace text overlay.
 
 Idle provider logos transition into Kai's native thinking scene. A done mark is
-shown only for a confirmed successful run. Sidebar labels share a consistent
+shown only for a confirmed successful run, including late confirmations or runs
+that finish between snapshots. Failure and cancellation never infer success
+from a run disappearing. Quick Chat keeps task pets and automatic chat reviews
+suppressed across every owner notification. Sidebar labels share a consistent
 gutter and baseline; file-citation underlines cover the filename, leaving the
 icon, gutter, and file-action buttons clear.
 
@@ -148,6 +168,7 @@ from confirmed runtime outcomes, including turns that finish between snapshots.
 swift test --disable-sandbox
 cargo test --manifest-path integrations/Code/Cargo.toml --bin orbit -- --test-threads=1
 python3 -m unittest discover -v
+scripts/test-unified-native.sh
 ```
 
 The packaged build also has a provider-free startup/morph probe:
@@ -182,3 +203,27 @@ microphone/TCC behavior, or every installed provider's live behavior. Those need
 an interactive desktop pass. UI automation was unavailable during development;
 the native tests, ABI checks, and packaged-app probe are recorded separately
 from that remaining visual and live-provider validation.
+
+### 0.4.0 verification (2026-10-25)
+
+The permanent `Tests/UnifiedNative/StateHarness.swift` harness compiles the actual
+Kai AppKit sources with the in-process runtime. It runs under its own bundle ID,
+using synthetic owner events and no microphone/provider calls. It verifies
+failure/cancellation, late confirmed completion, exclusive Quick Chat, clickable
+approval controls over both workspace and Quick Chat, exact approval token
+submission, inbox cycling, incremental-history retention/isolation, and Code-owned
+image-only drafts without reimporting thumbnails.
+
+The owner regression suite verifies Unicode/escaped JSON budgets, shared effort
+choices, draft-preserving back/forward, delegated child identity, stale approval
+rejection, form validation, and two consecutive native-provider fixture turns.
+Installed-provider checks additionally verify Codex model/account metadata, a real
+minimal Codex turn with an explicit effort, native sandbox commands/write blocking/
+owned-command cancellation, and Claude’s bidirectional initialization/catalog.
+These do not establish physical modifier delivery, live microphone audio, or
+subjective animation quality. The desktop automation service was unavailable.
+
+Final 0.4.0 checks: 185 Swift tests (one optional local-audio fixture skipped),
+727 Code tests (11 opt-in tests excluded), the isolated native event harness,
+and the signed release morph/Quick Chat probe. The three installed native sandbox
+checks and scoped installed Codex/Claude checks passed separately.

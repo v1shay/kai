@@ -363,7 +363,7 @@ impl Orbit {
             .find(|a| a.kind == AgentKind::Codex)
             .and_then(|a| a.executable.clone())
             .ok_or_else(|| anyhow::anyhow!("Codex is unavailable"))?;
-        let request = RunRequest {
+        let request = RunRequest { reasoning_effort:None,
             agent: AgentKind::Codex,
             executable,
             project: project.clone(),

@@ -165,7 +165,7 @@ impl Orbit {
             .execution_path
             .clone()
             .unwrap_or_else(|| session.project_path.clone());
-        let request = RunRequest {
+        let request = RunRequest { reasoning_effort:None,
             agent: AgentKind::Codex,
             executable,
             project,
@@ -289,7 +289,7 @@ impl Orbit {
             .execution_path
             .clone()
             .unwrap_or_else(|| session.project_path.clone());
-        let request = RunRequest {
+        let request = RunRequest { reasoning_effort:None,
             agent: AgentKind::Codex,
             executable,
             project,
@@ -357,7 +357,7 @@ impl Orbit {
         else {
             return false;
         };
-        let request = RunRequest {
+        let request = RunRequest { reasoning_effort:None,
             agent: AgentKind::Codex,
             executable,
             project: session
@@ -1216,13 +1216,14 @@ mod tests {
 // The notch reviews only live, explicitly scoped requests. Opaque IDs include
 // the exact invocation epoch so provider request IDs cannot survive a restart.
 impl Orbit {
+    pub(super) fn unified_pending_ids(&self)->Vec<String>{let mut ids:Vec<_>=self.native_pending.iter().filter(|(_,p)|p.current(&self.runs)&&!p.sending).map(|(id,_)|id.clone()).collect();ids.sort();ids}
     pub(super) fn unified_pending(&self) -> Option<(String, String, String)> {
         let mut pending: Vec<_> = self
             .native_pending
             .iter()
             .filter(|(_, p)| p.current(&self.runs) && !p.sending)
             .collect();
-        pending.sort_by_key(|(id, p)| (self.active.as_ref() != Some(&p.owner), (*id).clone()));
+        pending.sort_by_key(|(id, p)| (self.native_request_focus.as_ref()!=Some(*id),self.active.as_ref() != Some(&p.owner), (*id).clone()));
         pending.first().map(|(id, p)| {
             let token = format!("{}:{id}", p.epoch);
             let body = if p.request.detail.is_empty() {

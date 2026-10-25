@@ -160,7 +160,8 @@ private final class FilePreviewLayer:CALayer {
 private final class ChatRowLayer:CALayer {
     private let provider=CALayer(),statusHost=CALayer(),hide=CATextLayer(),title=CATextLayer()
     private let value:String,font=NSFont.systemFont(ofSize:8)
-    private var hovered=false,selected=false,running=false,lastRun:String?
+    private var hovered=false,selected=false,running=false,lastRun:String?,shownSuccess:String?
+    private var knownSuccesses=[String]()
     private var statusEngine:NotchIndicatorEngine?,profile:PetGradientProfile?,settle:DispatchWorkItem?
     init(_ value:String){
         self.value=value;super.init();masksToBounds=true
@@ -191,7 +192,10 @@ private final class ChatRowLayer:CALayer {
     }
     @MainActor func setRunning(_ running:Bool,runID:String?,successfulRuns:[String]){
         if running{lastRun=runID}
-        guard running != self.running else{return};self.running=running;settle?.cancel();settle=nil
+        let success = !running ? successfulRuns.last(where:{!knownSuccesses.contains($0)}):nil
+        for run in successfulRuns where !knownSuccesses.contains(run){knownSuccesses.append(run)}
+        if knownSuccesses.count>128{knownSuccesses.removeFirst(knownSuccesses.count-128)}
+        guard running != self.running || (success != nil && success != shownSuccess) else{return};self.running=running;settle?.cancel();settle=nil
         if statusEngine == nil{
             let engine=NotchIndicatorEngine();engine.setAccentVisibility(left:false,right:false)
             if let profile{engine.setProfile(profile,wave:false)}
@@ -200,8 +204,8 @@ private final class ChatRowLayer:CALayer {
         fade(provider,to:0);fade(statusHost,to:1)
         if running{statusEngine?.showThinking()}
         else{
-            guard let lastRun,successfulRuns.contains(lastRun) else{statusEngine?.hide();fade(statusHost,to:0);fade(provider,to:0.65);return}
-            statusEngine?.showScene("success",looping:false)
+            guard let success else{statusEngine?.hide();fade(statusHost,to:0);fade(provider,to:0.65);return}
+            shownSuccess=success;statusEngine?.showScene("success",looping:false)
             let work=DispatchWorkItem{[weak self] in guard let self,!self.running else{return};self.fade(self.statusHost,to:0);self.fade(self.provider,to:0.65);self.statusEngine?.hide()}
             settle=work;DispatchQueue.main.asyncAfter(deadline:.now()+1.05,execute:work)
         }
@@ -566,7 +570,7 @@ private final class AttachmentLayer:CALayer {
         let nextChats=hiddenProjects.contains(state.project) ? [] : state.chats.filter{!hiddenChats.contains($0.id) && !activeIDs.contains($0.id)}
         let nextStandalone=state.standaloneChats.filter{!hiddenChats.contains($0.id) && !activeIDs.contains($0.id)}
         let nextCode=(state.codeChats ?? []).filter{!hiddenChats.contains($0.id) && !activeIDs.contains($0.id)}
-        let sidebarChanged=codeChats != nextCode || selectedProject != state.project || selectedThread != state.threadId || projects != nextProjects || chats != nextChats || standaloneChats != nextStandalone || elsewhere != active
+        let sidebarChanged=codeChats != nextCode || selectedProject != state.project || selectedThread != state.threadId || projects != nextProjects || chats != nextChats || standaloneChats != nextStandalone || elsewhere != active || modelState?.finishedTasks != state.finishedTasks
         modelState=state
         selectedProject=state.project;selectedThread=state.threadId;approvalNeeded=state.approval;turnActive=state.activeTurnId != nil
         projects=nextProjects;chats=nextChats;standaloneChats=nextStandalone;codeChats=nextCode
@@ -606,7 +610,7 @@ private final class AttachmentLayer:CALayer {
         var x:CGFloat=0
         let codeView=state.threadId?.hasPrefix("code:") == true
         let contextTitle=lightweightContext ? "Context: light":"Context: screen"
-        let settings=EmbeddedCodeRuntime.shared.active ? [("agent",state.agents?.first{$0.id == state.selectedAgent}?.name ?? "Agent"),("model",name),("context",contextTitle)]:codeView ? [("model",name),("context",contextTitle)]:[("model",name),("effort",effort),("context",contextTitle)]
+        let settings=EmbeddedCodeRuntime.shared.active ? [("agent",state.agents?.first{$0.id == state.selectedAgent}?.name ?? "Agent"),("model",name)]+((model?.supportedReasoningEfforts.isEmpty == false) ? [("effort",effort.isEmpty ? "Effort":effort)]:[])+[("context",contextTitle)]:codeView ? [("model",name),("context",contextTitle)]:[("model",name),("effort",effort),("context",contextTitle)]
         for (id,text) in settings {
             let width=min(id == "model" ? 100: id == "effort" ? 48:80, min(CGFloat(text.count)*4.5+9,max(0,settingsBar.bounds.width-x)))
             guard width>16 else{break}
@@ -633,7 +637,7 @@ private final class AttachmentLayer:CALayer {
         if kind == "model" {
             if EmbeddedCodeRuntime.shared.active{let item=menu.addItem(withTitle:"Use provider default",action:#selector(selectSetting(_:)),keyEquivalent:"");item.target=self;item.representedObject=["",""];item.state=state.selectedModel == nil ? .on:.off}
             for model in models {
-                let item=menu.addItem(withTitle:model.displayName,action:#selector(selectSetting(_:)),keyEquivalent:"");item.target=self;item.representedObject=[model.model,state.reasoningEffort ?? ""];item.state=model.model == state.selectedModel ? .on:.off
+                let item=menu.addItem(withTitle:model.displayName,action:#selector(selectSetting(_:)),keyEquivalent:"");item.target=self;item.representedObject=[model.model,model.model == state.selectedModel ? (state.reasoningEffort ?? ""):""];item.state=model.model == state.selectedModel ? .on:.off
             }
         } else if let model=models.first(where:{$0.model == state.selectedModel}) {
             for effort in model.supportedReasoningEfforts {
@@ -668,6 +672,7 @@ private final class AttachmentLayer:CALayer {
     }
 
     func setComposerHasText(_ hasText:Bool){CATransaction.begin();CATransaction.setDisableActions(true);for item in input.sublayers ?? [] where item !== send && item !== voiceButton{item.opacity=hasText ? 0:1};CATransaction.commit()}
+    func synchronizeImages(_ images:[NSImage]){imageStrip.sublayers?.forEach{$0.removeFromSuperlayer()};for image in images{imageStrip.addSublayer(AttachmentLayer(image))};layoutImages()}
     func clearImages(){imageStrip.sublayers?.forEach{$0.removeFromSuperlayer()};layoutImages();imagesChanged()}
     func addImages(_ images:[NSImage]){for image in images{let preview=AttachmentLayer(image);preview.opacity=0;imageStrip.addSublayer(preview);let reveal=CAAnimationGroup();let fade=CABasicAnimation(keyPath:"opacity"),scale=CABasicAnimation(keyPath:"transform.scale");fade.fromValue=0;fade.toValue=1;scale.fromValue=0.82;scale.toValue=1;reveal.animations=[fade,scale];reveal.duration=0.34;reveal.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.7,0.25,1);preview.opacity=1;preview.add(reveal,forKey:"attach")};layoutImages();imagesChanged()}
     private func layoutImages(){let previews=imageStrip.sublayers ?? [],w:CGFloat=42,step=previews.count<2 ? 0:min(w+5,max(13,(imageStrip.bounds.width-w)/CGFloat(previews.count-1)));CATransaction.begin();CATransaction.setDisableActions(true);for(i,preview) in previews.enumerated(){preview.frame=CGRect(x:CGFloat(i)*step,y:0,width:w,height:32);preview.zPosition=CGFloat(i)};imageStrip.opacity=previews.isEmpty ? 0:1;CATransaction.commit()}

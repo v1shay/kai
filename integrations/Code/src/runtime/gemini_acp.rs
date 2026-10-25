@@ -878,7 +878,7 @@ fn run(
             if !super::valid_model_id(id) {
                 return None;
             }
-            Some(crate::agent_controls::ModelChoice {
+            Some(crate::agent_controls::ModelChoice { reasoning_efforts:vec![],
                 id: id.into(),
                 label: model["name"]
                     .as_str()
@@ -1309,7 +1309,7 @@ for line in sys.stdin:
   emit({'jsonrpc':'2.0','id':5,'result':{'stopReason':'end_turn'}})
 "#,
         );
-        let request = RunRequest {
+        let request = RunRequest { reasoning_effort:None,
             agent: crate::discovery::AgentKind::Gemini,
             executable,
             project: root.clone(),
@@ -1384,7 +1384,7 @@ for line in sys.stdin:
   emit({'jsonrpc':'2.0','id':v['id'],'result':{'stopReason':'end_turn'}})
 "#,
         );
-        let request = RunRequest {
+        let request = RunRequest { reasoning_effort:None,
             agent: crate::discovery::AgentKind::Gemini,
             executable,
             project: root.clone(),
@@ -1435,7 +1435,7 @@ for line in sys.stdin:
   emit({'jsonrpc':'2.0','id':5,'result':{'stopReason':'cancelled'}})
 "#,
         );
-        let request = RunRequest {
+        let request = RunRequest { reasoning_effort:None,
             agent: crate::discovery::AgentKind::Gemini,
             executable,
             project: root.clone(),
@@ -1654,7 +1654,7 @@ for line in sys.stdin:
   emit({'jsonrpc':'2.0','id':5,'result':{'stopReason':'end_turn'}})
 "#,
         );
-        let handle = super::super::launch_cli_command(RunRequest {
+        let handle = super::super::launch_cli_command(RunRequest { reasoning_effort:None,
             agent: AgentKind::Cursor,
             executable,
             project: root.clone(),

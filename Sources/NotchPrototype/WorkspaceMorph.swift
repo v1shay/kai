@@ -3,6 +3,7 @@ import AppKit
 /// The actual workspace is clipped by one continuous native shape. GPUI paints
 /// its real components at their final size; no tiles or per-frame window resize.
 @MainActor final class WorkspaceMorph {
+    var motionEnabled=true
     var onPresentation:((String)->Void)?
     private var revision=0
     private weak var window:NSWindow?,host:NSView?
@@ -26,11 +27,16 @@ import AppKit
         }
         originalBackground=nil
     }
-    private func liveRectangle(fallback:CGRect)->CGRect{
-        guard let window,let host,let path=clip?.presentation()?.path ?? clip?.path else{return fallback}
-        let rect=host.convert(path.boundingBoxOfPath,to:nil)
-        return window.convertToScreen(rect)
+    private func liveContour()->CGPath?{
+        guard let window,let host,let path=clip?.presentation()?.path ?? clip?.path else{return nil}
+        return Self.convert(path){window.convertPoint(toScreen:host.convert($0,to:nil))}
     }
+    nonisolated static func convert(_ path:CGPath,using map:(CGPoint)->CGPoint)->CGPath{
+        let o=map(.zero),x=map(CGPoint(x:1,y:0)),y=map(CGPoint(x:0,y:1))
+        var transform=CGAffineTransform(a:x.x-o.x,b:x.y-o.y,c:y.x-o.x,d:y.y-o.y,tx:o.x,ty:o.y)
+        return path.copy(using:&transform)!
+    }
+    private func local(_ path:CGPath,in host:NSView,window:NSWindow)->CGPath{Self.convert(path){host.convert(window.convertPoint(fromScreen:$0),from:nil)}}
     private func local(_ rect:CGRect,in host:NSView,window:NSWindow)->CGRect{host.convert(window.convertFromScreen(rect),from:nil)}
     /// Same segment order and shoulder geometry as NotchSizing.path. Negative
     /// shoulders become ordinary app corners, so Core Animation interpolates
@@ -50,14 +56,14 @@ import AppKit
         animation.duration=duration;animation.beginTime=CACurrentMediaTime()+delay;animation.timingFunction=curve
         animation.fillMode = .both;mask.add(animation,forKey:"workspaceShape")
     }
-    private func prepare(_ window:NSWindow,from source:CGRect,to target:CGRect,duration:TimeInterval,delay:TimeInterval=0,expanding:Bool){
+    private func prepare(_ window:NSWindow,from source:CGRect,to target:CGRect,duration:TimeInterval,delay:TimeInterval=0,expanding:Bool,contour:CGPath?=nil){
         self.window=window
         originalBackground=window.backgroundColor;originalOpaque=window.isOpaque;originalShadow=window.hasShadow;originalIgnores=window.ignoresMouseEvents
         window.backgroundColor = .clear;window.isOpaque=false;window.hasShadow=false;window.ignoresMouseEvents=true
         guard let host=window.contentView?.superview ?? window.contentView else{return}
         self.host=host;host.wantsLayer=true
         let mask=CAShapeLayer();mask.frame=host.bounds;previousMask=host.layer?.mask;host.layer?.mask=mask;clip=mask
-        animate(mask,from:Self.outline(local(source,in:host,window:window),notch:expanding,radius:expanding ? 14:10),to:Self.outline(local(target,in:host,window:window),notch:!expanding,radius:expanding ? 10:14),duration:duration,delay:delay)
+        animate(mask,from:contour.map{local($0,in:host,window:window)} ?? Self.outline(local(source,in:host,window:window),notch:expanding,radius:expanding ? 14:10),to:Self.outline(local(target,in:host,window:window),notch:!expanding,radius:expanding ? 10:14),duration:duration,delay:delay)
         // A single glass backdrop bridges the menu-bar gap. It sits UNDER the
         // live workspace, so each real UI component is visible as it arrives.
         let union=source.union(target)
@@ -67,19 +73,20 @@ import AppKit
         let glass=NSVisualEffectView(frame:CGRect(origin:.zero,size:union.size));glass.wantsLayer=true;glass.material = .underWindowBackground;glass.blendingMode = .behindWindow;glass.state = .active
         panel.contentView=glass;shell=panel
         let glassMask=CAShapeLayer();glass.layer?.mask=glassMask
-        animate(glassMask,from:Self.outline(source.offsetBy(dx:-union.minX,dy:-union.minY),notch:expanding,radius:expanding ? 14:10),to:Self.outline(target.offsetBy(dx:-union.minX,dy:-union.minY),notch:!expanding,radius:expanding ? 10:14),duration:duration,delay:delay)
+        animate(glassMask,from:contour.map{Self.convert($0){CGPoint(x:$0.x-union.minX,y:$0.y-union.minY)}} ?? Self.outline(source.offsetBy(dx:-union.minX,dy:-union.minY),notch:expanding,radius:expanding ? 14:10),to:Self.outline(target.offsetBy(dx:-union.minX,dy:-union.minY),notch:!expanding,radius:expanding ? 10:14),duration:duration,delay:delay)
         window.makeKeyAndOrderFront(nil);panel.order(.below,relativeTo:window.windowNumber)
     }
     func expand(_ window:NSWindow,from source:CGRect,completion:@escaping()->Void={}){
         if expanded && !transitioning{window.makeKeyAndOrderFront(nil);completion();return}
-        let start=transitioning ? liveRectangle(fallback:source):source
+        let contour=transitioning ? liveContour():nil
+        let start=contour?.boundingBoxOfPath ?? source
         revision += 1;let token=revision;clearVisuals();self.window=window;expanded=true;transitioning=true
         let screen=NSScreen.screens.first{$0.frame.contains(CGPoint(x:source.midX,y:source.maxY-1))} ?? window.screen ?? NSScreen.main
         let target=Self.destination(saved:nil,screen:screen?.visibleFrame ?? window.frame)
         window.setFrame(target,display:true);onPresentation?("expand")
-        let reduce=NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        let reduce = !motionEnabled || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         window.alphaValue=1
-        if !reduce{prepare(window,from:start,to:target,duration:0.68,expanding:true)}else{
+        if !reduce{prepare(window,from:start,to:target,duration:0.68,expanding:true,contour:contour)}else{
             window.alphaValue=0;window.orderFront(nil)
             NSAnimationContext.runAnimationGroup{context in context.duration=0.12;window.animator().alphaValue=1}
         }
@@ -91,11 +98,12 @@ import AppKit
     }
     func collapse(_ window:NSWindow,to target:CGRect,completion:@escaping()->Void){
         if !expanded && !transitioning && !window.isVisible{completion();return}
-        let source=transitioning ? liveRectangle(fallback:window.frame):window.frame
+        let contour=transitioning ? liveContour():nil
+        let source=contour?.boundingBoxOfPath ?? window.frame
         revision += 1;let token=revision;clearVisuals();self.window=window;expanded=false;transitioning=true
         onPresentation?("collapse")
-        let reduce=NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        if !reduce{prepare(window,from:source,to:target,duration:0.48,delay:0.10,expanding:false)}else{
+        let reduce = !motionEnabled || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        if !reduce{prepare(window,from:source,to:target,duration:0.48,delay:0.10,expanding:false,contour:contour)}else{
             NSAnimationContext.runAnimationGroup{context in context.duration=0.12;window.animator().alphaValue=0}
         }
         let finish=DispatchWorkItem{[weak self,weak window] in

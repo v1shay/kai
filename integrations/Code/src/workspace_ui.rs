@@ -256,7 +256,7 @@ impl Orbit {
         self.active.hash(&mut hash);
         self.open_tabs.hash(&mut hash);
         self.agent.command().hash(&mut hash);
-        self.model.hash(&mut hash);
+        self.model.hash(&mut hash);self.unified_text_morph.hash(&mut hash);self.reasoning_efforts.hash(&mut hash);
         self.codex_approvals.hash(&mut hash);
         self.sidebar_split.hash(&mut hash);
         let mut expanded: Vec<_> = self.expanded_projects.iter().collect();
@@ -417,6 +417,8 @@ impl Orbit {
             execution_path: self.execution_root(),
             agent: self.agent.command().to_owned(),
             model: self.model.clone(),
+            text_morph:self.unified_text_morph,
+            reasoning_efforts:self.reasoning_efforts.clone(),
             allow_edits: self.allow_edits,
             codex_approvals: self.codex_approvals,
             motion: self.motion,
@@ -500,6 +502,7 @@ impl Orbit {
         };
         self.sidebar_transition = None;
         self.sidebar_layout_transition = None;
+        self.unified_text_morph=saved.text_morph;self.reasoning_efforts=saved.reasoning_efforts.clone();
         self.motion = saved.motion && std::env::var_os("ORBIT_REDUCE_MOTION").is_none();
         self.appearance = saved.appearance.normalized();
         self.theme = saved.theme.normalized();

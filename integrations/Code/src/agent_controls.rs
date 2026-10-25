@@ -33,6 +33,7 @@ pub enum AuthState {
 pub struct ModelChoice {
     pub id: String,
     pub label: String,
+    pub reasoning_efforts:Vec<String>,
 }
 
 pub use crate::usage::LimitWindow;
@@ -657,6 +658,9 @@ fn codex_snapshot(responses: &std::collections::BTreeMap<u64, Value>) -> Control
                         .and_then(Value::as_str)
                         .unwrap_or(id),
                 );
+                if let Some(choice)=info.models.iter_mut().find(|m|m.id==id){
+                    choice.reasoning_efforts=model["supportedReasoningEfforts"].as_array().into_iter().flatten().filter_map(|v|v["reasoningEffort"].as_str()).filter(|v|matches!(*v,"none"|"minimal"|"low"|"medium"|"high"|"xhigh"|"max"|"ultra")).map(str::to_owned).collect();
+                }
             }
         }
     }
@@ -848,7 +852,7 @@ fn configured_model(models: &mut Vec<ModelChoice>, path: &Path, pointers: &[&str
 fn add_model(models: &mut Vec<ModelChoice>, id: &str, label: &str) {
     if models.len() < MODEL_LIMIT && valid_model_id(id) && !models.iter().any(|m| m.id == id) {
         let label: String = label.chars().filter(|c| !c.is_control()).take(80).collect();
-        models.push(ModelChoice {
+        models.push(ModelChoice { reasoning_efforts:vec![],
             id: id.into(),
             label: if label.is_empty() { id.into() } else { label },
         });
@@ -1202,7 +1206,7 @@ printf '%s\n' '{"id":3,"result":{"rateLimits":{"primary":{"usedPercent":99}},"ra
         assert_eq!(info.account.as_deref(), Some("pro"));
         assert_eq!(
             info.models,
-            vec![ModelChoice {
+            vec![ModelChoice { reasoning_efforts:vec![],
                 id: "native-id".into(),
                 label: "Native model".into()
             }]
@@ -1311,7 +1315,7 @@ fi
         let models = claude_models(&cli, &fixture.0).unwrap();
         assert_eq!(
             models,
-            vec![ModelChoice {
+            vec![ModelChoice { reasoning_efforts:vec![],
                 id: "future-model".into(),
                 label: "Future".into()
             }]
@@ -1458,7 +1462,7 @@ fi
         assert!(info.note.as_ref().unwrap().contains("local model catalog"));
         assert_eq!(
             info.models,
-            vec![ModelChoice {
+            vec![ModelChoice { reasoning_efforts:vec![],
                 id: "native-model".into(),
                 label: "Native Model".into()
             }]

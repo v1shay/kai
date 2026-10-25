@@ -20,6 +20,14 @@ final class WorkspaceMorphTests:XCTestCase {
         XCTAssertEqual(sourceKinds,targetKinds)
         XCTAssertEqual(WorkspaceMorph.outline(rect,notch:false,radius:10).boundingBoxOfPath,rect)
     }
+    func testInterruptedContourCoordinateConversionPreservesEveryCurve(){
+        let path=WorkspaceMorph.outline(CGRect(x:34,y:70,width:680,height:350),notch:true,radius:14)
+        let shifted=WorkspaceMorph.convert(path){CGPoint(x:$0.x+300,y:$0.y-800)}
+        let restored=WorkspaceMorph.convert(shifted){CGPoint(x:$0.x-300,y:$0.y+800)}
+        func points(_ path:CGPath)->[CGPoint]{var values=[CGPoint]();path.applyWithBlock{item in let e=item.pointee;let count=e.type == .addCurveToPoint ? 3:e.type == .addQuadCurveToPoint ? 2:e.type == .closeSubpath ? 0:1;values.append(contentsOf:(0..<count).map{e.points[$0]})};return values}
+        let expected=points(path),actual=points(restored);XCTAssertEqual(expected.count,actual.count)
+        for (a,b) in zip(expected,actual){XCTAssertEqual(a.x,b.x,accuracy:0.0000001);XCTAssertEqual(a.y,b.y,accuracy:0.0000001)}
+    }
     func testWorkspaceFillsTheMenuBarAndDockWorkingArea() {
         let screen=CGRect(x:0,y:0,width:800,height:600)
         let frame=WorkspaceMorph.destination(saved:nil,screen:screen)

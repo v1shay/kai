@@ -4,7 +4,8 @@ import AppKit
 @MainActor final class ConversationScrollView:NSScrollView {}
 
 @MainActor final class ConversationHistoryControl:NSView {
-    var onLoad:(()->Void)?
+    var onLoad:(()->Void)?,onLatest:(()->Void)?
+    private let latest=NSButton(title:"Latest",target:nil,action:nil)
     private let button=NSButton(title:"Load more",target:nil,action:nil)
     private let dots=CALayer()
     private var loading=false
@@ -14,6 +15,7 @@ import AppKit
         button.isBordered=false;button.font=NSFont.systemFont(ofSize:9)
         button.contentTintColor=NSColor.white.withAlphaComponent(0.55)
         button.target=self;button.action=#selector(load);addSubview(button)
+        latest.isBordered=false;latest.font=button.font;latest.contentTintColor=button.contentTintColor;latest.target=self;latest.action=#selector(returnToLatest);latest.isHidden=true;addSubview(latest)
         dots.opacity=0;layer?.addSublayer(dots)
         for index in 0..<3 {
             let dot=CALayer();dot.bounds=CGRect(x:0,y:0,width:3,height:3)
@@ -22,13 +24,15 @@ import AppKit
         }
     }
     required init?(coder:NSCoder){fatalError()}
+    @objc private func returnToLatest(){guard !loading else{return};onLatest?()}
     @objc private func load(){guard !loading else{return};onLoad?()}
     override func layout(){
-        super.layout();button.frame=CGRect(x:(bounds.width-80)/2,y:0,width:80,height:24)
+        super.layout();button.frame=CGRect(x:(bounds.width-80)/2-(latest.isHidden ? 0:30),y:0,width:80,height:24);latest.frame=CGRect(x:button.isHidden ? (bounds.width-60)/2:button.frame.maxX+4,y:0,width:60,height:24)
         dots.frame=CGRect(x:(bounds.width-22)/2,y:6,width:22,height:12)
     }
-    func update(hasMore:Bool,loading:Bool){
-        isHidden = !hasMore && !loading
+    func update(hasMore:Bool,loading:Bool,earlier:Bool=false){
+        latest.isHidden = !earlier;latest.isEnabled = !loading;button.isHidden = !hasMore && !loading;needsLayout=true
+        isHidden = !hasMore && !loading && !earlier
         guard self.loading != loading else{return};self.loading=loading
         button.isEnabled = !loading
         CATransaction.begin();CATransaction.setAnimationDuration(0.16)

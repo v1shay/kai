@@ -2428,7 +2428,7 @@ server.serve_forever()
    event('session.status',{'sessionID':'ses_child','status':{'type':'idle'}});return
   if path=='/permission/per_fixture/reply':"#);
         let (root, executable) = fixture(&source);
-        let mut request = RunRequest {
+        let mut request = RunRequest { reasoning_effort:None,
             agent: crate::discovery::AgentKind::OpenCode,
             executable,
             project: root.clone(),
@@ -2586,7 +2586,7 @@ server.serve_forever()
     #[test]
     fn native_server_routes_live_permissions_questions_and_child_progress() {
         let (root, executable) = fixture(NATIVE_FIXTURE);
-        let request = RunRequest {
+        let request = RunRequest { reasoning_effort:None,
             agent: crate::discovery::AgentKind::OpenCode,
             executable,
             project: root.clone(),
@@ -2666,7 +2666,7 @@ server.serve_forever()
     #[test]
     fn native_commands_use_the_command_endpoint_and_keep_approvals_live() {
         let (root, executable) = fixture(NATIVE_FIXTURE);
-        let request = RunRequest {
+        let request = RunRequest { reasoning_effort:None,
             agent: crate::discovery::AgentKind::OpenCode,
             executable,
             project: root.clone(),
@@ -2713,7 +2713,7 @@ server.serve_forever()
     #[test]
     fn dropping_the_run_sends_native_abort_before_reaping_the_server() {
         let (root, executable) = fixture(NATIVE_FIXTURE);
-        let request = RunRequest {
+        let request = RunRequest { reasoning_effort:None,
             agent: crate::discovery::AgentKind::OpenCode,
             executable,
             project: root.clone(),
@@ -2752,7 +2752,7 @@ server.serve_forever()
     #[test]
     fn oversized_command_rest_response_waits_for_every_late_sse_delta() {
         let (root, executable) = fixture(NATIVE_FIXTURE);
-        let request = RunRequest {
+        let request = RunRequest { reasoning_effort:None,
             agent: crate::discovery::AgentKind::OpenCode,
             executable,
             project: root.clone(),
@@ -2790,7 +2790,7 @@ server.serve_forever()
     #[test]
     fn external_resume_forks_before_any_permission_changes() {
         let (root, executable) = fixture(NATIVE_FIXTURE);
-        let request = RunRequest {
+        let request = RunRequest { reasoning_effort:None,
             agent: crate::discovery::AgentKind::OpenCode,
             executable,
             project: root.clone(),

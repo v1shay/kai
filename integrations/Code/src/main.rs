@@ -533,6 +533,14 @@ impl ListReveal {
     }
 }
 struct Orbit {
+    unified_history_end:Option<(String,usize)>,
+    unified_history_wait:bool,
+    unified_back:Vec<SessionSummary>,
+    unified_forward:Vec<SessionSummary>,
+    unified_navigating:bool,
+    unified_text_morph:bool,
+    reasoning_efforts:std::collections::BTreeMap<String,String>,
+    unified_children:Vec<runtime::broker::ChildSnapshot>,
     unified_text_decode:text_decode::TextDecode,
     unified_successes: std::collections::VecDeque<(String, String)>,
     unified_context: Option<String>,
@@ -1046,6 +1054,11 @@ impl Orbit {
             });
         }));
         Self {
+            unified_text_morph:restored.as_ref().is_none_or(|s|s.text_morph),
+            unified_history_end:None,unified_history_wait:false,
+            unified_back:vec![],unified_forward:vec![],unified_navigating:false,
+            reasoning_efforts:restored.as_ref().map(|s|s.reasoning_efforts.clone()).unwrap_or_default(),
+            unified_children:vec![],
             unified_text_decode:Default::default(),
             unified_successes: Default::default(),
             unified_context: None,
@@ -1988,6 +2001,10 @@ impl Orbit {
                 self.transcript_reveal = None;
                 let mut older = Self::history_rows(messages);
                 let count = older.len();
+                if self.unified_history_end.as_ref().is_some_and(|(owner,_)|owner==&self.unified_token()){
+                    if let Some((_,end))=&mut self.unified_history_end{*end=if self.unified_history_wait{count}else{end.saturating_add(count)}}
+                }
+                self.unified_history_wait=false;
                 let anchor = self.list.logical_scroll_top();
                 self.history_offset += 1;
                 for page in &mut self.history_pages {
@@ -2334,6 +2351,7 @@ impl Orbit {
         self.composer.update(cx, |input, cx| input.set_text("", cx));
     }
     fn new_conversation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.unified_navigating{if let Some(old)=self.active.as_ref().and_then(|id|self.sessions.iter().find(|s|&s.id==id)).cloned(){self.unified_back.push(old);if self.unified_back.len()>100{self.unified_back.remove(0);}self.unified_forward.clear();}}
         self.stop_voice(cx);
         self.new_execution_path = if self.project == self.unprojected_root() {
             Some(self.project.join(uuid::Uuid::new_v4().to_string()))
@@ -2358,6 +2376,13 @@ impl Orbit {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.unified_navigating && self.active.as_ref()!=Some(&session.id){
+            if let Some(old)=self.active.as_ref().and_then(|id|self.sessions.iter().find(|s|&s.id==id)).cloned(){
+                self.unified_back.push(old);if self.unified_back.len()>100{self.unified_back.remove(0);}
+            }
+            self.unified_forward.clear();
+        }
+
         if self.active.as_ref() != Some(&session.id) {
             self.stop_voice(cx);
         }
@@ -2900,7 +2925,7 @@ impl Orbit {
             }
         };
         let context_scope = self.context_scope();
-        let request = RunRequest {
+        let request = RunRequest { reasoning_effort:self.unified_effort().map(str::to_owned),
             agent: self.agent,
             executable,
             project: execution_path.clone(),
@@ -4615,7 +4640,7 @@ impl Orbit {
             if row.role.as_deref().is_some_and(|role|role.starts_with("user")){return None}
             match &row.block{MessageBlock::Paragraph(text)|MessageBlock::Heading(text)|MessageBlock::Quote(text)|MessageBlock::RichParagraph{text,..}|MessageBlock::ListItem{text,..}=>Some(text.clone()),_=>None}
         });
-        let decoded=if unified::decode_enabled(self.motion)&&unified::workspace_frame(self.motion).content_visible(){decode_source.as_ref().map(|source|{
+        let decoded=if unified::decode_enabled(self.motion && self.unified_text_morph)&&unified::workspace_frame(self.motion).content_visible(){decode_source.as_ref().map(|source|{
             let (frame,active)=self.unified_text_decode.frame(ix,source,Instant::now());if active{window.request_animation_frame();}frame
         })}else{None};
         let Some(row) = self.rows.get(ix) else {

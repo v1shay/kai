@@ -116,6 +116,8 @@ pub struct WorkspaceState {
     pub execution_path: Option<PathBuf>,
     pub agent: String,
     pub model: Option<String>,
+    pub text_morph:bool,
+    pub reasoning_efforts:BTreeMap<String,String>,
     pub allow_edits: bool,
     pub codex_approvals: crate::runtime::CodexApprovals,
     pub motion: bool,
@@ -154,6 +156,8 @@ impl Default for WorkspaceState {
             execution_path: None,
             agent: "codex".into(),
             model: None,
+            text_morph:true,
+            reasoning_efforts:BTreeMap::new(),
             allow_edits: false,
             codex_approvals: crate::runtime::CodexApprovals::default(),
             motion: true,
@@ -258,6 +262,7 @@ impl WorkspaceState {
         if !valid_text(&self.agent, 64) {
             self.agent = "codex".into();
         }
+        self.reasoning_efforts.retain(|key,value|valid_text(key,512)&&matches!(value.as_str(),"none"|"minimal"|"low"|"medium"|"high"|"xhigh"|"max"|"ultra"));while self.reasoning_efforts.len()>512{self.reasoning_efforts.pop_first();}
         self.model = self.model.filter(|m| valid_text(m, 256));
         self.active_chat = self.active_chat.filter(|id| valid_text(id, 512));
         let mut seen = HashSet::with_capacity(8);

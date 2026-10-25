@@ -2124,7 +2124,7 @@ fn controls_fixture(app: &mut Orbit, kind: AgentKind, models: usize) {
                 limits: Vec::new(),
                 catalog: None,
                 models: (0..models)
-                    .map(|ix| agent_controls::ModelChoice {
+                    .map(|ix| agent_controls::ModelChoice { reasoning_efforts:vec![],
                         id: format!("model-{ix}"),
                         label: format!("Model {ix}"),
                     })
@@ -2704,7 +2704,7 @@ fn failed_run(agent: AgentKind, project: PathBuf, error: &str) -> Running {
     run.handle = RunHandle::test_events(vec![RuntimeEvent::Failed(error.into())]);
     run.agent = agent;
     run.submitted_prompt = "Original submitted prompt".into();
-    run.retry = Some(RunRequest {
+    run.retry = Some(RunRequest { reasoning_effort:None,
         agent,
         executable: agent.command().into(),
         project,

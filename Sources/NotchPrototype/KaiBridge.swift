@@ -18,16 +18,28 @@ struct KaiActiveTask: Decodable, Equatable {
     let id:String,name:String,scene:String,text:String
     var runId:String?=nil
     var agent:String?=nil
+    var parentId:String?=nil
 }
 struct KaiFinishedTask:Decodable,Equatable {let id:String;var runId:String?=nil}
 struct KaiReasoningOption: Decodable { let reasoningEffort: String }
 struct KaiModel: Decodable { let model: String; let displayName: String; let supportedReasoningEfforts: [KaiReasoningOption] }
 struct KaiAgent:Decodable {let id:String;let name:String;let available:Bool}
 struct KaiCodeConnectionState:Decodable {let connected:Bool;let enabled:Bool;let error:String?}
+@propertyWrapper struct EmptyHistory:Decodable {
+    var wrappedValue:[KaiMessage]
+    init(from decoder:Decoder)throws{wrappedValue=try [KaiMessage](from:decoder)}
+    init(){wrappedValue=[]}
+}
+extension KeyedDecodingContainer {
+    func decode(_ type:EmptyHistory.Type,forKey key:Key)throws->EmptyHistory {try decodeIfPresent(type,forKey:key) ?? EmptyHistory()}
+}
 struct KaiState: Decodable {
     let modelsLoading:Bool?
     let historyLoading:Bool?
     let nativeReview:KaiNativeReview?
+    let approvalCount:Int?
+    let workspaceMotion:Bool?
+    let workspaceTextMorph:Bool?
     let ownerToken:String?
     let composerDraft:String?
     let agents:[KaiAgent]?
@@ -55,8 +67,9 @@ struct KaiState: Decodable {
     let standalone: Bool
     let threadId: String?
     let threadName: String
-    let history: [KaiMessage]
+    @EmptyHistory var history: [KaiMessage]
     let historyHasMore:Bool?
+    let historyEarlier:Bool?
     let files: [KaiFile]?
     let readOnly: Bool
     let activeTurnId: String?
@@ -268,7 +281,7 @@ enum KaiBridgeEvent {
             request["ownerToken"]=ownerToken
             request["draftBase"]=draftBaseProvider?()
             if action == "interrupt"{request["runId"]=selectedRunID}
-            if ["chat","project","new","new_project","workspace_expand"].contains(action){request["draft"]=draftProvider?() ?? ""}
+            if ["chat","project","new","new_project","workspace_expand","navigate"].contains(action){request["draft"]=draftProvider?() ?? ""}
             if request["targetThreadId"] == nil{request["targetThreadId"]=selectedThreadID}
             if let data=try? JSONSerialization.data(withJSONObject:request){EmbeddedCodeRuntime.shared.send(data)}
             return

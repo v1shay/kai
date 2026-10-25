@@ -18,6 +18,8 @@ struct Host {
     collapse: Collapse,
     _toggle: Collapse,
     last: Vec<u8>,
+    history:Value,
+    history_owner:String,
     completed: Option<String>,
     error: Option<String>,
     results: std::collections::VecDeque<(String, [u8; 32], Option<String>)>,
@@ -118,6 +120,8 @@ pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Resul
                 collapse,
                 _toggle:toggle,
                 last: vec![],
+                history:Value::Null,
+                history_owner:String::new(),
                 completed: None,
                 error: None,
                 results: Default::default(),
@@ -228,6 +232,13 @@ fn native_id(value: &Value, key: &str) -> Option<String> {
 fn bounded(text: &str, limit: usize) -> String {
     text.chars().take(limit).collect()
 }
+const HISTORY_BYTES:usize=512*1024;
+fn budget_history(mut rows:Vec<Value>)->Vec<Value>{
+    let mut bytes=2;let mut kept=0;
+    for row in rows.iter().rev(){let size=serde_json::to_vec(row).map_or(0,|v|v.len()+1);if bytes+size>HISTORY_BYTES{break}bytes+=size;kept+=1;}
+    rows.drain(..rows.len().saturating_sub(kept));rows
+}
+pub(super) fn child_id(child:&runtime::broker::ChildSnapshot)->String{format!("child:{}:{}:{}",child.provider.command(),child.project.display(),child.id)}
 fn scene(status: &str) -> &'static str {
     let value = status.to_lowercase();
     if value.contains("error") || value.contains("fail") {
@@ -247,6 +258,8 @@ fn scene(status: &str) -> &'static str {
     }
 }
 impl Orbit {
+    fn effort_key(&self)->String{format!("{}:{}",self.agent.command(),self.model.as_deref().unwrap_or(""))}
+    pub(super) fn unified_effort(&self)->Option<&str>{self.reasoning_efforts.get(&self.effort_key()).map(String::as_str)}
     pub(super) fn unified_token(&self) -> String {
         // Composer edits have their own exact draft-base check. They must not
         // invalidate navigation/model commands before the parent observes input.
@@ -271,7 +284,7 @@ impl Orbit {
     }
     fn dispatch_unified(&mut self, request: Value, window: &mut Window, cx: &mut Context<Self>) {
         if request["action"] == "workspace_presentation"{
-            HOST.with(|host|{if let Some(host)=host.borrow_mut().as_mut(){host.workspace_motion.set(request["phase"].as_str().unwrap_or("hidden"))}});
+            HOST.with(|host|{if let Some(host)=host.borrow_mut().as_mut(){host.workspace_motion.set_at(request["phase"].as_str().unwrap_or("hidden"),request["started"].as_f64().filter(|t|t.is_finite()&&*t>0.).unwrap_or_else(workspace_motion::now))}});
             if request["phase"] == "expand"{
                 self.project_reveal=self.motion.then(||ListReveal::new(Some(0)));
                 self.sessions_reveal=self.motion.then(||ListReveal::new(Some(0)));
@@ -343,7 +356,7 @@ impl Orbit {
         };
         let navigates = matches!(
             action,
-            "chat" | "project" | "new" | "new_project" | "workspace_expand"
+            "chat" | "project" | "new" | "new_project" | "workspace_expand" | "navigate"
         );
         // An approval carries its own owner/generation; it may belong to another chat.
         if !matches!(
@@ -352,6 +365,7 @@ impl Orbit {
                 | "reject"
                 | "approval_stop"
                 | "native_answer"
+                | "approval_next"
                 | "refresh"
                 | "workspace_settings"
         ) {
@@ -380,6 +394,7 @@ impl Orbit {
                 return Err("The IDE has a different draft. Both drafts are preserved; review the workspace before continuing.".into());
             }
         }
+        if navigates || action == "send"{self.unified_history_end=None;self.unified_history_wait=false;}
         if navigates {
             if action != "workspace_expand" {
                 self.unified_context = None;
@@ -424,6 +439,14 @@ impl Orbit {
                 }
                 self.select_project(path, window, cx);
             }
+            "navigate"=>{
+                let back=match request["direction"].as_str(){Some("back")=>true,Some("forward")=>false,_=>return Err("Invalid navigation direction".into())};
+                let mut source=if back{std::mem::take(&mut self.unified_back)}else{std::mem::take(&mut self.unified_forward)};
+                let target=loop{let s=source.pop().ok_or("No chat in that direction")?;if self.sessions.iter().any(|v|v.id==s.id)&&!self.hidden_sessions.contains(&s.id){break s}};
+                if back{self.unified_back=source}else{self.unified_forward=source};
+                if let Some(current)=self.active.as_ref().and_then(|id|self.sessions.iter().find(|s|&s.id==id)).cloned(){if back{self.unified_forward.push(current)}else{self.unified_back.push(current)}}
+                self.unified_navigating=true;self.open_session(target,window,cx);self.unified_navigating=false;
+            }
             "new" => self.new_unprojected_conversation(window, cx),
             "new_project" => self.new_conversation(window, cx),
             "send" => {
@@ -465,6 +488,16 @@ impl Orbit {
                 }
                 run.handle.cancel();
             }
+            "approval_next"=>{
+                let tokens=self.unified_pending_ids();if tokens.len()>1{let current=self.unified_pending().and_then(|(_,token,_)|tokens.iter().position(|id|token.ends_with(&format!(":{id}"))));let next=current.map_or(0,|i|(i+1)%tokens.len());self.native_request_focus=Some(tokens[next].clone());}
+            }
+            "preferences"=>{if let Some(value)=request["textMorph"].as_bool(){self.unified_text_morph=value}if let Some(value)=request["motion"].as_bool(){self.motion=value}self.queue_workspace_save(cx);}
+            "child_open"=>{
+                let id=request["id"].as_str().ok_or("Missing child")?;
+                let child=self.unified_children.iter().find(|c|child_id(c)==id&&c.connected).cloned().ok_or("Child is no longer connected")?;
+                if self.broker_panel.is_none(){self.toggle_children(window,cx)}
+                self.select_child(child.provider,child.id,cx);reveal();
+            }
             "approve" | "reject" | "approval_stop" | "native_answer" => {
                 self.unified_approval(request, cx)?
             }
@@ -474,7 +507,13 @@ impl Orbit {
                 if !known {
                     return Err("That model is no longer available".into());
                 }
+                if let Some(effort)=request["effort"].as_str().filter(|s|!s.is_empty()){
+                    if !self.unified_models().iter().any(|m|m.id==model&&m.reasoning_efforts.iter().any(|v|v==effort)){return Err("That reasoning effort is not available for this model".into())}
+                }
+                if self.loading||self.starting||self.handoff_pending.is_some(){return Err("Finish the current handoff before changing the model".into())}
                 self.choose_model((!model.is_empty()).then(||model.into()), cx);
+                if let Some(effort)=request["effort"].as_str(){let key=self.effort_key();if effort.is_empty(){self.reasoning_efforts.remove(&key);}else{self.reasoning_efforts.insert(key,effort.into());}}
+                self.queue_workspace_save(cx);
             }
             "agent" => {
                 let name = request["agent"].as_str().ok_or("Missing agent")?;
@@ -524,24 +563,13 @@ impl Orbit {
                     .filter_map(|v| v.as_str())
                     .map(PathBuf::from)
                     .collect();
-                let removed: HashSet<_> = self
-                    .unified_notch_sources
-                    .iter()
-                    .filter(|p| !paths.contains(p))
-                    .filter_map(|p| self.unified_attachment_sources.get(p).copied())
-                    .collect();
-                self.attachments.retain(|a| !removed.contains(&a.id));
-                let additions: Vec<_> = paths
-                    .iter()
-                    .filter(|p| !self.unified_notch_sources.contains(p))
-                    .cloned()
-                    .collect();
-                if additions.len() + self.attachments.len() > attachments::MAX_ATTACHMENTS {
-                    return Err("Image slots are full".into());
-                }
-                self.unified_attachment_expected = Some(self.attachments.len() + additions.len());
-                self.unified_notch_sources = paths;
-                self.add_attachments(additions, cx);
+                let additions:Vec<_>=paths.iter().filter(|p|!self.attachments.iter().any(|a|&a.path==*p)&&!self.unified_notch_sources.contains(p)).cloned().collect();
+                let retained=self.attachments.iter().filter(|a|paths.contains(&a.path)||self.unified_attachment_sources.iter().any(|(p,id)|*id==a.id&&paths.contains(p))).count();
+                if additions.len()+retained>attachments::MAX_ATTACHMENTS{return Err("Image slots are full".into())}
+                self.attachments.retain(|a|paths.contains(&a.path)||self.unified_attachment_sources.iter().any(|(p,id)|*id==a.id&&paths.contains(p)));
+                self.unified_attachment_expected=Some(self.attachments.len()+additions.len());
+                self.unified_notch_sources=paths;
+                self.add_attachments(additions,cx);
             }
             "workspace_expand" => reveal(),
             "draft" => {
@@ -610,7 +638,16 @@ impl Orbit {
                 self.unified_files(request, window, cx)?;
             }
             "history_more" => {
-                self.load_history_page(true, cx);
+                let first=self.unified_history().first().and_then(|v|v["id"].as_str()).and_then(|s|s.strip_prefix("row-")).and_then(|v|v.parse::<usize>().ok()).unwrap_or(0);
+                if first>0{self.unified_history_wait=false;self.unified_history_end=Some((self.unified_token(),first));}
+                else if self.has_older{
+                    self.load_history_page(true,cx);
+                    if self.loading_earlier{self.unified_history_end=Some((self.unified_token(),0));self.unified_history_wait=true;}
+                }
+            }
+            "history_latest"=>{
+                self.unified_history_end=None;self.unified_history_wait=false;
+                if self.history_offset>0 || self.navigation_history{if let Some(id)=self.active.clone(){if self.runs.contains_key(&id){self.restore_live_tail(&id,cx)}else{self.load_history_page(false,cx)}}}
             }
             "refresh" | "models" => {self.refresh_unified_models(cx);}
             // Settings stay explicit: unsupported actions cannot launch another runtime.
@@ -643,14 +680,14 @@ impl Orbit {
             if let Some(host) = host.borrow_mut().as_mut() {
                 let finished:Vec<_>=self.unified_successes.iter().filter(|(id,epoch)|!host.reported_successes.iter().any(|(seen,run)|seen==id&&run==epoch) && !self.finalizing.contains(id) && !self.settling.contains_key(id)).cloned().collect();
                 for event in &finished{if host.reported_successes.len()>=128{host.reported_successes.pop_front();}host.reported_successes.push_back(event.clone());}
-                let finished:Vec<_>=finished.iter().map(|(id,run)|json!({"id":format!("code:{id}"),"runId":run})).collect();
+                let finished:Vec<_>=finished.iter().map(|(id,run)|json!({"id":if id.starts_with("child:"){id.clone()}else{format!("code:{id}")},"runId":run})).collect();
                 if !finished.is_empty() {
                     host.finished = finished;
                 }
                 state["finishedTasks"] = json!(host.finished);
                 state["completedRequestId"] = json!(host.completed);
                 state["completedRequestError"] = json!(host.error);
-                if self.attachment_pending > 0 {
+                if self.attachment_pending > 0 || self.loading_earlier {
                     state["completedRequestId"] = Value::Null;
                 } else if self
                     .unified_attachment_expected
@@ -660,6 +697,10 @@ impl Orbit {
                         "An image could not be imported. Review the draft before sending."
                     ));
                 }
+                let owner=state["threadId"].as_str().unwrap_or("").to_owned();
+                let history=state["history"].clone();
+                if host.history_owner==owner && host.history==history{state.as_object_mut().unwrap().remove("history");}
+                else{host.history=history;host.history_owner=owner;}
                 let Ok(data) = serde_json::to_vec(&state) else {
                     return;
                 };
@@ -677,6 +718,11 @@ impl Orbit {
             let name=self.sessions.iter().find(|s|s.id==*id).map(|s|s.title.as_str()).unwrap_or("Agent");
             json!({"id":format!("code:{id}"),"name":name,"runId":run.parse_epoch.to_string(),"scene":self.native_pending.values().find(|p|p.owner==*id&&p.current(&self.runs)).map(|p|p.indicator_scene()).unwrap_or(scene(&run.status)),"text":format!("{} · {}",run.agent.name(),run.status),"agent":run.agent.command()})
         }).collect();
+        for child in self.unified_children.iter().filter(|c|c.connected && (matches!(c.status,chat_interactions::InteractionStatus::Started|chat_interactions::InteractionStatus::Working)||!c.requests.is_empty())){
+            let parent=self.child_owner(child,&self.unified_children).map(|s|format!("code:{}",s.id));
+            if parent.is_none(){continue}
+            tasks.push(json!({"id":child_id(child),"name":format!("{} · {}",child.provider.name(),short(&child.id,10)),"runId":child.turn_id.clone().unwrap_or_else(||child.id.clone()),"scene":if child.requests.is_empty(){"thinking"}else{"permission"},"text":child.preview,"agent":child.provider.command(),"parentId":parent}));
+        }
         tasks.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
         let approval = self.unified_pending();
         let activity=approval.as_ref().map(|(owner,token,summary)|json!({"scene":"permission","text":summary,"owner":owner,"request":token})).or_else(||tasks.first().map(|t|json!({"scene":t["scene"],"text":t["text"]}))).unwrap_or(json!({"scene":"off","text":"Ready"}));
@@ -708,28 +754,32 @@ impl Orbit {
         let chats:Vec<_>=self.sessions.iter().filter(|s|!self.hidden_sessions.contains(&s.id)&&s.project_path==self.project).take(100).map(row).collect();
         let standalone:Vec<_>=self.sessions.iter().filter(|s|!self.hidden_sessions.contains(&s.id)&&s.project_path==self.unprojected_root()&&s.project_path!=self.project).take(60).map(row).collect();
         let models=self.unified_models();
-        json!({"project":self.project,"projects":self.projects.iter().take(80).map(|p|json!({"path":p.path,"name":p.name})).collect::<Vec<_>>(),"projectsLoading":false,
+        let history=if self.loading{vec![]}else{self.unified_history()};
+        let local_older=history.first().and_then(|v|v["id"].as_str()).is_some_and(|v|v!="row-0");
+        let mut snapshot=json!({"project":self.project,"projects":self.projects.iter().take(80).map(|p|json!({"path":p.path,"name":p.name})).collect::<Vec<_>>(),"projectsLoading":false,
             "chats":chats,"standaloneChats":standalone,"standalone":self.project==self.unprojected_root(),"codeChats":[],"codeConnection":{"connected":true,"enabled":true},
             "threadId":selected,"threadName":chat.map(|s|s.title.as_str()).unwrap_or("New chat"),"ownerToken":self.unified_token(),"composerDraft":self.composer.read(cx).text(),
-            "historyLoading":self.loading,"history":if self.loading{Vec::<Value>::new()}else{self.unified_history()},"historyHasMore":self.has_older,"files":self.unified_file_rows(cx),
+            "historyLoading":self.loading || self.loading_earlier,"history":history,"historyHasMore":self.has_older || local_older,"files":self.unified_file_rows(cx),
             "readOnly":!self.unified_send_ready(),"activeTurnId":running.map(|r|r.parse_epoch.to_string()),
             "nativeReview":self.unified_review(),"approval":approval.is_some(),"approvalThreadId":approval.as_ref().map(|a|format!("code:{}",a.0)),"approvalRequestId":approval.as_ref().map(|a|a.1.clone()),"approvalSummary":approval.as_ref().map(|a|a.2.clone()),
             "activity":if tasks.is_empty(){selected_activity.clone()}else{activity},"sessionActivity":self.voice_call.as_ref().filter(|v|v.owns_current_chat(self.active.as_deref())).map(|v|json!({"scene":v.scene(),"text":v.caption()})).unwrap_or(selected_activity),"activeTasks":tasks,"focusThreadId":approval.as_ref().map(|a|format!("code:{}",a.0)).or_else(||tasks.first().and_then(|t|t["id"].as_str().map(str::to_owned))),
-            "notice":self.notice.as_deref().unwrap_or("Kai · Code"),"attachments":[],"modelsLoading":self.controls_pending.contains(self.agent.command()),"models":models.iter().map(|m|json!({"model":m.id,"displayName":m.label,"supportedReasoningEfforts":[]})).collect::<Vec<_>>(),
-            "selectedModel":self.model,"reasoningEffort":"","canGoBack":false,"canGoForward":false,
-            "agents":self.agents.iter().map(|a|json!({"id":a.kind.command(),"name":a.kind.name(),"available":a.available&&a.executable.is_some()})).collect::<Vec<_>>(),"selectedAgent":self.agent.command(),"workspaceVoiceChoice":self.voice_choice,"workspaceVoiceActive":self.voice_call.is_some(),"workspaceVoiceScene":self.voice_call.as_ref().map(|v|v.scene())})
+            "notice":self.notice.as_deref().unwrap_or("Kai · Code"),"attachments":self.attachments.iter().filter(|a|!self.attachment_removals.contains_key(&a.id)).map(|a|a.path.to_string_lossy().into_owned()).collect::<Vec<_>>(),"modelsLoading":self.controls_pending.contains(self.agent.command()),"models":models.iter().map(|m|json!({"model":m.id,"displayName":m.label,"supportedReasoningEfforts":m.reasoning_efforts.iter().map(|v|json!({"reasoningEffort":v})).collect::<Vec<_>>()})).collect::<Vec<_>>(),
+            "selectedModel":self.model,"reasoningEffort":self.unified_effort().unwrap_or(""),"canGoBack":!self.unified_back.is_empty(),"canGoForward":!self.unified_forward.is_empty(),
+            "agents":self.agents.iter().map(|a|json!({"id":a.kind.command(),"name":a.kind.name(),"available":a.available&&a.executable.is_some()})).collect::<Vec<_>>(),"selectedAgent":self.agent.command(),"workspaceVoiceChoice":self.voice_choice,"workspaceVoiceActive":self.voice_call.is_some(),"workspaceVoiceScene":self.voice_call.as_ref().map(|v|v.scene())});
+        snapshot["historyEarlier"]=json!(self.unified_history_end.as_ref().is_some_and(|(owner,_)|owner==&self.unified_token()) || self.history_offset>0 || self.navigation_history);snapshot["approvalCount"]=json!(self.unified_pending_ids().len());snapshot["workspaceMotion"]=json!(self.motion);snapshot["workspaceTextMorph"]=json!(self.unified_text_morph);snapshot
+
     }
     fn unified_history(&self) -> Vec<Value> {
         let mut history = Vec::new();
         let mut role = "assistant".to_owned();
-        let end = self.rows.len();
+        let end = self.unified_history_end.as_ref().filter(|(owner,_)|owner==&self.unified_token() && !self.unified_history_wait).map_or(self.rows.len(),|(_,end)|(*end).min(self.rows.len()));
         let start = end.saturating_sub(100);
         for row in self.rows.iter().take(start) {
             if let Some(r) = &row.role {
                 role = r.clone()
             }
         }
-        for (index, row) in self.rows.iter().enumerate().skip(start) {
+        for (index, row) in self.rows.iter().enumerate().take(end).skip(start) {
             if let Some(r) = &row.role {
                 role = r.clone()
             }
@@ -792,7 +842,7 @@ impl Orbit {
             };
             history.push(json!({"id":format!("row-{index}"),"kind":if kind.starts_with("user"){"user"}else if kind=="activity"{"activity"}else{"assistant"},"lines":[{"text":bounded(&text,4000),"style":style}],"agent":role.split(':').nth(1).unwrap_or(self.agent.command()),"speechText":if kind.starts_with("user") || kind=="activity" || style=="code" {String::new()}else{bounded(&text,4000)}}));
         }
-        history
+        budget_history(history)
     }
 }
 
@@ -1090,15 +1140,15 @@ mod final_regressions {
 }
 
 impl Orbit {
-    fn unified_models(&self)->Vec<agent_controls::ModelChoice>{
+    pub(super) fn unified_models(&self)->Vec<agent_controls::ModelChoice>{
         let mut models=self.native_models.get(&self.agent).cloned().unwrap_or_default();
         if let Some((_,info))=self.controls.get(self.agent.command()){
-            for model in &info.models{if !models.iter().any(|m|m.id==model.id){models.push(model.clone());}}
+            for model in &info.models{if let Some(existing)=models.iter_mut().find(|m|m.id==model.id){existing.reasoning_efforts=model.reasoning_efforts.clone();}else{models.push(model.clone());}}
         }
         models
     }
     fn refresh_unified_models(&mut self,cx:&mut Context<Self>){
-        if !active() || self.controls_pending.contains(self.agent.command()) || !self.unified_models().is_empty(){return}
+        if !active() || self.controls_pending.contains(self.agent.command()){return}
         if self.controls.get(self.agent.command()).is_some_and(|(at,_)|at.elapsed()<Duration::from_secs(60)){return}
         let kind=self.agent;
         let Some(path)=self.agents.iter().find(|a|a.kind==kind&&a.available).and_then(|a|a.executable.clone())else{return};
@@ -1127,6 +1177,63 @@ mod regression_tests {
     use std::prelude::v1::test;
     fn request(app:&Orbit,action:&str,cx:&App)->Value{json!({"action":action,"ownerToken":app.unified_token(),"draftBase":app.composer.read(cx).text()})}
 
+    #[test]
+    fn unicode_and_escaped_history_has_a_total_encoded_byte_budget(){
+        for text in ["文".repeat(4000),"\\\"\n".repeat(4000)]{
+            let rows=(0..100).map(|i|json!({"id":format!("row-{i}"),"kind":"assistant","lines":[{"text":text,"style":"text"}],"speechText":text})).collect();
+            let kept=budget_history(rows);let bytes=serde_json::to_vec(&kept).unwrap();
+            assert!(bytes.len()<=HISTORY_BYTES);assert_eq!(kept.last().unwrap()["id"],"row-99");assert!(!kept.is_empty());
+        }
+    }
+    #[gpui::test]
+    fn bounded_mini_history_pages_every_loaded_row_and_returns_to_latest(cx:&mut TestAppContext){
+        let (view,cx)=crate::ui_tests::fixture(cx);view.update_in(cx,|app,window,cx|{
+            app.loading=false;app.rows=(0..240).map(|i|Row{role:Some("assistant:codex".into()),block:MessageBlock::Paragraph(format!("{i}:{}","文".repeat(4000)))}).collect();app.has_older=false;
+            let mut seen=HashSet::new();let mut pages=0;
+            loop{let state=app.unified_snapshot(cx);for row in state["history"].as_array().unwrap(){seen.insert(row["id"].as_str().unwrap().to_owned());}pages+=1;if state["historyHasMore"]==false{break}let body=request(app,"history_more",cx);app.unified_command(&body,window,cx).unwrap();assert!(pages<50,"History cursor did not move");}
+            assert_eq!(seen.len(),240);assert!(app.unified_snapshot(cx)["historyEarlier"]==true);
+            let body=request(app,"history_latest",cx);app.unified_command(&body,window,cx).unwrap();assert_eq!(app.unified_snapshot(cx)["history"].as_array().unwrap().last().unwrap()["id"],"row-239");assert!(app.unified_snapshot(cx)["historyEarlier"]==false);
+        });
+    }
+    #[gpui::test]
+    fn navigation_round_trips_exact_sessions_and_preserves_each_draft(cx:&mut TestAppContext){
+        let (view,cx)=crate::ui_tests::fixture(cx);view.update_in(cx,|app,window,cx|{
+            let first=app.sessions[0].clone();let mut second=first.clone();second.id="second-chat".into();second.title="Second".into();app.sessions.push(second.clone());app.active=Some(first.id.clone());app.loading=false;
+            app.composer.update(cx,|input,cx|input.set_text("First draft",cx));let mut body=request(app,"chat",cx);body["id"]=json!(format!("code:{}",second.id));app.unified_command(&body,window,cx).unwrap();assert!(!app.unified_back.is_empty());
+            app.loading=false;app.composer.update(cx,|input,cx|input.set_text("Second draft",cx));let mut body=request(app,"navigate",cx);body["direction"]=json!("back");app.unified_command(&body,window,cx).unwrap();assert_eq!(app.active.as_deref(),Some(first.id.as_str()));assert_eq!(app.composer.read(cx).text(),"First draft");
+            app.loading=false;let mut body=request(app,"navigate",cx);body["direction"]=json!("forward");app.unified_command(&body,window,cx).unwrap();assert_eq!(app.active.as_deref(),Some(second.id.as_str()));assert_eq!(app.composer.read(cx).text(),"Second draft");
+        });
+    }
+    #[gpui::test]
+    fn delegated_task_snapshot_keeps_parent_provider_and_native_epoch(cx:&mut TestAppContext){
+        let (view,cx)=crate::ui_tests::fixture(cx);view.update(cx,|app,cx|{
+            let parent=&mut app.sessions[0];parent.agent=AgentKind::Codex;parent.external_id=Some("native-parent".into());let project=parent.execution_path.as_ref().unwrap_or(&parent.project_path).clone();let parent_id=parent.id.clone();
+            app.unified_children=vec![runtime::broker::ChildSnapshot{provider:AgentKind::Codex,project,parent_id:"native-parent".into(),id:"native-child".into(),turn_id:Some("child-turn".into()),status:chat_interactions::InteractionStatus::Working,preview:"Working child".into(),requests:vec![],transcript_bytes:0,transcript_revision:0,connected:true}];
+            let snapshot=app.unified_snapshot(cx);let child=snapshot["activeTasks"].as_array().unwrap().iter().find(|v|v["id"].as_str().unwrap().starts_with("child:")).unwrap();assert_eq!(child["parentId"],format!("code:{parent_id}"));assert_eq!(child["runId"],"child-turn");assert_eq!(child["agent"],"codex");
+            app.unified_children[0].status=chat_interactions::InteractionStatus::Cancelled;assert!(!app.unified_snapshot(cx)["activeTasks"].as_array().unwrap().iter().any(|v|v["id"].as_str().unwrap().starts_with("child:")));
+        });
+    }
+    #[gpui::test]
+    fn effort_choices_come_from_catalog_and_reach_owner_state(cx:&mut TestAppContext){
+        let (view,cx)=crate::ui_tests::fixture(cx);
+        view.update_in(cx,|app,window,cx|{
+            app.loading=false;app.starting=false;app.handoff_pending=None;app.agent=AgentKind::Codex;
+            app.native_models.insert(AgentKind::Codex,vec![agent_controls::ModelChoice{id:"fixture-model".into(),label:"Fixture".into(),reasoning_efforts:vec!["low".into(),"high".into()]}]);
+            let mut body=request(app,"settings",cx);body["model"]=json!("fixture-model");body["effort"]=json!("high");app.unified_command(&body,window,cx).unwrap();
+            assert_eq!(app.unified_snapshot(cx)["reasoningEffort"],"high");assert_eq!(app.workspace_snapshot(cx).reasoning_efforts["codex:fixture-model"],"high");
+            body["effort"]=json!("invented");assert!(app.unified_command(&body,window,cx).is_err());assert_eq!(app.unified_effort(),Some("high"));
+        });
+    }
+    #[gpui::test]
+    fn inbox_cycles_native_requests_without_navigating_the_owner(cx:&mut TestAppContext){
+        let (view,cx)=crate::ui_tests::fixture(cx);
+        view.update_in(cx,|app,window,cx|{
+            app.active=Some("fixture-session".into());let run=crate::ui_tests::idle_run("Approval".into());let epoch=run.parse_epoch;app.runs.insert("fixture-session".into(),run);
+            for id in ["a","b"]{let request=runtime::NativeRequest{id:id.into(),method:"test".into(),title:id.into(),detail:"cargo test".into(),kind:runtime::NativeRequestKind::Approval{choices:vec![runtime::NativeOption{id:"accept".into(),label:"Allow once".into()}]}};app.native_pending.insert(id.into(),native_request_ui::LiveRequest::new("fixture-session",epoch,request));}
+            assert_eq!(app.unified_pending_ids(),vec!["a","b"]);let initial=app.unified_pending().unwrap().1;
+            let body=request(app,"approval_next",cx);app.unified_command(&body,window,cx).unwrap();assert_ne!(initial,app.unified_pending().unwrap().1);assert_eq!(app.active.as_deref(),Some("fixture-session"));app.unified_command(&body,window,cx).unwrap();assert_eq!(initial,app.unified_pending().unwrap().1);
+        });
+    }
     #[gpui::test]
     fn project_snapshot_and_models_follow_the_actual_owner(cx:&mut TestAppContext){
         let(view,cx)=crate::ui_tests::fixture(cx);
@@ -1138,7 +1245,7 @@ mod regression_tests {
             assert_eq!(first["standaloneChats"][0]["id"],"code:other");assert_eq!(first["standalone"],false);
             app.project=app.unprojected_root();let second=app.unified_snapshot(cx);
             assert_eq!(second["chats"][0]["id"],"code:other");assert_eq!(second["standalone"],true);
-            let choice=|id:&str|agent_controls::ModelChoice{id:id.into(),label:id.into()};
+            let choice=|id:&str|agent_controls::ModelChoice{ reasoning_efforts:vec![],id:id.into(),label:id.into()};
             app.controls.insert(app.agent.command(),(Instant::now(),agent_controls::ControlInfo{auth:agent_controls::AuthState::Unknown,models:vec![choice("catalog-model")],note:None,account:None,limits:vec![],catalog:None}));
             assert_eq!(app.unified_snapshot(cx)["models"][0]["model"],"catalog-model");
             app.native_models.insert(app.agent,vec![choice("catalog-model"),choice("live-model")]);

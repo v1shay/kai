@@ -216,6 +216,11 @@ impl Orbit {
                 }
                 this.remember_service_usage(&services);
                 this.broker_children.clear();
+                for child in children.iter().filter(|c|c.status==chat_interactions::InteractionStatus::Completed){
+                    let event=(crate::unified::child_id(child),child.turn_id.clone().unwrap_or_else(||child.id.clone()));
+                    if !this.unified_successes.contains(&event){if this.unified_successes.len()>=128{this.unified_successes.pop_front();}this.unified_successes.push_back(event);}
+                }
+                this.unified_children=children.clone();
                 for child in children.iter().filter(|c| c.connected) {
                     let owner = this.child_owner(child, &children).map(|s| s.id.clone());
                     let Some(owner) = owner else {
@@ -329,7 +334,7 @@ impl Orbit {
     }
     // Providers report the immediate parent for nested delegation. Walk only
     // observed ownership links, bounded even if a malformed graph has a cycle.
-    fn child_owner<'a>(
+    pub(super) fn child_owner<'a>(
         &'a self,
         child: &ChildSnapshot,
         children: &[ChildSnapshot],
@@ -381,7 +386,7 @@ impl Orbit {
         self.native_request_focus = Some(request);
         cx.notify();
     }
-    fn select_child(&mut self, provider: AgentKind, id: String, cx: &mut Context<Self>) {
+    pub(super) fn select_child(&mut self, provider: AgentKind, id: String, cx: &mut Context<Self>) {
         let mut offset = 0;
         if let Some(panel) = &mut self.broker_panel {
             offset = panel

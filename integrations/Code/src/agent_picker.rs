@@ -460,6 +460,13 @@ impl Orbit {
                         .h(px((count as f32 * 30.).min(180.)))
                         .w_full()
                     })
+                    .when_some(self.unified_models().into_iter().find(|m|Some(&m.id)==self.model.as_ref()).filter(|m|!m.reasoning_efforts.is_empty()),|s,model|{
+                        s.child(div().px_2().py_1().text_size(crate::theme::ui_px(10.)).text_color(rgb(MUTED)).child("Reasoning effort"))
+                         .child(div().flex().flex_wrap().gap_1().px_2().children(model.reasoning_efforts.into_iter().map(|effort|{
+                            let value=effort.clone();let selected=self.unified_effort()==Some(effort.as_str());
+                            div().id(SharedString::from(format!("reasoning-{effort}"))).cursor_pointer().px_2().py_1().rounded_md().text_size(crate::theme::ui_px(11.)).when(selected,|s|s.bg(rgba(GLASS_HOVER))).child(effort).on_click(cx.listener(move|this,_,_,cx|{let key=format!("{}:{}",this.agent.command(),this.model.as_deref().unwrap_or(""));this.reasoning_efforts.insert(key,value.clone());this.queue_workspace_save(cx);cx.notify();}))
+                         })))
+                    })
                     .when(
                         controls.is_some_and(|c| {
                             matches!(c.auth, AuthState::Unknown | AuthState::Configured)

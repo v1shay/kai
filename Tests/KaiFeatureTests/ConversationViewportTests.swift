@@ -3,6 +3,14 @@ import XCTest
 @testable import NotchPrototype
 
 final class ConversationViewportTests:XCTestCase {
+    @MainActor func testPagedHistoryCanReturnToLatestAtTheOldestBoundary(){
+        _=NSApplication.shared
+        let view=ConversationHistoryControl(frame:CGRect(x:0,y:0,width:280,height:24));view.update(hasMore:false,loading:false,earlier:true);view.layoutSubtreeIfNeeded()
+        XCTAssertFalse(view.isHidden)
+        let latest=view.subviews.compactMap{$0 as? NSButton}.first{$0.title == "Latest"}!
+        XCTAssertFalse(latest.isHidden);XCTAssertEqual(latest.frame.midX,view.bounds.midX)
+        var called=false;view.onLatest={called=true};latest.performClick(nil);XCTAssertTrue(called)
+    }
     @MainActor func testFirstLayoutShowsFinalLineAtEverySizeAndCanReopenAtBottom(){
         for size in [CGSize(width:260,height:160),CGSize(width:500,height:350),CGSize(width:700,height:500)] {
             let scroll=ConversationScrollView(frame:CGRect(origin:.zero,size:size)),text=NSTextView(frame:CGRect(origin:.zero,size:size))

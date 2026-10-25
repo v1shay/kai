@@ -242,6 +242,7 @@ fn input(request: &RunRequest) -> Value {
     );
     Value::Array(values)
 }
+fn turn_params(thread:&str,request:&RunRequest)->Value{json!({"threadId":thread,"input":input(request),"approvalPolicy":request.codex_approvals.policy(),"approvalsReviewer":request.codex_approvals.reviewer(),"effort":request.reasoning_effort})}
 fn thread_params(request: &RunRequest) -> Value {
     let mut params = json!({"cwd":request.project,
         "approvalPolicy":request.codex_approvals.policy(),
@@ -1212,9 +1213,7 @@ impl Session {
                         &ctx.cancelled,
                         3,
                         "turn/start",
-                        json!({"threadId":self.thread,"input":input(request),
-                            "approvalPolicy":request.codex_approvals.policy(),
-                            "approvalsReviewer":request.codex_approvals.reviewer()}),
+                        turn_params(&self.thread,request),
                     )?;
                 }
             }
@@ -3065,7 +3064,7 @@ mod tests {
         path
     }
     fn request(path: &std::path::Path) -> RunRequest {
-        RunRequest {
+        RunRequest { reasoning_effort:None,
             agent: AgentKind::Codex,
             executable: path.into(),
             project: std::env::temp_dir(),
@@ -3078,6 +3077,12 @@ mod tests {
             codex_approvals: crate::runtime::CodexApprovals::default(),
             trust_workspace: false,
         }
+    }
+    #[test]
+    fn native_turn_transmits_selected_reasoning_without_changing_model_id(){
+        let mut r=request(std::path::Path::new("/fixture"));r.model=Some("exact-model".into());r.reasoning_effort=Some("high".into());
+        assert_eq!(thread_params(&r)["model"],"exact-model");assert_eq!(turn_params("thread",&r)["effort"],"high");
+        r.reasoning_effort=None;assert!(turn_params("thread",&r)["effort"].is_null());
     }
     #[test]
     fn native_voice_uses_webrtc_same_chat_approvals_and_survives_delegated_turn_completion() {

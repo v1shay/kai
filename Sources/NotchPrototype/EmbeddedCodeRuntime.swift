@@ -21,6 +21,8 @@ enum UnifiedDraftHandoff {
     var onState:((KaiState)->Void)?
     var onError:((String)->Void)?
     private var lastState:Data?
+    private var historyOwner:String?
+    private var history=[KaiMessage]()
 
     func start(window:NSWindow,command:@escaping Command) {
         guard !active else{return}
@@ -45,18 +47,34 @@ enum UnifiedDraftHandoff {
     }
     func receive(_ data:Data) {
         guard data != lastState else{return}
-        if let object=try? JSONSerialization.jsonObject(with:data) as? [String:Any],let type=object["type"] as? String{
-            if type=="workspaceReveal"{app?.revealWorkspace();return}
-            if type=="workspaceDismiss"{app?.dismissUnifiedSurface();return}
-            if type=="probeDoubleCommand",CommandLine.arguments.contains("--unified-smoke-test"){app?.probeDoubleCommand();return}
-            if type=="quickVisibility",let visible=object["visible"] as? Bool{app?.setQuickChatVisible(visible);return}
-            if type=="workspacePetSlot",let frame=object["rect"] as? [Double],frame.count==4{app?.workspacePetGeometry(CGRect(x:frame[0],y:frame[1],width:frame[2],height:frame[3]));return}
+        guard let packet=try? JSONDecoder().decode(OwnerPacket.self,from:data) else{onError?("Could not read Code’s owner state");fputs("Kai unified state decode failed\n",stderr);return}
+        switch packet.type {
+        case "workspaceReveal":app?.revealWorkspace();return
+        case "workspaceDismiss":app?.dismissUnifiedSurface();return
+        case "probeDoubleCommand":if CommandLine.arguments.contains("--unified-smoke-test"){app?.probeDoubleCommand()};return
+        case "quickVisibility":if let visible=packet.visible{app?.setQuickChatVisible(visible)};return
+        case "workspacePetSlot":if let frame=packet.rect,frame.count==4{app?.workspacePetGeometry(CGRect(x:frame[0],y:frame[1],width:frame[2],height:frame[3]))};return
+        default:break
         }
-        guard let state=try? JSONDecoder().decode(KaiState.self,from:data) else{onError?("Could not read Code’s owner state");fputs("Kai unified state decode failed\n",stderr);return}
+        guard var state=packet.state else{return}
+        let carriesHistory=packet.hasHistory
+        if carriesHistory{history=state.history;historyOwner=state.threadId}
+        else if historyOwner==state.threadId{state.history=history}
+        else{history=[];historyOwner=state.threadId}
         lastState=data;onState?(state)
     }
+    private struct OwnerPacket:Decodable {
+        let type:String?,visible:Bool?,rect:[Double]?,state:KaiState?,hasHistory:Bool
+        private enum Keys:String,CodingKey{case type,visible,rect,history}
+        init(from decoder:Decoder)throws{
+            let fields=try decoder.container(keyedBy:Keys.self)
+            type=try fields.decodeIfPresent(String.self,forKey:.type)
+            if type == nil || type == "state"{state=try KaiState(from:decoder);hasHistory=fields.contains(.history);visible=nil;rect=nil}
+            else{state=nil;hasHistory=false;visible=try fields.decodeIfPresent(Bool.self,forKey:.visible);rect=try fields.decodeIfPresent([Double].self,forKey:.rect)}
+        }
+    }
     var ready:Bool{active && onState != nil && lastState != nil}
-    func presentation(_ phase:String){sendAction("workspace_presentation",["phase":phase])}
+    func presentation(_ phase:String){var now=timespec();clock_gettime(CLOCK_MONOTONIC_RAW,&now);sendAction("workspace_presentation",["phase":phase,"started":Double(now.tv_sec)+Double(now.tv_nsec)/1_000_000_000])}
     func sendAction(_ action:String,_ fields:[String:Any]=[:]){var value=fields;value["action"]=action;if let data=try? JSONSerialization.data(withJSONObject:value){send(data)}}
     func diagnostics()->UInt32{app?.unifiedPresentationDiagnostics() ?? 0}
     func toggle(){app?.toggleUnifiedSurface()}
