@@ -1150,11 +1150,17 @@ private final class NotchView:ImageDropView {
         workspaceNotchOverlay=false
         guard let window=EmbeddedCodeRuntime.shared.workspaceWindow,let panel else{return}
         pinned=true;compactWhileWorking=false;autoCompact=false
-        let width=expandedSize?.width ?? notchWidth+160
-        let target=CGRect(x:panel.frame.midX-width/2,y:panel.frame.maxY-canvasHeight,width:width,height:canvasHeight)
-        setOpen(true,mini:true,userInitiated:true)
+        // Retire Code into the compact contour. Opening the mini chat before
+        // this handoff runs its native morph offscreen and reveals a cropped
+        // piece of Code followed by a snap to the finished mini interface.
+        setOpen(true,mini:false,userInitiated:true)
+        let width=notchWidth+160
+        let target=CGRect(x:panel.frame.midX-width/2,y:panel.frame.maxY-notchHeight,width:width,height:notchHeight)
         workspaceMorph.collapse(window,to:target){[weak self] in
-            guard let self else{return};self.restoreWorkspacePet();self.floatingTasks.setSuppressed(self.suppressFloatingTasks);self.placePanel();self.panel.makeKey();self.reviewNextFloatingTask()
+            guard let self else{return}
+            self.restoreWorkspacePet();self.floatingTasks.setSuppressed(self.suppressFloatingTasks)
+            self.setOpen(true,mini:true,userInitiated:true)
+            self.panel.makeKey();self.reviewNextFloatingTask()
         }
     }
     private func dismissWorkspace(){
@@ -1872,6 +1878,8 @@ private final class NotchView:ImageDropView {
         visualTransition.resize(mediaArtwork,to:frame,animated:animated)
     }
     private func layoutPet() {
+        // Preparing the hidden notch must not move the pet still owned by Code.
+        guard sprite.superlayer !== workspacePet.layer else{return}
         guard let screen=NSScreen.screens.first(where:{$0.auxiliaryTopLeftArea != nil}) else{return};let expanded=expandedWidth,physicalLeft=(canvasWidth-notchWidth)/2,kaiLeft=(canvasWidth-expanded)/2,scale=screen.backingScaleFactor,topBandY=canvasHeight-notchHeight,h=min(36,notchHeight-3)*petScale,w=h*192/208
         func px(_ v:CGFloat)->CGFloat{round(v*scale)/scale};CATransaction.begin();CATransaction.setDisableActions(true);sprite.frame=CGRect(x:px((physicalLeft+kaiLeft)/2-w/2),y:px(topBandY+(notchHeight-h)/2),width:px(w),height:px(h));CATransaction.commit()
     }

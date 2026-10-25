@@ -387,3 +387,34 @@ screen locked and the display asleep. It is not recorded as a successful live
 probe are ready for an unlocked display. Native state and geometry assertions
 passed independently. Installation preserves the previous experimental bundle
 and does not terminate the running user application or its agents.
+
+### 0.6.1 native workspace-to-notch handoff
+
+Foreground Control–Option now retires the workspace into the compact notch
+contour, then opens the actual mini interface using Kai's existing notch morph.
+Previously `setOpen(mini: true)` ran before the workspace collapse: the mini
+animation played while its panel was hidden, Code's contour ended at the mini
+chat's height, and the completed mini panel appeared abruptly at handoff.
+The workspace now keeps its full-size frame throughout retirement. Mini chat
+begins only after the workspace is hidden, so its live native mask and content
+animate together. Preparing the hidden notch also leaves the shared pet in
+Code's coordinates until it is returned to the notch. Double-Command's existing
+dismissal path and background-workspace overlays are unchanged.
+
+The production native view harness passed with new assertions for the compact
+collapse target, unchanged Code window frame, preserved shared-pet frame, hidden
+mini during retirement, visible original mini mask animation after handoff, and
+preserved chat draft. The signed packaged smoke probe passed on an awake display:
+continuous reversal, workspace working-area sizing, shared pet, repeat open,
+extended-notch return, resized-window double-Command, and exclusive Quick Chat.
+The 0.6.1 (9) installation retains a 0.6.0 rollback bundle; its signature and all
+three executable/library hashes were checked. No running user process was stopped.
+Native desktop automation remains unavailable (Sky service startup failure), so
+this does not establish physical key delivery or subjective visual inspection.
+
+The separate previously pending generated-audio voice probe was retried while
+awake. WebKit permission, WebRTC connection and first-prompt transmission passed,
+but the native voice session closed with reason `requested` before the full
+transcript assertions completed. It is not counted as a passing voice regression;
+no cause is inferred from that reason alone and this release changes no voice
+runtime behavior.
