@@ -2151,7 +2151,8 @@ fn agent_picker_is_compact_aligned_and_virtualizes_models(cx: &mut TestAppContex
     draw_frame(&view, cx);
     let pane = cx.debug_bounds("agent-picker").unwrap();
     assert_eq!(pane.size.width, px(280.));
-    assert!(pane.size.height < px(300.));
+    assert!(pane.size.height < px(360.), "Searchable model picker is too tall: {:?}",pane.size.height);
+    assert!(cx.debug_bounds("model-search").is_some(),"Model search was omitted from the compact picker");
     let row = cx.debug_bounds("agent-choice-codex").unwrap();
     let logo = cx.debug_bounds("picker-logo-codex").unwrap();
     let name = cx.debug_bounds("picker-label-codex").unwrap();
@@ -4837,4 +4838,18 @@ fn timestamp_swipe_reveals_real_turn_time_and_preserves_completed_duration(cx:&m
     cx.update(|_,cx|{let app=view.read(cx);assert!(app.timestamp_peek>0.9,"The actual transcript list consumed the timestamp swipe");assert_eq!(app.workspace_snapshot(cx).turn_timings[0].elapsed_ms,Some(9000));});
     cx.simulate_event(ScrollWheelEvent{position,delta:ScrollDelta::Pixels(point(px(0.),px(0.))),modifiers:Modifiers::none(),touch_phase:TouchPhase::Ended});
     cx.update(|_,cx|assert!(view.read(cx).timestamp_released.is_some(),"Releasing the swipe did not return the timestamp rail"));
+}
+
+#[gpui::test]
+fn model_search_selects_the_filtered_native_model_without_losing_the_draft(cx:&mut TestAppContext){
+    let(view,cx)=fixture(cx);
+    view.update_in(cx,|app,window,cx|{
+        app.loading=false;app.composer.update(cx,|input,cx|input.set_text("Keep my chat draft",cx));
+        app.native_models.insert(app.agent,vec![agent_controls::ModelChoice{id:"model-first".into(),label:"First model".into(),reasoning_efforts:vec![]},agent_controls::ModelChoice{id:"model-target".into(),label:"Target model".into(),reasoning_efforts:vec!["high".into()]}]);
+        app.toggle_agent_picker(point(px(20.),px(650.)),window,cx);
+        app.agent_picker.as_ref().unwrap().search.update(cx,|input,cx|input.set_text("target",cx));
+    });
+    draw_frame(&view,cx);assert!(cx.debug_bounds("model-search").is_some());assert!(cx.debug_bounds("model-choice-2").is_none());
+    click_selector(cx,"model-choice-1");
+    view.update(cx,|app,cx|{assert_eq!(app.model.as_deref(),Some("model-target"));assert_eq!(app.composer.read(cx).text(),"Keep my chat draft");});
 }

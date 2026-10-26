@@ -6,6 +6,8 @@ pub(super) struct Picker {
     pub anchor: Point<Pixels>,
     pub started: Instant,
     pub closing: bool,
+    pub search:Entity<TextInput>,
+    _search_subscription:Subscription,
     closing_from: f32,
     auth_pulse: Option<(&'static str, Instant)>,
 }
@@ -96,7 +98,10 @@ impl Orbit {
         self.panel_popover = None;
         self.action_menu = None;
         let height = window.viewport_size().height;
+        let search=cx.new(|cx|{let mut input=TextInput::new(window,cx);input.set_placeholder("Search models…",cx);input});
+        let subscription=cx.subscribe(&search,|_,_,event,cx|{if matches!(event,InputEvent::Changed){cx.notify();}});
         self.agent_picker = Some(Picker {
+            search,_search_subscription:subscription,
             anchor: point(
                 position.x,
                 (position.y - px(340.)).max(px(8.)).min(height - px(350.)),
@@ -181,9 +186,6 @@ impl Orbit {
     pub(super) fn choose_model(&mut self, model: Option<String>, cx: &mut Context<Self>) {
         if self.loading || self.starting_current() || self.handoff_pending.is_some() {
             return;
-        }
-        if self.active.as_ref().is_none_or(|id|!self.runs.contains_key(id)){
-            if let Some(usage)=self.active.as_ref().and_then(|id|self.usage.get_mut(id)){usage.model=None;usage.reasoning_effort=None;}
         }
         self.model = model.clone();
         if self
@@ -300,7 +302,8 @@ impl Orbit {
             .controls
             .get(self.agent.command())
             .map(|(_, info)| info);
-        let mut models = vec![(None, format!("Default · {}",self.provider_default_model().unwrap_or_else(||"…".into())))];
+        let automatic=if self.active.is_some(){format!("Continue · {}",self.effective_model_settings().0.unwrap_or_else(||self.agent.name().into()))}else{format!("Use {}",self.provider_default_model().unwrap_or_else(||self.agent.name().into()))};
+        let mut models = vec![(None,automatic)];
         if let Some(catalog) = self
             .native_models
             .get(&self.agent)
@@ -317,6 +320,8 @@ impl Orbit {
         {
             models.push((Some(id.clone()), id.clone()));
         }
+        let query=picker.search.read(cx).text().to_lowercase();
+        if !query.trim().is_empty(){models.retain(|(id,label)|id.is_none() || query.split_whitespace().all(|word|label.to_lowercase().contains(word) || id.as_deref().unwrap_or("").to_lowercase().contains(word)));}
         anchored()
             .position(picker.anchor + point(px(0.), px(8. * (1. - reveal))))
             .snap_to_window_with_margin(px(8.))
@@ -434,7 +439,7 @@ impl Orbit {
                             .justify_between()
                             .text_size(crate::theme::ui_px(10.))
                             .text_color(rgb(MUTED))
-                            .child("Model")
+                            .child(if self.active.as_ref().is_some_and(|id|self.runs.contains_key(id)){"Model for next turn"}else{"Model"})
                             .child(
                                 div()
                                     .id("refresh-controls")
@@ -446,6 +451,9 @@ impl Orbit {
                                     })),
                             ),
                     )
+                    .child(div().px_2().pb_1().text_size(crate::theme::ui_px(10.)).text_color(rgb(MUTED)).child(format!("{} · {}",self.agent.name(),self.effective_model_label())))
+                    .when(self.active.as_ref().is_some_and(|id|self.runs.contains_key(id)) && self.model.is_some(),|s|s.child(div().px_2().pb_1().text_size(crate::theme::ui_px(10.)).text_color(rgb(ACCENT)).child(format!("Next turn · {}{}",self.model.as_deref().unwrap_or(""),self.unified_effort().map(|e|format!(" · {e}")).unwrap_or_default()))))
+                    .child(div().debug_selector(||"model-search".into()).px_2().pb_1().child(picker.search.clone()))
                     .child({
                         let count = models.len();
                         uniform_list(
@@ -466,7 +474,7 @@ impl Orbit {
                     .when_some(self.effort_model_choice().filter(|m|!m.reasoning_efforts.is_empty()),|s,model|{
                         s.child(div().px_2().py_1().text_size(crate::theme::ui_px(10.)).text_color(rgb(MUTED)).child("Reasoning effort"))
                          .child(div().flex().flex_wrap().gap_1().px_2().children(model.reasoning_efforts.into_iter().map(|effort|{
-                            let value=effort.clone();let selected=self.effective_model_settings().1.as_deref()==Some(effort.as_str());
+                            let value=effort.clone();let selected=self.unified_effort().map(str::to_owned).or_else(||self.effective_model_settings().1).as_deref()==Some(effort.as_str());
                             div().id(SharedString::from(format!("reasoning-{effort}"))).cursor_pointer().px_2().py_1().rounded_md().text_size(crate::theme::ui_px(11.)).when(selected,|s|s.bg(rgba(GLASS_HOVER))).child(effort).on_click(cx.listener(move|this,_,_,cx|{let key=this.effort_key();this.reasoning_efforts.insert(key,value.clone());this.queue_workspace_save(cx);cx.notify();}))
                          })))
                     })

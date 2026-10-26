@@ -948,9 +948,21 @@ fn message_title(content: Option<&Value>) -> Option<String> {
     })
 }
 
+/// Temporary native verification sessions are kept on disk but do not belong
+/// in a daily project list. The exact prefixes are owned by Kai's test probes.
+pub fn internal_probe_project(path:&std::path::Path)->bool{
+    let Some(name)=path.file_name().and_then(|s|s.to_str())else{return false};
+    if !["kai-agent-ui-","kai-v060-packaged-"].iter().any(|prefix|name.starts_with(prefix)){return false}
+    let normalize=|p:&std::path::Path|p.strip_prefix("/private").map(|rest|std::path::Path::new("/").join(rest)).unwrap_or_else(|_|p.to_owned());
+    let parent=path.parent().map(normalize);
+    parent.as_deref()==Some(std::path::Path::new("/tmp")) || parent==Some(normalize(&std::env::temp_dir()))
+}
+
 pub fn clean_title(text: &str) -> Option<String> {
     let sanitized = crate::presentation::sanitize_transcript_text("user", text)?;
-    let text = sanitized.as_str();
+    let text = if sanitized.starts_with("# Files mentioned by the user:") || sanitized.starts_with("## Files mentioned by the user:") {
+        sanitized.split_once("## My request:").map(|(_,request)|request).unwrap_or(sanitized.as_str())
+    }else{sanitized.as_str()};
     let mut title = String::new();
     for word in text.split_whitespace().take(40) {
         if !title.is_empty() {
@@ -1371,6 +1383,14 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[test]
+    fn diagnostic_projects_are_recognized_only_in_owned_temporary_locations(){
+        assert!(internal_probe_project(std::path::Path::new("/private/tmp/kai-agent-ui-fixture")));
+        assert!(internal_probe_project(&std::env::temp_dir().join("kai-agent-ui-reasoning-fixture")));
+        assert!(!internal_probe_project(std::path::Path::new("/Users/person/projects/kai-agent-ui-client")));
+        assert!(!internal_probe_project(std::path::Path::new("/private/tmp/my-project")));
+        assert_eq!(clean_title("# Files mentioned by the user:\n## sample.png: /tmp/sample.png\n## My request:\nBuild a useful browser").as_deref(),Some("Build a useful browser"));
+    }
     #[test]
     fn titles_are_unicode_safe_and_bounded() {
         let title = clean_title(&"🦀".repeat(200)).unwrap();

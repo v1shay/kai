@@ -821,7 +821,8 @@ pub fn card_detail_text(title: &str, text: &str) -> (String, Vec<(Range<usize>, 
     // safely distinguish source, diffs, HTML and JSON from narrative prose.
     let prose = matches!(
         title,
-        "Plan"
+        "Thinking"
+            | "Plan"
             | "Agent plan"
             | "Agent task list"
             | "Proposed plan"

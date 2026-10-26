@@ -147,6 +147,14 @@ import AppKit
             notch.level=NSWindow.Level(rawValue:window.level.rawValue+1)
             let reveal=DispatchWorkItem{[weak self] in
                 guard let self,self.revision==token else{return}
+                // A delayed render-server frame can leave the presentation
+                // opacity behind the fade's deadline. Retire that animation
+                // before revealing the native notch; workspace pixels must
+                // never survive onto its surface.
+                CATransaction.begin();CATransaction.setDisableActions(true)
+                self.host?.layer?.removeAnimation(forKey:"workspaceContent")
+                self.host?.layer?.opacity=0
+                CATransaction.commit();CATransaction.flush()
                 self.presentingNotch=true;revealNotch()
             };handoff=reveal;DispatchQueue.main.asyncAfter(deadline:.now()+(reduce ? 0.06:0.16),execute:reveal)
         }

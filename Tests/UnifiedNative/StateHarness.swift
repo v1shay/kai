@@ -105,7 +105,14 @@ private func member(_ object:Any,_ name:String)->Any?{Mirror(reflecting:object).
     // A workspace behind another application stays open while its notch overlays
     // that application. Returning reuses the same window and native morph.
     foreground=true;app.revealWorkspace()
-    let until=Date().addingTimeInterval(0.95);while Date()<until{RunLoop.current.run(until:Date().addingTimeInterval(0.01))}
+    // Poll for completion rather than assuming a loaded WindowServer has
+    // delivered the final main-queue callback by an arbitrary wall-clock tick.
+    func settled(_ condition:()->Bool,timeout:TimeInterval=2){
+        let deadline=Date().addingTimeInterval(timeout)
+        while !condition(),Date()<deadline{RunLoop.current.run(until:Date().addingTimeInterval(0.005))}
+    }
+    let workspaceMorph=member(app,"workspaceMorph") as! WorkspaceMorph
+    settled{!workspaceMorph.transitioning}
     let retainedFrame=window.frame,retainedWindow=window.windowNumber
     let statusPanel=member(app,"panel") as! NSPanel
     precondition(!statusPanel.isVisible,"Foreground Code duplicated its status notch")
@@ -113,12 +120,21 @@ private func member(_ object:Any,_ name:String)->Any?{Mirror(reflecting:object).
     foreground=false
     NSWorkspace.shared.notificationCenter.post(name:NSWorkspace.didActivateApplicationNotification,object:nil)
     RunLoop.current.run(until:Date().addingTimeInterval(0.03))
-    precondition(statusPanel.isVisible && member(app,"open") as? Bool == true && member(app,"miniOpen") as? Bool == false,"Switching to another app did not automatically show the compact status notch")
+    precondition(statusPanel.isVisible && member(app,"open") as? Bool == true && member(app,"miniOpen") as? Bool == false,"Switching to another app did not automatically show compact status: visible=\(statusPanel.isVisible), open=\(String(describing:member(app,"open") as? Bool)), mini=\(String(describing:member(app,"miniOpen") as? Bool)), morph=\(String(describing:(member(app,"workspaceMorph") as? WorkspaceMorph)?.transitioning)), tasks=\(String(describing:(member(app,"latestState") as? KaiState)?.activeTasks.count))")
     precondition(statusPanel.ignoresMouseEvents && !statusPanel.isKeyWindow,"Background status stole keyboard focus")
+    let statusEcho=member(app,"workspaceStatusMorph") as! WorkspaceStatusMorph
+    precondition(statusEcho.active,"Leaving a working workspace skipped its native status contour")
+    let statusMask=member(app,"mask") as! CAShapeLayer
+    let statusOpening=statusMask.animation(forKey:"width") as? CABasicAnimation
+    precondition(statusOpening != nil,"Background status appeared without the original notch opening animation")
+    app.workspaceFocusChanged()
+    precondition((statusMask.animation(forKey:"width") as? CABasicAnimation)?.beginTime==statusOpening?.beginTime,"Repeated focus events restarted the notch animation")
     precondition(window.isVisible && window.frame==retainedFrame && window.windowNumber==retainedWindow,"Showing background status hid or replaced Code")
     precondition(commands.count==focusCommands,"Switching apps changed the owner or replayed the workspace morph")
     precondition((member(app,"composerField") as? NSTextField)?.stringValue == "Keep this draft","Background status lost the selected chat draft")
     foreground=true;app.workspaceFocusChanged()
+    precondition(commands.last?["phase"] as? String == "reopen","Returning to Code skipped the status-to-workspace morph")
+    settled{!workspaceMorph.transitioning}
     precondition(!statusPanel.isVisible && window.isVisible,"Returning to Code left a duplicate notch or closed Code")
     foreground=false;NotificationCenter.default.post(name:NSApplication.didResignActiveNotification,object:NSApp)
     RunLoop.current.run(until:Date().addingTimeInterval(0.03))
@@ -127,20 +143,27 @@ private func member(_ object:Any,_ name:String)->Any?{Mirror(reflecting:object).
     // finishes, even if no further activation notification follows.
     foreground=true;app.revealWorkspace()
     foreground=false;app.workspaceFocusChanged()
-    let lostDuringReveal=Date().addingTimeInterval(0.95);while Date()<lostDuringReveal{RunLoop.current.run(until:Date().addingTimeInterval(0.01))}
+    settled{!workspaceMorph.transitioning}
     precondition(statusPanel.isVisible && window.isVisible,"Focus loss during workspace reveal never restored its background notch")
     var idle=selected;idle["activeTasks"]=[];idle["activeTurnId"]=NSNull();idle["activity"]=["scene":"off","text":"Ready"];idle["notice"]="Background idle"
     runtime.receive(try JSONSerialization.data(withJSONObject:idle))
-    let idleDeadline=Date().addingTimeInterval(1.3);while Date()<idleDeadline{RunLoop.current.run(until:Date().addingTimeInterval(0.01))}
-    precondition(statusPanel.isVisible && member(app,"miniOpen") as? Bool == false,"An idle update hid the persistent background status notch")
+    let idleDeadline=Date().addingTimeInterval(1.6);while Date()<idleDeadline{RunLoop.current.run(until:Date().addingTimeInterval(0.01))}
+    precondition(!statusPanel.isVisible,"Idle Code left a permanent background status notch")
+    app.workspaceFocusChanged();precondition(!statusPanel.isVisible,"Switching between other apps resurrected an idle status notch")
     runtime.receive(try JSONSerialization.data(withJSONObject:selected))
+    precondition(statusPanel.isVisible,"Work starting in the background never surfaced status")
+    runtime.receive(try JSONSerialization.data(withJSONObject:idle))
+    let closingStatus=Date().addingTimeInterval(1.14);while Date()<closingStatus{RunLoop.current.run(until:Date().addingTimeInterval(0.005))}
+    runtime.receive(try JSONSerialization.data(withJSONObject:selected))
+    let resumedStatus=Date().addingTimeInterval(0.3);while Date()<resumedStatus{RunLoop.current.run(until:Date().addingTimeInterval(0.005))}
+    precondition(statusPanel.isVisible && member(app,"open") as? Bool == true,"New work during the status closing animation was hidden by a stale completion")
     app.collapseWorkspace()
     precondition(window.isVisible && window.frame==retainedFrame && window.windowNumber==retainedWindow,"Overlay hid or replaced Code")
     precondition(member(app,"workspaceNotchOverlay") as? Bool == true && member(app,"miniOpen") as? Bool == true,"Background shortcut did not open extended notch")
     app.dismissUnifiedSurface();precondition(window.isVisible,"Dismissing the overlay closed Code")
-    app.collapseWorkspace();app.expandWorkspace()
+    app.collapseWorkspace();foreground=true;app.expandWorkspace()
     precondition(commands.last?["phase"] as? String == "reopen","Returning to Code skipped the native morph")
-    let reopened=Date().addingTimeInterval(0.95);while Date()<reopened{RunLoop.current.run(until:Date().addingTimeInterval(0.01))}
+    settled{!workspaceMorph.transitioning}
     precondition(window.isVisible && window.windowNumber==retainedWindow && window.frame==retainedFrame,"Morph return replaced the workspace")
     foreground=true
     // Direct Code -> extended notch: one contour target, with Code pixels
@@ -194,6 +217,7 @@ private func member(_ object:Any,_ name:String)->Any?{Mirror(reflecting:object).
     RunLoop.current.run(until:Date().addingTimeInterval(0.03))
     precondition(controls.window?.isVisible == true && controls.window?.ignoresMouseEvents == false,"Background approval never reached Kai")
     foreground=true;app.workspaceFocusChanged()
+    settled{!workspaceMorph.transitioning}
     precondition(member(app,"approvalPopout") as? Bool == false,"Returning to Code left a duplicate notch approval")
     foreground=false;app.workspaceFocusChanged()
     precondition(controls.window?.isVisible == true,"Same pending approval did not follow Code back into the background")
@@ -216,15 +240,15 @@ private func member(_ object:Any,_ name:String)->Any?{Mirror(reflecting:object).
     let textDecode=member(app,"textReveal") as! ConversationTextReveal
     let nativeText=member(app,"conversationText") as! NSTextView
     precondition(textDecode.activeTileCount>0 && textDecode.snapshotCount>0,"Unified extended notch skipped native text unjumbling")
-    let textSettled=Date().addingTimeInterval(0.45);while Date()<textSettled{RunLoop.current.run(until:Date().addingTimeInterval(0.005))}
-    precondition(textDecode.activeTileCount==0 && nativeText.string.contains("Retain this transcript"),"Unjumbling changed or failed to restore the real transcript")
+    settled{textDecode.activeTileCount==0}
+    precondition(textDecode.activeTileCount==0 && nativeText.string.contains("Retain this transcript"),"Unjumbling failed to settle: tiles=\(textDecode.activeTileCount), text=\(nativeText.string.debugDescription)")
     app.dismissUnifiedSurface();let closedText=Date().addingTimeInterval(0.3);while Date()<closedText{RunLoop.current.run(until:Date().addingTimeInterval(0.005))}
     app.expandToRunningChat()
     precondition(textDecode.activeTileCount>0,"Reopening the unchanged selected chat did not replay visible text unjumbling")
     app.revealWorkspace();let codeText=Date().addingTimeInterval(1);while Date()<codeText{RunLoop.current.run(until:Date().addingTimeInterval(0.01))}
     foreground=true;app.collapseWorkspace();let decodeOverlap=Date().addingTimeInterval(0.23);while Date()<decodeOverlap{RunLoop.current.run(until:Date().addingTimeInterval(0.005))}
     precondition(textDecode.activeTileCount>0,"Direct Code-to-notch handoff lost the native text unjumbling")
-    let decodedHandoff=Date().addingTimeInterval(0.5);while Date()<decodedHandoff{RunLoop.current.run(until:Date().addingTimeInterval(0.005))}
+    settled{textDecode.activeTileCount==0}
     precondition(textDecode.activeTileCount==0 && nativeText.string.contains("Retain this transcript"),"Handoff text failed to settle into the real native glyphs")
     foreground=false
     history.removeValue(forKey:"history");history["notice"]="Status changed"

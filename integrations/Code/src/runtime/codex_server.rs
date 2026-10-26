@@ -26,6 +26,8 @@ struct Session {
     file_changes: HashMap<String, Option<String>>,
     file_order: std::collections::VecDeque<String>,
     stream_sequence: u64,
+    reasoning: BTreeMap<String,BTreeMap<u64,String>>,
+    request_reasoning:bool,
     tool_streamed: std::collections::HashSet<String>,
     service: Option<Arc<broker::Service>>,
     voice: Option<VoiceState>,
@@ -58,6 +60,8 @@ impl Default for Session {
             file_changes: HashMap::new(),
             file_order: std::collections::VecDeque::new(),
             stream_sequence: 0,
+            reasoning:BTreeMap::new(),
+            request_reasoning:false,
             tool_streamed: std::collections::HashSet::new(),
             service: None,
             voice: None,
@@ -249,7 +253,7 @@ fn input(request: &RunRequest) -> Value {
     );
     Value::Array(values)
 }
-fn turn_params(thread:&str,request:&RunRequest)->Value{json!({"threadId":thread,"input":input(request),"approvalPolicy":request.codex_approvals.policy(),"approvalsReviewer":request.codex_approvals.reviewer(),"effort":request.reasoning_effort})}
+fn turn_params(thread:&str,request:&RunRequest)->Value{json!({"threadId":thread,"input":input(request),"approvalPolicy":request.codex_approvals.policy(),"approvalsReviewer":request.codex_approvals.reviewer(),"effort":request.reasoning_effort,"summary":"detailed"})}
 fn thread_params(request: &RunRequest) -> Value {
     let mut params = json!({"cwd":request.project,
         "approvalPolicy":request.codex_approvals.policy(),
@@ -278,6 +282,7 @@ fn routed_thread_params(request:&RunRequest,config:&Value)->Value{
     let mut params=thread_params(request);
     if config["model_provider"].as_str().is_none_or(|p|p=="openai"){
         params["modelProvider"]=json!("kai-openai-https");
+        params["config"]["model_reasoning_summary"]=json!("detailed");
     }
     params
 }
@@ -777,6 +782,12 @@ fn run_turn(
     } else {
         RuntimeEvent::Finished
     };
+    // A canceled or failed stream may never deliver item/completed. Retire its
+    // live reasoning cards before preserving the response for history.
+    for (id,parts) in std::mem::take(&mut state.reasoning){
+        let status=if ctx.cancelled.load(Ordering::Acquire){crate::chat_interactions::InteractionStatus::Cancelled}else if failure.is_some(){crate::chat_interactions::InteractionStatus::Failed}else{crate::chat_interactions::InteractionStatus::Completed};
+        state.parser.upsert_interaction(crate::chat_interactions::ChatInteraction::Status{title:"Thinking".into(),details:parts.into_values().collect::<Vec<_>>().join("\n\n"),status},&format!("reasoning:{id}"));
+    }
     super::record_terminal(&mut state.parser, &terminal);
     if let Ok(source) = state.parser.rendered_source() {
         *ctx.finalized_source
@@ -954,6 +965,11 @@ fn graceful_stop(
 }
 
 impl Session {
+    fn turn_params(&self,request:&RunRequest)->Value{
+        let mut params=turn_params(&self.thread,request);
+        if !self.request_reasoning{params.as_object_mut().unwrap().remove("summary");}
+        params
+    }
     fn launch_pending(&self)->bool{
         (self.thread.is_empty() && self.command_process.is_empty())
             || (self.maintenance.is_none() && self.turn.is_empty())
@@ -1183,6 +1199,7 @@ impl Session {
             }
             Some(0) => {
                 let config=value["result"].get("config").context("Codex returned no effective configuration")?;
+                self.request_reasoning=config["model_provider"].as_str().is_none_or(|p|p=="openai" || p=="kai-openai-https");
                 rpc(stdin,&ctx.cancelled,2,
                     if request.resume_id.is_none(){"thread/start"}else if request.fork_session{"thread/fork"}else{"thread/resume"},
                     routed_thread_params(request,config))?;
@@ -1213,7 +1230,7 @@ impl Session {
                 if let Some((method, mut params)) = self.maintenance.clone() {
                     if method=="thread/realtime/start" && self.voice.as_ref().is_some_and(|v|v.preparing_context){
                         self.voice.as_mut().context("Missing voice context owner")?.preparing_context=true;
-                        rpc(stdin,&ctx.cancelled,3,"turn/start",turn_params(&self.thread,request))?;
+                        rpc(stdin,&ctx.cancelled,3,"turn/start",self.turn_params(request))?;
                         send(&ctx.tx,RuntimeEvent::Status("Reading appshot for voice".into()),&ctx.cancelled)?;return Ok(())
                     }
                     params["threadId"] = json!(self.thread);
@@ -1233,7 +1250,7 @@ impl Session {
                         &ctx.cancelled,
                         3,
                         "turn/start",
-                        turn_params(&self.thread,request),
+                        self.turn_params(request),
                     )?;
                 }
             }
@@ -1923,10 +1940,17 @@ impl Session {
                     )?;
                 }
             }
+            "item/reasoning/summaryTextDelta" | "item/reasoning/summaryPartAdded" => {
+                let id=p["itemId"].as_str().context("Reasoning update missing item ID")?;
+                let index=p["summaryIndex"].as_u64().unwrap_or(0);
+                let parts=self.reasoning.entry(id.into()).or_default();
+                if let Some(delta)=p["delta"].as_str(){parts.entry(index).or_default().push_str(delta);}
+                let text=parts.values().cloned().collect::<Vec<_>>().join("\n\n");
+                let events=self.parser.upsert_interaction(crate::chat_interactions::ChatInteraction::Status{title:"Thinking".into(),details:text,status:crate::chat_interactions::InteractionStatus::Working},&format!("reasoning:{id}"));self.events(events,ctx)?;
+            }
             "turn/plan/updated"
             | "turn/diff/updated"
             | "item/commandExecution/outputDelta"
-            | "item/reasoning/summaryTextDelta"
             | "item/plan/delta" => {
                 // Keep terminal/code/plan output inside typed glass cards, never
                 // splice it into the assistant's natural-language response.
@@ -2061,6 +2085,14 @@ impl Session {
                 }
                 events
             }
+            "reasoning" => {
+                let summary=item["summary"].as_array().into_iter().flatten().filter_map(|v|v.as_str().or_else(||v["text"].as_str())).collect::<Vec<_>>().join("\n\n");
+                let streamed=self.reasoning.remove(id).map(|parts|parts.into_values().collect::<Vec<_>>().join("\n\n")).unwrap_or_default();
+                let text=if summary.is_empty(){streamed}else{summary};
+                let events=self.parser.upsert_interaction(crate::chat_interactions::ChatInteraction::Status{title:"Thinking".into(),details:text,status:if completed{crate::chat_interactions::InteractionStatus::Completed}else{crate::chat_interactions::InteractionStatus::Working}},&format!("reasoning:{id}"));
+                if completed && let Err(error)=self.parser.interactions.commit_updates(){self.parser.storage_error=Some(error.to_string());}
+                events
+            }
             "userMessage" | "hookPrompt" => Vec::new(),
             kind => {
                 let title = match kind {
@@ -2105,6 +2137,8 @@ impl Session {
                         .chars()
                         .take(8192)
                         .collect()
+                } else if kind == "fileChange" {
+                    item["changes"].as_array().into_iter().flatten().map(|change|format!("{}\n{}",change["path"].as_str().unwrap_or("File"),change["diff"].as_str().unwrap_or(""))).collect::<Vec<_>>().join("\n\n")
                 } else if kind == "plan" {
                     item["text"].as_str().unwrap_or("").into()
                 } else {
@@ -3131,6 +3165,30 @@ send({'method':'thread/realtime/closed','params':{'threadId':'12345678-1234-4234
             match event{RuntimeEvent::Text(t)=>text.push_str(&t),RuntimeEvent::Voice(crate::voice::Signal::Started{..})=>{started=true;handle.native_command("thread/realtime/stop",json!({})).unwrap()},RuntimeEvent::Failed(e)=>panic!("{e}"),RuntimeEvent::Finished=>break,_=>{}}
         }
         handle.cancel();assert!(started,"Realtime did not follow context turn in {thread}");assert!(text.contains("fixture image is blue"));let _=std::fs::remove_file(script);let _=std::fs::remove_file(image);
+    }
+    #[test]
+    #[ignore="Native Codex subscription inference in an isolated temporary workspace"]
+    fn installed_codex_streams_readable_reasoning(){
+        let project=std::env::temp_dir().join(format!("kai-agent-ui-reasoning-{}",uuid::Uuid::new_v4()));std::fs::create_dir_all(&project).unwrap();
+        let executable=std::env::var("KAI_NATIVE_TEST_EXECUTABLE").unwrap_or_else(|_|"codex".into());
+        let mut r=request(std::path::Path::new(&executable));r.project=project;r.model=std::env::var("KAI_NATIVE_TEST_MODEL").ok();r.reasoning_effort=Some("high".into());r.prompt="For a scheduler that runs up to four agents, explain which invariants prevent a canceled startup from attaching to another chat. Consider an out-of-order history load, a model change during launch and new work during a close animation. Give a concise final design. Do not use tools.".into();
+        let handle=launch(r).unwrap();let mut seen=false;let started=Instant::now();
+        while started.elapsed()<Duration::from_secs(90){
+            let event=handle.events.recv_timeout(Duration::from_secs(30)).expect("Native Codex stalled");
+            let source=match event{RuntimeEvent::Interaction(card)=>crate::chat_interactions::serialize_interaction(&card),RuntimeEvent::ReplaceText(text)|RuntimeEvent::ReplacePreview(text)|RuntimeEvent::Text(text)=>text,RuntimeEvent::Failed(error)=>panic!("{error}"),RuntimeEvent::Finished=>break,_=>continue};
+            seen |= crate::presentation::message_blocks("assistant",&source).iter().any(|b|matches!(b,crate::presentation::MessageBlock::Interaction(crate::chat_interactions::ChatInteraction::Status{title,details,..})if title=="Thinking"&&!details.is_empty()));
+        }
+        handle.cancel();assert!(seen,"Native subscription did not emit readable reasoning with detailed summaries");eprintln!("Real Codex subscription streamed a readable reasoning summary in {:.1}s",started.elapsed().as_secs_f64());
+    }
+    #[test]
+    fn reasoning_sections_update_one_card_and_final_snapshot_replaces_stream(){
+        let mut state=Session::default();state.request_reasoning=true;
+        let r=request(std::path::Path::new("/fixture"));assert_eq!(state.turn_params(&r)["summary"],"detailed");state.request_reasoning=false;assert!(state.turn_params(&r)["summary"].is_null());
+        state.item(&json!({"id":"reason-one","type":"reasoning","summary":[]}),false);
+        state.reasoning.entry("reason-one".into()).or_default().insert(0,"Streamed thought".into());
+        state.parser.upsert_interaction(crate::chat_interactions::ChatInteraction::Status{title:"Thinking".into(),details:"Streamed thought".into(),status:crate::chat_interactions::InteractionStatus::Working},"reasoning:reason-one");
+        state.item(&json!({"id":"reason-one","type":"reasoning","summary":["Authoritative thought","Second section"]}),true);
+        let text=state.parser.rendered_output();assert_eq!(text.matches("<orbit_interaction version=").count(),1);assert!(text.contains("Authoritative thought"));assert!(text.contains("Second section"));assert!(!text.contains("Streamed thought"));assert!(text.contains("completed"));assert!(state.reasoning.is_empty());assert!(state.parser.interactions.len()==1);
     }
     #[test]
     fn launch_deadline_does_not_limit_active_turns_or_native_maintenance(){

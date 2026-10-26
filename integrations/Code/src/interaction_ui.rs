@@ -85,12 +85,12 @@ impl Orbit {
                 details,
                 status,
                 agent,
-            } => self.status_card(ix, title, details, *status, agent.as_deref(), cx),
+            } => self.status_card(ix, title, details, *status, agent.as_deref(), false, cx),
             ChatInteraction::Status {
                 title,
                 details,
                 status,
-            } => self.status_card(ix, title, details, *status, None, cx),
+            } => self.status_card(ix, title, details, *status, None, false, cx),
             ChatInteraction::Answer { question, answer } => panel
                 .p_3()
                 .child(
@@ -233,6 +233,10 @@ impl Orbit {
             }
         }
     }
+    pub(super) fn activity_card(&self,ix:usize,title:&str,details:&str,cx:&Context<Self>)->AnyElement{
+        // Historical tool inputs have no authoritative completion status.
+        self.status_card(ix,title,details,InteractionStatus::Completed,None,true,cx)
+    }
     fn status_card(
         &self,
         ix: usize,
@@ -240,10 +244,17 @@ impl Orbit {
         details: &str,
         status: InteractionStatus,
         agent: Option<&str>,
+        neutral:bool,
         cx: &Context<Self>,
     ) -> AnyElement {
-        let (symbol, color, label) = status_appearance(status);
-        let reviewable = status == InteractionStatus::Completed && title == "Completed";
+        let (mut symbol, mut color, mut label) = status_appearance(status);
+        let thinking=title=="Thinking";
+        if matches!(title,"Terminal output"|"Terminal command"|"Tool output"|"Updated files"|"File changes"|"Changes") || title.starts_with("Used "){symbol=activity_icon(title);}
+        let preview=presentation::card_detail_text("Thinking",details.lines().find(|l|!l.trim().is_empty()).unwrap_or("")).0;
+        if thinking{symbol="assets/kai/status/thinking.svg";if matches!(status,InteractionStatus::Started|InteractionStatus::Working){label="Thinking"}else if status==InteractionStatus::Completed{label="Thought"}}
+
+        if neutral{symbol=activity_icon(title);color=MUTED;label="Details";}
+        let reviewable = !neutral && status == InteractionStatus::Completed && title == "Completed";
         let review_target = reviewable.then(|| self.completion_target(ix)).flatten();
         let undo_target = review_target.clone();
         let expanded = self.expanded_tools.contains(&ix);
@@ -352,6 +363,7 @@ impl Orbit {
                         cx.notify();
                     })),
             )
+            .when(thinking && reveal<0.01 && !details.is_empty(),|s|s.child(div().px_3().pb_2().text_size(crate::theme::ui_px(11.)).line_height(crate::theme::ui_line_height(18.)).text_color(rgb(MUTED)).child(short(&preview,120))))
             .when(reveal > 0. && !details.is_empty(), |s| {
                 s.child(
                     div()

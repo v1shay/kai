@@ -936,7 +936,7 @@ pub(crate) fn split_message(message: TranscriptMessage) -> Vec<TranscriptMessage
             chunk.to_owned()
         };
         pieces.push(TranscriptMessage {
-            code_language: start_context,
+            code_language: if message.role == "tool" { None } else { start_context },
             role: message.role.clone(),
             text: output,
         });
@@ -1207,7 +1207,8 @@ impl LargeRecord {
                     ),
                 }));
             }
-            let code_language = code_context;
+            // Tool envelopes must reach the typed decoder before any code fence.
+            let code_language = if self.role == "tool" { None } else { code_context };
             if let Some(text) = if code_language.is_some() {
                 Some(text)
             } else {
@@ -2215,6 +2216,15 @@ mod tests {
         assert_eq!(page[0].text.trim(), "Actual request");
         drop(cursor);
         std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn giant_tool_output_with_code_fences_stays_typed_and_lossless(){
+        let path=path();let source=format!("```swift\n{}\n```", "let text = \"literal \\n\"; // *source*\n".repeat(12_000));
+        std::fs::write(&path,format!("{}\n",serde_json::json!({"type":"response_item","payload":{"type":"function_call_output","output":source}}))).unwrap();
+        let mut cursor=HistoryCursor::open(&path,AgentKind::Codex).unwrap();let mut all=vec![];
+        while cursor.has_older(){let mut page=cursor.page(20).unwrap();page.append(&mut all);all=page;}
+        let mut actual=String::new();for message in all{assert_eq!(message.role,"tool");assert!(message.code_language.is_none());let v:serde_json::Value=serde_json::from_str(&message.text).unwrap();assert_eq!(v["orbit_tool"],true);actual.push_str(v["details"].as_str().unwrap());}
+        assert_eq!(actual,source);drop(cursor);std::fs::remove_file(path).unwrap();
     }
     #[test]
     fn encoded_long_speaker_continuations_never_fall_back_to_garbled_tool_json() {

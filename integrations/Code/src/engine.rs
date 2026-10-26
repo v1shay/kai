@@ -871,7 +871,8 @@ fn parse_messages(messages: Vec<runtime::TranscriptMessage>) -> Vec<ParsedMessag
     messages
         .into_iter()
         .map(|message| {
-            let text = if let Some(language) = &message.code_language {
+            let text = if let Some(language) = &message.code_language
+                && message.role.split(':').next() != Some("tool") {
                 std::borrow::Cow::Owned(if language.starts_with("~~~") {
                     format!("{language}\n{}", message.text)
                 } else {
@@ -1721,6 +1722,23 @@ mod tests {
     use crate::discovery::AgentKind;
     use std::fs;
 
+    #[test]
+    #[ignore="Read-only check of an explicitly selected native transcript"]
+    fn selected_native_history_has_typed_tool_cards_without_escaped_envelopes(){
+        let path=std::path::PathBuf::from(std::env::var("KAI_HISTORY_REGRESSION_FILE").expect("Select the native transcript"));
+        let mut cursor=runtime::history::HistoryCursor::open(&path,AgentKind::Codex).unwrap();let mut cards=0;
+        for _ in 0..10{if !cursor.has_older(){break}let page=cursor.page(50).unwrap();let parsed=parse_messages(page);
+            for message in parsed{if message.role=="tool"{for block in message.blocks{if let presentation::MessageBlock::Activity{..}|presentation::MessageBlock::Interaction(_)=block{cards+=1;}else if let presentation::MessageBlock::Paragraph(text)|presentation::MessageBlock::RichParagraph{text,..}|presentation::MessageBlock::Code{text,..}=block{assert!(!text.contains("\"orbit_tool\""),"Tool JSON escaped into the transcript");}}}}
+        }
+        assert!(cards>0,"The selected fixture had no tool history");eprintln!("Actual selected native history: {cards} typed tool/interaction cards, no escaped tool envelopes");
+    }
+    #[test]
+    fn typed_tool_envelopes_decode_before_native_fence_context(){
+        let source="diff --git a/view.swift b/view.swift\n+ var label = \"Hello\"\n```swift\nlet text = 1\n";
+        let parsed=parse_messages(vec![runtime::TranscriptMessage{role:"tool".into(),code_language:Some("swift".into()),text:serde_json::json!({"orbit_tool":true,"label":"Updated files","details":source}).to_string()}]);
+        assert!(matches!(&parsed[0].blocks[0],presentation::MessageBlock::Activity{label,details}if label=="Updated files" && details==source));
+        assert_eq!(parsed[0].blocks.len(),1);
+    }
     fn receive_event(engine: &Engine) -> Event {
         loop {
             let event = engine.events.recv_blocking().unwrap();

@@ -17,10 +17,16 @@ pub(super) struct InteractionLog {
     memory_bytes: usize,
     disk: Option<(File, Arc<HistoryArtifact>)>,
     count: usize,
+    updates: std::collections::BTreeMap<usize,String>,
 }
 impl InteractionLog {
     pub(super) fn is_empty(&self) -> bool {
         self.count == 0
+    }
+    pub(super) fn len(&self)->usize{self.count}
+    pub(super) fn update(&mut self,index:usize,marker:String)->Result<()>{
+        ensure!(index<self.count && marker.len()<=RECORD_BYTES,"Invalid interaction update");
+        self.updates.insert(index,marker);Ok(())
     }
     pub(super) fn push(&mut self, entry: (usize, String)) -> Result<()> {
         ensure!(
@@ -70,21 +76,27 @@ impl InteractionLog {
             let mut reader = BufReader::with_capacity(64 * 1024, File::open(&artifact.path)?);
             let mut header = [0_u8; 12];
             let mut marker = Vec::new();
-            for _ in 0..self.count {
+            for index in 0..self.count {
                 reader.read_exact(&mut header)?;
                 let offset = usize::try_from(u64::from_le_bytes(header[..8].try_into()?))?;
                 let len = u32::from_le_bytes(header[8..].try_into()?) as usize;
                 ensure!(len <= RECORD_BYTES, "Invalid interaction spill record");
                 marker.resize(len, 0);
                 reader.read_exact(&mut marker)?;
-                visit(offset, std::str::from_utf8(&marker)?)?;
+                visit(offset, self.updates.get(&index).map(String::as_str).unwrap_or(std::str::from_utf8(&marker)?))?;
             }
         } else {
-            for (offset, marker) in &self.memory {
-                visit(*offset, marker)?;
+            for (index,(offset, marker)) in self.memory.iter().enumerate() {
+                visit(*offset, self.updates.get(&index).unwrap_or(marker))?;
             }
         }
         Ok(())
+    }
+    pub(super) fn commit_updates(&mut self)->Result<()>{
+        if self.updates.is_empty(){return Ok(())}
+        let mut replacement=Self::default();
+        self.for_each(|offset,marker|replacement.push((offset,marker.into())))?;
+        *self=replacement;Ok(())
     }
     pub(super) fn reanchor(&mut self, start: usize, end: usize) -> Result<()> {
         if self.disk.is_some() {
@@ -108,6 +120,11 @@ impl InteractionLog {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+    #[test]
+    fn updating_a_spilled_card_preserves_order_offsets_and_latest_text(){
+        let mut log=InteractionLog::default();log.push((0,"first".into())).unwrap();log.push((4,"middle".repeat(30_000))).unwrap();log.push((8,"last".into())).unwrap();
+        log.update(1,"new middle".into()).unwrap();log.reanchor(0,12).unwrap();let mut rows=vec![];log.for_each(|at,text|{rows.push((at,text.to_owned()));Ok(())}).unwrap();assert_eq!(rows,vec![(0,"first".into()),(12,"new middle".into()),(12,"last".into())]);assert_eq!(log.len(),3);
+    }
     #[test]
     fn thousands_of_cards_spill_and_correct_without_retaining_all_markers() {
         let mut log = InteractionLog::default();

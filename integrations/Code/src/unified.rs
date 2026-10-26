@@ -1484,7 +1484,7 @@ fn start_agent_probe(window:WindowHandle<Orbit>,cx:&mut App)->anyhow::Result<()>
         }
         let first=window.update(cx,|app,window,cx|{
             assert!(app.runs.is_empty()&&app.launches.is_empty());
-            app.project=root.clone();app.new_execution_path=None;app.agent=AgentKind::Codex;app.model=None;app.active=None;app.loading=false;app.loading_earlier=false;app.allow_edits=true;
+            app.project=root.clone();app.new_execution_path=None;app.agent=AgentKind::Codex;app.model=std::env::var("KAI_AGENT_PROBE_MODEL").ok();app.active=None;app.loading=false;app.loading_earlier=false;app.allow_edits=true;
             app.trusted_workspaces.insert((AgentKind::Codex,root.clone()));
             app.composer.update(cx,|input,cx|input.set_text("Create kai-proof.txt containing exactly KAI_AGENT_OK. Do not edit any other file. Reply KAI_AGENT_OK.",cx));
             app.send(window,cx);
@@ -1496,21 +1496,24 @@ fn start_agent_probe(window:WindowHandle<Orbit>,cx:&mut App)->anyhow::Result<()>
             assert!(!app.unified_snapshot(cx)["sessionActivity"]["text"].as_str().unwrap_or("").contains("Preparing workspace"));
             eprintln!("Kai agent UI probe: new-chat submission and independent draft passed");id
         }).expect("Probe window");
+        let mut reasoning_seen=false;
         for turn in 0..2{
             let mut done=false;
             for _ in 0..480{
                 Timer::after(Duration::from_millis(250)).await;
                 let state=window.update(cx,|app,_,_|{
+                    let observed=app.runs.get(&first).is_some_and(|run|presentation::message_blocks("assistant",&run.text).iter().any(|block|matches!(block,MessageBlock::Interaction(chat_interactions::ChatInteraction::Status{title,details,..})if title=="Thinking"&&!details.is_empty())));
                     let busy=app.launches.contains_key(&first)||app.runs.contains_key(&first)||app.finalizing.contains(&first)||app.settling.contains_key(&first);
                     let finished=app.turn_timings.iter().filter(|r|r.session==first&&r.finished_ms.is_some()).count();
                     if !busy&&finished>turn{
                         let record=app.turn_timings.iter().rev().find(|r|r.session==first).unwrap();
                         assert_eq!(record.outcome.as_deref(),Some("completed"),"Agent failed in actual UI: {:?}",app.notice);
                         assert!(record.elapsed_ms.is_some());
-                        assert!(app.usage.get(&first).and_then(|u|u.model.as_ref()).is_some(),"Native run never reported its actual model");return true
-                    }false
+                        assert!(app.usage.get(&first).and_then(|u|u.model.as_ref()).is_some(),"Native run never reported its actual model");return (true,observed)
+                    }(false,observed)
                 }).expect("Probe state");
-                if state{done=true;break}
+                reasoning_seen |= state.1;
+                if state.0{done=true;break}
             }
             assert!(done,"Actual UI agent turn did not settle");
             let body=std::fs::read_to_string(root.join("kai-proof.txt")).expect("Native agent did not write its fixture");
@@ -1530,6 +1533,7 @@ fn start_agent_probe(window:WindowHandle<Orbit>,cx:&mut App)->anyhow::Result<()>
                 }).expect("Resume existing chat");
             }
         }
+        if std::env::var_os("KAI_AGENT_REASONING_PROBE").is_some(){assert!(reasoning_seen,"Native Codex never streamed a readable reasoning summary into its live chat card");eprintln!("Kai agent UI probe: real Codex reasoning summary streamed into the live typed transcript");}
         if let Ok(path)=std::env::var("KAI_AGENT_VOICE_FIXTURE"){
             assert_eq!(std::env::var("KAI_CODE_VOICE_DIAGNOSTIC").as_deref(),Ok("1"),"Voice UI probe must disable ambient microphone audio");
             assert!(std::fs::metadata(&path).unwrap().len()<2*1024*1024);

@@ -401,6 +401,7 @@ fn relevant(key: &str) -> bool {
             | "agentThreadId"
             | "agentPath"
             | "reasoningEffort"
+            | "summaryIndex"
             | "tokenUsage"
             | "last"
             | "total"

@@ -1524,6 +1524,7 @@ struct StreamParser {
     output: ResponseBuffer,
     storage_error: Option<String>,
     interactions: interaction_log::InteractionLog,
+    live_interactions: std::collections::HashMap<String,usize>,
     interaction_bytes: usize,
     fork_source_id: Option<String>,
     fork_notice_bytes: usize,
@@ -1616,6 +1617,16 @@ impl StreamParser {
             self.storage_error = Some(error.to_string());
         }
         vec![RuntimeEvent::Interaction(Box::new(card))]
+    }
+    fn upsert_interaction(&mut self,card:crate::chat_interactions::ChatInteraction,key:&str)->Vec<RuntimeEvent>{
+        if let Some(index)=self.live_interactions.get(key).copied(){
+            let marker=crate::chat_interactions::serialize_interaction(&card);
+            if let Err(error)=self.interactions.update(index,marker){self.storage_error=Some(error.to_string());}
+            vec![self.replacement()]
+        }else{
+            let index=self.interactions.len();let events=self.interaction(card,key);
+            if !events.is_empty(){self.live_interactions.insert(key.into(),index);}events
+        }
     }
     fn tool_interactions(&mut self, name: &str, input: &Value, key: &str) -> Vec<RuntimeEvent> {
         crate::chat_interactions::tool_interactions(name, input, false)
@@ -2105,6 +2116,11 @@ fn transcript_record(value: &Value, agent: AgentKind) -> Vec<TranscriptMessage> 
             }
         }
         return messages;
+    }
+    if agent==AgentKind::Codex && value["type"]=="response_item" && value["payload"]["type"]=="reasoning"{
+        let text=value["payload"]["summary"].as_array().into_iter().flatten().filter_map(|v|v["text"].as_str()).collect::<Vec<_>>().join("\n\n");
+        if !text.is_empty(){messages.push(TranscriptMessage{role:"tool".into(),code_language:None,text:crate::chat_interactions::encode(&crate::chat_interactions::ChatInteraction::Status{title:"Thinking".into(),details:text,status:crate::chat_interactions::InteractionStatus::Completed})});}
+        return messages
     }
     if agent == AgentKind::Codex
         && value["type"] == "response_item"

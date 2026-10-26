@@ -1368,6 +1368,7 @@ impl Orbit {
             .iter()
             .filter(|session| {
                 !self.hidden_sessions.contains(&session.id)
+                    && !discovery::internal_probe_project(&session.project_path)
                     && self.lifecycle.archived_chats.contains(&session.id) == self.archived_view
                     && (self.all_projects || session.project_path.starts_with(&self.project))
             })
@@ -1392,7 +1393,7 @@ impl Orbit {
             .source_projects
             .iter()
             .chain(&self.custom_projects)
-            .filter(|p| !self.hidden_projects.contains(&p.path) && seen.insert(p.path.clone()))
+            .filter(|p| !self.hidden_projects.contains(&p.path) && !discovery::internal_probe_project(&p.path) && seen.insert(p.path.clone()))
             .cloned()
             .collect();
         self.projects
@@ -4865,59 +4866,7 @@ impl Orbit {
                             .child(cell.clone())
                     })),
             ),
-            MessageBlock::Activity { label, details } => {
-                let expanded = self.expanded_tools.contains(&ix);
-                content.child(
-                    div()
-                        .rounded_md()
-                        .border_1()
-                        .border_color(rgba(0xebebeb12))
-                        .bg(rgba(self.appearance.tint(GLASS_SURFACE)))
-                        .child(
-                            div()
-                                .id(("activity", ix))
-                                .debug_selector(move || format!("activity-{ix}"))
-                                .h(px(34.))
-                                .px_3()
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .cursor_pointer()
-                                .text_size(theme::ui_px(12.))
-                                .text_color(rgb(MUTED))
-                                .child(icon(activity_icon(label), 14., MUTED))
-                                .child(label.clone())
-                                .child(div().flex_1())
-                                .child(icon(
-                                    if expanded {
-                                        "chevron-down"
-                                    } else {
-                                        "chevron-right"
-                                    },
-                                    12.,
-                                    MUTED,
-                                ))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    if !this.expanded_tools.remove(&ix) {
-                                        this.expanded_tools.insert(ix);
-                                    }
-                                    cx.notify();
-                                })),
-                        )
-                        .when(expanded, |s| {
-                            s.child(
-                                div()
-                                    .px_3()
-                                    .pb_3()
-                                    .font_family(theme::mono_font())
-                                    .text_size(theme::mono_px(11.))
-                                    .line_height(theme::mono_line_height(18.))
-                                    .text_color(rgb(MUTED))
-                                    .child(details.clone()),
-                            )
-                        }),
-                )
-            }
+            MessageBlock::Activity { label, details } => content.child(self.activity_card(ix,label,details,cx)),
             MessageBlock::Heading(text) => content.child(
                 div()
                     .text_size(theme::ui_px(20.))

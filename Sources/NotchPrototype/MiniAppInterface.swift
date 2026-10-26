@@ -635,13 +635,14 @@ private final class AttachmentLayer:CALayer {
             menu.popUp(positioning:nil,at:NSEvent.mouseLocation,in:nil);return
         }
         if kind == "model" {
-            if EmbeddedCodeRuntime.shared.active{let item=menu.addItem(withTitle:"Use provider default"+(state.providerDefaultModel.map{" · "+$0} ?? ""),action:#selector(selectSetting(_:)),keyEquivalent:"");item.target=self;item.representedObject=["",""];item.state=state.selectedModel == nil ? .on:.off}
+            let providerName=state.agents?.first{$0.id == state.selectedAgent}?.name ?? "Agent"
+            if EmbeddedCodeRuntime.shared.active{let item=menu.addItem(withTitle:(state.threadId != nil ? "Continue · "+(state.effectiveModel ?? state.selectedModel ?? providerName):"Use "+(state.providerDefaultModel ?? state.effectiveModel ?? providerName)),action:#selector(selectSetting(_:)),keyEquivalent:"");item.target=self;item.representedObject=["",""];item.state=state.selectedModel == nil ? .on:.off}
             for model in models {
                 let item=menu.addItem(withTitle:model.displayName,action:#selector(selectSetting(_:)),keyEquivalent:"");item.target=self;item.representedObject=[model.model,model.model == state.selectedModel ? (state.reasoningEffort ?? ""):""];item.state=model.model == state.selectedModel ? .on:.off
             }
-        } else if let model=models.first(where:{$0.model == state.selectedModel || $0.model == state.effectiveModel || ($0.resolvedModel != nil && $0.resolvedModel == state.effectiveModel)}) {
+        } else if let model=models.first(where:{$0.model == state.selectedModel}) ?? models.first(where:{$0.model == state.effectiveModel || ($0.resolvedModel != nil && $0.resolvedModel == state.effectiveModel)}) {
             for effort in model.supportedReasoningEfforts {
-                let item=menu.addItem(withTitle:effort.reasoningEffort,action:#selector(selectSetting(_:)),keyEquivalent:"");item.target=self;item.representedObject=[EmbeddedCodeRuntime.shared.active ? (state.selectedModel ?? ""):model.model,effort.reasoningEffort];item.state=effort.reasoningEffort == (state.effectiveReasoningEffort ?? state.reasoningEffort) ? .on:.off
+                let item=menu.addItem(withTitle:effort.reasoningEffort,action:#selector(selectSetting(_:)),keyEquivalent:"");item.target=self;item.representedObject=[EmbeddedCodeRuntime.shared.active ? (state.selectedModel ?? ""):model.model,effort.reasoningEffort];item.state=effort.reasoningEffort == (state.reasoningEffort ?? state.effectiveReasoningEffort) ? .on:.off
             }
         }
         menu.popUp(positioning:nil,at:NSEvent.mouseLocation,in:nil)

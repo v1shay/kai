@@ -579,3 +579,91 @@ package passed the existing morph/double-Command/Quick Chat smoke probe. Install
 0.7.1 (13), verified its signature and executable/library hashes, and retained the
 0.7.0 bundle without stopping the user's running app. Quit and relaunch to load
 the updated native library.
+
+### 0.8.0 clean agent history, reasoning, model controls and status transitions
+
+Imported tool envelopes are decoded before native code-fence continuation metadata.
+Large tool output retains its exact source, including literal backslashes and code
+fences, inside bounded, animated disclosures instead of becoming escaped Markdown
+in the chat. Historical tool inputs retain a neutral Details label; authoritative
+native success/failure cards keep their actual status. File-change events render
+paths and literal diffs. Attachment-prefixed prompts use the actual request for
+newly discovered titles. Owned temporary verification projects are omitted from
+the daily project/session lists without deleting their native records.
+
+Codex reasoning summary fragments update one stable card per native item, grouped
+by summary section. The authoritative completed item replaces streamed text;
+interrupted summaries retire as stopped/failed. The original ordered interaction
+log supports replacement after spilling, and completed updates return to its
+bounded storage. The card provides a readable preview, animated disclosure and
+copying. Imported native reasoning summaries use the same presentation. These are
+provider-supplied readable summaries, never generated approximations or decrypted
+private reasoning.
+
+First-party Codex turns explicitly request detailed summaries, following the
+[T3 Code adapter](https://github.com/pingdotgg/t3code/blob/main/apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts).
+The [official App Server contract](https://learn.chatgpt.com/docs/app-server)
+defines summary deltas and authoritative completed items. Existing authentication,
+HTTPS routing, approvals and coding model choices are retained. Custom provider
+requests preserve their own configuration. An experimental concurrent-summary
+flag was evaluated and removed after it did not improve delivery.
+
+The model picker adds local catalog search, separates the active model from a
+selection for the next turn, and keeps pending effort choices visible. Native
+notch menus prioritize the selected model's effort catalog over the current
+run's model. Continuing a chat preserves its reported native model/effort; new
+drafts resolve the configured provider setting. Selecting a model preserves the
+last actual report and the current draft.
+
+Background status is activity-driven. Idle Code does not leave a permanent
+notch. Work, voice and approvals animate the compact notch out of its original
+physical contour, accompanied by one short, nonactivating contour echo from the
+retained workspace. Returning to Code uses the original notch-to-workspace morph.
+Results settle briefly before retiring, and new work during that closing animation
+reverses the dismissal. Repeated focus notifications do not restart animations.
+Explicit mini chat and Quick Chat retain their own surface ownership. The contour
+echo is released after half a second and respects Reduce Motion; no workspace
+snapshot, extra agent service or persistent animation loop is introduced.
+
+The direct workspace-to-extended-notch handoff also explicitly retires Code's
+content fade before revealing Kai's native UI. A delayed render-server frame
+cannot leave miniature workspace pixels on the extended-notch surface. Native
+settlement checks poll for the actual completion callback with a bounded deadline;
+the tests still inspect the overlapping morph and original text animation.
+
+Live reasoning verification with the installed Codex 0.164.0 and existing ChatGPT
+subscription succeeded on GPT-5.6 Terra. GPT-6.1 Sol returned empty summary items
+with explicit detailed requests through both the direct HTTPS and built-in OpenAI
+routes. The RPC audit confirmed the requested settings and empty incoming summary
+items; Kai does not substitute another model or invent thinking text. The opt-in
+native reasoning test intentionally fails when the service emits no readable
+summary, keeping that limitation visible in verification rather than hiding it
+behind a fallback. The public viewer still handles summaries whenever supplied.
+
+Verification for 0.8.0: 849 Rust tests passed across the application and support
+library (15 opt-in tests ignored); the Swift suite ran 189 tests with one skipped
+and no failures. A read-only replay of the screenshot's actual native history
+decoded 117 typed tool/interaction cards without escaped envelopes. The native
+state harness passed activity-only status, no focus theft, retained workspace,
+return/reversal morphs, delayed-frame pixel retirement, original text unjumbling,
+approval ownership, selected chat/draft continuity, Quick Chat and image-only
+submission. The separate production modifier-handler harness passed voice holds,
+silence cancellation, context/pre-roll ownership and Double-Command dismissal.
+
+The signed app's real UI probe created and resumed separate native coding turns,
+edited an isolated fixture, received readable reasoning, reported the native
+model, retained per-chat startup state and persisted both working durations.
+Its real workspace voice-button path connected, exchanged both speaker transcripts
+using generated diagnostic audio, and stopped cleanly (48.4 seconds total).
+Native desktop automation could not start (Sky Computer Use service startup
+failure), so these are production native-handler and signed-app checks rather
+than a claim of subjective visual or physical-key/microphone review.
+
+The final signed 0.8.0 (14) bundle also passed the packaged morph probe: continuous
+reversal, maximized visible working area, shared pet, repeated open, direct
+extended-notch return, Double-Command dismissal and exclusive Quick Chat. It was
+installed atomically at the existing experimental `.build/Kai Unified.app`
+destination, with signatures and all executable/library hashes verified. The
+prior 0.7.1 bundle is retained as `Kai Unified 0.7.1 backup 20261026-162120.app`.
+No running app or agent was stopped. Quit and relaunch the experimental app after
+ongoing runs finish to load the update.
