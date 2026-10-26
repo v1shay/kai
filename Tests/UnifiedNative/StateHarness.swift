@@ -104,9 +104,36 @@ private func member(_ object:Any,_ name:String)->Any?{Mirror(reflecting:object).
     precondition(commands.filter{$0["action"] as? String == "chat"}.count == priorNavigation,"Expanding implicitly navigated to another running agent")
     // A workspace behind another application stays open while its notch overlays
     // that application. Returning reuses the same window and native morph.
-    app.revealWorkspace()
+    foreground=true;app.revealWorkspace()
     let until=Date().addingTimeInterval(0.95);while Date()<until{RunLoop.current.run(until:Date().addingTimeInterval(0.01))}
     let retainedFrame=window.frame,retainedWindow=window.windowNumber
+    let statusPanel=member(app,"panel") as! NSPanel
+    precondition(!statusPanel.isVisible,"Foreground Code duplicated its status notch")
+    let focusCommands=commands.count
+    foreground=false
+    NSWorkspace.shared.notificationCenter.post(name:NSWorkspace.didActivateApplicationNotification,object:nil)
+    RunLoop.current.run(until:Date().addingTimeInterval(0.03))
+    precondition(statusPanel.isVisible && member(app,"open") as? Bool == true && member(app,"miniOpen") as? Bool == false,"Switching to another app did not automatically show the compact status notch")
+    precondition(statusPanel.ignoresMouseEvents && !statusPanel.isKeyWindow,"Background status stole keyboard focus")
+    precondition(window.isVisible && window.frame==retainedFrame && window.windowNumber==retainedWindow,"Showing background status hid or replaced Code")
+    precondition(commands.count==focusCommands,"Switching apps changed the owner or replayed the workspace morph")
+    precondition((member(app,"composerField") as? NSTextField)?.stringValue == "Keep this draft","Background status lost the selected chat draft")
+    foreground=true;app.workspaceFocusChanged()
+    precondition(!statusPanel.isVisible && window.isVisible,"Returning to Code left a duplicate notch or closed Code")
+    foreground=false;NotificationCenter.default.post(name:NSApplication.didResignActiveNotification,object:NSApp)
+    RunLoop.current.run(until:Date().addingTimeInterval(0.03))
+    precondition(statusPanel.isVisible,"A second app switch did not restore background status")
+    // Losing focus during the reveal must be reconciled when its contour
+    // finishes, even if no further activation notification follows.
+    foreground=true;app.revealWorkspace()
+    foreground=false;app.workspaceFocusChanged()
+    let lostDuringReveal=Date().addingTimeInterval(0.95);while Date()<lostDuringReveal{RunLoop.current.run(until:Date().addingTimeInterval(0.01))}
+    precondition(statusPanel.isVisible && window.isVisible,"Focus loss during workspace reveal never restored its background notch")
+    var idle=selected;idle["activeTasks"]=[];idle["activeTurnId"]=NSNull();idle["activity"]=["scene":"off","text":"Ready"];idle["notice"]="Background idle"
+    runtime.receive(try JSONSerialization.data(withJSONObject:idle))
+    let idleDeadline=Date().addingTimeInterval(1.3);while Date()<idleDeadline{RunLoop.current.run(until:Date().addingTimeInterval(0.01))}
+    precondition(statusPanel.isVisible && member(app,"miniOpen") as? Bool == false,"An idle update hid the persistent background status notch")
+    runtime.receive(try JSONSerialization.data(withJSONObject:selected))
     app.collapseWorkspace()
     precondition(window.isVisible && window.frame==retainedFrame && window.windowNumber==retainedWindow,"Overlay hid or replaced Code")
     precondition(member(app,"workspaceNotchOverlay") as? Bool == true && member(app,"miniOpen") as? Bool == true,"Background shortcut did not open extended notch")
@@ -218,6 +245,6 @@ private func member(_ object:Any,_ name:String)->Any?{Mirror(reflecting:object).
     precondition(commands.filter{$0["action"] as? String == "attachments"}.count == beforeImports,"Owner thumbnail reimported its original")
     guard let mini=member(app,"miniUI") as? MiniAppInterface else{fatalError("Missing mini UI")}
     mini.onSend?();precondition(commands.last?["action"] as? String == "send" && commands.last?["text"] as? String == "","Image-only draft could not send from notch")
-    print("Native state regression: failure/cancellation, late success, exclusive Quick Chat, retained background workspace, replayed morph, focus-aware clickable approvals, selected-chat/draft continuity, exact approval decisions, inbox cycling, incremental history, and image-only owner drafts passed")
+    print("Native state regression: failure/cancellation, late success, exclusive Quick Chat, automatic nonactivating background status, retained background workspace, replayed morph, focus-aware clickable approvals, selected-chat/draft continuity, exact approval decisions, inbox cycling, incremental history, and image-only owner drafts passed")
  }
 }

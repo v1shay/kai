@@ -1161,7 +1161,7 @@ private final class NotchView:ImageDropView {
         let source=CGRect(x:panel.frame.midX-width/2,y:panel.frame.maxY-height,width:width,height:height)
         miniUI.cancelPending();compactWhileWorking=true;compactThreadID=latestState?.threadId;autoCompact=false;pinned=true
         workspaceNotchOverlay=false
-        workspaceMorph.expand(window,from:source,replay:replay){[weak self] in self?.syncWorkspacePet()}
+        workspaceMorph.expand(window,from:source,replay:replay){[weak self] in self?.syncWorkspacePet();self?.workspaceFocusChanged()}
         setOpen(true,mini:false);if !approvalPopout{panel.orderOut(nil);dropPanel?.orderOut(nil)};floatingTasks.setSuppressed(true);syncWorkspacePet()
     }
     @objc func collapseWorkspace(){
@@ -1207,8 +1207,22 @@ private final class NotchView:ImageDropView {
     @objc func workspaceFocusChanged(){
         // The same process owns the notch and Code. App activation alone does
         // not identify the workspace; keyboard focus on its real window does.
-        if EmbeddedCodeRuntime.shared.workspaceIsForeground,!workspaceMorph.transitioning,!quickChatVisible,workspaceNotchOverlay{
-            workspaceNotchOverlay=false;panel?.orderOut(nil);dropPanel?.orderOut(nil);syncWorkspacePet()
+        if EmbeddedCodeRuntime.shared.active,workspaceMorph.expanded,!workspaceMorph.transitioning,!quickChatVisible{
+            if EmbeddedCodeRuntime.shared.workspaceIsForeground{
+                if workspaceNotchOverlay{
+                    workspaceNotchOverlay=false;panel?.orderOut(nil);dropPanel?.orderOut(nil);syncWorkspacePet()
+                }
+            }else if !workspaceNotchOverlay{
+                // Keep the workspace and its selected chat in place. The status
+                // panel is nonactivating, so showing it must not reclaim focus.
+                workspaceNotchOverlay=true;restoreWorkspacePet()
+                autoCompact=false;pinned=true;compactWhileWorking=true
+                setOpen(true,mini:false)
+                // Code may already have the same compact layout hidden. In that
+                // case setOpen is a no-op, but the panel still needs ordering.
+                placePanel()
+                currentScene="";if let state=latestState{showActivity(displayActivity(state))}
+            }
         }
         if let state=latestState{updateCompactApproval(state)}
     }
@@ -1530,7 +1544,7 @@ private final class NotchView:ImageDropView {
             completionIndicatorWork=finish;DispatchQueue.main.asyncAfter(deadline:.now()+1.05,execute:finish)
         }
         if !quickChatVisible && !state.activeTasks.isEmpty && !open {autoCompact=true;compactWhileWorking=true;setOpen(true,mini:false)}
-        if state.activeTasks.isEmpty && autoCompact && !miniOpen {autoCompact=false;DispatchQueue.main.asyncAfter(deadline:.now()+1.2){[weak self] in guard let self,self.latestState?.activeTasks.isEmpty == true,!self.miniOpen,!self.dictating,!self.finalizingDictation else{return};self.compactWhileWorking=false;self.setOpen(false)}}
+        if state.activeTasks.isEmpty && autoCompact && !miniOpen {autoCompact=false;DispatchQueue.main.asyncAfter(deadline:.now()+1.2){[weak self] in guard let self,self.latestState?.activeTasks.isEmpty == true,!self.miniOpen,!self.dictating,!self.finalizingDictation,!(self.workspaceMorph.expanded && self.workspaceNotchOverlay) else{return};self.compactWhileWorking=false;self.setOpen(false)}}
     }
     private func updateFeatureChecks(){
         speechItem?.state=speakResponses ? .on:.off;compactSendItem?.state=compactOnSend ? .on:.off

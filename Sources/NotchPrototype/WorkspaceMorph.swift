@@ -116,7 +116,11 @@ import AppKit
         NSApp.activate(ignoringOtherApps:true)
         let finish=DispatchWorkItem{[weak self,weak window] in
             guard let self,self.revision==token,let window else{return}
-            self.transitioning=false;self.clearVisuals();window.alphaValue=1;window.makeKeyAndOrderFront(nil);completion()
+            self.transitioning=false;self.clearVisuals();window.alphaValue=1
+            // The user may have switched applications while the reveal was in
+            // flight. Finishing its mask must not order Code over that app.
+            if NSApp.isActive{window.makeKeyAndOrderFront(nil)}
+            completion()
         };delayed=finish;DispatchQueue.main.asyncAfter(deadline:.now()+(reduce ? 0.12:Self.expansionDuration),execute:finish)
     }
     func collapse(_ window:NSWindow,to target:CGRect,into notch:NSPanel?=nil,revealNotch:(()->Void)?=nil,completion:@escaping()->Void){

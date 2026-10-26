@@ -549,3 +549,33 @@ capture was disabled. The final model-menu refinement additionally passed all
 20 unified-interface regressions. Installation retained the prior 0.6.3 bundle,
 verified the new signature and executable/library hashes, and left the user's
 running process untouched. Quit and relaunch Kai Unified to load 0.7.0 (12).
+
+
+### 0.7.1 automatically restore status over other applications
+
+The native app/window activation handler now shows the compact status notch as
+soon as the expanded Code workspace loses focus. It retains the same workspace
+window, frame, selected chat and draft in the background; the nonactivating,
+click-through status panel does not claim keyboard focus. Returning to Code hides
+the overlay and returns the shared pet to its workspace slot. Repeated focus
+notifications leave an explicitly opened extended notch intact. Idle/completion
+updates cannot let an older auto-compact timer hide the background status panel.
+Quick Chat remains exclusive, and background approvals keep their native review
+routing.
+
+Workspace reveal completion now reconciles focus again, covering an app switch
+that happened during the morph. An inactive application's animation completion
+no longer orders its workspace front. The direct extended-notch and compact
+collapse animations retain their existing contours and timing.
+
+
+Verification: 189 Swift tests ran with one optional test skipped and no failures.
+The native state harness passed automatic background status via both application
+and workspace activation notifications, repeated return/leave, nonactivating
+panel ordering, preserved workspace geometry/draft, idle persistence, and focus
+loss during reveal, alongside its existing approval and handoff checks. Its
+foreground provider is controlled for deterministic focus tests. The final signed
+package passed the existing morph/double-Command/Quick Chat smoke probe. Installed
+0.7.1 (13), verified its signature and executable/library hashes, and retained the
+0.7.0 bundle without stopping the user's running app. Quit and relaunch to load
+the updated native library.
