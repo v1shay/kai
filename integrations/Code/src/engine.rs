@@ -297,13 +297,15 @@ impl Engine {
                                 has_newer,
                             )))
                         }
-                        Command::LoadModel(id, generation) => Ok(Some(Event::Model(
-                            id.clone(),
-                            generation,
-                            store.session_model(&id)?,
-                            store.session_usage(&id)?.map(Box::new),
-                            store.session_handoff(&id)?,
-                        ))),
+                        Command::LoadModel(id, generation) => {
+                            let mut usage=store.session_usage(&id)?;
+                            if let Some(session)=store.session(&id)?{
+                                if let Some(native)=session.transcript_path.as_deref().and_then(|p|crate::usage::native_chat_settings(p,session.agent)){
+                                    usage.get_or_insert_with(Default::default).merge(native);
+                                }
+                            }
+                            Ok(Some(Event::Model(id.clone(),generation,store.session_model(&id)?,usage.map(Box::new),store.session_handoff(&id)?)))
+                        },
                         Command::PrepareHandoff(session, token, interrupted) => {
                             let result = (|| {
                                 let session = store.session(&session.id)?.unwrap_or(session);

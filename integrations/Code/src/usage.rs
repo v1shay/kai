@@ -254,7 +254,11 @@ impl Usage {
         };
         match agent {
             AgentKind::Codex => {
-                let usage = if kind == "turn.completed" {
+                let usage = if kind == "turn_context" {
+                    out.model=model(&value["payload"]["model"]);
+                    out.reasoning_effort=model(&value["payload"]["effort"]).or_else(||model(&value["payload"]["reasoning_effort"]));
+                    out.scope="Native chat settings".into();&Value::Null
+                } else if kind == "turn.completed" {
                     out.scope = "Last turn".into();
                     &value["usage"]
                 } else if kind == "event_msg" && value["payload"]["type"] == "token_count" {
@@ -502,4 +506,28 @@ mod tests {
         assert_eq!(no_reset[0].resets_at, None);
         assert_eq!(no_reset[0].duration_minutes, None);
     }
+}
+
+/// Read the newest complete native turn-context record, without loading a large
+/// transcript or mistaking the user's prose for model metadata.
+pub fn native_chat_settings(path:&std::path::Path,agent:AgentKind)->Option<Usage>{
+    use std::io::{Read,Seek,SeekFrom};
+    if agent!=AgentKind::Codex{return None}
+    let mut file=std::fs::File::open(path).ok()?;let len=file.metadata().ok()?.len();let start=len.saturating_sub(16*1024*1024);
+    file.seek(SeekFrom::Start(start)).ok()?;let mut bytes=Vec::new();file.take(16*1024*1024).read_to_end(&mut bytes).ok()?;
+    let begin=if start==0{0}else{bytes.iter().position(|b|*b==b'\n')?+1};
+    for line in bytes[begin..].split(|b|*b==b'\n').rev(){
+        if line.len()>64*1024 || !line.windows(14).any(|w|w==b"\"turn_context\""){continue}
+        let Ok(value)=serde_json::from_slice::<Value>(line)else{continue};
+        if value["type"]=="turn_context"{if let Some(usage)=Usage::observed(agent,&value){return Some(usage)}}
+    }None
+}
+
+#[cfg(test)]mod native_model_tests{
+ use super::*;
+ #[test]fn reads_only_actual_native_turn_context_and_keeps_its_effort(){
+  let path=std::env::temp_dir().join(format!("kai-model-history-{}.jsonl",uuid::Uuid::new_v4()));
+  std::fs::write(&path,concat!("{\"type\":\"turn_context\",\"payload\":{\"model\":\"first-chat-model\",\"effort\":\"low\"}}\n","{\"type\":\"response_item\",\"payload\":{\"type\":\"turn_context\",\"model\":\"user-mentioned-model\"}}\n","{\"type\":\"turn_context\",\"payload\":{\"model\":\"actual-last-model\",\"effort\":\"high\"}}\n")).unwrap();
+  let actual=native_chat_settings(&path,AgentKind::Codex).unwrap();assert_eq!(actual.model.as_deref(),Some("actual-last-model"));assert_eq!(actual.reasoning_effort.as_deref(),Some("high"));assert!(native_chat_settings(&path,AgentKind::Claude).is_none());std::fs::remove_file(path).unwrap();
+ }
 }

@@ -6,6 +6,7 @@ use super::*;
 pub(super) struct Submission {
     pub session: SessionSummary,
     pub request: RunRequest,
+    pub selected_model:Option<String>,
     pub prompt: String,
     pub original_prompt: String,
     pub saved_prompt: String,
@@ -122,6 +123,9 @@ impl Orbit {
         cx.notify();
     }
     pub(super) fn cancel_send_handoff(&mut self, cx: &mut Context<Self>) -> bool {
+        if let Some(launch)=self.active.as_ref().and_then(|id|self.launches.get(id)){
+            launch.cancel.store(true,std::sync::atomic::Ordering::Release);cx.notify();return true
+        }
         let Some(pending) = self.handoff_pending.take() else {
             return false;
         };
@@ -196,6 +200,7 @@ impl Orbit {
         cx.notify();
     }
     pub(super) fn advance_handoff(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let starting_current = self.starting_current();
         let Some(pending) = &mut self.handoff_pending else {
             return;
         };
@@ -209,7 +214,7 @@ impl Orbit {
         // Selection never stops the source. Explicit Send uses the ordinary
         // queue/busy guards; if source cleanup races, wait without cancellation.
         if self.runs.contains_key(&pending.source.id)
-            || self.starting
+            || starting_current
             || self.finalizing.contains(&pending.source.id)
             || self.settling.contains_key(&pending.source.id)
         {

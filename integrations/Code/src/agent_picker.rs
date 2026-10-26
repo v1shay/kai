@@ -179,7 +179,7 @@ impl Orbit {
         self.request_handoff(kind, window, cx);
     }
     pub(super) fn choose_model(&mut self, model: Option<String>, cx: &mut Context<Self>) {
-        if self.loading || self.starting || self.handoff_pending.is_some() {
+        if self.loading || self.starting_current() || self.handoff_pending.is_some() {
             return;
         }
         if self.active.as_ref().is_none_or(|id|!self.runs.contains_key(id)){
@@ -467,7 +467,7 @@ impl Orbit {
                         s.child(div().px_2().py_1().text_size(crate::theme::ui_px(10.)).text_color(rgb(MUTED)).child("Reasoning effort"))
                          .child(div().flex().flex_wrap().gap_1().px_2().children(model.reasoning_efforts.into_iter().map(|effort|{
                             let value=effort.clone();let selected=self.effective_model_settings().1.as_deref()==Some(effort.as_str());
-                            div().id(SharedString::from(format!("reasoning-{effort}"))).cursor_pointer().px_2().py_1().rounded_md().text_size(crate::theme::ui_px(11.)).when(selected,|s|s.bg(rgba(GLASS_HOVER))).child(effort).on_click(cx.listener(move|this,_,_,cx|{let key=format!("{}:{}",this.agent.command(),this.model.as_deref().unwrap_or(""));this.reasoning_efforts.insert(key,value.clone());this.queue_workspace_save(cx);cx.notify();}))
+                            div().id(SharedString::from(format!("reasoning-{effort}"))).cursor_pointer().px_2().py_1().rounded_md().text_size(crate::theme::ui_px(11.)).when(selected,|s|s.bg(rgba(GLASS_HOVER))).child(effort).on_click(cx.listener(move|this,_,_,cx|{let key=this.effort_key();this.reasoning_efforts.insert(key,value.clone());this.queue_workspace_save(cx);cx.notify();}))
                          })))
                     })
                     .when(

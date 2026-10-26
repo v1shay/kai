@@ -418,6 +418,7 @@ impl Orbit {
             agent: self.agent.command().to_owned(),
             model: self.model.clone(),
             text_morph:self.unified_text_morph,
+            turn_timings:self.turn_timings.clone(),
             reasoning_efforts:self.reasoning_efforts.clone(),
             allow_edits: self.allow_edits,
             codex_approvals: self.codex_approvals,

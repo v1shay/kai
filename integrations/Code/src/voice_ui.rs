@@ -117,10 +117,10 @@ impl Orbit {
         }
         if self.loading
             || self.loading_earlier
-            || self.starting
+            || self.starting_current()
             || self.checkpoint_busy > 0
             || self.handoff_pending.is_some()
-            || self.runs.len() + self.team_starting.len() >= 4
+            || self.runs.len() + self.team_starting.len() + self.launches.len() >= 4
             || self.active.as_ref().is_some_and(|id| {
                 self.runs.contains_key(id)
                     || self.settling.contains_key(id)
@@ -322,13 +322,13 @@ impl Orbit {
             active: self.active.as_deref(),
             pending: self.loading
                 || self.loading_earlier
-                || self.starting
+                || self.starting_current()
                 || self.handoff_pending.is_some()
                 || self.checkpoint_busy > 0,
             occupied: self.runs.contains_key(&id)
                 || self.settling.contains_key(&id)
                 || self.finalizing.contains(&id),
-            capacity: self.runs.len() + self.team_starting.len() < 4,
+            capacity: self.runs.len() + self.team_starting.len() + self.launches.len() < 4,
             historical: self.history_offset > 0 || self.navigation_history,
             codex: self.agent == AgentKind::Codex,
         })?;
@@ -368,7 +368,7 @@ impl Orbit {
             .find(|a| a.kind == AgentKind::Codex)
             .and_then(|a| a.executable.clone())
             .ok_or_else(|| anyhow::anyhow!("Codex is unavailable"))?;
-        let request = RunRequest { reasoning_effort:self.unified_effort().map(str::to_owned),
+        let request = RunRequest { reasoning_effort:self.request_effort(),
             agent: AgentKind::Codex,
             executable,
             project: project.clone(),
@@ -376,7 +376,7 @@ impl Orbit {
             resume_id: session.external_id.clone(),
             fork_session: imported_codex_needs_fork(&session)
                 || self.fork_next.as_deref() == Some(&id),
-            model: self.model.clone(),
+            model: self.request_model(),
             images,
             allow_edits: self.allow_edits,
             codex_approvals: self.codex_approvals,
@@ -402,10 +402,12 @@ impl Orbit {
         if !self.open_tabs.contains(&id) {
             self.open_tabs.push(id.clone())
         }
+        let timing_key=uuid::Uuid::new_v4().to_string();let turn_started=Instant::now();
+        self.begin_turn_clock(&id,&timing_key,turn_started,cx);
         let run_epoch=uuid::Uuid::new_v4();self.voice_runs.insert((id.clone(),run_epoch));
         self.runs.insert(
             id.clone(),
-            Running {
+            Running { timing:Some(chat_timing::Live{key:timing_key,started:turn_started}),
                 agent: AgentKind::Codex,
                 submitted_prompt: String::new(),
                 handle,
@@ -513,9 +515,10 @@ impl Orbit {
             voice::Signal::Closed { session_id, reason } if session_id == call.session_id => {
                 // The backing coding turn may still be finishing; the native
                 // run retains it and its requests after the microphone closes.
+                let expected=call.stopping;
                 self.voice_call.take();
                 if let Some(reason) = reason.filter(|r| {
-                    !matches!(
+                    !expected && !matches!(
                         r.as_str(),
                         "userRequested" | "clientRequested" | "stopped" | "completed"
                     )

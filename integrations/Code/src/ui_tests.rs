@@ -155,6 +155,7 @@ def send(value): print(json.dumps(value),flush=True)
 for line in sys.stdin:
  v=json.loads(line); method=v.get('method'); p=v.get('params',{})
  if method=='initialize': send({'id':v['id'],'result':{}})
+ elif method=='config/read': send({'id':v['id'],'result':{'config':{'model_provider':'openai'}}})
  elif method=='command/exec':
   open(config['calls'],'w').write(json.dumps(v))
   send({'method':'command/exec/outputDelta','params':{'processId':p['processId'],'stream':'stdout','deltaBase64':'U0FOREJPWF9PSw==','capReached':False}})
@@ -2482,7 +2483,7 @@ fn an_image_removed_during_its_exit_animation_is_never_sent_or_saved(cx: &mut Te
 }
 
 pub(super) fn idle_run(text: String) -> Running {
-    Running {
+    Running { timing:None,
         agent: AgentKind::Codex,
         submitted_prompt: String::new(),
         handle: RunHandle::idle_test_handle(),
@@ -4801,4 +4802,39 @@ fn composer_permissions_open_real_approval_controls_and_save_the_selected_mode(
         let old: workspace_state::WorkspaceState = serde_json::from_str("{}").unwrap();
         assert_eq!(old.codex_approvals, runtime::CodexApprovals::Ask);
     });
+}
+
+#[gpui::test]
+fn pending_launch_belongs_to_its_chat_and_keeps_its_prompt_on_reload(cx:&mut TestAppContext){
+    let(view,cx)=fixture(cx);let cancel=std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    view.update_in(cx,|app,window,cx|{
+        app.active=Some("fixture-session".into());app.loading=false;app.runs.clear();
+        app.launches.insert("fixture-session".into(),chat_timing::Launch{caption:"Preparing workspace…",preview:vec![Row{role:Some("user".into()),block:MessageBlock::Paragraph("Keep submitted prompt".into())}],cancel:cancel.clone(),started:Instant::now(),key:"launch-one".into()});app.starting=true;
+        assert!(app.starting_current());assert!(!app.unified_send_ready());
+        app.new_conversation(window,cx);
+        assert!(!app.starting_current());assert!(app.unified_send_ready());
+        assert_eq!(app.unified_snapshot(cx)["sessionActivity"]["scene"],"off");
+        assert!(!app.cancel_send_handoff(cx));assert!(!cancel.load(std::sync::atomic::Ordering::Acquire));
+        app.active=Some("fixture-session".into());
+        app.receive(Event::Loaded("fixture-session".into(),app.generation,vec![],false,false),cx);
+        assert!(app.rows.iter().any(|r|matches!(&r.block,MessageBlock::Paragraph(t)if t=="Keep submitted prompt")));
+        assert!(app.starting_current());assert!(app.cancel_send_handoff(cx));assert!(cancel.load(std::sync::atomic::Ordering::Acquire));
+    });
+}
+
+#[gpui::test]
+fn timestamp_swipe_reveals_real_turn_time_and_preserves_completed_duration(cx:&mut TestAppContext){
+    let(view,cx)=fixture(cx);let checkpoint=uuid::Uuid::new_v4().to_string();
+    view.update(cx,|app,cx|{
+        let now=chrono::Utc::now().timestamp_millis();app.active=Some("fixture-session".into());app.loading=false;
+        app.rows=vec![Row{role:Some("user".into()),block:MessageBlock::Paragraph("Work on this".into())},Row{role:None,block:MessageBlock::Activity{label:"Prompt changes".into(),details:checkpoint.clone()}},Row{role:Some("assistant:codex".into()),block:MessageBlock::Paragraph("Ready".into())}];
+        app.turn_timings=vec![chat_timing::Record{key:uuid::Uuid::new_v4().to_string(),session:"fixture-session".into(),checkpoint:Some(checkpoint.clone()),submitted_ms:now-10_000,first_output_ms:Some(now-5000),finished_ms:Some(now-1000),elapsed_ms:Some(9000),outcome:Some("completed".into())}];
+        app.list.reset(app.rows.len());cx.notify();
+    });draw_frame(&view,cx);
+    assert!(cx.debug_bounds("turn-duration-2").is_some(),"Completed response lost its small duration footer");
+    let position=cx.debug_bounds("transcript-row-2").unwrap().center();
+    cx.simulate_event(ScrollWheelEvent{position,delta:ScrollDelta::Pixels(point(px(-90.),px(0.))),modifiers:Modifiers::none(),touch_phase:TouchPhase::Moved});draw_frame(&view,cx);
+    cx.update(|_,cx|{let app=view.read(cx);assert!(app.timestamp_peek>0.9,"The actual transcript list consumed the timestamp swipe");assert_eq!(app.workspace_snapshot(cx).turn_timings[0].elapsed_ms,Some(9000));});
+    cx.simulate_event(ScrollWheelEvent{position,delta:ScrollDelta::Pixels(point(px(0.),px(0.))),modifiers:Modifiers::none(),touch_phase:TouchPhase::Ended});
+    cx.update(|_,cx|assert!(view.read(cx).timestamp_released.is_some(),"Releasing the swipe did not return the timestamp rail"));
 }

@@ -119,9 +119,9 @@ impl Orbit {
         }
         if self.loading
             || self.loading_earlier
-            || self.starting
+            || self.starting_current()
             || self.handoff_pending.is_some()
-            || self.runs.len() + self.team_starting.len() >= 4
+            || self.runs.len() + self.team_starting.len() + self.launches.len() >= 4
             || self.active.as_ref().is_some_and(|id| {
                 self.runs.contains_key(id)
                     || self.settling.contains_key(id)
@@ -264,9 +264,9 @@ impl Orbit {
             return;
         }
         if self.loading
-            || self.starting
+            || self.starting_current()
             || self.handoff_pending.is_some()
-            || self.runs.len() + self.team_starting.len() >= 4
+            || self.runs.len() + self.team_starting.len() + self.launches.len() >= 4
             || self.finalizing.contains(&session.id)
             || self.settling.contains_key(&session.id)
             || self.runs.contains_key(&session.id)
@@ -338,9 +338,9 @@ impl Orbit {
         }
         if self.loading
             || self.loading_earlier
-            || self.starting
+            || self.starting_current()
             || self.handoff_pending.is_some()
-            || self.runs.len() + self.team_starting.len() >= 4
+            || self.runs.len() + self.team_starting.len() + self.launches.len() >= 4
             || self.finalizing.contains(&session.id)
             || self.settling.contains_key(&session.id)
             || self.runs.contains_key(&session.id)
@@ -413,6 +413,8 @@ impl Orbit {
             .cloned();
         let checkpoint_cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         self.checkpoint_cancel = checkpoint_cancel.clone();
+        let launch_key=uuid::Uuid::new_v4().to_string();
+        self.launches.insert(id.clone(),chat_timing::Launch{caption:status,preview:Vec::new(),cancel:checkpoint_cancel.clone(),started:Instant::now(),key:launch_key.clone()});
         let task = cx.background_executor().spawn(async move {
             let checkpoint = if method == "command/exec" {
                 let repository = checkpoint_repository.map_err(anyhow::Error::msg)?;
@@ -457,9 +459,12 @@ impl Orbit {
             Ok((handle,checkpoint_id)) => {
                 let mut cleanup = cleanup_repository.ok().and_then(|repository|checkpoint_id.clone().map(|id|repository.cleanup_on_orphan(id,handle.settled.clone())));
                 let wake = handle.wake.clone();
-                if this
+                if !this
                     .update(cx, |this, cx| {
-                        this.starting = false;
+                        if this.quit_pending || this.launches.get(&id).is_none_or(|l|l.key!=launch_key||l.cancel.load(std::sync::atomic::Ordering::Acquire)){
+                            handle.cancel();this.launches.remove(&id);this.starting=!this.launches.is_empty();cx.notify();return false
+                        }
+                        this.launches.remove(&id);this.starting=!this.launches.is_empty();
                         if let Some(checkpoint)=checkpoint_id {
                             this.checkpoint_runs.insert(id.clone(),checkpoint.clone());
                             if let (Some(session),Some(command))=(terminal_session,saved_terminal_prompt.as_ref()) {
@@ -471,7 +476,7 @@ impl Orbit {
                         }
                         this.runs.insert(
                             id.clone(),
-                            Running {
+                            Running { timing:None,
                                 agent,
                                 submitted_prompt: String::new(),
                                 handle,
@@ -489,9 +494,9 @@ impl Orbit {
                                 submitted_attachments: Vec::new(),
                             },
                         );
-                        cx.notify();
+                        cx.notify();true
                     })
-                    .is_err()
+                    .unwrap_or(false)
                 {
                     return;
                 }
@@ -507,13 +512,13 @@ impl Orbit {
             }
             Err(error) => {
                 let _ = this.update(cx, |this, cx| {
-                    this.starting = false;
+                    this.launches.remove(&id);this.starting=!this.launches.is_empty();
                     if let Some(command)=terminal_prompt {
                         let draft=format!("/terminal {command}");
                         this.drafts.entry(id.clone()).or_insert_with(||draft.clone());
                         if this.active.as_deref()==Some(&id)&&this.composer.read(cx).text().is_empty(){this.composer.update(cx,|input,cx|input.set_text(&draft,cx));}
                     }
-                    this.notice = Some(error.to_string());
+                    if this.active.as_deref()==Some(&id){this.notice=Some(error.to_string());}
                     cx.notify();
                 });
             }

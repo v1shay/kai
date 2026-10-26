@@ -144,6 +144,12 @@ fn launch_mode(request: RunRequest, maintenance: Option<(String, Value)>) -> Res
     crate::process_env::apply(&mut command);
     command
         .args(["app-server", "--listen", "stdio://"])
+        // This app's first-party Codex route uses HTTPS/SSE directly. Realtime
+        // voice still uses its independent native WebRTC transport.
+        .args(["-c","model_providers.kai-openai-https.name=\"OpenAI\"",
+               "-c","model_providers.kai-openai-https.wire_api=\"responses\"",
+               "-c","model_providers.kai-openai-https.requires_openai_auth=true",
+               "-c","model_providers.kai-openai-https.supports_websockets=false"])
         .current_dir(&request.project)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -261,6 +267,17 @@ fn thread_params(request: &RunRequest) -> Value {
         if request.fork_session {
             params["ephemeral"] = json!(false);
         }
+    }
+    params
+}
+
+// Read Codex's effective per-project configuration before choosing transport.
+// Custom providers retain their native route; only built-in OpenAI uses our
+// first-party HTTPS profile. No user configuration or credentials are changed.
+fn routed_thread_params(request:&RunRequest,config:&Value)->Value{
+    let mut params=thread_params(request);
+    if config["model_provider"].as_str().is_none_or(|p|p=="openai"){
+        params["modelProvider"]=json!("kai-openai-https");
     }
     params
 }
@@ -550,19 +567,7 @@ fn run_turn(
     let mut tail = Vec::new();
     let mut buffer = [0u8; 8192];
     let mut failure = if initialized_before {
-        rpc(
-            stdin,
-            &ctx.cancelled,
-            2,
-            if request.resume_id.is_none() {
-                "thread/start"
-            } else if request.fork_session {
-                "thread/fork"
-            } else {
-                "thread/resume"
-            },
-            thread_params(request),
-        )
+        rpc(stdin, &ctx.cancelled, 0, "config/read", json!({"cwd":request.project,"includeLayers":false}))
     } else {
         rpc(
             stdin,
@@ -714,8 +719,8 @@ fn run_turn(
                 Err(_) => break,
             }
         }
-        if !initialized && started.elapsed() > Duration::from_secs(30) {
-            failure = Some("Codex App Server did not initialize within 30 seconds".into());
+        if started.elapsed()>Duration::from_secs(30) && (!initialized || state.launch_pending()) {
+            failure = Some("Codex did not acknowledge the pending launch within 30 seconds".into());
             break;
         }
         if state.complete {
@@ -949,6 +954,12 @@ fn graceful_stop(
 }
 
 impl Session {
+    fn launch_pending(&self)->bool{
+        (self.thread.is_empty() && self.command_process.is_empty())
+            || (self.maintenance.is_none() && self.turn.is_empty())
+            || self.calls.values().any(|method|matches!(method.as_str(),"turn/start"|"thread/realtime/start"))
+    }
+
     fn events(&mut self, events: Vec<RuntimeEvent>, ctx: &NativeContext) -> Result<()> {
         if let Some(error) = self.parser.storage_error.take() {
             bail!("Could not save response interactions: {error}");
@@ -1167,20 +1178,14 @@ impl Session {
                         &ctx.cancelled,
                     )?;
                 } else {
-                    rpc(
-                        stdin,
-                        &ctx.cancelled,
-                        2,
-                        if request.resume_id.is_none() {
-                            "thread/start"
-                        } else if request.fork_session {
-                            "thread/fork"
-                        } else {
-                            "thread/resume"
-                        },
-                        thread_params(request),
-                    )?;
+                    rpc(stdin, &ctx.cancelled, 0, "config/read", json!({"cwd":request.project,"includeLayers":false}))?;
                 }
+            }
+            Some(0) => {
+                let config=value["result"].get("config").context("Codex returned no effective configuration")?;
+                rpc(stdin,&ctx.cancelled,2,
+                    if request.resume_id.is_none(){"thread/start"}else if request.fork_session{"thread/fork"}else{"thread/resume"},
+                    routed_thread_params(request,config))?;
             }
             Some(2) => {
                 self.thread = value["result"]["thread"]["id"]
@@ -3079,7 +3084,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     fn fixture(body: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!("code-native-rpc-{}", uuid::Uuid::new_v4()));
-        std::fs::write(&path,format!("#!/usr/bin/python3\nimport json,sys,time\ndef send(v):\n print(json.dumps(v),flush=True)\ndef recv():\n return json.loads(sys.stdin.readline())\n{body}")).unwrap();
+        std::fs::write(&path,format!("#!/usr/bin/python3\nimport json,sys,time\ndef send(v):\n print(json.dumps(v),flush=True)\ndef recv():\n v=json.loads(sys.stdin.readline())\n if v.get('method')=='config/read':\n  send({{'id':v['id'],'result':{{'config':{{'model_provider':'openai'}}}}}})\n  return recv()\n return v\n{body}")).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
         path
     }
@@ -3126,6 +3131,23 @@ send({'method':'thread/realtime/closed','params':{'threadId':'12345678-1234-4234
             match event{RuntimeEvent::Text(t)=>text.push_str(&t),RuntimeEvent::Voice(crate::voice::Signal::Started{..})=>{started=true;handle.native_command("thread/realtime/stop",json!({})).unwrap()},RuntimeEvent::Failed(e)=>panic!("{e}"),RuntimeEvent::Finished=>break,_=>{}}
         }
         handle.cancel();assert!(started,"Realtime did not follow context turn in {thread}");assert!(text.contains("fixture image is blue"));let _=std::fs::remove_file(script);let _=std::fs::remove_file(image);
+    }
+    #[test]
+    fn launch_deadline_does_not_limit_active_turns_or_native_maintenance(){
+        let mut state=Session::default();assert!(state.launch_pending());
+        state.thread="thread".into();assert!(state.launch_pending());
+        state.turn="turn".into();assert!(!state.launch_pending());
+        state.turn.clear();state.maintenance=Some(("thread/compact/start".into(),json!({})));assert!(!state.launch_pending());
+        state.thread.clear();state.command_process="terminal".into();assert!(!state.launch_pending());
+        state.calls.insert(10,"turn/start".into());assert!(state.launch_pending());
+    }
+    #[test]
+    fn direct_https_transport_preserves_custom_native_provider_configuration(){
+        let r=request(std::path::Path::new("/fixture"));
+        for config in [json!({}),json!({"model_provider":"openai"})]{
+            assert_eq!(routed_thread_params(&r,&config)["modelProvider"],"kai-openai-https");
+        }
+        assert!(routed_thread_params(&r,&json!({"model_provider":"my-provider"}))["modelProvider"].is_null());
     }
     #[test]
     fn native_turn_transmits_selected_reasoning_without_changing_model_id(){

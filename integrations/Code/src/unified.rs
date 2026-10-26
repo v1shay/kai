@@ -162,6 +162,9 @@ pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Resul
         if std::env::args().any(|arg|arg=="--unified-voice-probe"){
             anyhow::ensure!(std::env::args().any(|arg|arg=="--unified-smoke-test") && std::env::var("KAI_CODE_VOICE_DIAGNOSTIC").as_deref()==Ok("1"),"Live voice probe requires isolated, generated-audio diagnostic mode");
             start_voice_probe(window,cx)?;
+        }else if std::env::args().any(|arg|arg=="--unified-agent-probe"){
+            anyhow::ensure!(std::env::args().any(|arg|arg=="--unified-smoke-test"),"Agent probe requires isolated app data");
+            start_agent_probe(window,cx)?;
         }else if std::env::args().any(|arg| arg == "--unified-smoke-test") {
             let diagnostics=unsafe{libc::dlsym(library,c"kai_unified_diagnostics".as_ptr())};
             anyhow::ensure!(!diagnostics.is_null(),"Missing presentation diagnostics");
@@ -264,8 +267,8 @@ fn scene(status: &str) -> &'static str {
     }
 }
 impl Orbit {
-    fn effort_key(&self)->String{format!("{}:{}",self.agent.command(),self.model.as_deref().unwrap_or(""))}
-    pub(super) fn unified_effort(&self)->Option<&str>{self.reasoning_efforts.get(&self.effort_key()).map(String::as_str)}
+    pub(super) fn effort_key(&self)->String{format!("{}:{}:{}",self.agent.command(),self.active.as_deref().unwrap_or("draft"),self.model.as_deref().unwrap_or(""))}
+    pub(super) fn unified_effort(&self)->Option<&str>{self.reasoning_efforts.get(&self.effort_key()).or_else(||self.active.is_none().then(||self.reasoning_efforts.get(&format!("{}:{}",self.agent.command(),self.model.as_deref().unwrap_or("")))).flatten()).map(String::as_str)}
     pub(super) fn unified_token(&self) -> String {
         // Composer edits have their own exact draft-base check. They must not
         // invalidate navigation/model commands before the parent observes input.
@@ -275,7 +278,7 @@ impl Orbit {
     pub(super) fn unified_send_ready(&self) -> bool {
         !self.loading
             && !self.loading_earlier
-            && !self.starting
+            && !self.starting_current()
             && !self.quit_pending
             && self.active.as_ref().is_none_or(|id| {
                 !self.runs.contains_key(id)
@@ -480,7 +483,7 @@ impl Orbit {
                 self.composer
                     .update(cx, |input, cx| input.set_text(&supplied, cx));
                 self.send(window, cx);
-                if !self.starting && self.composer.read(cx).text() == supplied {
+                if !self.starting_current() && self.composer.read(cx).text() == supplied {
                     return Err(self.notice.clone().unwrap_or_else(|| {
                         "Prompt staged in the workspace; review its native confirmation".into()
                     }));
@@ -488,6 +491,10 @@ impl Orbit {
             }
             "interrupt" => {
                 let id = native_id(request, "targetThreadId").ok_or("Select a running chat")?;
+                if let Some(launch)=self.launches.get(&id){
+                    if request["runId"].as_str()!=Some(launch.key.as_str()){return Err("The launch changed; refresh before stopping".into())}
+                    launch.cancel.store(true,std::sync::atomic::Ordering::Release);return Ok(())
+                }
                 let run = self.runs.get(&id).ok_or("The run has finished")?;
                 if request["runId"].as_str() != Some(run.parse_epoch.to_string().as_str()) {
                     return Err("The run changed; refresh before stopping".into());
@@ -517,7 +524,7 @@ impl Orbit {
                     let choice=if model.is_empty(){self.effort_model_choice()}else{self.unified_models().into_iter().find(|m|m.id==model)};
                     if !choice.is_some_and(|m|m.reasoning_efforts.iter().any(|v|v==effort)){return Err("That reasoning effort is not available for this model".into())}
                 }
-                if self.loading||self.starting||self.handoff_pending.is_some(){return Err("Finish the current handoff before changing the model".into())}
+                if self.loading||self.starting_current()||self.handoff_pending.is_some(){return Err("Finish the current handoff before changing the model".into())}
                 self.choose_model((!model.is_empty()).then(||model.into()), cx);
                 if let Some(effort)=request["effort"].as_str(){let key=self.effort_key();if effort.is_empty(){self.reasoning_efforts.remove(&key);}else{self.reasoning_efforts.insert(key,effort.into());}}
                 self.queue_workspace_save(cx);
@@ -727,6 +734,9 @@ impl Orbit {
             let name=self.sessions.iter().find(|s|s.id==*id).map(|s|s.title.as_str()).unwrap_or("Agent");
             json!({"id":format!("code:{id}"),"name":name,"runId":run.parse_epoch.to_string(),"scene":self.native_pending.values().find(|p|p.owner==*id&&p.current(&self.runs)).map(|p|p.indicator_scene()).unwrap_or(scene(&run.status)),"text":format!("{} · {}",run.agent.name(),run.status),"agent":run.agent.command()})
         }).collect();
+        for (id,launch) in &self.launches{
+            if let Some(chat)=self.sessions.iter().find(|s|s.id==*id){tasks.push(json!({"id":format!("code:{id}"),"name":chat.title,"runId":launch.key,"scene":"thinking","text":format!("{} · {}",launch.caption,chat_timing::duration(launch.started.elapsed().as_millis() as u64)),"agent":chat.agent.command()}));}
+        }
         for child in self.unified_children.iter().filter(|c|c.connected && (matches!(c.status,chat_interactions::InteractionStatus::Started|chat_interactions::InteractionStatus::Working)||!c.requests.is_empty())){
             let parent=self.child_owner(child,&self.unified_children).map(|s|format!("code:{}",s.id));
             if parent.is_none(){continue}
@@ -742,13 +752,13 @@ impl Orbit {
             .map(|(_, scene)| *scene);
         let selected_activity = running
             .map(|run| json!({"scene":scene(&run.status),"text":run.status}))
-            .unwrap_or_else(|| match terminal {
+            .unwrap_or_else(|| if self.starting_current(){json!({"scene":"thinking","text":self.launch_caption()})}else{match terminal {
                 Some("failure") => {
                     json!({"scene":"failure","text":"Agent failed — review the workspace"})
                 }
                 Some("declined") => json!({"scene":"declined","text":"Stopped"}),
                 _ => json!({"scene":"off","text":"Ready"}),
-            });
+            }});
         let selected = Some(
             self.active
                 .as_ref()
@@ -770,13 +780,14 @@ impl Orbit {
             "chats":chats,"standaloneChats":standalone,"standalone":self.project==self.unprojected_root(),"codeChats":[],"codeConnection":{"connected":true,"enabled":true},
             "threadId":selected,"threadName":chat.map(|s|s.title.as_str()).unwrap_or("New chat"),"ownerToken":self.unified_token(),"composerDraft":self.composer.read(cx).text(),
             "historyLoading":self.loading || self.loading_earlier,"history":history,"historyHasMore":self.has_older || local_older,"files":self.unified_file_rows(cx),
-            "readOnly":self.history_offset>0 || self.navigation_history,"composerBusy":!self.unified_send_ready(),"activeTurnId":running.map(|r|r.parse_epoch.to_string()),
+            "readOnly":self.history_offset>0 || self.navigation_history,"composerBusy":!self.unified_send_ready(),"activeTurnId":running.map(|r|r.parse_epoch.to_string()).or_else(||self.active.as_ref().and_then(|id|self.launches.get(id)).map(|l|l.key.clone())),
             "nativeReview":self.unified_review(),"approval":approval.is_some(),"approvalThreadId":approval.as_ref().map(|a|format!("code:{}",a.0)),"approvalRequestId":approval.as_ref().map(|a|a.1.clone()),"approvalSummary":approval.as_ref().map(|a|a.2.clone()),
             "activity":if tasks.is_empty(){selected_activity.clone()}else{activity},"sessionActivity":self.voice_call.as_ref().filter(|v|v.owns_current_chat(self.active.as_deref())).map(|v|json!({"scene":v.scene(),"text":format!("{} · {}",v.caption(),voice::REALTIME_MODEL)})).unwrap_or(selected_activity),"activeTasks":tasks,"focusThreadId":approval.as_ref().map(|a|format!("code:{}",a.0)).or_else(||tasks.first().and_then(|t|t["id"].as_str().map(str::to_owned))),
             "notice":self.notice.as_deref().unwrap_or("Kai · Code"),"attachments":self.attachments.iter().filter(|a|!self.attachment_removals.contains_key(&a.id)).map(|a|a.path.to_string_lossy().into_owned()).collect::<Vec<_>>(),"modelsLoading":self.controls_pending.contains(self.agent.command()),"models":models.iter().map(|m|json!({"model":m.id,"displayName":m.label,"resolvedModel":self.controls.get(self.agent.command()).and_then(|(_,v)|v.defaults.aliases.get(&m.id)).unwrap_or(&m.id),"supportedReasoningEfforts":m.reasoning_efforts.iter().map(|v|json!({"reasoningEffort":v})).collect::<Vec<_>>()})).collect::<Vec<_>>(),
             "selectedModel":self.model,"reasoningEffort":self.unified_effort().unwrap_or(""),"canGoBack":!self.unified_back.is_empty(),"canGoForward":!self.unified_forward.is_empty(),
             "agents":self.agents.iter().map(|a|json!({"id":a.kind.command(),"name":a.kind.name(),"available":a.available&&a.executable.is_some()})).collect::<Vec<_>>(),"selectedAgent":self.agent.command(),"workspaceVoiceChoice":self.voice_choice,"workspaceVoiceActive":self.voice_call.is_some(),"workspaceVoiceScene":self.voice_call.as_ref().map(|v|v.scene())});
         snapshot["providerDefaultModel"]=json!(self.provider_default_model());snapshot["effectiveModel"]=json!(effective_model);snapshot["effectiveReasoningEffort"]=json!(effective_effort);snapshot["voiceModel"]=json!(self.voice_call.as_ref().map(|_|voice::REALTIME_MODEL));
+        if let Some(elapsed)=self.elapsed_label(){if let Some(text)=snapshot["sessionActivity"]["text"].as_str().map(str::to_owned){snapshot["sessionActivity"]["text"]=json!(format!("{text} · {elapsed}"));}}
         snapshot["workspaceVoiceError"]=json!(self.voice_error);snapshot["historyEarlier"]=json!(self.unified_history_end.as_ref().is_some_and(|(owner,_)|owner==&self.unified_token()) || self.history_offset>0 || self.navigation_history);snapshot["approvalCount"]=json!(self.unified_pending_ids().len());snapshot["workspaceMotion"]=json!(self.motion);snapshot["workspaceTextMorph"]=json!(self.unified_text_morph);snapshot
 
     }
@@ -1232,10 +1243,28 @@ mod regression_tests {
             app.loading=false;app.starting=false;app.handoff_pending=None;app.agent=AgentKind::Codex;
             app.native_models.insert(AgentKind::Codex,vec![agent_controls::ModelChoice{id:"fixture-model".into(),label:"Fixture".into(),reasoning_efforts:vec!["low".into(),"high".into()]}]);
             let mut body=request(app,"settings",cx);body["model"]=json!("fixture-model");body["effort"]=json!("high");app.unified_command(&body,window,cx).unwrap();
-            assert_eq!(app.unified_snapshot(cx)["reasoningEffort"],"high");assert_eq!(app.workspace_snapshot(cx).reasoning_efforts["codex:fixture-model"],"high");
+            assert_eq!(app.unified_snapshot(cx)["reasoningEffort"],"high");assert_eq!(app.workspace_snapshot(cx).reasoning_efforts[&app.effort_key()],"high");
             body["effort"]=json!("invented");assert!(app.unified_command(&body,window,cx).is_err());assert_eq!(app.unified_effort(),Some("high"));
             app.model=None;app.controls.insert("codex",(Instant::now(),agent_controls::ControlInfo{defaults:agent_controls::ModelDefaults{model:Some("fixture-model".into()),..Default::default()},auth:agent_controls::AuthState::Unknown,models:vec![],note:None,account:None,limits:vec![],catalog:None}));
             body=request(app,"settings",cx);body["model"]=json!("");body["effort"]=json!("low");app.unified_command(&body,window,cx).unwrap();assert!(app.model.is_none());assert_eq!(app.unified_effort(),Some("low"));
+        });
+    }
+    #[gpui::test]
+    fn reasoning_override_stays_with_its_chat_and_native_settings_resume(cx:&mut TestAppContext){
+        let (view,cx)=crate::ui_tests::fixture(cx);
+        view.update(cx,|app,_|{
+            app.agent=AgentKind::Codex;app.model=None;app.active=Some("fixture-session".into());
+            app.sessions[0].external_id=Some("native-thread".into());
+            app.reasoning_efforts.insert(app.effort_key(),"high".into());
+            app.usage.insert("fixture-session".into(),usage::Usage{model:Some("chat-model".into()),reasoning_effort:Some("low".into()),..Default::default()});
+            assert_eq!(app.request_model().as_deref(),Some("chat-model"));assert_eq!(app.request_effort().as_deref(),Some("high"));
+            app.native_models.insert(AgentKind::Codex,vec![agent_controls::ModelChoice{id:"chat-model".into(),label:"Chat".into(),reasoning_efforts:vec!["high".into()]}]);
+            app.controls.insert("codex",(Instant::now(),agent_controls::ControlInfo{defaults:agent_controls::ModelDefaults{model:Some("other-default".into()),..Default::default()},auth:agent_controls::AuthState::Unknown,models:vec![],note:None,account:None,limits:vec![],catalog:None}));
+            assert_eq!(app.effort_model_choice().unwrap().id,"chat-model");
+            app.active=Some("other-chat".into());assert_eq!(app.unified_effort(),None);assert_eq!(app.request_effort(),None);
+            app.reasoning_efforts.insert("codex:".into(),"medium".into());assert_eq!(app.unified_effort(),None);
+            app.active=None;assert_eq!(app.unified_effort(),Some("medium"));
+            app.active=Some("fixture-session".into());assert_eq!(app.request_effort().as_deref(),Some("high"));
         });
     }
     #[gpui::test]
@@ -1340,6 +1369,9 @@ pub(super) fn voice_host()->Option<*mut c_void>{
 }
 
 impl Orbit{
+    pub(super) fn request_model(&self)->Option<String>{self.model.clone().or_else(||self.active.as_ref().filter(|id|self.sessions.iter().any(|s|s.id==**id&&s.agent==self.agent&&s.external_id.is_some())).and_then(|id|self.usage.get(id)).and_then(|u|u.model.clone()))}
+    pub(super) fn request_effort(&self)->Option<String>{self.unified_effort().map(str::to_owned).or_else(||self.active.as_ref().filter(|id|self.sessions.iter().any(|s|s.id==**id&&s.agent==self.agent&&s.external_id.is_some())).and_then(|id|self.usage.get(id)).and_then(|u|u.reasoning_effort.clone()))}
+
     pub(super) fn model_project(&self)->PathBuf{
         self.active.as_ref().and_then(|id|self.sessions.iter().find(|s|s.id==*id)).map(|s|s.execution_path.as_ref().unwrap_or(&s.project_path).clone()).filter(|p|p.is_dir()).unwrap_or_else(||if self.project.is_dir(){self.project.clone()}else{self.controls_home.clone()})
     }
@@ -1349,11 +1381,11 @@ impl Orbit{
         let usage=self.active.as_ref().filter(|id|self.sessions.iter().any(|s|s.id==**id&&s.agent==self.agent)).and_then(|id|self.usage.get(id));
         let alias=|id:&str|controls.and_then(|d|d.aliases.get(id)).cloned().unwrap_or_else(||id.into());
         let selected=self.model.as_deref().map(alias);
-        let configured=controls.and_then(|d|d.model.as_deref()).map(alias);
+        let configured=self.active.is_none().then(||controls.and_then(|d|d.model.as_deref()).map(alias)).flatten();
         let reported=usage.and_then(|u|u.model.as_deref()).map(alias);
         let model=if run.is_some(){reported.clone().or_else(||run.and_then(|r|r.retry.as_ref()).and_then(|r|r.model.as_deref()).map(alias)).or(selected).or(configured)}else{selected.or(reported).or(configured)};
         let reported_matches=usage.and_then(|u|u.model.as_deref()).map(alias)==model;
-        let default_effort=controls.and_then(|d|d.effort.clone().or_else(||model.as_ref().and_then(|m|d.efforts.get(m)).cloned()));
+        let default_effort=self.active.is_none().then(||controls.and_then(|d|d.effort.clone().or_else(||model.as_ref().and_then(|m|d.efforts.get(m)).cloned()))).flatten();
         let effort=if run.is_some(){usage.filter(|_|reported_matches).and_then(|u|u.reasoning_effort.clone()).or_else(||run.and_then(|r|r.retry.as_ref()).and_then(|r|r.reasoning_effort.clone())).or(default_effort)}else{self.unified_effort().map(str::to_owned).or_else(||usage.filter(|_|reported_matches).and_then(|u|u.reasoning_effort.clone())).or(default_effort)};
         (model,effort)
     }
@@ -1370,10 +1402,11 @@ impl Orbit{
   let(view,cx)=crate::ui_tests::fixture(cx);view.update(cx,|app,cx|{
    let mut defaults=agent_controls::ModelDefaults{model:Some("configured-model".into()),effort:Some("high".into()),..Default::default()};defaults.efforts.insert("explicit-model".into(),"low".into());
    app.controls.insert("codex",(Instant::now(),agent_controls::ControlInfo{defaults,auth:agent_controls::AuthState::Unknown,models:vec![],note:None,account:None,limits:vec![],catalog:None}));
-   app.agent=AgentKind::Codex;app.active=Some("fixture-session".into());app.model=None;app.runs.clear();app.usage.clear();assert_eq!(app.effective_model_settings(),(Some("configured-model".into()),Some("high".into())));assert_eq!(app.model,None);
+   app.agent=AgentKind::Codex;app.active=None;app.model=None;app.runs.clear();app.usage.clear();assert_eq!(app.effective_model_settings(),(Some("configured-model".into()),Some("high".into())));assert_eq!(app.model,None);
+   app.active=Some("fixture-session".into());assert_eq!(app.effective_model_settings(),(None,None));app.active=None;
    app.model=Some("explicit-model".into());assert_eq!(app.effective_model_settings(),(Some("explicit-model".into()),Some("high".into())));
    app.controls.get_mut("codex").unwrap().1.defaults.effort=None;assert_eq!(app.effective_model_settings().1.as_deref(),Some("low"));
-   app.usage.insert("fixture-session".into(),usage::Usage{model:Some("native-rerouted-model".into()),reasoning_effort:Some("medium".into()),..Default::default()});app.runs.insert("fixture-session".into(),crate::ui_tests::idle_run("Thinking".into()));
+   app.active=Some("fixture-session".into());app.usage.insert("fixture-session".into(),usage::Usage{model:Some("native-rerouted-model".into()),reasoning_effort:Some("medium".into()),..Default::default()});app.runs.insert("fixture-session".into(),crate::ui_tests::idle_run("Thinking".into()));
    let snapshot=app.unified_snapshot(cx);assert_eq!(snapshot["effectiveModel"],"native-rerouted-model");assert_eq!(snapshot["effectiveReasoningEffort"],"medium");assert_eq!(snapshot["readOnly"],false);assert_eq!(snapshot["composerBusy"],true);
    app.agent=AgentKind::Claude;app.model=None;assert_ne!(app.effective_model_settings().0.as_deref(),Some("native-rerouted-model"));
   });
@@ -1384,7 +1417,7 @@ impl Orbit{
     pub(super) fn effort_model_choice(&self)->Option<agent_controls::ModelChoice>{
         let defaults=self.controls.get(self.agent.command()).map(|(_,info)|&info.defaults);
         let resolved=self.effective_model_settings().0;
-        let id=self.model.as_deref().or_else(||defaults.and_then(|d|d.model.as_deref())).or(resolved.as_deref())?;
+        let id=self.model.as_deref().or(resolved.as_deref()).or_else(||defaults.and_then(|d|d.model.as_deref()))?;
         self.unified_models().into_iter().find(|m|m.id==id || defaults.and_then(|d|d.aliases.get(&m.id)).is_some_and(|resolved|resolved==id))
     }
 }
@@ -1411,8 +1444,8 @@ fn start_voice_probe(window:WindowHandle<Orbit>,cx:&mut App)->anyhow::Result<()>
             let ready=window.update(cx,|app,_,cx|{
                 if let Some(error)=&app.voice_error{panic!("Packaged voice failed: {error}")}
                 let snapshot=app.unified_snapshot(cx);
-                let user=app.rows.iter().any(|r|matches!(&r.block,MessageBlock::Interaction(chat_interactions::ChatInteraction::Speaker{speaker:chat_interactions::Speaker::User,text}) if !text.is_empty()));
-                let assistant=app.rows.iter().any(|r|matches!(&r.block,MessageBlock::Interaction(chat_interactions::ChatInteraction::Speaker{speaker:chat_interactions::Speaker::Assistant,text}) if !text.is_empty()));
+                let user=app.rows.iter().any(|r|matches!(&r.block,MessageBlock::Voice{speaker:chat_interactions::Speaker::User,text,..}|MessageBlock::Interaction(chat_interactions::ChatInteraction::Speaker{speaker:chat_interactions::Speaker::User,text}) if !text.is_empty()));
+                let assistant=app.rows.iter().any(|r|matches!(&r.block,MessageBlock::Voice{speaker:chat_interactions::Speaker::Assistant,text,..}|MessageBlock::Interaction(chat_interactions::ChatInteraction::Speaker{speaker:chat_interactions::Speaker::Assistant,text}) if !text.is_empty()));
                 let active=app.voice_call.as_ref().is_some_and(|call|call.active&&call.owns_current_chat(app.active.as_deref()));
                 if active&&user&&assistant{
                     assert_eq!(snapshot["readOnly"],false);assert_eq!(snapshot["composerBusy"],true);
@@ -1436,4 +1469,92 @@ impl Orbit{
         let defaults=&self.controls.get(self.agent.command())?.1.defaults;
         let id=defaults.model.as_ref()?;Some(defaults.aliases.get(id).unwrap_or(id).clone())
     }
+}
+
+/// Real composer -> checkpoint -> native Codex -> persisted chat, in an isolated
+/// temporary workspace. No user chats, prompts or project files are touched.
+fn start_agent_probe(window:WindowHandle<Orbit>,cx:&mut App)->anyhow::Result<()>{
+    let root=std::path::PathBuf::from(std::env::var("KAI_AGENT_FIXTURE")?).canonicalize()?;
+    anyhow::ensure!(root.parent()==Some(std::path::Path::new("/private/tmp")) && root.file_name().and_then(|s|s.to_str()).is_some_and(|s|s.starts_with("kai-agent-ui-")),"Agent probe requires its own temporary workspace");
+    cx.spawn(async move|cx|{
+        let started=Instant::now();
+        for _ in 0..100{
+            let ready=window.update(cx,|app,_,_|app.agents.iter().any(|a|a.kind==AgentKind::Codex&&a.available)).unwrap_or(false);
+            if ready{break}Timer::after(Duration::from_millis(100)).await;
+        }
+        let first=window.update(cx,|app,window,cx|{
+            assert!(app.runs.is_empty()&&app.launches.is_empty());
+            app.project=root.clone();app.new_execution_path=None;app.agent=AgentKind::Codex;app.model=None;app.active=None;app.loading=false;app.loading_earlier=false;app.allow_edits=true;
+            app.trusted_workspaces.insert((AgentKind::Codex,root.clone()));
+            app.composer.update(cx,|input,cx|input.set_text("Create kai-proof.txt containing exactly KAI_AGENT_OK. Do not edit any other file. Reply KAI_AGENT_OK.",cx));
+            app.send(window,cx);
+            let id=app.active.clone().expect("UI send did not create its chat");
+            assert!(app.launches.contains_key(&id),"UI send did not reserve its own launch: {:?}",app.notice);
+            app.new_conversation(window,cx);
+            assert!(!app.starting_current(),"A background launch contaminated a new chat");
+            assert!(app.unified_send_ready(),"A background launch blocked an unrelated composer");
+            assert!(!app.unified_snapshot(cx)["sessionActivity"]["text"].as_str().unwrap_or("").contains("Preparing workspace"));
+            eprintln!("Kai agent UI probe: new-chat submission and independent draft passed");id
+        }).expect("Probe window");
+        for turn in 0..2{
+            let mut done=false;
+            for _ in 0..480{
+                Timer::after(Duration::from_millis(250)).await;
+                let state=window.update(cx,|app,_,_|{
+                    let busy=app.launches.contains_key(&first)||app.runs.contains_key(&first)||app.finalizing.contains(&first)||app.settling.contains_key(&first);
+                    let finished=app.turn_timings.iter().filter(|r|r.session==first&&r.finished_ms.is_some()).count();
+                    if !busy&&finished>turn{
+                        let record=app.turn_timings.iter().rev().find(|r|r.session==first).unwrap();
+                        assert_eq!(record.outcome.as_deref(),Some("completed"),"Agent failed in actual UI: {:?}",app.notice);
+                        assert!(record.elapsed_ms.is_some());
+                        assert!(app.usage.get(&first).and_then(|u|u.model.as_ref()).is_some(),"Native run never reported its actual model");return true
+                    }false
+                }).expect("Probe state");
+                if state{done=true;break}
+            }
+            assert!(done,"Actual UI agent turn did not settle");
+            let body=std::fs::read_to_string(root.join("kai-proof.txt")).expect("Native agent did not write its fixture");
+            assert!(body.contains(if turn==0{"KAI_AGENT_OK"}else{"SECOND_OK"}),"Native edit was not performed");
+            if turn==0{
+                window.update(cx,|app,window,cx|{
+                    let session=app.sessions.iter().find(|s|s.id==first).cloned().expect("Owned chat disappeared");app.open_session(session,window,cx);
+                }).expect("Open existing chat");
+                for _ in 0..100{Timer::after(Duration::from_millis(100)).await;if window.update(cx,|app,_,_|!app.loading).unwrap_or(false){break}}
+                window.update(cx,|app,window,cx|{
+                    assert_eq!(app.active.as_ref(),Some(&first));assert!(!app.loading);
+                    assert!(app.rows.iter().any(|r|r.role.as_deref()==Some("user")),"Returning to the chat lost its submitted prompt");
+                    app.composer.update(cx,|input,cx|input.set_text("Read kai-proof.txt and append SECOND_OK on a new line. Do not edit any other file. Reply SECOND_OK.",cx));
+                    app.send(window,cx);
+                    assert!(app.launches.contains_key(&first),"Existing-chat UI send did not launch: {:?}",app.notice);
+                    eprintln!("Kai agent UI probe: first native edit, exact model report, and resumed-chat submission passed");
+                }).expect("Resume existing chat");
+            }
+        }
+        if let Ok(path)=std::env::var("KAI_AGENT_VOICE_FIXTURE"){
+            assert_eq!(std::env::var("KAI_CODE_VOICE_DIAGNOSTIC").as_deref(),Ok("1"),"Voice UI probe must disable ambient microphone audio");
+            assert!(std::fs::metadata(&path).unwrap().len()<2*1024*1024);
+            let fixture:Value=serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();let audio=fixture["audio"].as_str().expect("Generated speech fixture").to_owned();
+            let _=cx.update(|_|reveal());Timer::after(Duration::from_secs(1)).await;
+            window.update(cx,|app,window,cx|{
+                app.toggle_voice(window,cx);
+                app.voice_call.as_ref().expect("Actual UI voice button did not open a call").media.initial_prompt(&audio).expect("Generated voice prompt");
+                eprintln!("Kai agent UI probe: actual workspace voice-button handler started media");
+            }).expect("Voice UI");
+            let mut spoken=false;
+            for _ in 0..360{
+                Timer::after(Duration::from_millis(250)).await;
+                if window.update(cx,|app,_,cx|{
+                    assert!(app.voice_error.is_none(),"Actual UI voice failed: {:?}",app.voice_error);
+                    let user=app.rows.iter().any(|r|matches!(&r.block,MessageBlock::Voice{speaker:chat_interactions::Speaker::User,text,..}|MessageBlock::Interaction(chat_interactions::ChatInteraction::Speaker{speaker:chat_interactions::Speaker::User,text})if !text.is_empty()));
+                    let assistant=app.rows.iter().any(|r|matches!(&r.block,MessageBlock::Voice{speaker:chat_interactions::Speaker::Assistant,text,..}|MessageBlock::Interaction(chat_interactions::ChatInteraction::Speaker{speaker:chat_interactions::Speaker::Assistant,text})if !text.is_empty()));
+                    if app.voice_call.as_ref().is_some_and(|c|c.active&&c.owns_current_chat(app.active.as_deref()))&&user&&assistant{app.stop_voice(cx);return true}false
+                }).expect("Voice UI state"){spoken=true;break}
+            }
+            assert!(spoken,"Actual UI voice did not produce both speaker transcripts");Timer::after(Duration::from_secs(3)).await;
+            window.update(cx,|app,_,_|assert!(app.voice_call.is_none(),"Actual UI voice stop did not close media")).expect("Voice stop");
+            eprintln!("Kai agent UI probe: workspace UI voice connected, exchanged real speech transcripts, and stopped");
+        }
+        eprintln!("Kai agent UI probe: new and resumed UI agents edited the fixture, per-chat startup stayed isolated, native model was reported, and both durations persisted in {:.1}s",started.elapsed().as_secs_f64());
+        let _=cx.update(|cx|cx.quit());
+    }).detach();Ok(())
 }

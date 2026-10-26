@@ -130,7 +130,7 @@ impl Orbit {
         cx.notify();
     }
     fn save_prompt_library(&mut self, kind: Kind, cx: &mut Context<Self>) {
-        if self.quit_pending || self.starting || self.queue_editing.is_some() {
+        if self.quit_pending || self.starting_current() || self.queue_editing.is_some() {
             return;
         }
         let Some(picker) = &self.prompt_library_picker else {
@@ -205,7 +205,7 @@ impl Orbit {
         self.mutate_prompt_library(Operation::Save(entry), capture, cx);
     }
     fn recall_prompt(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
-        if self.quit_pending || self.starting || self.queue_editing.is_some() {
+        if self.quit_pending || self.starting_current() || self.queue_editing.is_some() {
             return;
         }
         self.stop_dictation(cx);

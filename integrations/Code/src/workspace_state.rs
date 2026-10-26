@@ -117,6 +117,7 @@ pub struct WorkspaceState {
     pub agent: String,
     pub model: Option<String>,
     pub text_morph:bool,
+    pub turn_timings:Vec<crate::chat_timing::Record>,
     pub reasoning_efforts:BTreeMap<String,String>,
     pub allow_edits: bool,
     pub codex_approvals: crate::runtime::CodexApprovals,
@@ -157,6 +158,7 @@ impl Default for WorkspaceState {
             agent: "codex".into(),
             model: None,
             text_morph:true,
+            turn_timings:Vec::new(),
             reasoning_efforts:BTreeMap::new(),
             allow_edits: false,
             codex_approvals: crate::runtime::CodexApprovals::default(),
@@ -262,6 +264,7 @@ impl WorkspaceState {
         if !valid_text(&self.agent, 64) {
             self.agent = "codex".into();
         }
+        self.turn_timings.retain(|t|t.key.len()<=128&&t.session.len()<=512&&t.submitted_ms>0);if self.turn_timings.len()>1024{self.turn_timings.drain(..self.turn_timings.len()-1024);}
         self.reasoning_efforts.retain(|key,value|valid_text(key,512)&&matches!(value.as_str(),"none"|"minimal"|"low"|"medium"|"high"|"xhigh"|"max"|"ultra"));while self.reasoning_efforts.len()>512{self.reasoning_efforts.pop_first();}
         self.model = self.model.filter(|m| valid_text(m, 256));
         self.active_chat = self.active_chat.filter(|id| valid_text(id, 512));

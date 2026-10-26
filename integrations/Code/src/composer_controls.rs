@@ -64,7 +64,7 @@ impl Orbit {
             cx.notify();
             return;
         }
-        if self.starting {
+        if self.starting_current() {
             return;
         }
         match speech::SpeechHandle::start() {
@@ -166,7 +166,7 @@ impl Orbit {
         self.import_attachment_sources(vec![AttachmentSource::Clipboard(bytes)], cx);
     }
     fn import_attachment_sources(&mut self, paths: Vec<AttachmentSource>, cx: &mut Context<Self>) {
-        if self.starting {
+        if self.starting_current() {
             return;
         }
         self.finish_attachment_removals();
@@ -298,7 +298,7 @@ impl Orbit {
         .detach();
     }
     fn remove_attachment(&mut self, id: uuid::Uuid, cx: &mut Context<Self>) {
-        if self.starting {
+        if self.starting_current() {
             return;
         }
         if self.motion {

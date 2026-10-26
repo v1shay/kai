@@ -104,8 +104,8 @@ impl Orbit {
             .unwrap_or_else(|| "New chat".into());
         let run = self.active.as_ref().and_then(|id| self.runs.get(id));
         let running = run.is_some();
-        let status = if self.starting {
-            Some("Starting agent…".to_owned())
+        let status = if self.starting_current() {
+            Some("Preparing workspace…".to_owned())
         } else if self.loading {
             Some("Opening conversation…".to_owned())
         } else {

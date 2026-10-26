@@ -481,3 +481,71 @@ that termination. The native text regression passed independently.
 The installed 0.6.3 (11) bundle's signature and executable/library hashes were
 verified through a clean staging copy. Previous bundles are retained, and no
 running user chat or agent was stopped. Relaunch to load the new native library.
+
+
+### 0.7.0 restore independent launches and add native chat timing
+
+Agent startup now belongs to the submitted chat, including checkpoint preparation,
+cancellation, native maintenance operations and the notch task snapshot. Navigating
+to another chat or a new draft no longer carries the first chat's busy controls.
+Returning while a checkpoint is being prepared preserves the submitted prompt;
+a late history load cannot erase the active prompt or attach its response to the
+wrong conversation. Asynchronous sends retain their original explicit model
+selection even if the composer changes while a handoff is preparing.
+
+The owned Codex App Server reads its effective project configuration before
+starting or resuming a thread. Built-in OpenAI threads select an app-local
+first-party HTTPS/SSE provider with native OpenAI authentication and WebSockets
+disabled. This avoids waiting for WebSocket retries before ordinary agent work.
+Configured custom providers retain their native routing. Realtime voice retains
+its separate WebRTC media transport. No global Codex configuration or credentials
+are edited. The supported provider fields are defined in
+[Codex's provider configuration](https://github.com/openai/codex/blob/main/codex-rs/model-provider-info/src/lib.rs).
+Startup acknowledgments are bounded; the deadline does not limit an acknowledged
+coding turn, sandbox command, compaction or review.
+
+Existing Codex chats recover the actual model and reasoning effort from their
+latest native turn-context record, read on the background engine with a bounded
+tail. User prose cannot supply that metadata. New drafts can show the configured
+provider default; existing chats no longer substitute it for their own model.
+Explicit reasoning choices belong to the chat and model, and resumed requests
+preserve the native model and effort unless the user chooses another value.
+
+New submissions record their actual submit time, first output, completion and
+monotonic elapsed duration. The composer and notch show live elapsed work; the
+transcript retains a small monospace completed/stopped/failed duration per turn.
+Horizontal swipes over the transcript reveal local message times and release
+fades them away without changing the message layout. Up to 1,024 timing records
+survive restart. Historical imported turns without recorded timing are not given
+invented times or durations. Voice retains its live call clock; voice speaker rows
+do not inherit the preceding coding turn's timestamp or duration.
+
+The opt-in `--unified-agent-probe` exercises the actual composer send handler,
+background checkpoint preparation, independent new draft, two native edit turns
+(new and resumed), the native model report, and persisted durations in its own
+`/private/tmp/kai-agent-ui-*` workspace. With generated speech provided through
+`KAI_AGENT_VOICE_FIXTURE` and ambient microphone disabled by
+`KAI_CODE_VOICE_DIAGNOSTIC=1`, it also invokes the workspace voice button handler,
+waits for both real speaker transcripts, and stops the call. It requires isolated
+`--unified-smoke-test` state and never uses a user project or chat.
+
+
+Verification for 0.7.0: the full Code suite passed 743 tests (12 opt-in tests
+ignored), with another 99 benchmark-library tests passing (one opt-in test
+ignored). The native state harness and production voice shortcut harness passed.
+The signed packaged animation probe passed morph reversal, maximum working-area
+sizing, shared pet, repeated open, direct extended-notch return, double-Command
+and exclusive Quick Chat. Timestamp verification dispatches a horizontal scroll
+through the actual rendered transcript list and checks the real duration footer.
+The tests invoke production UI handlers; physical keyboard/trackpad delivery and
+subjective visual review are separate from these automated checks.
+
+The final signed 0.7.0 release passed the live agent/voice probe in 32.4 seconds:
+the new chat created the proof file, the resumed chat appended the requested
+second line, both native model reporting and on-disk timing records were
+verified, and the workspace voice button exchanged real user/assistant speech
+transcripts before a clean stop. Generated speech was used; ambient microphone
+capture was disabled. The final model-menu refinement additionally passed all
+20 unified-interface regressions. Installation retained the prior 0.6.3 bundle,
+verified the new signature and executable/library hashes, and left the user's
+running process untouched. Quit and relaunch Kai Unified to load 0.7.0 (12).

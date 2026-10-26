@@ -335,7 +335,7 @@ impl Orbit {
                 cx.notify();
                 return;
             }
-            if self.loading || self.starting || self.handoff_pending.is_some() {
+            if self.loading || self.starting_current() || self.handoff_pending.is_some() {
                 self.notice =
                     Some("Wait for the conversation to finish opening or transferring.".into());
                 cx.notify();
@@ -770,7 +770,7 @@ impl Orbit {
             } else {
                 run.status.as_str()
             }
-        } else if self.starting {
+        } else if self.starting_current() {
             "Connecting"
         } else if self
             .active

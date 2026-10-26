@@ -71,6 +71,7 @@ mod theme_controls;
 mod ui_tests;
 mod unified;
 mod text_decode;
+mod chat_timing;
 mod workspace_motion;
 mod usage;
 mod voice;
@@ -386,6 +387,7 @@ fn stamp_row_providers(rows: &mut [Row], fallback: AgentKind) {
     }
 }
 struct Running {
+    timing:Option<chat_timing::Live>,
     agent: AgentKind,
     submitted_prompt: String,
     handle: RunHandle,
@@ -719,6 +721,11 @@ struct Orbit {
     allow_edits: bool,
     codex_approvals: runtime::CodexApprovals,
     starting: bool,
+    launches:HashMap<String,chat_timing::Launch>,
+    turn_timings:Vec<chat_timing::Record>,
+    timestamp_peek:f32,
+    timestamp_direction:f32,
+    timestamp_released:Option<Instant>,
     pending_response_start: Option<usize>,
     rows: Vec<Row>,
     list: ListState,
@@ -756,6 +763,7 @@ impl Orbit {
     fn cancel_pending_launches(&mut self) {
         self.checkpoint_cancel
             .store(true, std::sync::atomic::Ordering::Release);
+        for launch in self.launches.values(){launch.cancel.store(true,std::sync::atomic::Ordering::Release);}
         for team in &mut self.teams {
             for member in &mut team.members {
                 member
@@ -1131,6 +1139,7 @@ impl Orbit {
                 .map(|s| s.voice_choice.clone())
                 .unwrap_or_else(|| "cove".into()),
             workspace_store,
+            turn_timings:restored.as_ref().map(|s|s.turn_timings.clone()).unwrap_or_default(),
             restore_pending: restored,
             restore_scroll: None,
             restore_model: None,
@@ -1254,6 +1263,8 @@ impl Orbit {
             allow_edits: false,
             codex_approvals: runtime::CodexApprovals::default(),
             starting: false,
+            launches:HashMap::new(),
+            timestamp_peek:0.,timestamp_direction:0.,timestamp_released:None,
             pending_response_start: None,
             rows: vec![],
             list,
@@ -1541,7 +1552,7 @@ impl Orbit {
         !(self.hidden_sessions.contains(id)
             || self.runs.contains_key(id)
             || self.finalizing.contains(id)
-            || (self.starting && self.active.as_deref() == Some(id)))
+            || (self.launches.contains_key(id) || (self.starting_current() && self.active.as_deref()==Some(id))))
     }
     fn delete_chat(
         &mut self,
@@ -1964,6 +1975,7 @@ impl Orbit {
                 self.navigation_previous = None;
                 self.rows.clear();
                 self.rows = Self::history_rows(messages);
+                if !has_newer{self.restore_launch_preview(&id);}
                 self.navigation.update(cx, |rail, cx| {
                     rail.reset(cx);
                     rail.set_motion(self.motion, cx);
@@ -2852,7 +2864,7 @@ impl Orbit {
         } else {
             prompt
         };
-        if prompt.is_empty() || self.loading || self.loading_earlier || self.starting {
+        if prompt.is_empty() || self.loading || self.loading_earlier || self.starting_current() {
             return;
         }
         if self
@@ -2879,7 +2891,7 @@ impl Orbit {
             cx.notify();
             return;
         };
-        if self.runs.len() + self.team_starting.len() >= 4 {
+        if self.runs.len() + self.team_starting.len() + self.launches.len() >= 4 {
             self.notice = Some("Four agents are running. Wait for one to finish.".into());
             cx.notify();
             return;
@@ -2930,7 +2942,7 @@ impl Orbit {
             }
         };
         let context_scope = self.context_scope();
-        let request = RunRequest { reasoning_effort:self.unified_effort().map(str::to_owned),
+        let request = RunRequest { reasoning_effort:self.request_effort(),
             agent: self.agent,
             executable,
             project: execution_path.clone(),
@@ -2939,7 +2951,7 @@ impl Orbit {
             fork_session: imported_codex_needs_fork(&session)
                 || self.fork_next.as_deref() == Some(&id),
             allow_edits: self.allow_edits,
-            model: self.model.clone(),
+            model: self.request_model(),
             images: self.attachments.iter().map(|a| a.path.clone()).collect(),
             codex_approvals: self.codex_approvals,
             trust_workspace: self
@@ -2961,6 +2973,7 @@ impl Orbit {
             ));
         }
         let submission = handoff_ui::Submission {
+            selected_model:self.model.clone(),
             session,
             request,
             prompt,
@@ -3006,6 +3019,7 @@ impl Orbit {
         cx: &mut Context<Self>,
     ) {
         let handoff_ui::Submission {
+            selected_model,
             session,
             request,
             prompt,
@@ -3038,11 +3052,11 @@ impl Orbit {
                 self.open_tabs.remove(0);
             }
         }
-        if self.session_models.get(&id) != Some(&request.model) {
+        if self.session_models.get(&id) != Some(&selected_model) {
             self.engine
-                .set_model(session.clone(), request.model.clone());
+                .set_model(session.clone(), selected_model.clone());
             self.session_models
-                .insert(id.clone(), request.model.clone());
+                .insert(id.clone(), selected_model.clone());
         }
         self.agent_picker = None;
         let checkpoint_title = prompt.chars().take(256).collect::<String>();
@@ -3081,6 +3095,10 @@ impl Orbit {
         self.composer.read(cx).focus_handle.focus(window);
         self.notice = Some(format!("Connecting to {}…", agent_name(request.agent)));
         self.starting = true;
+        let turn_started=Instant::now();
+        self.launches.insert(id.clone(),chat_timing::Launch{caption:"Preparing workspace…",preview:self.rows[old..].to_vec(),cancel:checkpoint_cancel.clone(),started:turn_started,key:checkpoint_key.clone()});
+        self.begin_turn_clock(&id,&checkpoint_key,turn_started,cx);
+        let timing_key=checkpoint_key.clone();
         let retry = request.clone();
         let queued_state_saved = queued_prompt_id
             .as_ref()
@@ -3126,12 +3144,19 @@ impl Orbit {
                     repository.cleanup_on_orphan(checkpoint_id.clone(), handle.settled.clone())
                 });
                 let wake = handle.wake.clone();
-                if this
+                if !this
                     .update(cx, |this, cx| {
+                        if this.quit_pending || this.launches.get(&id).is_none_or(|l|l.cancel.load(std::sync::atomic::Ordering::Acquire)){
+                            handle.cancel();this.launches.remove(&id);this.starting=!this.launches.is_empty();this.finish_turn_clock(&timing_key,turn_started,"stopped",cx);
+                            this.drafts.entry(id.clone()).or_insert_with(||original_prompt.clone());
+                            if this.active.as_deref()==Some(&id)&&this.composer.read(cx).text().is_empty(){this.composer.update(cx,|input,cx|input.set_text(&original_prompt,cx));}
+                            cx.notify();return false
+                        }
                         if this.active.as_deref() == Some(&id) {
                             this.notice = None;
                         }
-                        this.starting = false;
+                        this.launches.remove(&id);this.starting = !this.launches.is_empty();
+                        if let Some(t)=this.turn_timings.iter_mut().rev().find(|t|t.key==timing_key){t.checkpoint=Some(checkpoint_id.clone());}
                         if let Some(current) = this.chat_context.get_mut(&context_scope) {
                             current.retain(|reference| !references.contains(reference));
                             if current.is_empty() {
@@ -3199,6 +3224,7 @@ impl Orbit {
                         this.runs.insert(
                             id.clone(),
                             Running {
+                                timing:Some(chat_timing::Live{key:timing_key.clone(),started:turn_started}),
                                 agent: retry.agent,
                                 submitted_prompt: original_prompt,
                                 handle,
@@ -3216,9 +3242,9 @@ impl Orbit {
                                 submitted_attachments: submitted_attachments.clone(),
                             },
                         );
-                        cx.notify();
+                        cx.notify();true
                     })
-                    .is_err()
+                    .unwrap_or(false)
                 {
                     return;
                 }
@@ -3243,7 +3269,8 @@ impl Orbit {
                     if this.active.as_deref() == Some(&id) {
                         this.notice = Some(error.to_string());
                     }
-                    this.starting = false;
+                    this.launches.remove(&id);this.starting = !this.launches.is_empty();
+                    this.finish_turn_clock(&timing_key,turn_started,"failed",cx);
                     let restored = if this.active.as_deref() == Some(&id) {
                         let current = this.composer.read(cx).text();
                         if current.is_empty() {
@@ -3393,6 +3420,7 @@ impl Orbit {
                     status_changed = true;
                 }
                 Ok(RuntimeEvent::Text(text)) => {
+                    if let Some(clock)=&run.timing{if let Some(t)=self.turn_timings.iter_mut().rev().find(|t|t.key==clock.key){if t.first_output_ms.is_none(){t.first_output_ms=Some(chrono::Utc::now().timestamp_millis());}}}
                     append_live_text(run, &text);
                     if run.status != "Writing" {
                         run.status = "Writing".into();
@@ -3562,6 +3590,7 @@ impl Orbit {
             self.native_pending
                 .retain(|_, request| request.owner != id || request.broker.is_some());
             if let Some(run) = self.runs.remove(id) {
+                if let Some(t)=&run.timing{self.finish_turn_clock(&t.key,t.started,if failed.is_some(){"failed"}else if run.handle.is_cancelled(){"stopped"}else{"completed"},cx);}
                 if failed.is_none()
                     && !ended_voice
                     && !run.handle.is_cancelled()
@@ -4669,6 +4698,8 @@ impl Orbit {
             .and_then(|r| r.geometry_probe(ix));
         let link_owner = cx.weak_entity();
         let list_link_owner = link_owner.clone();
+        let timing=self.row_timing(ix).cloned();
+        let timestamp=timing.as_ref().and_then(|t|if row.role.as_deref()==Some("user"){Some(t.submitted_ms)}else{t.first_output_ms.or(t.finished_ms)}).and_then(chrono::DateTime::from_timestamp_millis).map(|at|at.with_timezone(&chrono::Local).format("%-I:%M %p").to_string());
         let user = row.role.as_deref() == Some("user");
         let row_agent = agent_for_role(row.role.as_deref(), self.transcript_agent());
         let mut content = div()
@@ -4701,7 +4732,8 @@ impl Orbit {
                         "You"
                     } else {
                         agent_name(row_agent)
-                    }),
+                    })
+                    .when_some(timestamp,|s,stamp|s.child(div().flex_1()).child(div().debug_selector(move||format!("message-timestamp-{ix}")).font_family(theme::mono_font()).text_size(theme::mono_px(9.)).text_color(rgb(MUTED)).opacity(self.timestamp_opacity()).child(stamp))),
             );
         }
         content = match &row.block {
@@ -4972,6 +5004,10 @@ impl Orbit {
                 )
             }
         };
+        if let Some(t)=timing.filter(|t|t.elapsed_ms.is_some() && !user && (ix+1==self.rows.len() || self.rows.get(ix+1).is_some_and(|r|r.role.as_deref()==Some("user")))){
+            let label=match t.outcome.as_deref(){Some("failed")=>"Failed after",Some("stopped")=>"Stopped after",_=>"Worked for"};
+            content=content.child(div().debug_selector(move||format!("turn-duration-{ix}")).mt_2().font_family(theme::mono_font()).text_size(theme::mono_px(10.)).text_color(rgb(MUTED)).child(format!("{label} {}",chat_timing::duration(t.elapsed_ms.unwrap()))));
+        }
         div()
             .debug_selector(move || format!("transcript-row-{ix}"))
             .flex()
@@ -5006,7 +5042,7 @@ impl Orbit {
         let running = self
             .active
             .as_ref()
-            .is_some_and(|id| self.runs.contains_key(id));
+            .is_some_and(|id| self.runs.contains_key(id)) || self.starting_current();
         let project = self
             .project
             .file_name()
@@ -5294,11 +5330,7 @@ impl Orbit {
                     .justify_between()
                     .text_size(theme::ui_px(10.))
                     .text_color(rgb(0x707070))
-                    .child(self.dictation_status.unwrap_or(if running {
-                        "Working locally"
-                    } else {
-                        "Local session"
-                    }))
+                    .child(self.elapsed_label().map(|elapsed|format!("Working for {elapsed}")).unwrap_or_else(||self.dictation_status.unwrap_or(if running{"Working locally"}else{"Local session"}).to_owned()))
                     .child(
                         div()
                             .id("context-usage")
@@ -5360,7 +5392,7 @@ impl Orbit {
                 self.workspace_retry = None;
                 self.fork_next = None;
             } else if !self.finalizing.contains(&trust.session)
-                && !self.starting
+                && !self.starting_current()
                 && !self.loading
                 && !self.loading_earlier
             {
@@ -5412,6 +5444,7 @@ impl Orbit {
 }
 impl Render for Orbit {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(at)=self.timestamp_released{if at.elapsed()<Duration::from_millis(180){request_motion_frame(window,cx);}else{self.timestamp_peek=0.;self.timestamp_released=None;}}
         use workspace_motion::Part as WorkspacePart;
         let entrance=unified::workspace_frame(self.motion);
         if entrance.animating(){request_motion_frame(window,cx);}
@@ -5536,7 +5569,7 @@ impl Render for Orbit {
             kai_icons::scene_for_status("Delegating")
         } else if self.speech.is_some() {
             if listening { "listening" } else { "permission" }
-        } else if self.starting {
+        } else if self.starting_current() {
             "thinking"
         } else if let Some(status) = &status {
             kai_icons::scene_for_status(status)
@@ -5548,7 +5581,7 @@ impl Render for Orbit {
         };
         let looping = self.voice_call.is_some()
             || listening
-            || self.starting
+            || self.starting_current()
             || status.is_some()
             || self.handoff_pending.is_some();
         // Mount the single live player beside its status caption, where the
@@ -5556,10 +5589,10 @@ impl Render for Orbit {
         // without an indicator. Idle/terminal states return to the titlebar.
         let live_activity = self.voice_call.is_some()
             || self.speech.is_some()
-            || self.starting
+            || self.starting_current()
             || status.is_some()
             || self.handoff_pending.is_some();
-        let mark = if self.voice_call.is_some() || self.speech.is_some() || self.starting {
+        let mark = if self.voice_call.is_some() || self.speech.is_some() || self.starting_current() {
             // Dictation and launch feedback take priority over a running tool's
             // brand: its opaque mark would otherwise hide the live waveform.
             None
@@ -6019,6 +6052,7 @@ impl Render for Orbit {
                                     )
                                     .size_full();
                                     s.relative()
+                                        .on_scroll_wheel(cx.listener(|this,event:&ScrollWheelEvent,_,cx|this.peek_timestamps(event,cx)))
                                         .pl(px(32.))
                                         .child(transcript)
                                         .child(self.chat_navigation())
@@ -6062,8 +6096,8 @@ impl Render for Orbit {
                                                 call.caption().to_owned()
                                             } else if self.handoff_pending.is_some() {
                                                 "Transferring context…".to_owned()
-                                            } else if self.starting {
-                                                "Starting agent…".to_owned()
+                                            } else if self.starting_current() {
+                                                self.launch_caption().to_owned()
                                             } else {
                                                 activity_caption(
                                                     status.as_deref().unwrap_or_default(),

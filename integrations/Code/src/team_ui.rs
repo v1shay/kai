@@ -46,7 +46,7 @@ impl Orbit {
         cx.notify();
     }
     fn create_team(&mut self, cx: &mut Context<Self>) {
-        if self.quit_pending || self.teams.len() >= teams::MAX_TEAMS || self.starting {
+        if self.quit_pending || self.teams.len() >= teams::MAX_TEAMS || self.starting_current() {
             return;
         }
         if self
@@ -135,9 +135,9 @@ impl Orbit {
     }
     pub(super) fn advance_teams(&mut self, cx: &mut Context<Self>) {
         if self.quit_pending
-            || self.starting
+            || self.starting_current()
             || self.checkpoint_busy > 0
-            || self.runs.len() + self.team_starting.len() >= 4
+            || self.runs.len() + self.team_starting.len() + self.launches.len() >= 4
         {
             return;
         }
@@ -268,6 +268,8 @@ impl Orbit {
         let cancel = member.cancel.clone();
         let checkpoint_session = session.id.clone();
         let checkpoint_title = member.task.clone();
+        let timing_key=uuid::Uuid::new_v4().to_string();let turn_started=Instant::now();let checkpoint_key=timing_key.clone();
+        self.begin_turn_clock(&session.id,&timing_key,turn_started,cx);
         let job = cx.background_executor().spawn(async move {
             if let Some(durable) = durable {
                 durable
@@ -282,7 +284,7 @@ impl Orbit {
                 !cancel.load(std::sync::atomic::Ordering::Acquire),
                 "Team task stopped before launch"
             );
-            let key = uuid::Uuid::new_v4().to_string();
+            let key=checkpoint_key;
             let checkpoint = if request.allow_edits {
                 Some(
                     repository
@@ -363,6 +365,7 @@ impl Orbit {
                             if let Some(checkpoint) = checkpoint {
                                 saved.push_str(&format!("\n\n<!--code-checkpoint:{checkpoint}-->"));
                                 if retry.allow_edits {
+                                    if let Some(t)=this.turn_timings.iter_mut().rev().find(|t|t.key==timing_key){t.checkpoint=Some(checkpoint.clone());}
                                     this.checkpoint_runs.insert(id.clone(), checkpoint);
                                 }
                             }
@@ -370,7 +373,7 @@ impl Orbit {
                                 .save_prompt(session.clone(), saved, native_input);
                             this.runs.insert(
                                 id.clone(),
-                                Running {
+                                Running { timing:Some(chat_timing::Live{key:timing_key.clone(),started:turn_started}),
                                     agent: retry.agent,
                                     submitted_prompt: member.task,
                                     handle,
@@ -403,6 +406,7 @@ impl Orbit {
                 Err(error) => {
                     let _ = this.update(cx, |this, cx| {
                         this.team_starting.remove(&id);
+                        this.finish_turn_clock(&timing_key,turn_started,"failed",cx);
                         let stopped = member.cancel.load(std::sync::atomic::Ordering::Acquire)
                             || this.quit_pending;
                         this.team_finished(&id, !stopped, stopped, cx);
@@ -837,6 +841,7 @@ def emit(v):print(json.dumps(v),flush=True)
 for line in sys.stdin:
  v=json.loads(line);m=v.get('method');p=v.get('params',{})
  if m=='initialize':emit({'id':v['id'],'result':{}})
+ elif m=='config/read':emit({'id':v['id'],'result':{'config':{'model_provider':'openai'}}})
  elif m=='thread/start':
   assert p['sandbox']=='read-only'
   emit({'id':v['id'],'result':{'thread':{'id':thread}}})
