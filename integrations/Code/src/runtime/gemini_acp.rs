@@ -374,6 +374,9 @@ struct Session {
     loading: bool,
     modes: HashSet<String>,
     models: HashSet<String>,
+    model_catalog:Vec<crate::agent_controls::ModelChoice>,
+    model_current:Option<String>,
+    config:Value,
     commands: HashSet<String>,
     cursor_todos: BTreeMap<String, (String, String)>,
     children: HashMap<String, ChildSession>,
@@ -387,11 +390,18 @@ impl Session {
             pending: HashMap::new(),
             loading: false,
             modes: HashSet::new(),
-            models: HashSet::new(),
+            models: HashSet::new(),model_catalog:Vec::new(),model_current:None,config:Value::Null,
             commands: HashSet::new(),
             cursor_todos: BTreeMap::new(),
             children: HashMap::new(),
         }
+    }
+    fn update_effort_catalog(&mut self)->bool {
+        if let Some((_,levels))=crate::provider_defaults::acp_effort_option(&self.config)
+            && let Some(model)=self.model_catalog.iter_mut().find(|model|Some(&model.id)==self.model_current.as_ref()) {
+            if model.reasoning_efforts!=levels{model.reasoning_efforts=levels;return true}
+        }
+        false
     }
     fn owns(&self, id: &Value) -> bool {
         id.as_str() == Some(self.id.as_str())
@@ -690,8 +700,11 @@ impl Session {
                     "acp.plan",
                 ),
                 "current_model_update"|"config_option_update"=>{
+                    if update["configOptions"].is_array(){self.config=json!({"configOptions":update["configOptions"]});}
                     let selection=crate::provider_defaults::acp_selection(update);
-                    vec![RuntimeEvent::Usage(Box::new(crate::usage::Usage{model:selection.model,reasoning_effort:selection.effort,..Default::default()}))]
+                    if let Some(model)=&selection.model{self.model_current=Some(model.clone());}
+                    let mut events=vec![RuntimeEvent::Usage(Box::new(crate::usage::Usage{model:selection.model,reasoning_effort:selection.effort,..Default::default()}))];
+                    if self.update_effort_catalog(){events.push(RuntimeEvent::Models(self.model_catalog.clone()));}events
                 },
                 "current_mode_update" => vec![RuntimeEvent::Status(format!(
                     "Mode · {}",
@@ -872,30 +885,12 @@ fn run(
                 .map(str::to_owned)
         })
         .collect();
-    let models = created["models"]["availableModels"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .take(256)
-        .filter_map(|model| {
-            let id = model["modelId"].as_str().or_else(|| model["id"].as_str())?;
-            if !super::valid_model_id(id) {
-                return None;
-            }
-            Some(crate::agent_controls::ModelChoice { reasoning_efforts:vec![],
-                id: id.into(),
-                label: model["name"]
-                    .as_str()
-                    .unwrap_or(id)
-                    .chars()
-                    .take(160)
-                    .collect(),
-            })
-        })
-        .collect::<Vec<_>>();
-    if !models.is_empty() {
-        send(&cx.tx, RuntimeEvent::Models(models), &cx.cancelled)?;
-    }
+    let models=crate::provider_defaults::acp_models(&created);
+    session.models.extend(models.iter().map(|model|model.id.clone()));
+    session.model_catalog=models;
+    session.model_current=crate::provider_defaults::acp_selection(&created).model;
+    session.config=json!({"configOptions":created["configOptions"]});session.update_effort_catalog();
+    if !session.model_catalog.is_empty(){send(&cx.tx,RuntimeEvent::Models(session.model_catalog.clone()),&cx.cancelled)?;}
     let selection=crate::provider_defaults::acp_selection(&created);
     if selection.model.is_some() || selection.effort.is_some(){send(&cx.tx,RuntimeEvent::Usage(Box::new(crate::usage::Usage{model:request.model.clone().or(selection.model),reasoning_effort:selection.effort,..Default::default()})),&cx.cancelled)?;}
     let desired = if request.allow_edits {
@@ -907,29 +902,44 @@ fn run(
     } else {
         "plan"
     };
-    ensure!(
-        session.modes.contains(desired),
-        "The agent does not advertise the requested {desired} policy; update or configure it"
-    );
-    pipes.rpc(
-        3,
-        "session/set_mode",
-        json!({"sessionId":session.id,"modeId":desired}),
-        cx,
-    )?;
-    wait(3, pipes, &mut session, child, parser, cx, deadline)?;
+    let mode_config=session.config["configOptions"].as_array().into_iter().flatten().find(|option|option["category"]=="mode" || option["id"]=="mode");
+    if let Some(option)=mode_config {
+        let id=option["id"].as_str().context("Native mode selector has no ID")?;
+        ensure!(option["options"].as_array().into_iter().flatten().any(|value|value["value"]==desired),"Native agent does not advertise requested {desired} policy");
+        pipes.rpc(3,"session/set_config_option",json!({"sessionId":session.id,"configId":id,"value":desired}),cx)?;
+    }else{
+        ensure!(session.modes.contains(desired),"The agent does not advertise the requested {desired} policy; update or configure it");
+        pipes.rpc(3,"session/set_mode",json!({"sessionId":session.id,"modeId":desired}),cx)?;
+    }
+    let updated=wait(3,pipes,&mut session,child,parser,cx,deadline)?;
+    if updated["configOptions"].is_array(){session.config=updated;}
     if let Some(model) = &request.model {
         ensure!(
             session.models.contains(model),
             "The agent does not advertise model {model}"
         );
-        pipes.rpc(
-            4,
-            "session/set_model",
-            json!({"sessionId":session.id,"modelId":model}),
-            cx,
-        )?;
-        wait(4, pipes, &mut session, child, parser, cx, deadline)?;
+        let option=session.config["configOptions"].as_array().into_iter().flatten().find(|option|option["category"]=="model" || option["id"]=="model");
+        if let Some(option)=option {
+            let id=option["id"].as_str().context("Native model selector has no ID")?;
+            pipes.rpc(4,"session/set_config_option",json!({"sessionId":session.id,"configId":id,"value":model}),cx)?;
+        }else{pipes.rpc(4,"session/set_model",json!({"sessionId":session.id,"modelId":model}),cx)?;}
+        let updated=wait(4, pipes, &mut session, child, parser, cx, deadline)?;
+        session.model_current=Some(model.clone());
+        // New model capabilities replace the old selector; never reuse another
+        // model's effort options when the provider supplies a replacement.
+        if updated["configOptions"].is_array(){session.config=updated;}
+        session.update_effort_catalog();
+        if !session.model_catalog.is_empty(){send(&cx.tx,RuntimeEvent::Models(session.model_catalog.clone()),&cx.cancelled)?;}
+    }
+    if let Some(effort)=&request.reasoning_effort {
+        let (config_id,levels)=crate::provider_defaults::acp_effort_option(&session.config).context("This native model does not advertise a thinking-level selector")?;
+        ensure!(levels.contains(effort),"The selected model does not advertise thinking level {effort}");
+        pipes.rpc(6,"session/set_config_option",json!({"sessionId":session.id,"configId":config_id,"value":effort}),cx)?;
+        let updated=wait(6,pipes,&mut session,child,parser,cx,deadline)?;
+        if updated["configOptions"].is_array(){session.config=updated;}
+        let confirmed=crate::provider_defaults::acp_selection(&session.config).effort;
+        ensure!(confirmed.as_deref()==Some(effort),"The native agent did not confirm the requested thinking level");
+        send(&cx.tx,RuntimeEvent::Usage(Box::new(crate::usage::Usage{model:session.model_current.clone(),reasoning_effort:confirmed,..Default::default()})),&cx.cancelled)?;
     }
     if cli_command {
         let name =
@@ -1730,4 +1740,44 @@ for line in sys.stdin:
         drop(handle);
         std::fs::remove_dir_all(root).unwrap();
     }
+}
+
+#[cfg(test)]mod effort_wire_tests{
+ use super::*;use std::os::unix::fs::PermissionsExt;
+ #[test]fn acp_effort_is_native_confirmed_model_specific_and_sent_before_the_prompt(){
+  for correct in [true,false]{
+   let root=std::env::temp_dir().join(format!("kai-acp-effort-{}",uuid::Uuid::new_v4()));std::fs::create_dir_all(&root).unwrap();let path=root.join("agent");
+   let script=r#"#!/usr/bin/python3
+import sys,json
+model='model-a';effort='low';applied=False
+CORRECT=ACK
+options=lambda:[{'id':'native-safety','category':'mode','type':'select','currentValue':'plan','options':[{'value':'plan'}]},{'id':'native-model','category':'model','type':'select','currentValue':model,'options':[{'value':'model-a'},{'value':'model-b'}]},{'id':'native-thinking','category':'thought_level','type':'select','currentValue':effort,'options':[{'value':'low'},{'value':'high'}]}]
+def emit(value):print(json.dumps(value),flush=True)
+for line in sys.stdin:
+ v=json.loads(line);m=v.get('method')
+ if m=='initialize':r={'protocolVersion':1,'agentCapabilities':{}}
+ elif m=='session/new':r={'sessionId':'thinking-session','configOptions':options()}
+ elif m=='session/set_config_option':
+  p=v['params'];assert p['sessionId']=='thinking-session'
+  if p['configId']=='native-model':assert p['value']=='model-b';model='model-b'
+  elif p['configId']=='native-safety':assert p['value']=='plan'
+  elif p['configId']=='native-thinking':assert p['value']=='high';effort='high' if CORRECT else 'low';applied=True
+  else:raise AssertionError(p)
+  r={'configOptions':options()}
+ elif m=='session/prompt':
+  assert applied and effort=='high' and model=='model-b'
+  emit({'jsonrpc':'2.0','method':'session/update','params':{'sessionId':'thinking-session','update':{'sessionUpdate':'agent_message_chunk','content':{'type':'text','text':'NATIVE_THINKING_CONFIRMED'}}}})
+  r={'stopReason':'end_turn'}
+ elif m=='session/cancel':continue
+ else:raise AssertionError(m)
+ emit({'jsonrpc':'2.0','id':v['id'],'result':r})
+"#.replace("ACK",if correct{"True"}else{"False"});
+   std::fs::write(&path,script).unwrap();std::fs::set_permissions(&path,std::fs::Permissions::from_mode(0o700)).unwrap();
+   let request=RunRequest{agent:AgentKind::Gemini,executable:path,project:root.clone(),prompt:"Verify native thinking".into(),resume_id:None,fork_session:false,model:Some("model-b".into()),reasoning_effort:Some("high".into()),images:vec![],allow_edits:false,trust_workspace:false,codex_access:Default::default(),codex_approvals:Default::default()};
+   let handle=launch(request).unwrap();let mut confirmed=false;let mut text=String::new();let mut failure=None;
+   while let Ok(event)=handle.events.recv_timeout(Duration::from_secs(5)){match event{RuntimeEvent::Usage(usage)=>{confirmed |= usage.reasoning_effort.as_deref()==Some("high");},RuntimeEvent::Text(value)=>text.push_str(&value),RuntimeEvent::Failed(error)=>{failure=Some(error);break},RuntimeEvent::Finished=>break,_=>{}}}
+   handle.cancel();if correct{assert!(failure.is_none(),"{failure:?}");assert!(confirmed && text.contains("NATIVE_THINKING_CONFIRMED"));}else{assert!(failure.as_deref().is_some_and(|error|error.contains("did not confirm")));assert!(!text.contains("NATIVE_THINKING_CONFIRMED"));}
+   std::fs::remove_dir_all(root).unwrap();
+  }
+ }
 }

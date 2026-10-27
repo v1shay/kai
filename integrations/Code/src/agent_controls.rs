@@ -51,6 +51,8 @@ pub struct ModelDefaults {
     pub efforts:std::collections::HashMap<String,String>,
     pub aliases:std::collections::HashMap<String,String>,
     pub project:PathBuf,
+    pub capabilities_model:Option<String>,
+    pub capabilities_checked:bool,
 }
 #[derive(Clone, Debug)]
 pub struct ControlInfo {
@@ -1028,6 +1030,9 @@ impl Drop for ProbeChild {
 }
 
 fn probe(executable: &Path, args: &[&str], home: &Path, timeout: Duration) -> Result<ProbeOutput> {
+    probe_with_limit(executable,args,home,timeout,PROBE_BYTES)
+}
+fn probe_with_limit(executable:&Path,args:&[&str],home:&Path,timeout:Duration,limit:usize)->Result<ProbeOutput>{
     let mut command = Command::new(executable);
     crate::process_env::apply(&mut command);
     command
@@ -1081,7 +1086,7 @@ fn probe(executable: &Path, args: &[&str], home: &Path, timeout: Duration) -> Re
                         break;
                     }
                     Ok(count) => {
-                        if bytes.len() + count > PROBE_BYTES {
+                        if bytes.len() + count > if index==0{limit}else{PROBE_BYTES} {
                             bail!("CLI status exceeded its output limit");
                         }
                         bytes.extend_from_slice(&buffer[..count]);
@@ -1611,5 +1616,86 @@ printf '%s\n' '{"id":1,"result":{"account":{"type":"chatgpt","planType":"pro"}}}
    (2,serde_json::json!({"result":{"data":[{"model":"catalog-default","isDefault":true,"defaultReasoningEffort":"low"},{"model":"project-model","defaultReasoningEffort":"medium"}]}})),
    (4,serde_json::json!({"result":{"config":{"model":"project-model","model_reasoning_effort":"high"}}}))]);
   let info=codex_snapshot(&records);assert_eq!(info.defaults.model.as_deref(),Some("project-model"));assert_eq!(info.defaults.effort.as_deref(),Some("high"));assert_eq!(info.defaults.efforts.get("catalog-default").map(String::as_str),Some("low"));
+ }
+}
+
+/// Inspect a model's ACP selectors without sending a prompt, running a tool,
+/// changing a workspace policy, or writing the provider's configuration.
+pub fn inspect_model_project(kind:AgentKind,executable:&Path,home:&Path,project:&Path,model:Option<&str>)->ControlInfo{
+ let mut info=inspect_project(kind,executable,home,project);
+ if kind==AgentKind::OpenCode {
+  info.defaults.capabilities_model=model.map(str::to_owned);info.defaults.capabilities_checked=true;
+  if let Some(provider)=model.or(info.defaults.model.as_deref()).and_then(|id|id.split_once('/').map(|(provider,_)|provider)).filter(|provider|valid_model_id(provider)){
+   if let Ok(output)=probe_with_limit(executable,&["models",provider,"--pure","--verbose"],project,PROBE_TIMEOUT,METADATA_BYTES as usize){
+    if output.success{for model in crate::provider_defaults::opencode_verbose_models(&strip_ansi(&output.stdout)){if let Some(previous)=info.models.iter_mut().find(|m|m.id==model.id){*previous=model}else{info.models.push(model)}}}
+   }
+  }
+ }
+ if matches!(kind,AgentKind::Gemini|AgentKind::Cursor){
+  info.defaults.capabilities_model=model.map(str::to_owned);info.defaults.capabilities_checked=true;
+  match acp_model_metadata(kind,executable,project,model){
+   Ok((models,defaults))=>{
+    for model in models{if let Some(previous)=info.models.iter_mut().find(|m|m.id==model.id){*previous=model}else{info.models.push(model)}}
+    if info.defaults.model.is_none(){info.defaults.model=defaults.model}
+    info.defaults.efforts.extend(defaults.efforts);
+   }
+   Err(error)=>{info.note=Some(format!("Native model capabilities: {error}"));}
+  }
+ }
+ info
+}
+fn acp_model_metadata(kind:AgentKind,executable:&Path,project:&Path,selected:Option<&str>)->Result<(Vec<ModelChoice>,ModelDefaults)>{
+ let mut command=Command::new(executable);crate::process_env::apply(&mut command);
+ if kind==AgentKind::Cursor{command.arg("acp");}else{command.args(["--experimental-acp","--approval-mode","plan"]);}
+ let mut child=ProbeChild(command.current_dir(project).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).process_group(0).spawn()?);
+ let mut input=child.0.stdin.take().context("Native catalog input unavailable")?;let mut output=child.0.stdout.take().context("Native catalog output unavailable")?;
+ let fd=output.as_raw_fd();let flags=unsafe{libc::fcntl(fd,libc::F_GETFL)};if flags<0 || unsafe{libc::fcntl(fd,libc::F_SETFL,flags|libc::O_NONBLOCK)}<0{bail!("Native catalog output unavailable")}
+ let deadline=Instant::now()+Duration::from_secs(8);let mut pending=Vec::new();let mut total=0;let mut buffer=[0u8;8192];
+ let mut rpc=|id:u64,method:&str,params:Value|->Result<Value>{
+  writeln!(input,"{}",serde_json::json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))?;input.flush()?;
+  while Instant::now()<deadline {
+   while let Some(end)=pending.iter().position(|b|*b==b'\n'){
+    let value:Value=serde_json::from_slice(&pending[..end])?;pending.drain(..=end);
+    if value["id"]==id && value.get("method").is_none(){if let Some(error)=value.get("error"){bail!("{}",error["message"].as_str().unwrap_or("Native catalog rejected"))}return Ok(value["result"].clone())}
+    if value.get("method").is_some() && !value["id"].is_null(){writeln!(input,"{}",serde_json::json!({"jsonrpc":"2.0","id":value["id"],"error":{"code":-32601,"message":"Catalog inspection does not execute tools or approve permissions"}}))?;input.flush()?;}
+   }
+   match output.read(&mut buffer){Ok(0)=>bail!("Native catalog closed"),Ok(n)=>{total+=n;if total>METADATA_BYTES as usize{bail!("Native catalog exceeded bounds")}pending.extend_from_slice(&buffer[..n]);},Err(e)if e.kind()==std::io::ErrorKind::WouldBlock=>{let mut poll=libc::pollfd{fd,events:libc::POLLIN,revents:0};unsafe{libc::poll(&mut poll,1,20);}},Err(error)=>return Err(error.into())}
+  }
+  bail!("Native model catalog timed out")
+ };
+ let initialized=rpc(1,"initialize",serde_json::json!({"protocolVersion":1,"clientInfo":{"name":"code-model-controls","version":"1"},"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false}}))?;
+ if initialized["protocolVersion"]!=1{bail!("Unsupported native catalog protocol")}
+ let created=rpc(2,"session/new",serde_json::json!({"cwd":project,"mcpServers":[]}))?;
+ let mut defaults=crate::provider_defaults::acp_selection(&created);let mut catalog=created.clone();
+ if let Some(model)=selected {
+  let available=crate::provider_defaults::acp_models(&created);if !available.iter().any(|choice|choice.id==model){bail!("Selected model is absent from native catalog")}
+  let config_id=created["configOptions"].as_array().into_iter().flatten().find(|option|option["category"]=="model" || option["id"]=="model").and_then(|option|option["id"].as_str());
+  let updated=if let Some(config_id)=config_id{rpc(3,"session/set_config_option",serde_json::json!({"sessionId":created["sessionId"],"configId":config_id,"value":model}))?}else{rpc(3,"session/set_model",serde_json::json!({"sessionId":created["sessionId"],"modelId":model}))?};
+  if updated["configOptions"].is_array(){catalog["configOptions"]=updated["configOptions"].clone();}else if defaults.model.as_deref()!=Some(model){catalog["configOptions"]=Value::Null;}
+  catalog["models"]["currentModelId"]=Value::String(model.into());
+ }
+ let selection=crate::provider_defaults::acp_selection(&catalog);if let (Some(model),Some(effort))=(selection.model,selection.effort){defaults.efforts.insert(model,effort);}
+ Ok((crate::provider_defaults::acp_models(&catalog),defaults))
+}
+
+#[cfg(test)]mod reasoning_catalog_tests{
+ use super::*;use std::os::unix::fs::PermissionsExt;
+ #[test]fn native_acp_catalog_uses_selected_model_without_a_prompt_or_global_write(){
+  let root=std::env::temp_dir().join(format!("kai-model-catalog-{}",uuid::Uuid::new_v4()));std::fs::create_dir_all(&root).unwrap();let path=root.join("agent");
+  std::fs::write(&path,r#"#!/usr/bin/python3
+import sys,json
+model='model-a'
+def config(): return [{'id':'native-model','category':'model','type':'select','currentValue':model,'options':[{'value':'model-a','name':'A'},{'value':'model-b','name':'B'}]},{'id':'native-thinking','category':'thought_level','type':'select','currentValue':'high' if model=='model-b' else 'medium','options':[{'value':'low'},{'value':'high'}] if model=='model-b' else [{'value':'medium'}]}]
+for line in sys.stdin:
+ v=json.loads(line);m=v['method']
+ if m=='initialize':r={'protocolVersion':1}
+ elif m=='session/new':r={'sessionId':'catalog-only','configOptions':config()}
+ elif m=='session/set_config_option':
+  assert v['params']=={'sessionId':'catalog-only','configId':'native-model','value':'model-b'}
+  model='model-b';r={'configOptions':config()}
+ else:raise AssertionError('Catalog must not send prompts, tools or policy changes: '+m)
+ print(json.dumps({'jsonrpc':'2.0','id':v['id'],'result':r}),flush=True)
+"#).unwrap();std::fs::set_permissions(&path,std::fs::Permissions::from_mode(0o700)).unwrap();
+  let (models,defaults)=acp_model_metadata(AgentKind::Gemini,&path,&root,Some("model-b")).unwrap();assert_eq!(defaults.model.as_deref(),Some("model-a"));assert_eq!(defaults.efforts.get("model-b").map(String::as_str),Some("high"));assert_eq!(models.iter().find(|m|m.id=="model-b").unwrap().reasoning_efforts,vec!["low","high"]);assert!(models.iter().find(|m|m.id=="model-a").unwrap().reasoning_efforts.is_empty());std::fs::remove_dir_all(root).unwrap();
  }
 }

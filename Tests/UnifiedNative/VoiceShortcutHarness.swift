@@ -80,7 +80,8 @@ private func command(_ bytes:UnsafePointer<UInt8>?,_ count:Int)->Bool{
             scene="listening";publish();pump(0.03)
             precondition(member(app,"compactVoiceMode") as? Bool == true,"The native call lost shortcut indicator ownership")
             precondition(member(app,"open") as? Bool == true && member(app,"miniOpen") as? Bool == false,"Voice did not retain the compact listening surface")
-            scene="speaking";publish();pump(0.3)
+            scene="speaking";publish();let speakingDeadline=Date().addingTimeInterval(0.6)
+            while (member(app,"indicator") as? NotchIndicatorEngine)?.mode != .listening,Date()<speakingDeadline{pump(0.01)}
             precondition((member(app,"indicator") as? NotchIndicatorEngine)?.mode == .listening,"Speaking lost the original audio waveform")
             // Holding the assigned voice shortcut again stops the same call.
             pump(0.4);modifiers(flag);pump(0.15);modifiers([]);pump(0.05)

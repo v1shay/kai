@@ -2119,6 +2119,11 @@ fn run(
             .collect();
         send(&cx.tx, RuntimeEvent::Commands(names), &cx.cancelled)?;
     }
+    let reasoning_catalog=if api.supports("/provider") {
+        let value=api.request("GET","/provider",None,&cx.cancelled)?;
+        let models=crate::provider_defaults::opencode_models(&value);
+        if !models.is_empty(){send(&cx.tx,RuntimeEvent::Models(models.clone()),&cx.cancelled)?;}models
+    }else{Vec::new()};
     let mut parts = vec![json!({"type":"text","text":request.prompt})];
     for image in &request.images {
         let path = image.to_str().context("An image path is not UTF-8")?;
@@ -2134,6 +2139,11 @@ fn run(
             "Invalid OpenCode model"
         );
         body["model"] = json!({"providerID":provider,"modelID":model});
+    }
+    if let Some(effort)=&request.reasoning_effort {
+        let model=request.model.as_deref().context("Select an OpenCode model before changing its thinking level")?;
+        ensure!(reasoning_catalog.iter().any(|choice|choice.id==model && choice.reasoning_efforts.contains(effort)),"This OpenCode model does not advertise thinking variant {effort}");
+        body["variant"]=json!(effort);
     }
     // Drain the initial server/session events before prompt submission. A new
     // session's initial idle must never complete the requested turn prematurely.
@@ -3030,4 +3040,28 @@ server.serve_forever()
             "/A%20folder/%F0%9F%99%82.png"
         );
     }
+    #[test]
+    fn native_model_variant_reaches_opencode_without_changing_approval_routing(){
+        use crate::discovery::AgentKind;
+        let script=NATIVE_FIXTURE.replace("['/event',","['/provider','/event',")
+            .replace("  if path=='/command':", "  if path=='/provider':return self.sendjson({'all':[{'id':'openai','models':{'gpt-6.1-sol':{'name':'Sol','variants':{'fast':{'reasoningEffort':'low'},'deep':{'reasoningEffort':'high'}}}}}]})\n  if path=='/command':")
+            .replace("   assert body['parts'][0]['text']=='test native interactions';", "   assert body['variant']=='deep' and body['model']=={'providerID':'openai','modelID':'gpt-6.1-sol'}\n   assert body['parts'][0]['text']=='test native interactions';");
+        let (root,executable)=fixture(&script);
+        let handle=launch(RunRequest{agent:AgentKind::OpenCode,executable,project:root.clone(),prompt:"test native interactions".into(),resume_id:None,fork_session:false,model:Some("openai/gpt-6.1-sol".into()),reasoning_effort:Some("deep".into()),images:vec![],allow_edits:true,trust_workspace:false,codex_access:Default::default(),codex_approvals:Default::default()}).unwrap();
+        let mut catalog=false;let mut approval=false;let mut question=false;
+        while let Ok(event)=handle.events.recv_timeout(Duration::from_secs(5)){
+            match event{
+                RuntimeEvent::Models(models)=>{catalog=models.iter().any(|model|model.id=="openai/gpt-6.1-sol" && model.reasoning_efforts==["fast","deep"]);},
+                RuntimeEvent::Request(request)=>match &request.kind{
+                    NativeRequestKind::Approval{..}=>{approval=true;handle.respond(&request.id,NativeAnswer::Choice("once".into())).unwrap();},
+                    NativeRequestKind::Questions{questions}=>{question=true;handle.respond(&request.id,NativeAnswer::Answers([(questions[0].id.clone(),vec!["Second".into()]),(questions[1].id.clone(),vec!["a custom response".into()])].into_iter().collect())).unwrap();},_=>panic!("Unexpected native request"),
+                },
+                RuntimeEvent::Failed(error)=>panic!("{error}"),RuntimeEvent::Finished=>break,_=>{},
+            }
+        }
+        handle.cancel();assert!(catalog&&approval&&question);
+        let done=broker::shutdown_service(&root,AgentKind::OpenCode,"ses_fixture");let until=Instant::now()+Duration::from_secs(3);while !done.is_closed()&&Instant::now()<until{thread::sleep(Duration::from_millis(10));}
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
 }

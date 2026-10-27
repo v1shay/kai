@@ -2,7 +2,7 @@ import Foundation
 
 enum DictationTrigger: String, CaseIterable {
     case command, function, option
-    var title: String { rawValue.capitalized }
+    var title: String { self == .command ? "⌘ Command":rawValue.capitalized }
 }
 
 struct DictationSendPreferences {

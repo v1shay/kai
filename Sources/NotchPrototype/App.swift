@@ -367,6 +367,8 @@ private final class NotchView:ImageDropView {
         miniUI.onNew={ [weak self] in guard let self else{return};self.cancelShortcutHold();self.cancelShortcutInput();self.bridge.send("new",["requestId":self.miniUI.pendingRequestID ?? ""]) }
         miniUI.onNewInProject={ [weak self] in guard let self else{return};self.cancelShortcutHold();self.cancelShortcutInput();self.bridge.send("new_project",["requestId":self.miniUI.pendingRequestID ?? ""]) }
         miniUI.onFolder={ [weak self] path in guard let self else{return};self.bridge.send("folder",["path":path,"requestId":self.miniUI.pendingRequestID ?? ""]) }
+        miniUI.onModel={ [weak self] model in self?.bridge.send("settings",["model":model]) }
+        miniUI.onPermissions={ [weak self] access,approvals in var fields:[String:Any]=[:];if let access{fields["access"]=access};if let approvals{fields["approvals"]=approvals};self?.bridge.send("workspace_permissions",fields) }
         miniUI.onSettings={ [weak self] model, effort in self?.bridge.send("settings",["model":model,"effort":effort]) }
         miniUI.onNavigate={ [weak self] direction in guard let self else{return};self.cancelShortcutHold();self.cancelShortcutInput();self.bridge.send("navigate",["direction":direction,"requestId":self.miniUI.pendingRequestID ?? ""]) }
         miniUI.onContextMode={ [weak self] lightweight in self?.contextLightweight=lightweight }
@@ -641,7 +643,7 @@ private final class NotchView:ImageDropView {
         let contextItem=menu.addItem(withTitle:"Prefer lightweight appshot context",action:#selector(toggleContextMode(_:)),keyEquivalent:"");contextItem.target=self;contextItem.state=contextLightweight ? .on:.off
         let shortcutItem=menu.addItem(withTitle:"Shortcut actions",action:nil,keyEquivalent:"")
         let timingItem=menu.addItem(withTitle:"Hotkey hold timing",action:nil,keyEquivalent:"")
-        expandedDictationItem=menu.addItem(withTitle:"Expanded notch: Command dictation only",action:#selector(toggleExpandedDictation),keyEquivalent:"")
+        expandedDictationItem=menu.addItem(withTitle:"Expanded notch: ⌘ Command dictation only",action:#selector(toggleExpandedDictation),keyEquivalent:"")
         expandedDictationItem?.toolTip="When off, all shortcut assignments work in the expanded notch. When on, Command only dictates into the current draft; Fn and Option input shortcuts are disabled there."
         expandedDictationItem?.state=shortcutPreferences.expandedDictationOnly ? .on:.off
         timingItem.submenu=shortcutTimingMenu.menu
@@ -1370,7 +1372,7 @@ private final class NotchView:ImageDropView {
     private func showPetGallery(){guard miniOpen else{return};petGalleryVisible=true;miniUI.setVisible(false,duration:0.3);composerField?.isHidden=true;conversationScroll?.isHidden=true;petGallery.layout(in:petGallery.layer.bounds,selected:petID);petGallery.show(selected:petID,motion:motionID)}
     private func hidePetGallery(restore:Bool=true){guard petGalleryVisible else{return};petGalleryVisible=false;petGallery.hide();if restore{miniUI.setVisible(miniOpen,duration:0.32);composerField?.isHidden = !miniOpen;conversationScroll?.isHidden = !miniOpen}}
 
-    private func layoutComposer(_ frame:CGRect,animated:Bool){guard let field=composerField else{return};let root=miniUI.layer.frame,h:CGFloat=18,target=CGRect(x:root.minX+frame.minX+10,y:root.minY+frame.midY-h/2-2.25,width:max(20,frame.width-73),height:h);if animated{NSAnimationContext.runAnimationGroup{context in context.duration=0.42;context.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.7,0.25,1);field.animator().frame=target}}else{field.frame=target}}
+    private func layoutComposer(_ frame:CGRect,animated:Bool){guard let field=composerField else{return};let root=miniUI.layer.frame,h:CGFloat=18,modern=frame.height>40,target=CGRect(x:root.minX+frame.minX+10,y:root.minY+(modern ? frame.maxY-27:frame.midY-h/2-2.25),width:max(20,frame.width-(modern ? 20:73)),height:h);if animated{NSAnimationContext.runAnimationGroup{context in context.duration=0.42;context.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.7,0.25,1);field.animator().frame=target}}else{field.frame=target}}
     private func layoutConversation(_ frame:CGRect){guard let scroll=conversationScroll else{return};let root=miniUI.layer.frame;scroll.frame=CGRect(x:root.minX+frame.minX,y:root.minY+frame.minY,width:frame.width,height:frame.height)}
     private func setPrompt(_ text:String,dictation:Bool=false){if dictation,let field=composerField{DictationComposerEditing.update(field,text:text)}else{composerField?.stringValue=text};miniUI.setComposerHasText(!text.isEmpty);syncMotion(force:!text.isEmpty)}
     func controlTextDidChange(_ obj:Notification){miniUI.setComposerHasText(!(composerField?.stringValue.isEmpty ?? true));syncMotion(force:true)}

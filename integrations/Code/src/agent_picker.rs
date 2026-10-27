@@ -9,6 +9,10 @@ pub(super) struct Picker {
     pub search:Entity<TextInput>,
     _search_subscription:Subscription,
     closing_from: f32,
+    pub effort_motion:Option<(Instant,f32,f32)>,
+    pub effort_focus:FocusHandle,
+    pub effort_dragging:bool,
+    max_height:f32,
     auth_pulse: Option<(&'static str, Instant)>,
 }
 impl Picker {
@@ -25,7 +29,7 @@ impl Picker {
         }
     }
     pub fn animating(&self) -> bool {
-        self.started.elapsed() < Duration::from_millis(if self.closing { 120 } else { 320 })
+        self.effort_motion.is_some_and(|(at,_,_)|at.elapsed()<Duration::from_millis(340)) || self.started.elapsed() < Duration::from_millis(if self.closing { 120 } else { 320 })
             || self
                 .auth_pulse
                 .is_some_and(|(_, t)| t.elapsed() < Duration::from_millis(360))
@@ -109,7 +113,7 @@ impl Orbit {
             started: Instant::now(),
             closing: false,
             closing_from: 1.,
-            auth_pulse: None,
+            auth_pulse: None,effort_motion:None,effort_focus:cx.focus_handle(),effort_dragging:false,max_height:f32::from(height)-16.,
         });
         self.refresh_controls(false, cx);
         cx.notify();
@@ -212,6 +216,7 @@ impl Orbit {
             self.engine.set_model(session, model);
         }
         self.dismiss_agent_picker();
+        self.refresh_unified_models(cx);
         cx.notify();
     }
     fn account_action(&mut self, kind: AgentKind, open_cli: bool, cx: &mut Context<Self>) {
@@ -271,6 +276,7 @@ impl Orbit {
         cx: &Context<Self>,
     ) -> Stateful<Div> {
         let selected = self.model == id;
+        let glyph=composer_design::model_glyph(id.as_deref().unwrap_or(&label));
         div()
             .id(("model", ix))
             .debug_selector(move || format!("model-choice-{ix}"))
@@ -282,13 +288,14 @@ impl Orbit {
             .gap_2()
             .cursor_pointer()
             .hover(|s| s.bg(rgba(GLASS_HOVER)))
+            .when_some(glyph,|s,glyph|s.child(icon(glyph,15.,TEXT)))
             .child(
                 div()
                     .flex_1()
                     .min_w(px(0.))
                     .text_size(crate::theme::ui_px(12.))
                     .text_ellipsis()
-                    .child(label),
+                    .child(composer_design::display_label(&label)),
             )
             .when(selected, |s| s.child(icon("check", 12., ACCENT)))
             .on_click(cx.listener(move |this, _, _, cx| this.choose_model(id.clone(), cx)))
@@ -329,7 +336,7 @@ impl Orbit {
                 div()
                     .id("agent-picker")
                     .debug_selector(|| "agent-picker".into())
-                    .w(px(280.))
+                    .w(px(280.)).max_h(px(picker.max_height)).overflow_y_scroll()
                     .p(px(6.))
                     .rounded_lg()
                     .bg(rgba(appearance::MENU_SURFACE))
@@ -453,6 +460,7 @@ impl Orbit {
                     )
                     .child(div().px_2().pb_1().text_size(crate::theme::ui_px(10.)).text_color(rgb(MUTED)).child(format!("{} · {}",self.agent.name(),self.effective_model_label())))
                     .when(self.active.as_ref().is_some_and(|id|self.runs.contains_key(id)) && self.model.is_some(),|s|s.child(div().px_2().pb_1().text_size(crate::theme::ui_px(10.)).text_color(rgb(ACCENT)).child(format!("Next turn · {}{}",self.model.as_deref().unwrap_or(""),self.unified_effort().map(|e|format!(" · {e}")).unwrap_or_default()))))
+                    .when_some(self.effort_model_choice().filter(|m|!m.reasoning_efforts.is_empty()),|s,model|s.child(self.reasoning_slider(model,cx)))
                     .child(div().debug_selector(||"model-search".into()).px_2().pb_1().child(picker.search.clone()))
                     .child({
                         let count = models.len();
@@ -470,13 +478,6 @@ impl Orbit {
                         )
                         .h(px((count as f32 * 30.).min(180.)))
                         .w_full()
-                    })
-                    .when_some(self.effort_model_choice().filter(|m|!m.reasoning_efforts.is_empty()),|s,model|{
-                        s.child(div().px_2().py_1().text_size(crate::theme::ui_px(10.)).text_color(rgb(MUTED)).child("Reasoning effort"))
-                         .child(div().flex().flex_wrap().gap_1().px_2().children(model.reasoning_efforts.into_iter().map(|effort|{
-                            let value=effort.clone();let selected=self.unified_effort().map(str::to_owned).or_else(||self.effective_model_settings().1).as_deref()==Some(effort.as_str());
-                            div().id(SharedString::from(format!("reasoning-{effort}"))).cursor_pointer().px_2().py_1().rounded_md().text_size(crate::theme::ui_px(11.)).when(selected,|s|s.bg(rgba(GLASS_HOVER))).child(effort).on_click(cx.listener(move|this,_,_,cx|{let key=this.effort_key();this.reasoning_efforts.insert(key,value.clone());this.queue_workspace_save(cx);cx.notify();}))
-                         })))
                     })
                     .when(
                         controls.is_some_and(|c| {

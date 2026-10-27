@@ -823,3 +823,56 @@ Installed experimental build: **0.8.3 (17)**. The prior bundle is retained as
 `Kai Unified 0.8.2 backup 20261026-185027.app`. Installation verified the strict
 bundle signature and all three executable/library hashes. Running apps and
 agents were not stopped; relaunch the experimental app to load this build.
+
+## 0.8.4 — unified composer and native model intensity controls
+
+The extended-notch composer has separate editing and control rows, neutral glass,
+a symbol-only permission control, a model-family glyph, a compact animated effort
+preview, and a native waveform voice button. The permission symbol transitions
+from white for read-only, through white/orange for workspace edits, to white/red
+for Full access. Its menu exposes workspace access and approvals independently,
+shows the actual working directory, and explains that changes affect subsequent
+invocations. Its owner token prevents a stale menu from changing another chat.
+The Command keycap and shortcut labels include **⌘**.
+
+Four original SVG glyphs identify OpenAI model families in both interfaces and
+model menus: Luna/moon, Terra/earth, Sol/sun, Astra/star. Other models keep their
+provider identity. Known family labels are formatted readably while native IDs
+remain unchanged in requests and saved settings.
+
+Both interfaces use a discrete thinking slider with provider/model-specific
+stops. Its thumb and fill slide between stops while a shared blue, violet, pink,
+and warm-red palette interpolates intensity. The native control supports dragging,
+keyboard arrows, and accessibility increment/decrement; the Code control supports
+dragging and keyboard navigation. Animations retire after their short transition
+and respect Reduce Motion. Existing drafts and model selections survive changes.
+
+The slider reads Codex model capabilities, Claude SDK effort levels, ACP thinking
+selectors, and OpenCode variants. ACP configuration uses exact advertised selector
+IDs and confirms the resulting effort before a prompt is sent. Modern config-only
+ACP catalogs are supported alongside legacy model/mode fields. OpenCode sends the
+selected native variant without changing its approval flow. Plugin-free OpenCode
+metadata and prompt-free ACP metadata provide capabilities for fresh selections;
+these probes are bounded, cached, and do not send model prompts or change global
+provider configuration. Unknown or unsupported effort choices are not invented.
+Selection remains scoped to each chat/model, and native live capabilities take
+precedence over older cached catalogs.
+
+Verification: 767 Rust tests passed (17 opt-in tests ignored); the Swift suite
+ran 190 tests with one skip and no failures; all 14 WebRTC media tests passed.
+Native composer, state, and production modifier-shortcut harnesses passed,
+including exact effort dispatch, stale-owner rejection, narrow layouts, typed
+draft controls, and independent workspace/approval settings. The signed build
+passed its morph check and live generated-speech tests for an existing Gemini
+chat through the workspace voice button and a new Gemini-selected draft through
+the shortcut. Both kept one voice session and fresh incoming audio across
+workspace, notch, Double-Command, and Quick Chat transitions, then retired after
+explicit stop. New and resumed Codex agents edited only their disposable project
+and persisted actual model and duration. These checks used Codex authentication;
+provider-specific ACP/OpenCode effort exchanges were verified with native wire
+fixtures, and the installed OpenCode verbose catalog was checked separately.
+
+Installed experimental build: **0.8.4 (18)**. The previous bundle is retained as
+`Kai Unified 0.8.3 backup 20261026-223343.app`. Strict signature and all three
+executable/library hashes match the tested build. Running apps and agents were
+not stopped; relaunch the experimental app to load this version.

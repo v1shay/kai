@@ -14,6 +14,7 @@ mod citations;
 mod command_ui;
 mod commands;
 mod composer_controls;
+mod composer_design;
 mod context_refs;
 mod context_ui;
 mod diff_view;
@@ -5168,9 +5169,8 @@ impl Orbit {
                                         14.,
                                         agent_color(self.agent),
                                     ))
-                                    .child(
-                                        self.effective_model_label(),
-                                    )
+                                    .when_some(composer_design::model_glyph(&self.effective_model_label()),|s,glyph|s.child(icon(glyph,14.,TEXT)))
+                                    .child(composer_design::display_label(&self.effective_model_label()))
                                     .child(icon("chevron-down", 10., MUTED))
                                     .on_click(cx.listener(
                                         |this, event: &ClickEvent, window, cx| {

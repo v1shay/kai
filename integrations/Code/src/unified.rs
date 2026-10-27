@@ -599,6 +599,15 @@ impl Orbit {
                 if request["draftBase"].as_str()!=Some(self.composer.read(cx).text().as_str()){return Err("The workspace draft changed; your notch draft is preserved".into())}
                 if self.composer.read(cx).text()!=text{self.composer.update(cx,|input,cx|input.set_text(text,cx));self.queue_workspace_save(cx);}
             },
+            "workspace_permissions" => {
+                let access=request["access"].as_str();let approvals=request["approvals"].as_str();
+                if access.is_some_and(|value|!["read-only","workspace","full"].contains(&value)){return Err("Unknown workspace access".into())}
+                if approvals.is_some_and(|value|!["ask","auto-review","never"].contains(&value)){return Err("Unknown approval policy".into())}
+                if self.agent!=AgentKind::Codex && (access==Some("full") || approvals.is_some()){return Err("These controls apply to Codex workspace access and approvals".into())}
+                if let Some(access)=access{self.allow_edits=access!="read-only";if self.agent==AgentKind::Codex{self.codex_access=if access=="full"{runtime::CodexAccess::Full}else{runtime::CodexAccess::Workspace};}}
+                if let Some(policy)=approvals{self.codex_approvals=match policy{"ask"=>runtime::CodexApprovals::Ask,"auto-review"=>runtime::CodexApprovals::AutoReview,_=>runtime::CodexApprovals::Never};}
+                self.queue_workspace_save(cx);
+            },
             "workspace_settings" => self.show_modal(Modal::Settings, window, cx),
             "workspace_voice" => self.toggle_voice(window, cx),
             "workspace_voice_prompt" => {
@@ -790,6 +799,9 @@ impl Orbit {
             "notice":self.notice.as_deref().unwrap_or("Kai · Code"),"attachments":self.attachments.iter().filter(|a|!self.attachment_removals.contains_key(&a.id)).map(|a|a.path.to_string_lossy().into_owned()).collect::<Vec<_>>(),"modelsLoading":self.controls_pending.contains(self.agent.command()),"models":models.iter().map(|m|json!({"model":m.id,"displayName":m.label,"resolvedModel":self.controls.get(self.agent.command()).and_then(|(_,v)|v.defaults.aliases.get(&m.id)).unwrap_or(&m.id),"supportedReasoningEfforts":m.reasoning_efforts.iter().map(|v|json!({"reasoningEffort":v})).collect::<Vec<_>>()})).collect::<Vec<_>>(),
             "selectedModel":self.model,"reasoningEffort":self.unified_effort().unwrap_or(""),"canGoBack":!self.unified_back.is_empty(),"canGoForward":!self.unified_forward.is_empty(),
             "agents":self.agents.iter().map(|a|json!({"id":a.kind.command(),"name":a.kind.name(),"available":a.available&&a.executable.is_some()})).collect::<Vec<_>>(),"selectedAgent":self.agent.command(),"workspaceVoiceChoice":self.voice_choice,"workspaceVoiceActive":self.voice_call.is_some(),"workspaceVoiceScene":self.voice_call.as_ref().map(|v|v.scene())});
+        snapshot["workspaceAccess"]=json!(if !self.allow_edits{"read-only"}else if self.agent!=AgentKind::Codex{"native"}else if self.codex_access==runtime::CodexAccess::Full{"full"}else{"workspace"});
+        snapshot["workspaceApprovalPolicy"]=json!(match self.codex_approvals{runtime::CodexApprovals::Ask=>"ask",runtime::CodexApprovals::AutoReview=>"auto-review",runtime::CodexApprovals::Never=>"never"});
+        snapshot["workspaceExecutionPath"]=json!(self.execution_root().unwrap_or_else(||self.project.clone()));
         snapshot["providerDefaultModel"]=json!(self.provider_default_model());snapshot["effectiveModel"]=json!(effective_model);snapshot["effectiveReasoningEffort"]=json!(effective_effort);snapshot["voiceModel"]=json!(self.voice_call.as_ref().map(|_|voice::REALTIME_MODEL));
         if let Some(elapsed)=self.elapsed_label(){if let Some(text)=snapshot["sessionActivity"]["text"].as_str().map(str::to_owned){snapshot["sessionActivity"]["text"]=json!(format!("{text} · {elapsed}"));}}
         snapshot["workspaceVoiceError"]=json!(self.voice_error);snapshot["historyEarlier"]=json!(self.unified_history_end.as_ref().is_some_and(|(owner,_)|owner==&self.unified_token()) || self.history_offset>0 || self.navigation_history);snapshot["approvalCount"]=json!(self.unified_pending_ids().len());snapshot["workspaceMotion"]=json!(self.motion);snapshot["workspaceTextMorph"]=json!(self.unified_text_morph);snapshot
@@ -1214,20 +1226,20 @@ impl Orbit {
     pub(super) fn unified_models(&self)->Vec<agent_controls::ModelChoice>{
         let mut models=self.native_models.get(&self.agent).cloned().unwrap_or_default();
         if let Some((_,info))=self.controls.get(self.agent.command()){
-            for model in &info.models{if let Some(existing)=models.iter_mut().find(|m|m.id==model.id){existing.reasoning_efforts=model.reasoning_efforts.clone();}else{models.push(model.clone());}}
+            for model in &info.models{if let Some(existing)=models.iter_mut().find(|m|m.id==model.id){if existing.reasoning_efforts.is_empty(){existing.reasoning_efforts=model.reasoning_efforts.clone();}}else{models.push(model.clone());}}
         }
         models
     }
-    fn refresh_unified_models(&mut self,cx:&mut Context<Self>){
-        if !active() || self.controls_pending.contains(self.agent.command()){return}
+    pub(super) fn refresh_unified_models(&mut self,cx:&mut Context<Self>){
+        if self.controls_pending.contains(self.agent.command()){return}
         let project=self.model_project();
-        if self.controls.get(self.agent.command()).is_some_and(|(at,info)|at.elapsed()<Duration::from_secs(60)&&info.defaults.project==project){return}
+        if self.controls.get(self.agent.command()).is_some_and(|(at,info)|at.elapsed()<Duration::from_secs(60)&&info.defaults.project==project && (!matches!(self.agent,AgentKind::Gemini|AgentKind::Cursor|AgentKind::OpenCode) || (info.defaults.capabilities_checked && info.defaults.capabilities_model==self.model))){return}
         let kind=self.agent;
         let Some(path)=self.agents.iter().find(|a|a.kind==kind&&a.available).and_then(|a|a.executable.clone())else{return};
-        self.controls_pending.insert(kind.command());let home=self.controls_home.clone();
+        self.controls_pending.insert(kind.command());let home=self.controls_home.clone();let selected=self.model.clone();
         cx.spawn(async move|this,cx|{
-            let info=cx.background_executor().spawn(async move{agent_controls::inspect_project(kind,&path,&home,&project)}).await;
-            let _=this.update(cx,|app,cx|{app.controls_pending.remove(kind.command());app.controls.insert(kind.command(),(Instant::now(),info));cx.notify();});
+            let info=cx.background_executor().spawn(async move{agent_controls::inspect_model_project(kind,&path,&home,&project,selected.as_deref())}).await;
+            let _=this.update(cx,|app,cx|{app.controls_pending.remove(kind.command());app.controls.insert(kind.command(),(Instant::now(),info));if kind==app.agent{app.refresh_unified_models(cx);}cx.notify();});
         }).detach();
     }
 }
@@ -1418,7 +1430,7 @@ pub(super) fn voice_host()->Option<*mut c_void>{
 }
 
 impl Orbit{
-    pub(super) fn request_model(&self)->Option<String>{self.model.clone().or_else(||self.active.as_ref().filter(|id|self.sessions.iter().any(|s|s.id==**id&&s.agent==self.agent&&s.external_id.is_some())).and_then(|id|self.usage.get(id)).and_then(|u|u.model.clone()))}
+    pub(super) fn request_model(&self)->Option<String>{self.model.clone().or_else(||self.active.as_ref().filter(|id|self.sessions.iter().any(|s|s.id==**id&&s.agent==self.agent&&s.external_id.is_some())).and_then(|id|self.usage.get(id)).and_then(|u|u.model.clone())).or_else(||self.unified_effort().and_then(|_|self.effort_model_choice()).map(|model|model.id))}
     pub(super) fn request_effort(&self)->Option<String>{self.unified_effort().map(str::to_owned).or_else(||self.active.as_ref().filter(|id|self.sessions.iter().any(|s|s.id==**id&&s.agent==self.agent&&s.external_id.is_some())).and_then(|id|self.usage.get(id)).and_then(|u|u.reasoning_effort.clone()))}
 
     pub(super) fn model_project(&self)->PathBuf{

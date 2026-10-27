@@ -28,8 +28,8 @@ final class ExpandedInputTests:XCTestCase {
         ui.composerFrameChanged={frame,_ in composer=frame}
         ui.layout(in:CGRect(x:0,y:0,width:500,height:400))
         var actions=[String](),focused=0;ui.onVoice={actions.append("voice")};ui.onSend={actions.append("send")};ui.onFocusComposer={focused+=1}
-        let voice=CGRect(x:composer.maxX-51,y:composer.minY+3,width:22,height:22)
-        let send=CGRect(x:composer.maxX-27,y:composer.minY+1,width:26,height:26)
+        let voice=CGRect(x:composer.maxX-53,y:composer.minY+3,width:22,height:22)
+        let send=CGRect(x:composer.maxX-28,y:composer.minY+2,width:25,height:25)
         XCTAssertTrue(ui.handleClick(CGPoint(x:voice.maxX+0.5,y:voice.midY)))
         XCTAssertTrue(ui.handleClick(CGPoint(x:send.minX-0.5,y:send.midY)))
         XCTAssertTrue(ui.handleClick(CGPoint(x:voice.midX,y:voice.maxY+3)))

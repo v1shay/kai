@@ -34,8 +34,8 @@ struct DefaultModelPreferences {
         automatic.target=self;automatic.representedObject=""
         menu.addItem(.separator())
         for model in models {
-            let item=menu.addItem(withTitle:model.displayName,action:#selector(selectModel(_:)),keyEquivalent:"")
-            item.target=self;item.representedObject=model.model;item.toolTip=model.model
+            let item=menu.addItem(withTitle:ModelIdentity.title(model.displayName),action:#selector(selectModel(_:)),keyEquivalent:"")
+            item.target=self;item.representedObject=model.model;item.toolTip=model.model;item.image=ModelIdentity.image(model.resolvedModel ?? model.model);item.image?.size=CGSize(width:16,height:16)
         }
         if let saved=preferences.selectedID,!modelIDs.contains(saved){
             let item=menu.addItem(withTitle:"\(saved) · unavailable",action:nil,keyEquivalent:"")

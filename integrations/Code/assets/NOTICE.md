@@ -55,3 +55,7 @@ The file tree's media and document glyphs are downloaded from the canonical npm 
 ## User-selected default wallpaper
 
 `wallpapers/bonsai-sakura.png` is the user-provided “ASCII Bonsai at Sakura Sunset.png” from Downloads, bundled at the user's request. `Code.icns` uses the same artwork, resized with a rounded mask by the build-time icon generator. No third-party license or ownership claim is inferred.
+
+The `model-moon`, `model-earth`, `model-sun`, and `model-star` vector glyphs are
+original Kai Unified artwork. They identify Luna, Terra, Sol, and Astra model
+families and are shared by the native notch and Code composer.

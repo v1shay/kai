@@ -9,7 +9,7 @@ pub fn acp_selection(value:&Value)->ModelDefaults{
  out.model=text(&value["models"]["currentModelId"]).or_else(||text(&value["currentModelId"]));
  for option in value["configOptions"].as_array().into_iter().flatten(){
   let id=option["category"].as_str().or_else(||option["id"].as_str()).unwrap_or("");
-  match id{"model"=>{if let Some(model)=text(&option["currentValue"]){out.model=Some(model)}},"thought_level"|"reasoning_effort"|"reasoning"|"thinking"=>out.effort=text(&option["currentValue"]),_=>{}}
+  match id{"model"=>{if let Some(model)=text(&option["currentValue"]){out.model=Some(model)}},"thought_level"|"reasoning_effort"|"reasoning"|"thinking"|"thinking_level"|"effort"=>out.effort=text(&option["currentValue"]),_=>{}}
  }
  out
 }
@@ -72,5 +72,102 @@ pub fn gemini_build_default(executable:&Path)->Option<String>{
    if kind==AgentKind::Cursor{assert_eq!(info.defaults.model.as_deref(),Some("auto"),"Native Cursor combined current/default marker must resolve");}
    println!("{}: {} · {} ({} choices)",kind.name(),info.defaults.model.unwrap_or_else(||"not reported".into()),info.defaults.effort.unwrap_or_else(||"provider-managed".into()),info.models.len());
   }
+ }
+}
+
+/// Exact native values, including grouped ACP options. Only reasoning selectors
+/// qualify; unrelated model config (temperature, context size) cannot become effort.
+pub fn acp_effort_option(value:&Value)->Option<(String,Vec<String>)>{
+ for option in value["configOptions"].as_array().into_iter().flatten(){
+  let Some(id)=option["id"].as_str()else{continue};let category=option["category"].as_str().unwrap_or(id);
+  if category!="thought_level" && !["effort","reasoning_effort","thinking_level","thought_level","reasoning","thinking"].contains(&id){continue}
+  if option["type"].as_str().is_some_and(|kind|kind!="select"){continue}
+  let mut levels=Vec::new();
+  for group in option["options"].as_array().into_iter().flatten(){
+   let entries=if group["options"].is_array(){group["options"].as_array().unwrap().iter().collect::<Vec<_>>()}else{vec![group]};
+   for entry in entries{if let Some(level)=entry["value"].as_str().filter(|v|!v.is_empty()&&v.len()<=128&&!v.chars().any(char::is_control)){if !levels.iter().any(|v|v==level)&&levels.len()<16{levels.push(level.to_owned())}}}
+  }
+  if !levels.is_empty(){return Some((id.into(),levels))}
+ }
+ None
+}
+/// OpenCode exposes provider/model variants, whose IDs must be sent unchanged.
+pub fn opencode_models(value:&Value)->Vec<crate::agent_controls::ModelChoice>{
+ let mut models=Vec::new();
+ for provider in value["all"].as_array().or_else(||value["providers"].as_array()).into_iter().flatten(){
+  let Some(provider_id)=provider["id"].as_str()else{continue};
+  for (id,model) in provider["models"].as_object().into_iter().flatten(){
+   let full=format!("{provider_id}/{id}");if !valid_model_id(&full){continue}
+   let mut variants=model["variants"].as_object().into_iter().flatten().filter(|(_,v)|v["disabled"]!=true).filter_map(|(id,v)|{
+    if !valid_model_id(id){return None}
+    let effort=v["reasoningEffort"].as_str().or_else(||v["options"]["reasoningEffort"].as_str()).unwrap_or(id);
+    let rank=["none","minimal","low","medium","high","xhigh","max","ultra"].iter().position(|v|*v==effort).unwrap_or(8);
+    Some((rank,id.clone()))
+   }).collect::<Vec<_>>();variants.sort_by(|a,b|a.0.cmp(&b.0));
+   models.push(crate::agent_controls::ModelChoice{id:full,label:model["name"].as_str().unwrap_or(id).chars().take(160).collect(),reasoning_efforts:variants.into_iter().take(16).map(|(_,id)|id).collect()});
+   if models.len()>=256{return models}
+  }
+ }
+ models
+}
+
+pub fn acp_models(value:&Value)->Vec<crate::agent_controls::ModelChoice>{
+ let mut models=Vec::new();
+ for model in value["models"]["availableModels"].as_array().into_iter().flatten().take(256){
+  if let Some(id)=model["modelId"].as_str().or_else(||model["id"].as_str()).filter(|id|valid_model_id(id)){
+   models.push(crate::agent_controls::ModelChoice{id:id.into(),label:model["name"].as_str().unwrap_or(id).chars().take(160).collect(),reasoning_efforts:Vec::new()});
+  }
+ }
+ for option in value["configOptions"].as_array().into_iter().flatten().filter(|v|v["category"]=="model" || v["id"]=="model"){
+  for group in option["options"].as_array().into_iter().flatten(){
+   let entries=if let Some(options)=group["options"].as_array(){options.iter().collect::<Vec<_>>()}else{vec![group]};
+   for model in entries{if let Some(id)=model["value"].as_str().filter(|id|valid_model_id(id)){if models.len()<256 && !models.iter().any(|m|m.id==id){models.push(crate::agent_controls::ModelChoice{id:id.into(),label:model["name"].as_str().unwrap_or(id).chars().take(160).collect(),reasoning_efforts:Vec::new()})}}}
+  }
+ }
+ let selected=acp_selection(value);
+ if let Some((_,levels))=acp_effort_option(value){if let Some(model)=models.iter_mut().find(|m|Some(&m.id)==selected.model.as_ref()){model.reasoning_efforts=levels}}
+ models
+}
+
+#[cfg(test)]mod capability_tests{
+ use super::*;
+ #[test]fn acp_reasoning_is_exact_grouped_and_applies_only_to_selected_model(){
+  let value=serde_json::json!({"models":{"currentModelId":"gemini-one","availableModels":[{"modelId":"gemini-one"},{"modelId":"gemini-two"}]},"configOptions":[{"id":"temperature","category":"model_config","options":[{"value":"hot"}]},{"id":"budget-choice","category":"thought_level","type":"select","currentValue":"high","options":[{"group":"Thinking","options":[{"value":"low"},{"value":"high"}]}]}]});
+  assert_eq!(acp_effort_option(&value),Some(("budget-choice".into(),vec!["low".into(),"high".into()])));
+  let models=acp_models(&value);assert_eq!(models[0].reasoning_efforts,vec!["low","high"]);assert!(models[1].reasoning_efforts.is_empty());
+  assert!(acp_effort_option(&serde_json::json!({"configOptions":[{"id":"temperature","category":"model_config","options":[{"value":"high"}]}]})).is_none());
+ }
+ #[test]fn config_only_acp_catalogs_do_not_require_legacy_model_metadata(){
+  let value=serde_json::json!({"configOptions":[{"id":"selected","category":"model","currentValue":"model-b","options":[{"value":"model-a","name":"Model A"},{"value":"model-b","name":"Model B"}]},{"id":"effort","category":"thought_level","currentValue":"high","options":[{"value":"low"},{"value":"high"}]}]});
+  let models=acp_models(&value);assert_eq!(models.len(),2);assert!(models[0].reasoning_efforts.is_empty());assert_eq!(models[1].reasoning_efforts,vec!["low","high"]);
+ }
+ #[test]fn opencode_variants_preserve_native_ids_and_order_by_real_effort(){
+  let value=serde_json::json!({"all":[{"id":"openai","models":{"gpt-6.1-sol":{"name":"Sol","variants":{"deep":{"reasoningEffort":"high"},"fast":{"reasoningEffort":"low"},"disabled":{"disabled":true}}}}}]});
+  let models=opencode_models(&value);assert_eq!(models[0].id,"openai/gpt-6.1-sol");assert_eq!(models[0].reasoning_efforts,vec!["fast","deep"]);
+ }
+}
+
+/// The installed CLI prints an ID line followed by a complete JSON model.
+/// Parse JSON framing, not brace counts or a guessed list of reasoning levels.
+pub fn opencode_verbose_models(text:&str)->Vec<crate::agent_controls::ModelChoice>{
+ let mut out=Vec::new();let mut remaining=text;
+ while !remaining.trim().is_empty() && out.len()<256{
+  remaining=remaining.trim_start();let Some(end)=remaining.find('\n')else{break};
+  let id=remaining[..end].trim();let body=remaining[end+1..].trim_start();
+  let Some((provider,model_id))=id.split_once('/').filter(|_|valid_model_id(id))else{remaining=body;continue};
+  let mut stream=serde_json::Deserializer::from_str(body).into_iter::<Value>();
+  if let Some(Ok(model))=stream.next(){
+   let mut models=serde_json::Map::new();models.insert(model_id.into(),model);
+   out.extend(opencode_models(&serde_json::json!({"all":[{"id":provider,"models":models}]})));
+   remaining=&body[stream.byte_offset()..];
+  }else{remaining=body;}
+ }
+ out
+}
+#[cfg(test)]mod verbose_catalog_tests{
+ use super::*;
+ #[test]fn cli_metadata_preserves_native_variants_before_a_first_message(){
+  let text="openai/gpt-6.1-sol\n{\"name\":\"Sol\",\"variants\":{\"deep\":{\"reasoningEffort\":\"high\"},\"fast\":{\"reasoningEffort\":\"low\"}}}\nopenai/gpt-6-luna\n{\"name\":\"Luna\",\"variants\":{\"low\":{},\"high\":{}}}\n";
+  let models=opencode_verbose_models(text);assert_eq!(models.len(),2);assert_eq!(models[0].reasoning_efforts,vec!["fast","deep"]);assert_eq!(models[1].id,"openai/gpt-6-luna");
  }
 }

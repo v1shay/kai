@@ -229,15 +229,21 @@ private final class AttachmentLayer:CALayer {
     private var renderingScale:CGFloat=NSScreen.main?.backingScaleFactor ?? 2
     func setRenderingScale(_ scale:CGFloat){renderingScale=scale;NotchSizing.updateTextResolution(layer,scale:scale)}
     var onSettings: ((String,String)->Void)?
+    var onModel:((String)->Void)?
+    var onPermissions:((String?,String?)->Void)?
     var onNavigate: ((String)->Void)?
     var onContextMode: ((Bool)->Void)?
     var onAgent:((String)->Void)?
     var onVoice:(()->Void)?
     var onFocusComposer:(()->Void)?
     var onPendingTimeout:((String)->Void)?
+    private let permissionGlyph=CAGradientLayer(),permissionMask=CALayer(),modelChip=CALayer(),modelIcon=CALayer(),modelName=CATextLayer(),effortChip=CALayer(),effortFill=CAGradientLayer(),effortThumb=CALayer()
+    private var composerControlKey=[String](),composerHits=[(CGRect,String)]()
+    private var usesUnifiedComposer:Bool{EmbeddedCodeRuntime.shared.active || modelState?.workspaceAccess != nil}
+    private let voiceWaveform=CALayer()
     private let voiceButton=CATextLayer()
-    private var voiceActive=false
-    func setVoiceActive(_ active:Bool){voiceActive=active;voiceButton.string=active ? "■":"◉";voiceButton.foregroundColor=(active ? NSColor.systemRed:NSColor.white.withAlphaComponent(0.7)).cgColor}
+    private var voiceActive=false,voiceStyle=""
+    func setVoiceActive(_ active:Bool){voiceActive=active;let style="\(usesUnifiedComposer)-\(active)";guard style != voiceStyle else{return};voiceStyle=style;voiceButton.string=usesUnifiedComposer ? "":(active ? "■":"◉");voiceButton.foregroundColor=(active ? NSColor.systemRed:NSColor.white.withAlphaComponent(0.7)).cgColor;voiceWaveform.isHidden = !usesUnifiedComposer;voiceWaveform.contents=NSImage(systemSymbolName:active ? "stop.fill":"waveform",accessibilityDescription:nil)?.withSymbolConfiguration(.init(paletteColors:[active ? .systemRed:.white]))}
     private var modelState: KaiState?
     private var lightweightContext=false
     private let settingsBar=CALayer()
@@ -284,12 +290,15 @@ private final class AttachmentLayer:CALayer {
         configure(activeTitle,"ACTIVE",7,.white.withAlphaComponent(0.42),.medium);activeTitle.opacity=0;left.addSublayer(activeTitle)
         configure(message,"Choose a project and chat",9,.white.withAlphaComponent(0.68),.medium);main.addSublayer(message);configure(closeButton,"×",12,.white.withAlphaComponent(0.65));closeButton.alignmentMode = .center;main.addSublayer(closeButton);main.addSublayer(actionBar);main.addSublayer(settingsBar)
         input.cornerRadius=14; input.borderWidth=0.75; input.masksToBounds=true; layer.addSublayer(input);imageStrip.masksToBounds=true;layer.addSublayer(imageStrip)
-        input.addSublayer(label("type or hold",8,.white.withAlphaComponent(0.46))); command.cornerRadius=6; command.borderWidth=0.7; command.addSublayer(label("command",7.4,.white.withAlphaComponent(0.74),.medium)); input.addSublayer(command); input.addSublayer(label("to speak",8,.white.withAlphaComponent(0.46)))
+        input.addSublayer(label("type or hold",8,.white.withAlphaComponent(0.46))); command.cornerRadius=6; command.borderWidth=0.7; command.addSublayer(label("⌘ command",7.4,.white.withAlphaComponent(0.74),.medium)); input.addSublayer(command); input.addSublayer(label("to speak",8,.white.withAlphaComponent(0.46)))
         send.type = .radial;send.startPoint=CGPoint(x:0.5,y:0.5);send.endPoint=CGPoint(x:1,y:0.5);send.locations=[0,0.52,1];send.cornerRadius=13; send.borderWidth=0.8; send.masksToBounds=true; input.addSublayer(send)
         sendShade.type = .radial;sendShade.colors=[NSColor.clear.cgColor,NSColor.black.withAlphaComponent(0.3).cgColor];sendShade.locations=[0,1];sendShade.startPoint=CGPoint(x:0.5,y:0.5);sendShade.endPoint=CGPoint(x:1,y:0.5);sendShade.cornerRadius=13;sendShade.masksToBounds=true;send.addSublayer(sendShade)
         sendGlass.type = .radial; sendGlass.cornerRadius=13; sendGlass.masksToBounds=true; sendGlass.colors=[NSColor.white.withAlphaComponent(0.18).cgColor,NSColor.white.withAlphaComponent(0.04).cgColor,NSColor.clear.cgColor]; sendGlass.locations=[0,0.42,1]; sendGlass.startPoint=CGPoint(x:0.3,y:0.76);sendGlass.endPoint=CGPoint(x:0.94,y:0.08);send.addSublayer(sendGlass)
         arrow.fillColor=nil;arrow.strokeColor=NSColor.white.withAlphaComponent(0.92).cgColor;arrow.lineWidth=1.15;arrow.lineCap = .round;arrow.lineJoin = .round;send.addSublayer(arrow)
-        configure(voiceButton,"◉",14,.white.withAlphaComponent(0.7));voiceButton.alignmentMode = .center;input.addSublayer(voiceButton)
+        configure(voiceButton,"◉",14,.white.withAlphaComponent(0.7));voiceButton.alignmentMode = .center;input.addSublayer(voiceButton);voiceWaveform.contentsGravity = .resizeAspect;voiceWaveform.frame=CGRect(x:4,y:4,width:14,height:14);voiceButton.addSublayer(voiceWaveform)
+        permissionGlyph.startPoint=CGPoint(x:0,y:0);permissionGlyph.endPoint=CGPoint(x:1,y:1);permissionGlyph.mask=permissionMask;permissionMask.contentsGravity = .resizeAspect;input.addSublayer(permissionGlyph)
+        modelIcon.contentsGravity = .resizeAspect;modelChip.addSublayer(modelIcon);configure(modelName,"",7.8,.white.withAlphaComponent(0.84),.medium);modelName.truncationMode = .middle;modelChip.addSublayer(modelName);input.addSublayer(modelChip)
+        effortChip.backgroundColor=NSColor.white.withAlphaComponent(0.11).cgColor;effortChip.cornerRadius=2;effortFill.anchorPoint=CGPoint(x:0,y:0.5);effortFill.startPoint=CGPoint(x:0,y:0.5);effortFill.endPoint=CGPoint(x:1,y:0.5);effortFill.cornerRadius=2;effortChip.addSublayer(effortFill);effortThumb.cornerRadius=3;effortThumb.backgroundColor=NSColor.white.cgColor;effortChip.addSublayer(effortThumb);input.addSublayer(effortChip)
         pendingHighlight.opacity=0;pendingHighlight.cornerRadius=4;pendingHighlight.masksToBounds=true;pendingHighlight.backgroundColor=NSColor.white.withAlphaComponent(0.12).cgColor;pendingHighlight.borderColor=NSColor.white.withAlphaComponent(0.28).cgColor;pendingHighlight.borderWidth=0.6;pendingRibbon.colors=[NSColor.clear.cgColor,NSColor.white.withAlphaComponent(0.5).cgColor,NSColor.clear.cgColor];pendingRibbon.startPoint=CGPoint(x:0,y:0.5);pendingRibbon.endPoint=CGPoint(x:1,y:0.5);pendingHighlight.addSublayer(pendingRibbon);layer.addSublayer(pendingHighlight)
         installFlow()
     }
@@ -410,12 +419,18 @@ private final class AttachmentLayer:CALayer {
         setFrame(preview,CGRect(x:layer.bounds.width-previewWidth-4,y:31,width:previewWidth,height:layer.bounds.height-39),animated:animated)
         setFrame(main,target,animated:animated); let w=target.width,h=target.height
         message.frame=CGRect(x:5,y:h-18,width:max(0,w-26),height:12);closeButton.frame=CGRect(x:max(0,w-20),y:h-21,width:16,height:18);layoutPathHits();actionBar.frame=CGRect(x:5,y:h-37,width:max(0,w-10),height:13);layoutActions();settingsBar.frame=CGRect(x:5,y:h-53,width:max(0,w-10),height:13);layoutSettings()
-        let minX=projectIntrudesComposer && !projectsCollapsed && !previewOpen ? left.frame.maxX+9:18,maxX=paired ? fileX-4:(previewOpen ? layer.bounds.width-leftWidth-8:(filesOpen ? layer.bounds.width-drawerWidth-9:layer.bounds.width-18)),composerW=min(260,max(70,maxX-minX)),idealX=(minX+maxX-composerW)/2,inputX=min(max(idealX,minX),maxX-composerW),composerFrame=CGRect(x:inputX,y:0,width:composerW,height:28);setFrame(input,composerFrame,animated:animated);composerFrameChanged?(composerFrame,animated);setFrame(imageStrip,CGRect(x:inputX+8,y:34,width:max(0,composerW-16),height:32),animated:animated);layoutImages();let texts=input.sublayers?.compactMap{$0 as? CATextLayer} ?? []
-        if composerW < 200 { texts.first?.string="hold";texts.first?.frame=CGRect(x:11,y:8,width:22,height:11);command.frame=CGRect(x:36,y:5,width:47,height:18);if texts.count>1{texts[1].string=""} }
-        else { texts.first?.string="type or hold";texts.first?.frame=CGRect(x:11,y:8,width:55,height:11);command.frame=CGRect(x:68,y:5,width:47,height:18);if texts.count>1{texts[1].string="to speak";texts[1].frame=CGRect(x:120,y:8,width:43,height:11)} }
-        command.sublayers?.first?.frame=CGRect(x:4,y:4,width:39,height:10)
-        setFrame(send,CGRect(x:composerW-27,y:1,width:26,height:26),animated:animated);voiceButton.frame=CGRect(x:composerW-51,y:3,width:22,height:22);sendShade.frame=send.bounds;sendGlass.frame=send.bounds;let p=CGMutablePath();p.move(to:CGPoint(x:9,y:14.5));p.addLine(to:CGPoint(x:13,y:18.5));p.addLine(to:CGPoint(x:17,y:14.5));p.move(to:CGPoint(x:13,y:18.5));p.addLine(to:CGPoint(x:13,y:7.5));arrow.path=p;arrow.frame=send.bounds
-        let conversationBottom:CGFloat=(imageStrip.sublayers?.isEmpty == false) ? 68:32
+        let minX=(usesUnifiedComposer || projectIntrudesComposer) && !projectsCollapsed && !previewOpen ? left.frame.maxX+9:18,maxX=paired ? fileX-4:(previewOpen ? layer.bounds.width-leftWidth-8:(filesOpen ? layer.bounds.width-drawerWidth-9:layer.bounds.width-18)),composerW=min(260,max(70,maxX-minX)),idealX=(minX+maxX-composerW)/2,inputX=min(max(idealX,minX),maxX-composerW),composerFrame=CGRect(x:inputX,y:0,width:composerW,height:usesUnifiedComposer ? 58:28);setFrame(input,composerFrame,animated:animated);composerFrameChanged?(composerFrame,animated);setFrame(imageStrip,CGRect(x:inputX+8,y:usesUnifiedComposer ? 64:34,width:max(0,composerW-16),height:32),animated:animated);layoutImages();let texts=input.sublayers?.compactMap{$0 as? CATextLayer} ?? []
+        if usesUnifiedComposer {
+            texts.first?.string=composerW<190 ? "type or hold":"Type, or hold";texts.first?.frame=CGRect(x:10,y:36,width:60,height:12)
+            command.frame=CGRect(x:composerW<190 ? 70:74,y:32,width:61,height:19);command.sublayers?.first?.frame=CGRect(x:5,y:4,width:54,height:11)
+            if texts.count>1{texts[1].string=composerW>=230 ? "to speak":"";texts[1].frame=CGRect(x:139,y:36,width:43,height:11)}
+        } else {
+            texts.first?.string="type or hold";texts.first?.frame=CGRect(x:11,y:8,width:55,height:11);command.frame=CGRect(x:68,y:5,width:61,height:18);command.sublayers?.first?.frame=CGRect(x:4,y:4,width:54,height:10)
+            if texts.count>1{texts[1].string=composerW>=230 ? "to speak":"";texts[1].frame=CGRect(x:134,y:8,width:43,height:11)}
+        }
+        setFrame(send,CGRect(x:composerW-28,y:2,width:25,height:25),animated:animated);voiceButton.frame=CGRect(x:composerW-53,y:3,width:22,height:22);sendShade.frame=send.bounds;sendGlass.frame=send.bounds;let p=CGMutablePath();p.move(to:CGPoint(x:9,y:14.5));p.addLine(to:CGPoint(x:13,y:18.5));p.addLine(to:CGPoint(x:17,y:14.5));p.move(to:CGPoint(x:13,y:18.5));p.addLine(to:CGPoint(x:13,y:7.5));arrow.path=p;arrow.frame=send.bounds
+        layoutComposerControls()
+        let conversationBottom:CGFloat=(imageStrip.sublayers?.isEmpty == false) ? (usesUnifiedComposer ? 100:68):(usesUnifiedComposer ? 62:32)
         conversationFrameChanged?(CGRect(x:target.minX+2,y:conversationBottom,width:max(0,target.width-4),height:max(0,h-56-conversationBottom)))
     }
 
@@ -442,6 +457,7 @@ private final class AttachmentLayer:CALayer {
         }
         add(inMain(closeButton.frame),limit:main.frame){[self] in onClose?()}
         if !previewOpen{add(projectToggle.frame){[self] in toggleProjects()}}
+        for (rect,id) in composerHits {add(rect.offsetBy(dx:input.frame.minX,dy:input.frame.minY),limit:input.frame){[self] in if id=="permissions"{showPermissionsMenu()}else{showSettingsMenu(id)}}}
         let composerActions:[(CGRect,()->Void)]=[(send.frame,{[self] in onSend?()}),(voiceButton.frame,{[self] in onVoice?()})]
         for (frame,action) in composerActions {
             add(frame.offsetBy(dx:input.frame.minX,dy:input.frame.minY),limit:input.frame.insetBy(dx:0,dy:-4),action)
@@ -600,6 +616,7 @@ private final class AttachmentLayer:CALayer {
     }
     func setContextMode(_ lightweight:Bool){lightweightContext=lightweight;layoutSettings()}
     private func layoutSettings() {
+        layoutComposerControls()
         guard let state=modelState else{return}
         let model=state.models?.first{$0.model == state.selectedModel || $0.model == state.effectiveModel || ($0.resolvedModel != nil && $0.resolvedModel == state.effectiveModel)}
         let name=state.effectiveModel ?? model?.resolvedModel ?? model?.displayName ?? state.selectedModel ?? "…"
@@ -610,7 +627,7 @@ private final class AttachmentLayer:CALayer {
         var x:CGFloat=0
         let codeView=state.threadId?.hasPrefix("code:") == true
         let contextTitle=lightweightContext ? "Context: light":"Context: screen"
-        let settings=EmbeddedCodeRuntime.shared.active ? [("agent",state.agents?.first{$0.id == state.selectedAgent}?.name ?? "Agent"),("model",name)]+(!effort.isEmpty ? [("effort",effort)]:[])+[("context",contextTitle)]:codeView ? [("model",name),("context",contextTitle)]:[("model",name),("effort",effort),("context",contextTitle)]
+        let settings=usesUnifiedComposer ? [("agent",state.agents?.first{$0.id == state.selectedAgent}?.name ?? "Agent"),("context",contextTitle)]:codeView ? [("model",name),("context",contextTitle)]:[("model",name),("effort",effort),("context",contextTitle)]
         for (id,text) in settings {
             let width=min(id == "model" ? 200: id == "effort" ? 48:80, min((text as NSString).size(withAttributes:[.font:NSFont.systemFont(ofSize:7.5,weight:.medium)]).width+9,max(0,settingsBar.bounds.width-x)))
             guard width>16 else{break}
@@ -624,31 +641,80 @@ private final class AttachmentLayer:CALayer {
             settingsBar.addSublayer(gradient);if EmbeddedCodeRuntime.shared.active || !codeView || id == "context"{settingsHits.append((gradient.frame,id))};x+=width+6
         }
     }
-    private func showSettingsMenu(_ kind:String) {
-        guard let state=modelState,let models=state.models else{return}
+    private func selectedEffortModel(_ state:KaiState)->KaiModel? {
+        state.models?.first{$0.model==state.selectedModel} ?? state.models?.first{$0.model==state.effectiveModel || ($0.resolvedModel != nil && $0.resolvedModel==state.effectiveModel)}
+    }
+    private func effortMenuItem(_ model:KaiModel,state:KaiState)->NSMenuItem {
+        let item=NSMenuItem(),slider=ReasoningSliderControl(levels:model.supportedReasoningEfforts.map(\.reasoningEffort),current:state.reasoningEffort.flatMap{$0.isEmpty ? nil:$0} ?? state.effectiveReasoningEffort)
+        slider.onCommit={ [weak self,weak item] effort in guard let self,self.modelState?.ownerToken==state.ownerToken,self.modelState?.selectedModel==state.selectedModel else{item?.menu?.cancelTracking();return};self.onSettings?(state.selectedModel ?? "",effort);item?.menu?.cancelTracking() };item.view=slider;return item
+    }
+    private func layoutComposerControls(){
+        let shown=usesUnifiedComposer
+        permissionGlyph.isHidden = !shown;modelChip.isHidden = !shown;effortChip.isHidden = !shown
+        guard shown,let state=modelState else{composerHits=[];return}
+        setVoiceActive(voiceActive)
+        let name=state.effectiveModel ?? state.selectedModel ?? state.providerDefaultModel ?? "Model"
+        let levels=selectedEffortModel(state)?.supportedReasoningEfforts.map(\.reasoningEffort) ?? []
+        let effort=state.reasoningEffort.flatMap{$0.isEmpty ? nil:$0} ?? state.effectiveReasoningEffort ?? ""
+        let key=[name,effort,levels.joined(separator:","),state.workspaceAccess ?? "",state.workspaceApprovalPolicy ?? "",String(Double(input.bounds.width)),String(Double(renderingScale))]
+        guard key != composerControlKey else{return};composerControlKey=key
+        input.colors=[NSColor.white.withAlphaComponent(0.085).cgColor,NSColor.white.withAlphaComponent(0.035).cgColor];input.borderColor=NSColor.white.withAlphaComponent(0.16).cgColor
+        let width=input.bounds.width,hasEffort = !levels.isEmpty && width>=215
+        permissionGlyph.frame=CGRect(x:9,y:7,width:15,height:15);permissionMask.frame=permissionGlyph.bounds
+        let access=state.workspaceAccess ?? "read-only",symbol=access=="full" ? "lock.open.fill":access=="read-only" ? "lock.fill":"shield.lefthalf.filled"
+        permissionMask.contents=NSImage(systemSymbolName:symbol,accessibilityDescription:nil)?.withSymbolConfiguration(.init(paletteColors:[.white]))
+        let colors:[NSColor]=access=="full" ? [.white,.systemRed]:access=="workspace" || access=="native" ? [.white,.systemOrange]:[.white,.lightGray]
+        let oldColors=permissionGlyph.presentation()?.colors ?? permissionGlyph.colors
+        permissionGlyph.colors=colors.map(\.cgColor)
+        let transition=CABasicAnimation(keyPath:"colors");transition.fromValue=oldColors;transition.toValue=permissionGlyph.colors;transition.duration=NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0:0.25;permissionGlyph.add(transition,forKey:"sandboxLevel")
+        let modelWidth=max(16,width-91-(hasEffort ? 35:0));modelChip.frame=CGRect(x:30,y:6,width:modelWidth,height:17)
+        let image=ModelIdentity.image(name);modelIcon.contentsScale=renderingScale;permissionMask.contentsScale=renderingScale;modelIcon.contents=image;modelIcon.frame=CGRect(x:0,y:2,width:13,height:13);modelIcon.isHidden=image==nil
+        let textX:CGFloat=image==nil ? 0:18;modelName.frame=CGRect(x:textX,y:2,width:max(0,modelWidth-textX),height:12);modelName.string=ModelIdentity.title(name);modelName.contentsScale=renderingScale
+        effortChip.isHidden = !hasEffort;effortChip.frame=CGRect(x:width-88,y:12,width:25,height:4)
+        let fraction=CGFloat(levels.firstIndex(of:effort) ?? 0)/CGFloat(max(1,levels.count-1)),color=EffortAppearance.color(fraction)
+        let oldThumb=effortThumb.presentation()?.position ?? effortThumb.position,oldFill=effortFill.presentation()?.bounds.width ?? effortFill.bounds.width,oldGradient=effortFill.presentation()?.colors ?? effortFill.colors
+        CATransaction.begin();CATransaction.setDisableActions(true);effortFill.frame=CGRect(x:0,y:0,width:max(3,25*fraction),height:4);effortFill.colors=[EffortAppearance.color(max(0,fraction-0.4)).cgColor,color.cgColor];effortThumb.frame=CGRect(x:25*fraction-3,y:-1,width:6,height:6);CATransaction.commit()
+        if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {let move=CASpringAnimation(keyPath:"position");move.fromValue=oldThumb;move.toValue=effortThumb.position;move.stiffness=290;move.damping=28;move.duration=0.34;effortThumb.add(move,forKey:"effort");let fill=CABasicAnimation(keyPath:"bounds.size.width");fill.fromValue=oldFill;fill.toValue=effortFill.bounds.width;fill.duration=0.28;effortFill.add(fill,forKey:"effort");let tint=CABasicAnimation(keyPath:"colors");tint.fromValue=oldGradient;tint.toValue=effortFill.colors;tint.duration=0.28;effortFill.add(tint,forKey:"intensity")}
+        composerHits=[(permissionGlyph.frame.insetBy(dx:-4,dy:-4),"permissions"),(modelChip.frame,"model")]
+        if hasEffort{composerHits.append((effortChip.frame.insetBy(dx:-4,dy:-9),"effort"))}
+    }
+    private func showPermissionsMenu(){permissionMenu()?.popUp(positioning:nil,at:NSEvent.mouseLocation,in:nil)}
+    func permissionMenu()->NSMenu? {
+        guard let state=modelState else{return nil};let menu=NSMenu()
+        let path=menu.addItem(withTitle:state.workspaceExecutionPath ?? state.project,action:nil,keyEquivalent:"");path.isEnabled=false
+        for (value,title) in [("read-only","Read only"),("workspace","Workspace edits")]+(state.selectedAgent=="codex" ? [("full","Full access")]:[]) {
+            let item=menu.addItem(withTitle:title,action:#selector(selectPermission(_:)),keyEquivalent:"");item.target=self;item.representedObject=["access",value,state.ownerToken ?? ""];item.state=(state.workspaceAccess==value || value=="workspace" && state.workspaceAccess=="native") ? .on:.off
+        }
+        if state.selectedAgent=="codex" {menu.addItem(.separator());for (value,title) in [("ask","Ask me"),("auto-review","Review for me"),("never","Never ask")] {let item=menu.addItem(withTitle:title,action:#selector(selectPermission(_:)),keyEquivalent:"");item.target=self;item.representedObject=["approvals",value,state.ownerToken ?? ""];item.state=state.workspaceApprovalPolicy==value ? .on:.off}}
+        menu.addItem(.separator());let hint=menu.addItem(withTitle:"Changes apply to the next turn or voice call",action:nil,keyEquivalent:"");hint.isEnabled=false
+        return menu
+    }
+    @objc private func selectPermission(_ item:NSMenuItem){guard let values=item.representedObject as? [String],values.count==3,values[2]==(modelState?.ownerToken ?? "") else{return};onPermissions?(values[0]=="access" ? values[1]:nil,values[0]=="approvals" ? values[1]:nil)}
+    private func showSettingsMenu(_ kind:String){settingsMenu(kind)?.popUp(positioning:nil,at:NSEvent.mouseLocation,in:nil)}
+    func settingsMenu(_ kind:String)->NSMenu? {
+        guard let state=modelState,let models=state.models else{return nil}
         let menu=NSMenu()
         if kind == "agent" {
             for agent in state.agents ?? [] {
                 let item=menu.addItem(withTitle:agent.name,action:#selector(selectAgent(_:)),keyEquivalent:"")
                 item.target=self;item.representedObject=agent.id;item.isEnabled=agent.available;item.state=agent.id == state.selectedAgent ? .on:.off
             }
-            menu.popUp(positioning:nil,at:NSEvent.mouseLocation,in:nil);return
+            return menu
         }
         if kind == "model" {
             let providerName=state.agents?.first{$0.id == state.selectedAgent}?.name ?? "Agent"
-            if EmbeddedCodeRuntime.shared.active{let item=menu.addItem(withTitle:(state.threadId != nil ? "Continue · "+(state.effectiveModel ?? state.selectedModel ?? providerName):"Use "+(state.providerDefaultModel ?? state.effectiveModel ?? providerName)),action:#selector(selectSetting(_:)),keyEquivalent:"");item.target=self;item.representedObject=["",""];item.state=state.selectedModel == nil ? .on:.off}
+            if EmbeddedCodeRuntime.shared.active{let item=menu.addItem(withTitle:(state.threadId != nil ? "Continue · "+(state.effectiveModel ?? state.selectedModel ?? providerName):"Use "+(state.providerDefaultModel ?? state.effectiveModel ?? providerName)),action:#selector(selectSetting(_:)),keyEquivalent:"");item.target=self;item.representedObject=["","",state.ownerToken ?? ""];item.state=state.selectedModel == nil ? .on:.off}
             for model in models {
-                let item=menu.addItem(withTitle:model.displayName,action:#selector(selectSetting(_:)),keyEquivalent:"");item.target=self;item.representedObject=[model.model,model.model == state.selectedModel ? (state.reasoningEffort ?? ""):""];item.state=model.model == state.selectedModel ? .on:.off
+                let item=menu.addItem(withTitle:ModelIdentity.title(model.displayName),action:#selector(selectSetting(_:)),keyEquivalent:"");item.target=self;item.image=ModelIdentity.image(model.resolvedModel ?? model.model);item.image?.size=CGSize(width:16,height:16);item.representedObject=[model.model,"",state.ownerToken ?? ""];item.state=model.model == state.selectedModel ? .on:.off
             }
-        } else if let model=models.first(where:{$0.model == state.selectedModel}) ?? models.first(where:{$0.model == state.effectiveModel || ($0.resolvedModel != nil && $0.resolvedModel == state.effectiveModel)}) {
-            for effort in model.supportedReasoningEfforts {
-                let item=menu.addItem(withTitle:effort.reasoningEffort,action:#selector(selectSetting(_:)),keyEquivalent:"");item.target=self;item.representedObject=[EmbeddedCodeRuntime.shared.active ? (state.selectedModel ?? ""):model.model,effort.reasoningEffort];item.state=effort.reasoningEffort == (state.reasoningEffort ?? state.effectiveReasoningEffort) ? .on:.off
-            }
+            if let model=selectedEffortModel(state),!model.supportedReasoningEfforts.isEmpty{menu.addItem(.separator());menu.addItem(effortMenuItem(model,state:state))}
+        } else if let model=selectedEffortModel(state),!model.supportedReasoningEfforts.isEmpty {
+            menu.addItem(effortMenuItem(model,state:state))
         }
-        menu.popUp(positioning:nil,at:NSEvent.mouseLocation,in:nil)
+        return menu
     }
     @objc private func selectAgent(_ item:NSMenuItem){if let id=item.representedObject as? String{onAgent?(id)}}
-    @objc private func selectSetting(_ item:NSMenuItem) {guard let values=item.representedObject as? [String],values.count == 2 else{return};onSettings?(values[0],values[1])}
+    @objc private func selectSetting(_ item:NSMenuItem) {guard let values=item.representedObject as? [String],values.count == 3,values[2]==(modelState?.ownerToken ?? "") else{return};if values[1].isEmpty,let onModel{onModel(values[0])}else{onSettings?(values[0],values[1])}}
 
     private func layoutActions(){
         let key=[String(Double(actionBar.bounds.width)),String(modelState?.canGoBack == true),String(modelState?.canGoForward == true),String(approvalNeeded),String(turnActive),String(modelState?.threadId?.hasPrefix("code:") == true),String(Double(renderingScale))]
@@ -672,7 +738,7 @@ private final class AttachmentLayer:CALayer {
         CATransaction.commit()
     }
 
-    func setComposerHasText(_ hasText:Bool){CATransaction.begin();CATransaction.setDisableActions(true);for item in input.sublayers ?? [] where item !== send && item !== voiceButton{item.opacity=hasText ? 0:1};CATransaction.commit()}
+    func setComposerHasText(_ hasText:Bool){CATransaction.begin();CATransaction.setDisableActions(true);for item in input.sublayers ?? [] where item === command || (item is CATextLayer && item !== voiceButton){item.opacity=hasText ? 0:1};CATransaction.commit()}
     func synchronizeImages(_ images:[NSImage]){imageStrip.sublayers?.forEach{$0.removeFromSuperlayer()};for image in images{imageStrip.addSublayer(AttachmentLayer(image))};layoutImages()}
     func clearImages(){imageStrip.sublayers?.forEach{$0.removeFromSuperlayer()};layoutImages();imagesChanged()}
     func addImages(_ images:[NSImage]){for image in images{let preview=AttachmentLayer(image);preview.opacity=0;imageStrip.addSublayer(preview);let reveal=CAAnimationGroup();let fade=CABasicAnimation(keyPath:"opacity"),scale=CABasicAnimation(keyPath:"transform.scale");fade.fromValue=0;fade.toValue=1;scale.fromValue=0.82;scale.toValue=1;reveal.animations=[fade,scale];reveal.duration=0.34;reveal.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.7,0.25,1);preview.opacity=1;preview.add(reveal,forKey:"attach")};layoutImages();imagesChanged()}
@@ -699,6 +765,7 @@ private final class AttachmentLayer:CALayer {
     func setVisible(_ visible:Bool,duration:Double) { if !visible{handleHover(nil)};let fade=CABasicAnimation(keyPath:"opacity");fade.fromValue=layer.presentation()?.opacity ?? layer.opacity;fade.toValue=visible ? 1:0;fade.duration=duration*0.72;fade.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.65,0.25,1);CATransaction.begin();CATransaction.setDisableActions(true);layer.opacity=visible ? 1:0;CATransaction.commit();layer.add(fade,forKey:"visibility");notifyPreviewContent() }
 
     func setProfile(_ profile:PetGradientProfile,animated:Bool) {
+        defer{if usesUnifiedComposer{input.colors=[NSColor.white.withAlphaComponent(0.085).cgColor,NSColor.white.withAlphaComponent(0.035).cgColor];input.borderColor=NSColor.white.withAlphaComponent(0.16).cgColor}}
         rowProfile=profile
         let s=profile.gradients.ambient.stops;guard !s.isEmpty else{return};let c=[s.first!,s[s.count/2],s.last!].map{color($0.color)},radial=c.sorted{brightness($0)<brightness($1)};fileGlyphColors=c.map{readable($0)};fileRows.forEach{$0.setColors(fileGlyphColors,animated:animated)};animate(input,to:[alpha(c[0],0.15),alpha(c[1],0.065),alpha(c[2],0.1)],animated ? 0.72:0);animate(response,to:c.map{alpha(readable($0),0.92)},animated ? 0.72:0);animate(send,to:[mix(radial[2],NSColor.white.cgColor,0.2),mix(radial[1],NSColor.black.cgColor,0.16),mix(radial[0],NSColor.black.cgColor,0.58)],animated ? 0.72:0)
         CATransaction.begin();CATransaction.setDisableActions(true);input.borderColor=alpha(c[2],0.22);command.backgroundColor=alpha(c[0],0.14);command.borderColor=alpha(c[2],0.22);send.borderColor=NSColor.white.withAlphaComponent(0.36).cgColor;CATransaction.commit()

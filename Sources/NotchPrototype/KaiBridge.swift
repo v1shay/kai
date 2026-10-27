@@ -38,6 +38,9 @@ struct KaiState: Decodable {
     let historyLoading:Bool?
     let nativeReview:KaiNativeReview?
     let approvalCount:Int?
+    let workspaceAccess:String?
+    let workspaceApprovalPolicy:String?
+    let workspaceExecutionPath:String?
     let workspaceMotion:Bool?
     let workspaceTextMorph:Bool?
     let ownerToken:String?

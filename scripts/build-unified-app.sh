@@ -31,7 +31,7 @@ cp "$CARGO_TARGET_DIR/$configuration/orbit" "$product/Contents/MacOS/kai-unified
 cp "$root/.build/unified/"*.dylib "$resources/"
 cp -R "$root/Sources/NotchPrototype/Resources/"* "$resources/"
 mkdir -p "$resources/kai_pets" "$resources/providers"
-for provider in codex claude gemini opencode cursor grok antigravity; do cp "$root/integrations/Code/assets/$provider.svg" "$resources/providers/$provider.svg"; done
+for provider in codex claude gemini opencode cursor grok antigravity model-moon model-earth model-sun model-star; do cp "$root/integrations/Code/assets/$provider.svg" "$resources/providers/$provider.svg"; done
 cp "$root/kai_speech.py" "$resources/"
 cp -R "$root/integrations/Code/LICENSES/"* "$resources/Licenses/"
 cp "$root/integrations/Code/native_helpers/KAI-SOURCE.md" "$resources/Licenses/Kai-Voice-Attribution.txt"
@@ -48,7 +48,7 @@ for pet in catalog['pets']:
  source=root/'kai_pets'/pet['spritesheet'];target=resources/'kai_pets'/pet['spritesheet']
  target.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(source,target)
 info=plistlib.loads((root/'integrations/Code/scripts/Info.plist').read_bytes())
-info.update(CFBundleName='Kai Unified',CFBundleDisplayName='Kai Unified',CFBundleIdentifier='com.kai.unified.experimental',CFBundleExecutable='kai-unified',CFBundleVersion='17',CFBundleShortVersionString='0.8.3')
+info.update(CFBundleName='Kai Unified',CFBundleDisplayName='Kai Unified',CFBundleIdentifier='com.kai.unified.experimental',CFBundleExecutable='kai-unified',CFBundleVersion='18',CFBundleShortVersionString='0.8.4')
 icon=root/'integrations/Code/assets/Code.icns'
 if icon.exists():shutil.copy2(icon,resources/'Code-Bonsai.icns')
 info['NSAppleEventsUsageDescription']='Kai reads Spotify playback status for its optional idle media display.'

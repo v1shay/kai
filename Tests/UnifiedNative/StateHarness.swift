@@ -88,8 +88,10 @@ private func member(_ object:Any,_ name:String)->Any?{Mirror(reflecting:object).
     let voiceState=try JSONDecoder().decode(KaiState.self,from:JSONSerialization.data(withJSONObject:voice));ui.setState(voiceState)
     let status=(member(ui,"message") as? CATextLayer)?.string as? NSAttributedString
     precondition(status?.string.contains("Speaking") == true && status?.string.contains("read only") == false,"An active editable voice call retained its stale connecting/read-only header")
-    let labels=(member(ui,"settingsBar") as? CALayer)?.sublayers?.compactMap{($0.mask as? CATextLayer)?.string as? String} ?? []
-    precondition(labels.contains("gpt-6-luna") && labels.contains("medium"),"Resolved CLI model/effort were not rendered in the actual settings strip")
+    precondition((member(ui,"modelName") as? CATextLayer)?.string as? String == "GPT-6 Luna","Resolved CLI model was not rendered in the composer")
+    let effortMenu=ui.settingsMenu("effort")
+    let slider=effortMenu?.items.compactMap{$0.view as? ReasoningSliderControl}.first
+    precondition(slider?.levels == ["medium"] && slider?.selected == 0,"Resolved CLI effort did not reach the native slider")
 
     // Ordinary compact -> mini -> workspace expansion keeps the owner’s selected
     // idle chat even while the activity indicator follows a different agent.
