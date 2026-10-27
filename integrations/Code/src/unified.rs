@@ -8,6 +8,7 @@ use std::{cell::RefCell, ffi::c_void, sync::OnceLock};
 
 type Publish = unsafe extern "C" fn(*const u8, usize);
 type Collapse = unsafe extern "C" fn();
+type Wallpaper=unsafe extern "C" fn(*const u8,usize,usize,usize,f32);
 type Start = unsafe extern "C" fn(*mut c_void, extern "C" fn(*const u8, usize) -> bool);
 static COMMANDS: OnceLock<async_channel::Sender<Value>> = OnceLock::new();
 thread_local! {static HOST:RefCell<Option<Host>>=const{RefCell::new(None)};}
@@ -16,6 +17,9 @@ struct Host {
     publish: Publish,
     levels: unsafe extern "C" fn(*const f32, usize),
     voice_host:unsafe extern "C" fn()->*mut c_void,
+    wallpaper:Wallpaper,
+    wallpaper_visible:bool,
+    last_wallpaper:Option<(ImageId,u32)>,
     collapse: Collapse,
     _toggle: Collapse,
     last: Vec<u8>,
@@ -59,6 +63,12 @@ pub(super) fn collapse() {
 pub(super) fn reveal() {
     emit(&json!({"type":"workspaceReveal"}));
 }
+fn wallpaper_visible()->bool{HOST.with(|host|host.borrow().as_ref().is_some_and(|h|h.wallpaper_visible))}
+fn publish_wallpaper(background:&background::ChatBackground){
+    let surface=background.native_surface();let key=surface.as_ref().map(|(_,opacity,id)|(*id,opacity.to_bits()));
+    let callback=HOST.with(|host|{let mut host=host.borrow_mut();let h=host.as_mut()?;if !h.wallpaper_visible || h.last_wallpaper==key{return None}h.last_wallpaper=key;Some(h.wallpaper)});
+    if let Some(callback)=callback{if let Some((pixels,opacity,_))=surface{unsafe{callback(pixels.as_ptr(),pixels.len(),pixels.width()as usize,pixels.height()as usize,opacity)}}else{unsafe{callback(std::ptr::null(),0,0,0,0.)}}}
+}
 fn emit(value: &Value) {
     let Ok(data) = serde_json::to_vec(value) else {
         return;
@@ -96,18 +106,20 @@ pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Resul
         let ready = unsafe { libc::dlsym(library, c"kai_unified_ready".as_ptr()) };
         let levels = unsafe { libc::dlsym(library, c"kai_unified_levels".as_ptr()) };
         let voice_host=unsafe{libc::dlsym(library,c"kai_unified_voice_host".as_ptr())};
+        let wallpaper=unsafe{libc::dlsym(library,c"kai_unified_wallpaper".as_ptr())};
         anyhow::ensure!(
             !start.is_null()
                 && !publish.is_null()
                 && !collapse.is_null()
                 && !toggle.is_null()
                 && !ready.is_null()
-                && !levels.is_null() && !voice_host.is_null(),
+                && !levels.is_null() && !voice_host.is_null() && !wallpaper.is_null(),
             "Incompatible Kai library"
         );
         let levels: unsafe extern "C" fn(*const f32, usize) =
             unsafe { std::mem::transmute(levels) };
         let voice_host:unsafe extern "C" fn()->*mut c_void=unsafe{std::mem::transmute(voice_host)};
+        let wallpaper:Wallpaper=unsafe{std::mem::transmute(wallpaper)};
         let ready: unsafe extern "C" fn() -> bool = unsafe { std::mem::transmute(ready) };
         let start: Start = unsafe { std::mem::transmute(start) };
         let publish: Publish = unsafe { std::mem::transmute(publish) };
@@ -120,6 +132,7 @@ pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Resul
                 _library: library,
                 publish,
                 levels,voice_host,
+                wallpaper,wallpaper_visible:false,last_wallpaper:None,
                 collapse,
                 _toggle:toggle,
                 last: vec![],
@@ -147,9 +160,11 @@ pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Resul
         })?;
         // Entity notifications include background run, approval and transcript events.
         cx.observe(&entity, move |entity, cx| {
-            entity.update(cx,|app,cx|{app.refresh_unified_models(cx);app.publish_unified(cx)});
+            entity.update(cx,|app,cx|{app.refresh_unified_models(cx);let empty=app.active.is_none();let visible=wallpaper_visible()&&app.motion;app.background.update(cx,|background,cx|background.set_native_context(empty,visible,cx));app.publish_unified(cx)});
         })
         .detach();
+        let background=entity.read(cx).background.clone();
+        cx.observe(&background,|background,cx|publish_wallpaper(background.read(cx))).detach();
         entity.read(cx).publish_unified(cx);
         anyhow::ensure!(
             unsafe { ready() },
@@ -187,6 +202,7 @@ pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Resul
                 Timer::after(Duration::from_millis(850)).await;
                 let _=cx.update(|_|{
                     assert_eq!(unsafe{diagnostics()} & 27,2,"Fold must restore the extended notch and pet");
+                    if std::env::args().any(|arg|arg=="--unified-wallpaper-probe"){assert_ne!(unsafe{diagnostics()} & 256,0,"The extended notch did not receive Code's real prepared wallpaper");}
                     crate::unified::reveal();
                 });
                 Timer::after(Duration::from_millis(1000)).await;
@@ -377,6 +393,7 @@ impl Orbit {
                 | "approval_next"
                 | "refresh"
                 | "workspace_settings"
+                | "workspace_wallpaper_visibility"
         ) {
             if request["ownerToken"].as_str() != Some(self.unified_token().as_str()) {
                 return Err("The workspace changed; your input is preserved. Try again.".into());
@@ -607,6 +624,13 @@ impl Orbit {
                 if let Some(access)=access{self.allow_edits=access!="read-only";if self.agent==AgentKind::Codex{self.codex_access=if access=="full"{runtime::CodexAccess::Full}else{runtime::CodexAccess::Workspace};}}
                 if let Some(policy)=approvals{self.codex_approvals=match policy{"ask"=>runtime::CodexApprovals::Ask,"auto-review"=>runtime::CodexApprovals::AutoReview,_=>runtime::CodexApprovals::Never};}
                 self.queue_workspace_save(cx);
+            },
+            "workspace_wallpaper_visibility"=>{
+                let visible=request["visible"].as_bool().ok_or("Missing wallpaper visibility")?;
+                HOST.with(|host|{if let Some(host)=host.borrow_mut().as_mut(){host.wallpaper_visible=visible;}});
+                let empty=self.active.is_none();let active=visible&&self.motion;
+                self.background.update(cx,|background,cx|background.set_native_context(empty,active,cx));
+                publish_wallpaper(self.background.read(cx));
             },
             "workspace_settings" => self.show_modal(Modal::Settings, window, cx),
             "workspace_voice" => self.toggle_voice(window, cx),

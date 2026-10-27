@@ -3093,7 +3093,10 @@ impl Orbit {
         self.pending_response_start = Some(self.rows.len());
         self.list.splice(old..old, self.rows.len() - old);
         self.transcript_reveal = self.motion.then(|| ListReveal::appended(old));
-        self.list.scroll_to_reveal_item(old);
+        // A fresh prompt can exceed the viewport before its first layout.
+        // Revealing its first row pins that row's top and breaks tail following.
+        self.following_bottom = true;
+        self.list.scroll_to(ListOffset { item_ix:self.rows.len(),offset_in_item:px(0.) });
         if self.composer.read(cx).text() == original_prompt {
             self.composer.update(cx, |input, cx| input.set_text("", cx));
             self.drafts.remove(&id);

@@ -3,6 +3,22 @@ import AppKit
 /// History is loaded explicitly; scrolling never starts work on the main thread.
 @MainActor final class ConversationScrollView:NSScrollView {}
 
+/// Short chats sit against the composer; long chats keep normal text geometry.
+/// Moving the text origin also moves native selection, links and card drawing.
+@MainActor final class ConversationTextView:FileActionHoverTextView {
+    override func acceptsFirstMouse(for event:NSEvent?)->Bool{true}
+    private(set) var leadingSpace:CGFloat=0
+    override var textContainerOrigin:NSPoint {
+        let origin=super.textContainerOrigin
+        return NSPoint(x:origin.x,y:origin.y+leadingSpace)
+    }
+    func alignToBottom(usedHeight:CGFloat,viewportHeight:CGFloat){
+        let next=max(0,viewportHeight-ceil(usedHeight)-textContainerInset.height*2)
+        guard next != leadingSpace else{return}
+        leadingSpace=next;clearFileActionHover();needsDisplay=true
+    }
+}
+
 @MainActor final class ConversationHistoryControl:NSView {
     var onLoad:(()->Void)?,onLatest:(()->Void)?
     private let latest=NSButton(title:"Latest",target:nil,action:nil)
@@ -90,8 +106,10 @@ import AppKit
         let width=max(1,scroll.contentSize.width)
         if text.frame.width != width{text.setFrameSize(CGSize(width:width,height:text.frame.height))}
         manager.ensureLayout(for:container)
-        let height=max(scroll.contentSize.height,ceil(manager.usedRect(for:container).maxY+text.textContainerInset.height*2))
+        let usedHeight=manager.usedRect(for:container).maxY
+        let height=max(scroll.contentSize.height,ceil(usedHeight+text.textContainerInset.height*2))
         if text.frame.height != height{text.setFrameSize(CGSize(width:width,height:height))}
+        (text as? ConversationTextView)?.alignToBottom(usedHeight:usedHeight,viewportHeight:scroll.contentSize.height)
     }
     static func isAtBottom(_ text:NSTextView,in scroll:NSScrollView)->Bool {
         text.frame.height-scroll.contentView.bounds.maxY <= 24

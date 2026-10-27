@@ -149,22 +149,31 @@ enum Event {
     Ready {
         generation: u64,
         settings: Settings,
-        image: Option<Arc<RenderImage>>,
+        image: Option<Arc<WallpaperFrame>>,
         animated: bool,
         empty: bool,
         viewport: Option<(u32, u32)>,
     },
-    Frame(u64, Arc<RenderImage>),
+    Frame(u64, Arc<WallpaperFrame>),
     Error(u64, String),
+}
+
+/// The effect is computed once; the notch reuses a bounded unfaded surface.
+#[derive(Debug)]
+struct WallpaperFrame {image:Arc<RenderImage>,native:Option<RgbaImage>}
+impl std::ops::Deref for WallpaperFrame {type Target=RenderImage;fn deref(&self)->&RenderImage{&self.image}}
+impl WallpaperFrame {
+    #[cfg(test)]fn fixture(frames:Vec<image::Frame>)->Arc<Self>{Arc::new(Self{image:Arc::new(RenderImage::new(frames)),native:None})}
 }
 
 pub struct ChatBackground {
     project: PathBuf,
     generation: u64,
     settings: Settings,
-    image: Option<Arc<RenderImage>>,
+    image: Option<Arc<WallpaperFrame>>,
     empty: bool,
     active: bool,
+    native_active:bool,
     busy: bool,
     quitting: bool,
     error: Option<String>,
@@ -208,6 +217,7 @@ impl ChatBackground {
             image: None,
             empty: true,
             active: true,
+            native_active:false,
             busy: true,
             quitting: false,
             error: None,
@@ -232,7 +242,7 @@ impl ChatBackground {
     }
     fn clear_image(&mut self, cx: &mut App) {
         if let Some(image) = self.image.take() {
-            cx.drop_image(image, None);
+            cx.drop_image(image.image.clone(), None);
         }
     }
     fn receive(&mut self, event: Event, cx: &mut Context<Self>) {
@@ -257,7 +267,7 @@ impl ChatBackground {
                 self.prepared_viewport = viewport;
                 self.busy = false;
                 self.error = None;
-                let _ = self.tx.send(Command::Active(self.active && self.visible()));
+                let _ = self.tx.send(Command::Active((self.active || self.native_active) && self.visible()));
                 if self.empty != empty && self.settings.path.is_some() {
                     self.prepare(cx);
                 } else {
@@ -300,7 +310,7 @@ impl ChatBackground {
                 generation: self.generation,
                 project: self.project.clone(),
                 empty: self.empty,
-                active: self.active,
+                active: self.active || self.native_active,
                 viewport: self.viewport,
             });
         }
@@ -320,7 +330,7 @@ impl ChatBackground {
             generation: self.generation,
             project,
             empty: self.empty,
-            active: self.active,
+            active: self.active || self.native_active,
             viewport: self.viewport,
         });
         self.changed(cx);
@@ -339,9 +349,20 @@ impl ChatBackground {
         if scope_changed && self.settings.path.is_some() {
             self.prepare(cx);
         } else {
-            let _ = self.tx.send(Command::Active(self.active && self.visible()));
+            let _ = self.tx.send(Command::Active((self.active || self.native_active) && self.visible()));
             self.changed(cx);
         }
+    }
+    pub(super) fn set_native_context(&mut self,empty:bool,active:bool,cx:&mut Context<Self>){
+        if self.quitting{return}
+        let changed=self.native_active!=active;self.native_active=active;
+        self.set_context(empty,self.active,cx);
+        if changed{let _=self.tx.send(Command::Active((self.active||self.native_active)&&self.visible()));cx.notify();}
+    }
+    pub(super) fn native_surface(&self)->Option<(&RgbaImage,f32,ImageId)>{
+        if !self.visible(){return None}
+        let frame=self.image.as_ref()?;
+        Some((frame.native.as_ref()?,if self.empty{self.settings.empty_opacity}else{self.settings.session_opacity},frame.id))
     }
     /// Reuse the prepared frame in a secondary window. Reading this layer never
     /// changes the main wallpaper viewport, starts a decode, or sends a command.
@@ -358,7 +379,7 @@ impl ChatBackground {
             .overflow_hidden()
             .opacity(opacity)
             .when_some(image, |surface, image| {
-                surface.child(img(image).size_full().object_fit(ObjectFit::Cover))
+                surface.child(img(image.image.clone()).size_full().object_fit(ObjectFit::Cover))
             })
             .into_any_element()
     }
@@ -377,7 +398,7 @@ impl ChatBackground {
             project: self.project.clone(),
             settings: self.settings.clone(),
             empty: self.empty,
-            active: self.active,
+            active: self.active || self.native_active,
             viewport: self.viewport,
         }
     }
@@ -449,7 +470,7 @@ impl ChatBackground {
         let _ = self.tx.send(Command::Save {
             project: self.project.clone(),
             settings: self.settings.clone(),
-            active: self.active && self.visible(),
+            active: (self.active || self.native_active) && self.visible(),
         });
         self.changed(cx);
     }
@@ -620,7 +641,7 @@ impl ChatBackground {
             .border_color(rgba(0xebebeb18));
         if let Some(image) = &self.image {
             preview = preview.child(
-                img(image.clone())
+                img(image.image.clone())
                     .size_full()
                     .object_fit(ObjectFit::Contain)
                     .opacity(self.settings.empty_opacity),
@@ -916,7 +937,7 @@ impl Render for ChatBackground {
                     },
                     move |_, bounds, window, _| {
                         if let Some(image) = image {
-                            let _ = window.paint_image(bounds, Corners::default(), image, 0, false);
+                            let _ = window.paint_image(bounds, Corners::default(), image.image.clone(), 0, false);
                         }
                     },
                 )
@@ -1235,16 +1256,17 @@ fn fade_pixels<const BGRA: bool>(
         }
     }
 }
-fn render_image(mut pixels: RgbaImage, effect: Effect, empty: bool) -> Arc<RenderImage> {
+fn render_image(mut pixels: RgbaImage, effect: Effect, empty: bool) -> Arc<WallpaperFrame> {
     // None already owns its pixels. Avoid another full-size raster allocation.
     if effect != Effect::None {
         pixels = effects(&pixels, effect, empty);
     }
+    let native=Some(resize(&pixels,512));
     // Haze belongs to the fade, independently of the selected artwork effect.
     // Blend, alpha fade, and upload conversion share the existing in-place pass.
     let haze = fade_haze(&pixels);
     fade_pixels::<true>(&mut pixels, empty, Some(&haze));
-    Arc::new(RenderImage::new(vec![image::Frame::new(pixels)]))
+    Arc::new(WallpaperFrame{image:Arc::new(RenderImage::new(vec![image::Frame::new(pixels)])),native})
 }
 struct Animation {
     viewport: Option<(u32, u32)>,
@@ -1284,7 +1306,7 @@ fn prepare(
     bytes: Arc<[u8]>,
     settings: &Settings,
     empty: bool,
-) -> std::io::Result<(Arc<RenderImage>, Option<Animation>)> {
+) -> std::io::Result<(Arc<WallpaperFrame>, Option<Animation>)> {
     prepare_cached(bytes, settings, empty, None, &mut None)
 }
 fn prepare_cached(
@@ -1293,7 +1315,7 @@ fn prepare_cached(
     empty: bool,
     viewport: Option<(u32, u32)>,
     decoded: &mut Option<RgbaImage>,
-) -> std::io::Result<(Arc<RenderImage>, Option<Animation>)> {
+) -> std::io::Result<(Arc<WallpaperFrame>, Option<Animation>)> {
     #[cfg(test)]
     PREPARE_CALLS.with(|calls| calls.set(calls.get() + 1));
     if image::guess_format(&bytes).ok() == Some(image::ImageFormat::Gif) {
@@ -1339,7 +1361,7 @@ fn next_frame(
     animation: &mut Animation,
     settings: &Settings,
     empty: bool,
-) -> std::io::Result<Option<Arc<RenderImage>>> {
+) -> std::io::Result<Option<Arc<WallpaperFrame>>> {
     if animation.finished {
         return Ok(None);
     }
@@ -2951,13 +2973,13 @@ mod tests {
     fn inactive_or_reduced_motion_window_keeps_native_background_artwork_visible(
         cx: &mut gpui::TestAppContext,
     ) {
-        use gpui::{IntoElement, RenderImage};
+        use gpui::IntoElement;
         let (tx, _rx) = mpsc::channel();
-        let image = Arc::new(RenderImage::new(vec![Frame::new(RgbaImage::from_pixel(
+        let image = super::WallpaperFrame::fixture(vec![Frame::new(RgbaImage::from_pixel(
             8,
             8,
             Rgba([255, 0, 0, 255]),
-        ))]));
+        ))]);
         let (view, cx) = cx.add_window_view(move |_, _| super::ChatBackground {
             project: PathBuf::from("/project"),
             generation: 1,
@@ -2968,6 +2990,7 @@ mod tests {
             image: Some(image),
             empty: true,
             active: false,
+            native_active:false,
             busy: false,
             quitting: false,
             error: None,
@@ -3106,6 +3129,7 @@ mod tests {
             image: None,
             empty: true,
             active: true,
+            native_active:false,
             busy: false,
             quitting: false,
             error: None,
@@ -3119,9 +3143,9 @@ mod tests {
             resized_at: Instant::now(),
             resize_pending: false,
         });
-        let image = Arc::new(gpui::RenderImage::new(vec![Frame::new(
+        let image = super::WallpaperFrame::fixture(vec![Frame::new(
             RgbaImage::from_pixel(8, 8, Rgba([255, 0, 0, 255])),
-        )]));
+        )]);
         view.update(cx, |this, cx| {
             this.settings = Settings {
                 path: Some(data.join("backgrounds/image.png")),
@@ -3151,9 +3175,9 @@ mod tests {
             this.receive(
                 super::Event::Frame(
                     this.generation,
-                    Arc::new(gpui::RenderImage::new(vec![Frame::new(RgbaImage::new(
+                    super::WallpaperFrame::fixture(vec![Frame::new(RgbaImage::new(
                         1, 1,
-                    ))])),
+                    ))]),
                 ),
                 cx,
             );
@@ -3378,4 +3402,21 @@ mod native_image {
         let pixels = reader.decode().map_err(std::io::Error::other)?.into_rgba8();
         Ok(super::resize(&pixels, side))
     }
+}
+
+#[cfg(test)]mod native_notch_tests{
+ use super::*;use std::prelude::v1::test;
+ #[test]fn native_wallpaper_retains_real_transparency_and_uses_the_same_effect(){
+  let mut pixels=RgbaImage::from_pixel(16,16,image::Rgba([20,40,80,160]));pixels.put_pixel(0,0,image::Rgba([0,0,0,0]));
+  for effect in Effect::ALL{
+   let expected=if effect==Effect::None{pixels.clone()}else{effects(&pixels,effect,false)};
+   let frame=render_image(pixels.clone(),effect,false);let native=frame.native.as_ref().unwrap();
+   assert_eq!(native,&expected,"The notch must share the actual effect pixels before Code's downward fade");
+   assert!(frame.as_bytes(0).unwrap().chunks_exact(4).skip(16*15).all(|p|p[3]==0));
+  }
+ }
+ #[test]fn secondary_surface_is_bounded_without_changing_the_workspace_raster(){
+  let frame=render_image(RgbaImage::from_pixel(1600,900,image::Rgba([30,60,90,255])),Effect::None,true);
+  assert_eq!(frame.size(0).width.0,1600);let native=frame.native.as_ref().unwrap();assert_eq!(native.width(),512);assert!(native.height()<=512);
+ }
 }

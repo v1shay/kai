@@ -23,6 +23,7 @@ enum UnifiedDraftHandoff {
     var onLevels:(([CGFloat])->Void)?
     var onState:((KaiState)->Void)?
     var onError:((String)->Void)?
+    private var wallpaperVisible:Bool?
     private var lastState:Data?
     private var historyOwner:String?
     private var history=[KaiMessage]()
@@ -77,6 +78,14 @@ enum UnifiedDraftHandoff {
         }
     }
     var ready:Bool{active && onState != nil && lastState != nil}
+    func setWallpaperVisible(_ visible:Bool){guard active,visible != wallpaperVisible else{return};wallpaperVisible=visible;sendAction("workspace_wallpaper_visibility",["visible":visible])}
+    func receiveWallpaper(_ bytes:UnsafePointer<UInt8>?,count:Int,width:Int,height:Int,opacity:Float){
+        guard let bytes else{app?.setWorkspaceWallpaper(nil,opacity:0);return}
+        guard (1...512).contains(width),(1...512).contains(height),count==width*height*4,opacity.isFinite else{return}
+        let data=Data(bytes:bytes,count:count)
+        guard let provider=CGDataProvider(data:data as CFData),let image=CGImage(width:width,height:height,bitsPerComponent:8,bitsPerPixel:32,bytesPerRow:width*4,space:CGColorSpaceCreateDeviceRGB(),bitmapInfo:CGBitmapInfo(rawValue:CGImageAlphaInfo.last.rawValue),provider:provider,decode:nil,shouldInterpolate:true,intent:.defaultIntent) else{return}
+        app?.setWorkspaceWallpaper(image,opacity:opacity)
+    }
     func presentation(_ phase:String){var now=timespec();clock_gettime(CLOCK_MONOTONIC_RAW,&now);sendAction("workspace_presentation",["phase":phase,"started":Double(now.tv_sec)+Double(now.tv_nsec)/1_000_000_000])}
     func sendAction(_ action:String,_ fields:[String:Any]=[:]){var value=fields;value["action"]=action;if let data=try? JSONSerialization.data(withJSONObject:value){send(data)}}
     var voiceHost:NSView?{app?.unifiedVoiceHost()}
@@ -86,6 +95,8 @@ enum UnifiedDraftHandoff {
 }
 
 #if KAI_UNIFIED
+@_cdecl("kai_unified_wallpaper")
+public func kaiUnifiedWallpaper(_ bytes:UnsafePointer<UInt8>?,_ count:Int,_ width:Int,_ height:Int,_ opacity:Float){guard Thread.isMainThread else{return};MainActor.assumeIsolated{EmbeddedCodeRuntime.shared.receiveWallpaper(bytes,count:count,width:width,height:height,opacity:opacity)}}
 @_cdecl("kai_unified_start")
 public func kaiUnifiedStart(_ window:UnsafeMutableRawPointer?,_ command:(@convention(c)(UnsafePointer<UInt8>?,Int)->Bool)?) {
     guard Thread.isMainThread,let window,let command else{return}

@@ -49,7 +49,7 @@ enum FileActionSymbols {
     }
 }
 
-@MainActor final class FileActionHoverTextView:NSTextView {
+@MainActor class FileActionHoverTextView:NSTextView {
     private var actionTracking:NSTrackingArea?
     private(set) var fileActionHoverRect:CGRect?
     private(set) var hoveredFileAction:URL?

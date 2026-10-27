@@ -4879,3 +4879,26 @@ fn new_chat_welcome_is_centered_in_its_full_content_area(cx:&mut TestAppContext)
         assert!((content.center().y-greeting.center().y).abs()<px(1.),"Welcome must center in the content, not stick to its top: content={content:?}, greeting={greeting:?}");
     }
 }
+
+#[gpui::test]
+fn first_submission_starts_at_the_latest_line_and_keeps_following(cx:&mut TestAppContext){
+    let (view,cx)=fixture(cx);
+    cx.run_until_parked();
+    view.update_in(cx,|app,window,cx|{
+        app.new_conversation(window,cx);
+        app.agent=AgentKind::Codex;
+        app.agents[0].available=true;
+        app.agents[0].executable=Some(PathBuf::from("/usr/bin/true"));
+        app.trusted_workspaces.insert((AgentKind::Codex,app.project.clone()));
+        app.composer.update(cx,|input,cx|input.set_text(&(String::from("A long first prompt\n")+&"More context for the first turn.\n".repeat(100)+"FINAL PROMPT LINE"),cx));
+        app.send(window,cx);
+        assert!(app.active.is_some());
+        assert_eq!(app.list.logical_scroll_top().item_ix,app.rows.len(),"Submitting a new chat pinned its viewport to the first line");
+        assert!(app.following_bottom);
+    });
+    draw_frame(&view,cx);
+    let prompt=cx.debug_bounds("transcript-row-0").expect("Submitted prompt");
+    let viewport=cx.update(|_,cx|view.read(cx).list.viewport_bounds());
+    assert!(prompt.top()<viewport.top(),"A long new conversation must reveal its tail");
+    assert!((prompt.bottom()-viewport.bottom()).abs()<px(2.));
+}

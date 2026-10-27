@@ -123,6 +123,7 @@ private class ImageDropView:NSView {
 }
 
 private final class ComposerField:NSTextField {
+    override func acceptsFirstMouse(for event:NSEvent?)->Bool{true}
     var imagesEntered:(()->Void)?,imagesDropped:(([NSImage])->Void)?
     override init(frame:NSRect){super.init(frame:frame);registerForDraggedTypes([.fileURL,.png,.tiff]+NSImage.imageTypes.map{NSPasteboard.PasteboardType($0)})}
     required init?(coder:NSCoder){fatalError()}
@@ -176,6 +177,7 @@ private final class ComposerField:NSTextField {
 }
 
 private final class NotchView:ImageDropView {
+    override func acceptsFirstMouse(for event:NSEvent?)->Bool{true}
     var click:((CGPoint,Int)->Void)?
     var scroll:((CGPoint,CGFloat)->Void)?
     var hover:((CGPoint?)->Void)?
@@ -184,6 +186,10 @@ private final class NotchView:ImageDropView {
     override func scrollWheel(with event:NSEvent) { scroll?(event.locationInWindow,event.scrollingDeltaY) }
     override func mouseMoved(with event:NSEvent){hover?(event.locationInWindow)}
     override func mouseExited(with event:NSEvent){hover?(nil)}
+}
+
+private final class NotchSurfaceHost:NSView {
+    override func acceptsFirstMouse(for event:NSEvent?)->Bool{true}
 }
 
 @MainActor final class KaiPetApp: NSObject, NSApplicationDelegate, NSTextFieldDelegate, NSTextViewDelegate {
@@ -206,6 +212,8 @@ private final class NotchView:ImageDropView {
     private var workspacePetMenu:NSMenu?,workspacePetSlot=CGRect(x:215,y:36,width:48,height:34)
     private var reviewedFinished=[String]()
     private let glassBackground=NotchGlassBackground(frame:.zero)
+    private let workspaceBackground=NotchWorkspaceBackground(frame:.zero)
+    private var codeWallpaperEnabled=UserDefaults.standard.bool(forKey:"notchCodeWallpaper") || CommandLine.arguments.contains("--unified-wallpaper-probe"),codeWallpaperItem:NSMenuItem?
     private var codeConnectionItem:NSMenuItem?
     private var glassSliders=[String:NSSlider](),glassLabels=[String:NSTextField](),glassChoiceItems=[NSMenuItem]()
     private var glassEnabled=UserDefaults.standard.bool(forKey:"notchBottomGlass"),glassItem:NSMenuItem?
@@ -300,7 +308,7 @@ private final class NotchView:ImageDropView {
     private var lastControlTap = 0.0
     private var commandDismissGesture=ModifierDoubleTap()
     private var holdWork: DispatchWorkItem?
-    private let scalableUI=NSView(),resizeHandles=NotchResizeHandles()
+    private let scalableUI=NotchSurfaceHost(),resizeHandles=NotchResizeHandles()
     private var expandedSize:CGSize?,resizeInitial=CGSize.zero,resizeMode=NotchResizeMode.both
     private var defaultWidthSlider:NSSlider?,defaultHeightSlider:NSSlider?
     private var sizeLabels=[String:NSTextField]()
@@ -555,7 +563,8 @@ private final class NotchView:ImageDropView {
         soundsItem.target=self
         codeConnectionItem=menu.addItem(withTitle:EmbeddedCodeRuntime.shared.active ? "Code runtime · in this app":"Connect to Code",action:EmbeddedCodeRuntime.shared.active ? nil:#selector(toggleCodeConnection),keyEquivalent:"")
         glassItem=menu.addItem(withTitle:"Frosted glass at bottom",action:#selector(toggleBottomGlass),keyEquivalent:"")
-        let glassControls=menu.addItem(withTitle:"Glass appearance",action:nil,keyEquivalent:"")
+        if EmbeddedCodeRuntime.shared.active{codeWallpaperItem=menu.addItem(withTitle:"Code wallpaper at bottom",action:#selector(toggleCodeWallpaper),keyEquivalent:"");codeWallpaperItem?.target=self;codeWallpaperItem?.toolTip="Reuse Code’s wallpaper, effect, and visibility. Adjust Fade height under Bottom appearance."}
+        let glassControls=menu.addItem(withTitle:"Bottom appearance",action:nil,keyEquivalent:"")
         let glassMenu=NSMenu();glassControls.submenu=glassMenu
         let preferences=GlassPreferences(defaults:.standard)
         for control in GlassPreferences.controls {
@@ -681,7 +690,7 @@ private final class NotchView:ImageDropView {
             .init(title:"Chats & Models",items:[defaultModelItem]),
             .init(title:"Shortcuts & Input",items:items([shortcutItem,timingItem,expandedDictationItem,autoSendItem,contextItem,compactSendItem])),
             .init(title:"Voice & Audio",items:items([realtimeVoices,speechItem,voices,rescanVoicesItem,stopSpeakingItem,soundsItem])),
-            .init(title:"Appearance",items:items([petRoot,floatingTasksItem(),sizeItem,motionRoot,indicatorRoot,accentRoot,sizingItem,glassItem,glassControls,mathModeItem,textMorphItem])),
+            .init(title:"Appearance",items:items([petRoot,floatingTasksItem(),sizeItem,motionRoot,indicatorRoot,accentRoot,sizingItem,glassItem,codeWallpaperItem,glassControls,mathModeItem,textMorphItem])),
             .init(title:"Media",items:items([youtubeItem,spotifyItem,mediaSizeItem,mediaPermissionsItem])),
             .init(title:"Advanced & Connections",items:items([codeConnectionItem,experimentalModeItem,morphItem,approvalPreview]))
         ],footer:items([featureStatusItem,quit]))
@@ -716,10 +725,11 @@ private final class NotchView:ImageDropView {
             panel.level = .statusBar; panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
             let host=NotchView(frame:CGRect(origin:.zero,size:rect.size));host.click={ [weak self] point,count in self?.handleClick(point,count:count) };host.scroll={ [weak self] point,delta in self?.handleScroll(point,delta) };host.hover={ [weak self] point in self?.handleHover(point) };host.dragEntered={ [weak self] in guard self?.experimentalWebMode != true else{return};self?.handleImageEntered() };host.imageDropped={ [weak self] images in guard self?.experimentalWebMode != true else{return};self?.handleImageDrop(images) };panel.contentView=host;host.wantsLayer=true;panel.acceptsMouseMovedEvents=true
             host.addSubview(glassBackground)
+            host.addSubview(workspaceBackground)
             scalableUI.wantsLayer=true;host.addSubview(scalableUI)
             composerField=ComposerField();composerField.isBordered=false;composerField.drawsBackground=false;composerField.focusRingType = .none;composerField.font=NSFont.systemFont(ofSize:10);composerField.textColor=NSColor.white.withAlphaComponent(0.88);composerField.delegate=self;composerField.isHidden=true;composerField.imagesEntered={ [weak self] in self?.handleImageEntered() };composerField.imagesDropped={ [weak self] images in self?.handleImageDrop(images) };scalableUI.addSubview(composerField)
             miniUI.composerFrameChanged={ [weak self] frame,animated in self?.layoutComposer(frame,animated:animated) }
-            let scroll=ConversationScrollView(),text=FileActionHoverTextView()
+            let scroll=ConversationScrollView(),text=ConversationTextView()
             historyControl.onLatest={[weak self] in guard let self else{return};self.earlierHistoryRequest=nil;self.bridge.send("history_latest",[:])}
             historyControl.onLoad={ [weak self] in self?.loadEarlierHistory() }
             historyControl.frame=CGRect(x:0,y:0,width:scroll.contentSize.width,height:24)
@@ -1300,6 +1310,7 @@ private final class NotchView:ImageDropView {
         if workspaceMorph.transitioning{value |= 16}
         if let window=EmbeddedCodeRuntime.shared.workspaceWindow,let screen=window.screen,window.frame == screen.visibleFrame{value |= 64}
         if quickChatVisible{value |= 128}
+        if !workspaceBackground.isHidden && workspaceBackground.hasImage{value |= 256}
         if indicator.mode != .off && indicator.layer.opacity>0{value |= 32}
         return value
     }
@@ -2159,17 +2170,26 @@ private final class NotchView:ImageDropView {
     @objc private func changeGlass(_ slider:NSSlider){guard let key=slider.identifier?.rawValue else{return};UserDefaults.standard.set(slider.doubleValue,forKey:"glass."+key);refreshGlassLabels();updateGlassBackground();if key == "radius"{placePanel()}}
     @objc private func chooseGlass(_ item:NSMenuItem){guard let key=item.representedObject as? String else{return};UserDefaults.standard.set(item.tag,forKey:"glass."+key);for choice in glassChoiceItems where choice.representedObject as? String == key{choice.state=choice.tag == item.tag ? .on:.off};updateGlassBackground()}
     @objc private func resetGlass(){GlassPreferences.reset(.standard);for control in GlassPreferences.controls{glassSliders[control.key]?.doubleValue=control.initial};for item in glassChoiceItems{item.state=item.tag == ((item.representedObject as? String) == "blur" ? 1:0) ? .on:.off};refreshGlassLabels();placePanel()}
-    @objc private func toggleBottomGlass(){glassEnabled.toggle();UserDefaults.standard.set(glassEnabled,forKey:"notchBottomGlass");placePanel();refreshChecks()}
+    @objc private func toggleBottomGlass(){if codeWallpaperEnabled{codeWallpaperEnabled=false;UserDefaults.standard.set(false,forKey:"notchCodeWallpaper");glassEnabled=true}else{glassEnabled.toggle()};UserDefaults.standard.set(glassEnabled,forKey:"notchBottomGlass");placePanel();refreshChecks()}
+    @objc private func toggleCodeWallpaper(){codeWallpaperEnabled.toggle();UserDefaults.standard.set(codeWallpaperEnabled,forKey:"notchCodeWallpaper");placePanel();refreshChecks()}
+    func setWorkspaceWallpaper(_ image:CGImage?,opacity:Float){workspaceBackground.setImage(image,opacity:opacity)}
     private func updateGlassBackground(){
         guard let root=panel?.contentView?.layer else{return}
-        let enabled=glassEnabled && open && miniOpen && !experimentalWebMode
+        let wallpaper=codeWallpaperEnabled && EmbeddedCodeRuntime.shared.active
+        let visible=open && miniOpen && !experimentalWebMode
+        let enabled=glassEnabled && !wallpaper && visible
         root.backgroundColor=enabled ? NSColor.clear.cgColor:NSColor.black.cgColor
         glassBackground.update(canvas:CGSize(width:canvasWidth,height:canvasHeight),width:expandedWidth,enabled:enabled,color:assistantPalette.first ?? .systemBlue,preferences:GlassPreferences(defaults:.standard))
+        workspaceBackground.update(canvas:CGSize(width:canvasWidth,height:canvasHeight),width:expandedWidth,enabled:wallpaper&&visible,height:GlassPreferences(defaults:.standard).height)
+        EmbeddedCodeRuntime.shared.setWallpaperVisible(wallpaper&&visible)
     }
     private func refreshChecks() {
         codeConnectionItem?.state=(UserDefaults.standard.object(forKey:"connectCode") as? Bool ?? true) ? .on:.off
         petFilterItem?.state=petSelection.excludeCodexPets ? .on:.off
-        glassItem?.state=glassEnabled ? .on:.off
+        glassItem?.state=glassEnabled && !codeWallpaperEnabled ? .on:.off
+        codeWallpaperItem?.state=codeWallpaperEnabled ? .on:.off
+        for (key,slider) in glassSliders{slider.isEnabled = !codeWallpaperEnabled || key=="height"}
+        glassChoiceItems.forEach{$0.isEnabled = !codeWallpaperEnabled}
         experimentalModeItem?.state=experimentalWebMode ? .on:.off
         textMorphItem?.state=morphingText ? .on:.off
         mathModeItem?.state=renderMath ? .on:.off

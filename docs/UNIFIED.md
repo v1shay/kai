@@ -876,3 +876,47 @@ Installed experimental build: **0.8.4 (18)**. The previous bundle is retained as
 `Kai Unified 0.8.3 backup 20261026-223343.app`. Strict signature and all three
 executable/library hashes match the tested build. Running apps and agents were
 not stopped; relaunch the experimental app to load this version.
+
+## 0.8.5 — bottom conversation alignment and shared Code wallpaper
+
+Short extended-notch conversations now sit above the composer. A native text
+origin offset disappears as history grows beyond the viewport, preserving normal
+scrolling, selection, links, and text reveal. A separate reproduced Code bug pinned
+long first submissions to their first line; submissions now anchor to their tail.
+The notch host, composer, and conversation accept the first click while another
+application is active. The native window test sends actual mouse events to focus
+the editor and dispatch New.
+
+**Appearance → Code wallpaper at bottom** replaces the glass with the current
+Code wallpaper, effect, and empty/chat visibility. **Bottom appearance → Fade
+height** controls its upward feather. The existing background worker produces the
+effect once and retains a secondary unfaded raster capped at 512 pixels per side.
+The in-process ABI passes these pixels directly to a native layer; no extra
+decoder, web view, background renderer, or playback timer is introduced. GIF
+playback stays active for the visible notch and stops when neither surface needs
+it. Project changes, empty-only visibility, removal, and reduced motion use the
+existing background policy. Glass and wallpaper are mutually exclusive choices.
+
+Verification: 770 Rust tests passed with 17 opt-in tests ignored; the Swift suite
+ran 191 tests with one skip and no failures. All 26 wallpaper tests passed with
+one opt-in test ignored, including exact shared effect pixels, transparency, and
+bounded native rasters. Wallpaper-enabled native composer/input checks passed;
+the bottom-alignment changes also passed two-minute idle audits before wallpaper
+sharing was added. The final signed morph probe confirmed that real Code wallpaper
+pixels reach the extended notch during the workspace-to-notch handoff.
+
+The reported intermittent freeze remains unresolved. Live samples taken while
+the user reported it frozen showed the main event loop processing timers, and
+Accessibility trust was enabled. A first-click rejection was verified and fixed;
+this has not established the full cause of the reported menu/notch freeze. The
+new live generated-speech check failed before connection with “Microphone
+disconnected” both with wallpaper enabled and disabled. The voice media library
+is byte-identical to 0.8.4; the current failure is still open and is not counted
+as a passing voice verification. Earlier successful live checks remain recorded
+under their actual release versions.
+
+Installed and reopened **0.8.5 (19)** through LaunchServices, with Code wallpaper
+enabled. The prior bundle is retained as `Kai Unified 0.8.4 backup
+20261026-234612.app`. Strict bundle signature and all three executable/library
+hashes were verified. No active agent subprocesses were present in the previous
+observed instance when it exited.
