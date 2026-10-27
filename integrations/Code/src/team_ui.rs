@@ -239,6 +239,7 @@ impl Orbit {
             images: Vec::new(),
             allow_edits: team.allow_edits,
             codex_approvals: self.codex_approvals,
+            codex_access: self.codex_access,
             trust_workspace: self
                 .trusted_workspaces
                 .contains(&(member.agent, team.project.clone())),

@@ -176,6 +176,7 @@ impl Orbit {
             images: Vec::new(),
             allow_edits: self.allow_edits,
             codex_approvals: self.codex_approvals,
+            codex_access: self.codex_access,
             trust_workspace: false,
         };
         if !self.sessions.iter().any(|s| s.id == id) {
@@ -300,6 +301,7 @@ impl Orbit {
             images: Vec::new(),
             allow_edits: self.allow_edits,
             codex_approvals: self.codex_approvals,
+            codex_access: self.codex_access,
             trust_workspace: false,
         };
         self.start_native_maintenance(
@@ -371,6 +373,7 @@ impl Orbit {
             images: Vec::new(),
             allow_edits: false,
             codex_approvals: self.codex_approvals,
+            codex_access: self.codex_access,
             trust_workspace: false,
         };
         self.start_native_maintenance(

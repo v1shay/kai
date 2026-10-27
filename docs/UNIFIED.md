@@ -759,3 +759,67 @@ extended-notch return and Quick Chat dismissal, then asks that session to speak
 again and requires new incoming WebRTC audio bytes before explicit hang-up. It
 also checks that hang-up leaves no ghost notch. Its media remains diagnostic
 generated audio; ambient microphone tracks are disabled.
+
+## 0.8.3 — automatic voice handoff and explicit workspace access
+
+The workspace voice button and Kai’s voice shortcuts now share one routing path.
+New voice chats always use Codex, even when the empty composer has Gemini or
+another provider selected. An existing non-Codex conversation transfers through
+Code’s transactional handoff: its local chat ID, project and execution directory
+stay the same, while its original native session and history remain preserved.
+The bounded saved conversation packet is persisted into a real destination
+Codex turn before realtime starts. Captured screen context and images travel
+with that preparation; the held recording remains attached to the same media
+session. Ordinary dictation remains text input for the selected agent.
+
+The voice call captures the destination model, effort and permissions at start.
+Context acknowledgements cannot launch a different chat, and stopped calls reject
+late media callbacks. Early voice requests resolve the Codex executable directly
+through the normal provider-discovery function instead of waiting for project
+and saved-history discovery. Recordings arriving during microphone permission,
+after document startup, or after activation are retained and played once. Muting
+during playback remains in effect when live microphone input resumes.
+
+The composer’s mode menu now separates **workspace access** from **command
+approvals**, displays the actual execution directory, and offers Codex’s real
+**Full access** mode. Full access permits filesystem and network access outside
+the workspace. **Never ask** changes approval prompts only; it does not change
+the selected workspace boundary. Select Full access and Never ask together for
+runs without a Codex sandbox or command approval prompts. Read-only intent always retains a
+read-only sandbox, including when a previous Full access preference exists.
+
+Access is persisted independently and captured in each invocation. It reaches
+new/resumed native threads, subsequent turns, terminal commands, voice tools and
+team launches. Queued prompts retain their access choice and are held for review
+if access changes before dispatch. Permission changes affect the next invocation;
+ongoing work retains its captured policy. The application does not rewrite the
+user’s global Codex configuration. Approval requests continue using the existing
+opaque per-run token and focus-aware Code/notch review surfaces.
+
+Verification: 756 Code tests passed with no failures (17 opt-in checks ignored in
+the ordinary suite), and all 14 WebRTC media regressions passed. The installed
+Codex command/exec check ran separately: read-only blocked writes, workspace
+access permitted only the project write, and Full access permitted the separate
+outside-project write, without raising an approval prompt. Native state and
+production shortcut harnesses passed, including focus-aware exact-token reviews,
+all Command/Option/Fn voice actions, silence, held audio/context, and continuity.
+The actual Code UI also created and resumed a real Codex agent, edited only its
+disposable project, reported the native model and saved both turn durations.
+
+The final signed bundle passed all four generated-speech routes: saved Gemini
+chat and new Gemini-selected draft, each through the shortcut command and the
+workspace voice button. Existing-chat replies recalled the transferred “cobalt
+blue” fact. Every route preserved its single voice identity across workspace,
+Double-Command, extended notch and Quick Chat transitions, received new WebRTC
+audio afterward, and closed its media on explicit stop. The teardown check waits
+for authoritative backing coding work to finish before checking notch retirement;
+real remaining work keeps its status. No stale notch remained after quiescence.
+The separate signed morph check passed reversal, visible working-area bounds,
+shared pet, repeat opening, extended return, Double-Command and exclusive Quick
+Chat. These unlocked-desktop results complete the live checks left pending in
+0.8.2. Ambient microphone audio was disabled in these generated-speech runs.
+
+Installed experimental build: **0.8.3 (17)**. The prior bundle is retained as
+`Kai Unified 0.8.2 backup 20261026-185027.app`. Installation verified the strict
+bundle signature and all three executable/library hashes. Running apps and
+agents were not stopped; relaunch the experimental app to load this build.

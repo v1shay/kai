@@ -258,6 +258,7 @@ impl Orbit {
         self.agent.command().hash(&mut hash);
         self.model.hash(&mut hash);self.unified_text_morph.hash(&mut hash);self.reasoning_efforts.hash(&mut hash);
         self.codex_approvals.hash(&mut hash);
+        self.codex_access.hash(&mut hash);
         self.sidebar_split.hash(&mut hash);
         let mut expanded: Vec<_> = self.expanded_projects.iter().collect();
         expanded.sort_unstable();
@@ -422,6 +423,7 @@ impl Orbit {
             reasoning_efforts:self.reasoning_efforts.clone(),
             allow_edits: self.allow_edits,
             codex_approvals: self.codex_approvals,
+            codex_access: self.codex_access,
             motion: self.motion,
             sidebar: self.sidebar,
             sidebar_split: self.sidebar_split,
@@ -510,6 +512,7 @@ impl Orbit {
         self.apply_personalization(window, cx);
         self.allow_edits = saved.allow_edits;
         self.codex_approvals = saved.codex_approvals;
+        self.codex_access = saved.codex_access;
         self.prompt_queue = saved.prompt_queue;
         for prompt in &mut self.prompt_queue {
             prompt.held = true;

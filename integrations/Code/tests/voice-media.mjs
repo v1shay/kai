@@ -143,3 +143,30 @@ test('mute and interruption remain session scoped and stop output',async()=>{
  h.api.interrupt('one');assert.deepEqual(channel.sent.map(e=>e.type),['response.cancel','output_audio_buffer.clear']);
  h.api.stop();h.api.interrupt('one');assert.equal(channel.sent.length,2);
 });
+test('recording arriving while microphone permission is pending is retained',async()=>{
+  const h=harness({deferredCapture:true});const started=h.api.start('late',true);
+  await h.api.initialPrompt('late','AQID');h.resolveCapture(h.stream);await started;
+  await h.api.activate('late');assert.equal(h.sources.length,1);assert.equal(h.sources[0].started,true);
+  await h.sources[0].onended();assert.equal(h.track.enabled,true);
+  assert.equal(h.messages.filter(m=>m.type==='promptSent').length,1);h.api.stop();
+});
+test('recording arriving after the media page starts or activates is played exactly once',async()=>{
+  for(const active of [false,true]){
+    const h=harness();await h.api.start('late',true,'',true);
+    if(active)await h.api.activate('late');await h.api.initialPrompt('late','AQID');
+    if(!active)await h.api.activate('late');
+    assert.equal(h.sources.length,1);assert.equal(h.sources[0].started,true);
+    await h.api.initialPrompt('late','BAUG');assert.equal(h.sources.length,1);
+    await h.sources[0].onended();assert.equal(h.track.enabled,false);
+    assert.equal(h.messages.filter(m=>m.type==='promptSent').length,1);
+    h.api.stop();await h.api.initialPrompt('late','AQID');assert.equal(h.sources.length,1);
+  }
+});
+
+test('mute survives held recording playback and diagnostics never enable the microphone',async()=>{
+  for(const diagnostic of [false,true]){
+    const h=harness();await h.api.start('mute',true,'AQID',diagnostic);await h.api.activate('mute');
+    h.api.mute('mute',true);await h.sources[0].onended();assert.equal(h.track.enabled,false);
+    h.api.mute('mute',false);assert.equal(h.track.enabled,!diagnostic);h.api.stop();
+  }
+});

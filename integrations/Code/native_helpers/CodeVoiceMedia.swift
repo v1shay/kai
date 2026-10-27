@@ -17,7 +17,7 @@ private final class Relay:NSObject,WKScriptMessageHandler {
     let script:String
     weak var host:NSView?
     var view:WKWebView?
-    var initialPrompt=""
+    var initialPrompt="",scriptStarted=false
     var session:String?
     init(host:NSView,script:String,context:UnsafeMutableRawPointer?,callback:@escaping EventCallback){self.host=host;self.script=script;self.context=context;self.callback=callback}
     func post(_ fields:[String:Any]){
@@ -64,7 +64,7 @@ private final class Relay:NSObject,WKScriptMessageHandler {
     func command(_ event:[String:Any]){
         guard let id=session,event["sessionId"] as? String==id,let method=event["type"] as? String else{return}
         switch method{
-        case "initialPrompt":if let audio=event["audio"] as? String,audio.utf8.count<=32*1024*1024{initialPrompt=audio}
+        case "initialPrompt":if let audio=event["audio"] as? String,audio.utf8.count<=32*1024*1024{if scriptStarted{invoke("initialPrompt",[id,audio])}else{initialPrompt=audio}}
         case "answer":if let sdp=event["sdp"] as? String,sdp.hasPrefix("v=0"),sdp.utf8.count<=128*1024{invoke("answer",[id,sdp])}
         case "activate":invoke("activate",[id])
         case "mute":invoke("mute",[id,event["muted"] as? Bool ?? false])
@@ -80,12 +80,12 @@ private final class Relay:NSObject,WKScriptMessageHandler {
             view.stopLoading();view.uiDelegate=nil;view.navigationDelegate=nil;view.removeFromSuperview()
             view.loadHTMLString("",baseURL:nil)
         }
-        view=nil;initialPrompt=""
+        view=nil;initialPrompt="";scriptStarted=false
     }
     func fail(_ message:String){post(["type":"error","message":String(message.prefix(1000))]);stop()}
     func receive(_ message:WKScriptMessage){
         guard message.webView===view,message.frameInfo.isMainFrame,let event=message.body as? [String:Any],let type=event["type"] as? String,let id=session else{return}
-        if type=="ready"{diagnostic("documentReady",["hostVisible":host?.window?.isVisible == true,"unoccluded":host?.window?.occlusionState.contains(.visible) == true]);let prompt=initialPrompt;initialPrompt="";invoke("start",[id,true,prompt,ProcessInfo.processInfo.environment["KAI_CODE_VOICE_DIAGNOSTIC"] == "1"]);return}
+        if type=="ready"{diagnostic("documentReady",["hostVisible":host?.window?.isVisible == true,"unoccluded":host?.window?.occlusionState.contains(.visible) == true]);let prompt=initialPrompt;initialPrompt="";scriptStarted=true;invoke("start",[id,true,prompt,ProcessInfo.processInfo.environment["KAI_CODE_VOICE_DIAGNOSTIC"] == "1"]);return}
         guard event["sessionId"] as? String==id else{return}
         switch type{
         case "offer":if let sdp=event["sdp"] as? String,sdp.hasPrefix("v=0"),sdp.utf8.count<=128*1024{post(["type":"offer","sdp":sdp])}

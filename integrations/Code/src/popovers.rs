@@ -215,9 +215,9 @@ impl Orbit {
                 "Permissions",
                 "lock",
                 "permissions-popover",
-                360.,
+                400.,
                 if self.agent == AgentKind::Codex {
-                    420.
+                    600.
                 } else {
                     150.
                 },
@@ -263,35 +263,31 @@ impl Orbit {
                     .child(self.usage_panel(height - px(40.), cx));
             }
             Modal::Permissions => {
-                for (allow, label, detail) in [
-                    (
-                        false,
-                        "Read only / plan",
-                        "Keep the CLI's existing read-only policy",
-                    ),
-                    (
-                        true,
-                        "Workspace edits",
-                        "Allow edits; keep native tool permissions",
-                    ),
-                ] {
+                let mut modes=vec![
+                    (false,runtime::CodexAccess::Workspace,"Read only / plan","Read files; sandbox blocks edits and network."),
+                    (true,runtime::CodexAccess::Workspace,"Workspace edits","Edit this workspace; network and writes outside it require approval."),
+                ];
+                if self.agent==AgentKind::Codex {
+                    modes.push((true,runtime::CodexAccess::Full,"Full access","No Codex filesystem or network sandbox. Can modify files outside this workspace."));
+                    body=body.child(div().mx_3().mb_2().text_size(crate::theme::ui_px(10.)).text_color(rgb(MUTED))
+                        .child(div().text_ellipsis().child(format!("Workspace · {}",self.execution_root().as_ref().unwrap_or(&self.project).display())))
+                        .child(div().child("Next invocation · running work keeps its permissions")));
+
+                }
+                for (index,(allow, access, label, detail)) in modes.into_iter().enumerate() {
+                    let selected=self.allow_edits==allow && (!allow || self.agent!=AgentKind::Codex || self.codex_access==access);
                     body = body.child(
-                        div()
-                            .id(("permission-mode", allow as usize))
-                            .mx_2()
-                            .p_3()
-                            .rounded_md()
-                            .cursor_pointer()
+                        div().id(("permission-mode", index)).debug_selector(move || format!("workspace-access-{index}"))
+                            .mx_2().p_3().rounded_md().cursor_pointer()
+                            .bg(rgba(if selected {GLASS_HOVER}else{0xffffff00}))
                             .hover(|s| s.bg(rgba(GLASS_HOVER)))
-                            .child(div().text_size(crate::theme::ui_px(12.)).child(label))
-                            .child(
-                                div()
-                                    .text_size(crate::theme::ui_px(10.))
-                                    .text_color(rgb(MUTED))
-                                    .child(detail),
-                            )
+                            .child(div().flex().items_center().gap_2().text_size(crate::theme::ui_px(12.)).child(label).child(div().flex_1())
+                                .when(selected,|s|s.child(icon("check",12.,ACCENT))))
+                            .child(div().text_size(crate::theme::ui_px(10.)).text_color(rgb(MUTED)).child(detail))
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.allow_edits = allow;
+                                this.codex_access = access;
+                                this.queue_workspace_save(cx);
                                 this.dismiss_panel(window, cx);
                             })),
                     );
@@ -313,7 +309,7 @@ impl Orbit {
                             runtime::CodexApprovals::Ask,
                             "ask",
                             "Ask me",
-                            "Review requests in Code",
+                            "Review in Code when active; Kai’s notch when you’re in another app",
                         ),
                         (
                             runtime::CodexApprovals::AutoReview,
@@ -325,7 +321,7 @@ impl Orbit {
                             runtime::CodexApprovals::Never,
                             "never",
                             "Never ask",
-                            "Run allowed commands; blocked commands stay blocked",
+                            "No prompts; the workspace access above stays unchanged.",
                         ),
                     ] {
                         body = body.child(

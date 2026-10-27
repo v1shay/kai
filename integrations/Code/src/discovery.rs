@@ -95,6 +95,12 @@ pub struct Discovery {
     pub sessions: Vec<SessionSummary>,
 }
 
+/// Resolve a provider without waiting for saved-history/project discovery.
+pub fn discover_agent(kind: AgentKind, home: &Path) -> Agent {
+    let executable = find_executable(kind, home);
+    Agent { kind, name:kind.name().to_owned(), available:executable.is_some(), executable }
+}
+
 pub fn discover(home: &Path, extra_root: &Path) -> Discovery {
     let agents = [
         AgentKind::Codex,
@@ -106,15 +112,7 @@ pub fn discover(home: &Path, extra_root: &Path) -> Discovery {
         AgentKind::Grok,
     ]
     .into_iter()
-    .map(|kind| {
-        let executable = find_executable(kind, home);
-        Agent {
-            kind,
-            name: kind.name().to_owned(),
-            available: executable.is_some(),
-            executable,
-        }
-    })
+    .map(|kind| discover_agent(kind, home))
     .collect();
 
     let metadata = native_metadata(home);

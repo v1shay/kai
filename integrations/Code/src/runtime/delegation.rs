@@ -421,6 +421,7 @@ mod tests {
             images: vec![],
             allow_edits: false,
             codex_approvals: crate::runtime::CodexApprovals::default(),
+            codex_access: Default::default(),
             trust_workspace: false,
         })
         .unwrap();

@@ -1326,6 +1326,7 @@ for line in sys.stdin:
             images: vec![],
             allow_edits: true,
             codex_approvals: crate::runtime::CodexApprovals::default(),
+            codex_access: Default::default(),
             trust_workspace: false,
         };
         let handle = launch(request).unwrap();
@@ -1401,6 +1402,7 @@ for line in sys.stdin:
             images: vec![],
             allow_edits: true,
             codex_approvals: crate::runtime::CodexApprovals::default(),
+            codex_access: Default::default(),
             trust_workspace: false,
         };
         let handle = launch_command(request).unwrap();
@@ -1452,6 +1454,7 @@ for line in sys.stdin:
             images: vec![],
             allow_edits: true,
             codex_approvals: crate::runtime::CodexApprovals::default(),
+            codex_access: Default::default(),
             trust_workspace: false,
         };
         let handle = launch(request).unwrap();
@@ -1671,6 +1674,7 @@ for line in sys.stdin:
             images: vec![],
             allow_edits: false,
             codex_approvals: crate::runtime::CodexApprovals::default(),
+            codex_access: Default::default(),
             trust_workspace: false,
         })
         .unwrap();

@@ -637,9 +637,6 @@ impl Orbit {
                     .as_str()
                     .filter(|v| v.len() <= 32 * 1024 * 1024)
                     .map(str::to_owned);
-                if self.active.is_none() {
-                    self.request_handoff(AgentKind::Codex, window, cx);
-                }
                 self.start_voice_prompt(prompt, window, cx);
                 if self.voice_call.is_none(){return Err(self.notice.clone().unwrap_or_else(||"The native voice session could not start".into()))}
             }
@@ -1487,8 +1484,20 @@ fn start_voice_probe(window:WindowHandle<Orbit>,cx:&mut App)->anyhow::Result<()>
         window.update(cx,|app,window,cx|{
             assert!(app.runs.is_empty(),"Isolated voice probe unexpectedly contained user runs");
             app.project=project;app.agent=AgentKind::Codex;app.model=None;app.active=None;app.loading=false;app.new_execution_path=None;
-            let mut body=fixture;body["action"]=json!("workspace_voice_prompt");body["ownerToken"]=json!(app.unified_token());body["requestId"]=json!("native-voice-probe");
-            app.unified_command(&body,window,cx).expect("Start real packaged voice");cx.notify();
+            if std::env::var_os("KAI_VOICE_GEMINI_SOURCE").is_some() {
+                let source=SessionSummary{id:uuid::Uuid::new_v4().to_string(),title:"Saved Gemini voice handoff".into(),agent:AgentKind::Gemini,project_path:app.project.clone(),execution_path:None,external_id:Some("preserved-gemini-native-source".into()),transcript_path:None,updated_at:chrono::Utc::now().timestamp()};
+                app.engine.update_session(source.clone());
+                app.engine.save_prompt(source.clone(),"We agreed the lantern is cobalt blue. Remember its color for our voice conversation.".into(),None);
+                app.active=Some(source.id.clone());app.sessions.insert(0,source);app.agent=AgentKind::Gemini;app.model=Some("gemini-source-only".into());
+            } else { app.agent=AgentKind::Gemini;app.model=Some("gemini-source-only".into()); }
+            if std::env::var_os("KAI_VOICE_UI_BUTTON").is_some() {
+                let _=reveal();app.toggle_voice(window,cx);
+                app.voice_call.as_ref().expect("UI voice call").media.initial_prompt(fixture["audio"].as_str().expect("Generated audio")).unwrap();
+            } else {
+                let mut body=fixture;body["action"]=json!("workspace_voice_prompt");body["ownerToken"]=json!(app.unified_token());body["requestId"]=json!("native-voice-probe");
+                app.unified_command(&body,window,cx).expect("Start real packaged voice");
+            }
+            assert_eq!(app.agent,AgentKind::Codex);assert_ne!(app.model.as_deref(),Some("gemini-source-only"));cx.notify();
         }).expect("Voice probe window");
         let mut complete=false;
         for _ in 0..240{
@@ -1503,6 +1512,11 @@ fn start_voice_probe(window:WindowHandle<Orbit>,cx:&mut App)->anyhow::Result<()>
                     assert_eq!(snapshot["readOnly"],false);assert_eq!(snapshot["composerBusy"],true);
                     assert!(!snapshot["sessionActivity"]["text"].as_str().unwrap_or("").contains("Connecting"));
                     assert!(snapshot["effectiveModel"].as_str().is_some_and(|s|!s.is_empty()));assert!(snapshot["effectiveReasoningEffort"].as_str().is_some_and(|s|!s.is_empty()));assert!(app.model.is_none(),"Resolved defaults were incorrectly pinned");
+                    if std::env::var_os("KAI_VOICE_GEMINI_SOURCE").is_some() {
+                        assert!(app.handoff_packets.values().any(|p|p.recent.contains("cobalt blue")),"Saved source context was not transferred");
+                        let context_spoken=app.rows.iter().any(|r|matches!(&r.block,MessageBlock::Voice{speaker:chat_interactions::Speaker::Assistant,text,..}|MessageBlock::Interaction(chat_interactions::ChatInteraction::Speaker{speaker:chat_interactions::Speaker::Assistant,text}) if text.to_lowercase().contains("cobalt")));
+                        if !context_spoken { return false; }
+                    }
                     cx.notify();return true
                 }false
             }).expect("Read packaged voice state");
@@ -1527,11 +1541,20 @@ fn start_voice_probe(window:WindowHandle<Orbit>,cx:&mut App)->anyhow::Result<()>
         window.update(cx,|app,_,cx|app.stop_voice(cx)).expect("Explicit voice stop");
         Timer::after(Duration::from_secs(3)).await;
         window.update(cx,|app,_,_|assert!(app.voice_call.is_none(),"Packaged voice stop left its media alive")).expect("Check voice teardown");
+        // A realtime close can precede its backing coding turn's completion.
+        // That real work must keep its status; only a quiescent owner may retire.
+        let mut quiescent=false;
+        for _ in 0..80 {
+            let idle=window.update(cx,|app,_,_|app.runs.is_empty() && app.launches.is_empty() && app.settling.is_empty() && app.finalizing.is_empty() && app.native_pending.is_empty()).expect("Read voice backing-work ownership");
+            if idle {quiescent=true;break}
+            Timer::after(Duration::from_millis(250)).await;
+        }
+        assert!(quiescent,"The generated voice fixture left backing work running after explicit stop");
         Timer::after(Duration::from_secs(1)).await;
         let _=cx.update(|_|{
             let function=HOST.with(|host|unsafe{libc::dlsym(host.borrow().as_ref().unwrap()._library,c"kai_unified_diagnostics".as_ptr())});
             let diagnostics:unsafe extern "C" fn()->u32=unsafe{std::mem::transmute(function)};
-            assert_eq!(unsafe{diagnostics()} & 3,0,"Explicit stop left a ghost notch or reopened Code");
+            assert_eq!(unsafe{diagnostics()} & 3,0,"Quiescent voice stop left a ghost notch or reopened Code");
         });
         eprintln!("Kai packaged voice: real transcripts, live draft ownership, editable voice status, resolved model/effort, unpinned CLI defaults, and same-session notch/workspace/Double-Command/Quick Chat continuity, real incoming audio after transitions, and explicit native stop passed");
         let _=cx.update(|cx|cx.quit());

@@ -12,6 +12,8 @@ pub struct Prompt {
     pub agent: AgentKind,
     pub model: Option<String>,
     pub allow_edits: bool,
+    #[serde(default)]
+    pub codex_access: crate::runtime::CodexAccess,
     pub text: String,
     pub images: Vec<PathBuf>,
     pub context: Vec<Reference>,
@@ -45,6 +47,7 @@ mod tests {
             agent: AgentKind::Codex,
             model: None,
             allow_edits: false,
+            codex_access: Default::default(),
             text: "Review the result".into(),
             images: vec![],
             context: vec![],

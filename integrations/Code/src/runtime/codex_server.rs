@@ -253,12 +253,12 @@ fn input(request: &RunRequest) -> Value {
     );
     Value::Array(values)
 }
-fn turn_params(thread:&str,request:&RunRequest)->Value{json!({"threadId":thread,"input":input(request),"approvalPolicy":request.codex_approvals.policy(),"approvalsReviewer":request.codex_approvals.reviewer(),"effort":request.reasoning_effort,"summary":"detailed"})}
+fn turn_params(thread:&str,request:&RunRequest)->Value{json!({"threadId":thread,"input":input(request),"approvalPolicy":request.codex_approvals.policy(),"approvalsReviewer":request.codex_approvals.reviewer(),"effort":request.reasoning_effort,"summary":"detailed","sandboxPolicy":request.codex_access.policy(request.allow_edits,&request.project)})}
 fn thread_params(request: &RunRequest) -> Value {
     let mut params = json!({"cwd":request.project,
         "approvalPolicy":request.codex_approvals.policy(),
         "approvalsReviewer":request.codex_approvals.reviewer(),
-        "sandbox":if request.allow_edits{"workspace-write"}else{"read-only"},
+        "sandbox":request.codex_access.sandbox(request.allow_edits),
         "config":{"features.default_mode_request_user_input":true}});
 
     if let Some(effort)=&request.reasoning_effort{params["config"]["model_reasoning_effort"]=json!(effort);}
@@ -559,7 +559,7 @@ fn run_turn(
     if let Some((method, params)) = &mut state.maintenance
         && method == "thread/realtime/start"
     {
-        let prepare=params.as_object_mut().and_then(|p|p.remove("_codePrepareAppshot")).and_then(|v|v.as_bool()).unwrap_or(false);
+        let prepare=params.as_object_mut().and_then(|p|p.remove("_codePrepareVoiceContext")).and_then(|v|v.as_bool()).unwrap_or(false);
         state.voice = crate::voice::session_id(params).ok().map(|id| VoiceState {
             id,preparing_context:prepare,
             ..Default::default()
@@ -1173,11 +1173,7 @@ impl Session {
                     self.command_process = uuid::Uuid::new_v4().to_string();
                     let project = std::fs::canonicalize(&request.project)
                         .context("Project folder is unavailable")?;
-                    let sandbox = if request.allow_edits {
-                        json!({"type":"workspaceWrite","writableRoots":[project],"networkAccess":false,"excludeSlashTmp":true,"excludeTmpdirEnvVar":true})
-                    } else {
-                        json!({"type":"readOnly","networkAccess":false})
-                    };
+                    let sandbox = request.codex_access.policy(request.allow_edits, &project);
                     rpc(
                         stdin,
                         &ctx.cancelled,
@@ -1190,7 +1186,7 @@ impl Session {
                     self.events(events, ctx)?;
                     send(
                         &ctx.tx,
-                        RuntimeEvent::Status("Running sandboxed terminal command".into()),
+                        RuntimeEvent::Status("Running terminal command".into()),
                         &ctx.cancelled,
                     )?;
                 } else {
@@ -1231,7 +1227,7 @@ impl Session {
                     if method=="thread/realtime/start" && self.voice.as_ref().is_some_and(|v|v.preparing_context){
                         self.voice.as_mut().context("Missing voice context owner")?.preparing_context=true;
                         rpc(stdin,&ctx.cancelled,3,"turn/start",self.turn_params(request))?;
-                        send(&ctx.tx,RuntimeEvent::Status("Reading appshot for voice".into()),&ctx.cancelled)?;return Ok(())
+                        send(&ctx.tx,RuntimeEvent::Status("Preparing conversation context for voice".into()),&ctx.cancelled)?;return Ok(())
                     }
                     params["threadId"] = json!(self.thread);
                     rpc(stdin, &ctx.cancelled, 3, &method, params)?;
@@ -1807,7 +1803,7 @@ impl Session {
             }
             "turn/completed" => {
                 if self.voice.as_ref().is_some_and(|v|v.preparing_context){
-                    anyhow::ensure!(p["turn"]["status"]=="completed","Appshot preparation did not complete successfully");
+                    anyhow::ensure!(p["turn"]["status"]=="completed","Voice context preparation did not complete successfully");
                     let voice=self.voice.as_mut().unwrap();voice.preparing_context=false;voice.coding=false;self.turn.clear();
                     return Ok(())
                 }
@@ -3134,6 +3130,7 @@ mod tests {
             images: vec![],
             allow_edits: false,
             codex_approvals: crate::runtime::CodexApprovals::default(),
+            codex_access: Default::default(),
             trust_workspace: false,
         }
     }
@@ -3150,7 +3147,7 @@ send({'id':v['id'],'result':{'turn':{'id':'context-turn'}}})
 send({'method':'turn/started','params':{'threadId':'12345678-1234-4234-8234-123456789012','turn':{'id':'context-turn'}}})
 send({'method':'item/agentMessage/delta','params':{'threadId':'12345678-1234-4234-8234-123456789012','itemId':'context','delta':'The fixture image is blue.'}})
 send({'method':'turn/completed','params':{'threadId':'12345678-1234-4234-8234-123456789012','turn':{'id':'context-turn','status':'completed'}}})
-v=recv();assert v['method']=='thread/realtime/start';assert '_codePrepareAppshot' not in v['params']
+v=recv();assert v['method']=='thread/realtime/start';assert '_codePrepareVoiceContext' not in v['params']
 sid=v['params']['realtimeSessionId'];send({'id':v['id'],'result':{}})
 send({'method':'thread/realtime/started','params':{'threadId':'12345678-1234-4234-8234-123456789012','realtimeSessionId':sid}})
 v=recv();assert v['method']=='thread/realtime/stop';send({'id':v['id'],'result':{}})
@@ -3159,7 +3156,7 @@ send({'method':'thread/realtime/closed','params':{'threadId':'12345678-1234-4234
         let image=std::env::temp_dir().join(format!("code-voice-context-{}.png",uuid::Uuid::new_v4()));
         image::RgbaImage::new(8,8).save(&image).unwrap();
         let mut r=request(&script);r.prompt="Describe untrusted captured context".into();r.images=vec![image.clone()];
-        let mut params=crate::voice::Start{session_id:uuid::Uuid::new_v4().to_string(),sdp:"v=0\r\nfixture".into(),voice:None}.params().unwrap();params["_codePrepareAppshot"]=json!(true);
+        let mut params=crate::voice::Start{session_id:uuid::Uuid::new_v4().to_string(),sdp:"v=0\r\nfixture".into(),voice:None}.params().unwrap();params["_codePrepareVoiceContext"]=json!(true);
         let handle=maintenance(r,"thread/realtime/start",params).unwrap();let mut text=String::new();let mut started=false;
         while let Ok(event)=handle.events.recv_timeout(Duration::from_secs(10)){
             match event{RuntimeEvent::Text(t)=>text.push_str(&t),RuntimeEvent::Voice(crate::voice::Signal::Started{..})=>{started=true;handle.native_command("thread/realtime/stop",json!({})).unwrap()},RuntimeEvent::Failed(e)=>panic!("{e}"),RuntimeEvent::Finished=>break,_=>{}}
@@ -4441,4 +4438,44 @@ time.sleep(30)
             json!({"action":"accept","content":{"count":3}})
         );
     }
+}
+
+#[cfg(test)] mod access_regressions {
+ use super::*;
+ #[test] fn access_is_independent_of_approvals_on_new_resumed_and_subsequent_turns() {
+  for access in [CodexAccess::Workspace,CodexAccess::Full] {
+   for edits in [false,true] {
+    for approvals in [CodexApprovals::Ask,CodexApprovals::AutoReview,CodexApprovals::Never] {
+     for resume in [false,true] {
+      let req=RunRequest{agent:AgentKind::Codex,executable:"/fixture/codex".into(),project:"/fixture/workspace".into(),prompt:"Continue".into(),resume_id:resume.then(||"native".into()),fork_session:false,model:None,reasoning_effort:None,images:vec![],allow_edits:edits,trust_workspace:false,codex_access:access,codex_approvals:approvals};
+      let thread=thread_params(&req);let turn=turn_params("native",&req);
+      assert_eq!(thread["sandbox"],access.sandbox(edits));assert_eq!(turn["sandboxPolicy"],access.policy(edits,&req.project));
+      assert_eq!(turn["approvalPolicy"],approvals.policy());assert_eq!(thread["approvalPolicy"],approvals.policy());
+      assert_eq!(turn["approvalsReviewer"],approvals.reviewer());
+      if !edits { assert_eq!(turn["sandboxPolicy"]["type"],"readOnly"); }
+     }
+    }
+   }
+  }
+ }
+}
+
+#[cfg(test)] mod installed_access_tests {
+ use super::*;
+ #[test]
+ #[ignore="Runs installed Codex command/exec in an isolated temporary workspace"]
+ fn installed_codex_enforces_workspace_and_full_access_without_approval_prompts() {
+  let root=std::env::temp_dir().join(format!("kai-access-proof-{}",uuid::Uuid::new_v4()));let project=root.join("workspace");std::fs::create_dir_all(&project).unwrap();
+  for (edits,access,inside_ok,outside_ok) in [(false,CodexAccess::Workspace,false,false),(true,CodexAccess::Workspace,true,false),(true,CodexAccess::Full,true,true)] {
+   let inside=project.join("inside.txt");let outside=root.join("outside.txt");let _=std::fs::remove_file(&inside);let _=std::fs::remove_file(&outside);
+   let prompt=format!("/usr/bin/printf inside > '{}'; /usr/bin/printf outside > '{}'; /usr/bin/printf ACCESS_PROBE_DONE",inside.display(),outside.display());
+   let request=RunRequest{agent:AgentKind::Codex,executable:std::env::var("KAI_NATIVE_TEST_EXECUTABLE").unwrap_or_else(|_|"/opt/homebrew/bin/codex".into()).into(),project:project.clone(),prompt,resume_id:None,fork_session:false,model:None,reasoning_effort:None,images:vec![],allow_edits:edits,trust_workspace:false,codex_access:access,codex_approvals:CodexApprovals::Never};
+   let handle=maintenance(request,"command/exec",json!({})).unwrap();let mut finished=false;
+   while let Ok(event)=handle.events.recv_timeout(Duration::from_secs(20)) {
+    match event {RuntimeEvent::Failed(e)=>panic!("{e}"),RuntimeEvent::Request(_)=>panic!("Never ask unexpectedly raised an approval"),RuntimeEvent::Finished=>{finished=true;break},_=>{}}
+   }
+   handle.cancel();assert!(finished,"Native terminal did not finish");assert_eq!(inside.is_file(),inside_ok,"Wrong workspace boundary for {access:?}, edits={edits}");assert_eq!(outside.is_file(),outside_ok,"Wrong external boundary for {access:?}");
+  }
+  std::fs::remove_dir_all(root).unwrap();
+ }
 }

@@ -41,7 +41,7 @@
   };
   async function start(id, captureMicrophone, initialPrompt = '', promptOnly = false) {
     stop();
-    const session = {id, captureMicrophone, promptOnly, active: false, announced: false, initialized: false};
+    const session = {id, captureMicrophone, promptOnly, pendingInitialPrompt: initialPrompt, active: false, announced: false, initialized: false};
     current = session;
     try {
       const peer = session.peer = new RTCPeerConnection();
@@ -123,12 +123,8 @@
         const analyser = context.createAnalyser(); analyser.fftSize = 256;
         context.createMediaStreamSource(stream).connect(analyser);
         const samples = new Float32Array(analyser.fftSize);
-        if (initialPrompt) {
-          if (initialPrompt.length > 32 * 1024 * 1024) throw new Error('Recorded voice prompt is too large');
-          const bytes = Uint8Array.from(atob(initialPrompt), character => character.charCodeAt(0));
-          session.initialBuffer = await context.decodeAudioData(bytes.buffer);
-          if (current !== session) return;
-        }
+        if (session.pendingInitialPrompt) await setInitialPrompt(id, session.pendingInitialPrompt);
+        if (current !== session) return;
         context.resume().catch(() => {});
         session.meterTimer = setInterval(() => {
           if (current !== session || !session.active) return;
@@ -165,15 +161,35 @@
       if (current === session) post(session, 'answerApplied');
     } catch (error) { failure(session, String(error?.message || error).slice(0, 300)); }
   }
+  async function setInitialPrompt(id, encoded) {
+    const session = current;
+    if (!session || session.id !== id || session.promptSource) return;
+    if (!session.context) {session.pendingInitialPrompt = encoded; return;}
+    try {
+      if (encoded.length > 32 * 1024 * 1024) throw new Error('Recorded voice prompt is too large');
+      session.pendingInitialPrompt = '';
+      const revision = session.promptRevision = (session.promptRevision || 0) + 1;
+      const bytes = Uint8Array.from(atob(encoded), character => character.charCodeAt(0));
+      const buffer = await session.context.decodeAudioData(bytes.buffer);
+      if (current !== session || revision !== session.promptRevision) return;
+      session.initialBuffer = buffer;
+      if (session.active) await playInitialPrompt(session);
+    } catch (error) {failure(session, String(error?.message || error).slice(0, 300));}
+  }
   async function activate(id) {
     const session = current;
     if (!session || session.id !== id || session.active) return;
     session.active = true;
     session.audio.muted = session.promptOnly;
     if (!session.initialBuffer) {
-      session.stream?.getAudioTracks().forEach(track => { track.enabled = !session.promptOnly; });
+      session.stream?.getAudioTracks().forEach(track => { track.enabled = !session.muted && !session.promptOnly; });
       activity(session, 'listening'); return;
     }
+    await playInitialPrompt(session);
+  }
+  async function playInitialPrompt(session) {
+    if (current !== session || !session.initialBuffer || session.promptSource || session.promptStarting) return;
+    session.promptStarting = true;
     try {
       activity(session, 'thinking');
       const context = session.context;
@@ -194,7 +210,7 @@
           const microphone = session.stream.getAudioTracks()[0];
           await session.transceiver.sender.replaceTrack(microphone);
           if (current !== session) return;
-          microphone.enabled = !session.promptOnly; session.promptSource = null;
+          microphone.enabled = !session.muted && !session.promptOnly; session.promptSource = null;
           destination.stream.getTracks().forEach(track => track.stop()); session.promptDestination = null;
           activity(session, 'thinking'); post(session, 'promptSent');
         } catch (error) {failure(session, String(error?.message || error).slice(0, 300));}
@@ -227,7 +243,8 @@
   function mute(id, muted) {
     const session = current;
     if (!session || session.id !== id || !session.active) return;
-    session.stream?.getAudioTracks().forEach(track => {track.enabled = !muted;});
+    session.muted = Boolean(muted);
+    session.stream?.getAudioTracks().forEach(track => {track.enabled = !session.muted && !session.promptOnly;});
   }
   function interrupt(id) {
     const session = current;
@@ -236,7 +253,7 @@
     session.channel.send(JSON.stringify({type: 'output_audio_buffer.clear'}));
     activity(session, 'listening');
   }
-  window.codeVoice = {start, answer, activate, stop, mute, interrupt, diagnosticAudio};
+  window.codeVoice = {start, answer, activate, initialPrompt: setInitialPrompt, stop, mute, interrupt, diagnosticAudio};
   window.addEventListener('pagehide', stop);
   post(null, 'ready');
 })();

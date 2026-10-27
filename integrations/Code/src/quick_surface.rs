@@ -392,7 +392,7 @@ impl Orbit {
                                             .text_size(theme::ui_px(11.))
                                             .child(icon("shield", 13., MUTED))
                                             .child(if self.allow_edits {
-                                                "Build"
+                                                if self.agent==AgentKind::Codex && self.codex_access==runtime::CodexAccess::Full { "Full access" } else { "Build" }
                                             } else {
                                                 "Read only"
                                             })

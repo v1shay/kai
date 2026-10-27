@@ -7,7 +7,7 @@ mod adapters;
 #[path = "runtime/native_requests.rs"]
 mod native_requests;
 pub use native_requests::{
-    CodexApprovals, NativeAnswer, NativeControl, NativeOption, NativeQuestion, NativeRequest,
+    CodexAccess, CodexApprovals, NativeAnswer, NativeControl, NativeOption, NativeQuestion, NativeRequest,
     NativeRequestKind,
 };
 #[path = "runtime/broker.rs"]
@@ -86,6 +86,7 @@ pub struct RunRequest {
     /// Explicit app workspace confirmation; never enables tool auto-approval.
     pub trust_workspace: bool,
     pub codex_approvals: CodexApprovals,
+    pub codex_access: CodexAccess,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -339,11 +340,7 @@ fn command_for(request: &RunRequest) -> Result<Command> {
             command.args([
                 "exec",
                 "--sandbox",
-                if request.allow_edits {
-                    "workspace-write"
-                } else {
-                    "read-only"
-                },
+                request.codex_access.sandbox(request.allow_edits),
                 "--json",
                 "--color",
                 "never",
@@ -2390,6 +2387,7 @@ mod tests {
             model: std::env::var("CODE_SMOKE_MODEL").ok(),
             images: vec![], allow_edits: false,
             codex_approvals: crate::runtime::CodexApprovals::default(),
+            codex_access: Default::default(),
             trust_workspace: std::env::var("CODE_SMOKE_TRUST").is_ok_and(|value| value == "1"),
         }).unwrap();
         let deadline = Instant::now() + Duration::from_secs(60);
@@ -2734,6 +2732,7 @@ mod tests {
                 images: vec![],
                 allow_edits: false,
                 codex_approvals: crate::runtime::CodexApprovals::default(),
+                codex_access: Default::default(),
                 trust_workspace: false,
             },
             false,
@@ -2773,6 +2772,7 @@ mod tests {
             images: vec![],
             allow_edits: false,
             codex_approvals: crate::runtime::CodexApprovals::default(),
+            codex_access: Default::default(),
             trust_workspace: false,
         };
         let command = command_for(&request).unwrap();
@@ -2839,6 +2839,7 @@ mod tests {
             images: vec![image.clone()],
             allow_edits: false,
             codex_approvals: crate::runtime::CodexApprovals::default(),
+            codex_access: Default::default(),
             trust_workspace: false,
         };
         for (edits, mode) in [(false, "read-only"), (true, "workspace-write")] {
@@ -2942,6 +2943,7 @@ mod tests {
                     images: vec![],
                     allow_edits: false,
                     codex_approvals: crate::runtime::CodexApprovals::default(),
+                    codex_access: Default::default(),
                     trust_workspace: false,
                 },
                 false,
@@ -2986,6 +2988,7 @@ mod tests {
                 images: vec![],
                 allow_edits: false,
                 codex_approvals: crate::runtime::CodexApprovals::default(),
+                codex_access: Default::default(),
                 trust_workspace: false,
             },
             false,
@@ -3118,6 +3121,7 @@ mod tests {
                     images: vec![],
                     allow_edits: false,
                     codex_approvals: crate::runtime::CodexApprovals::default(),
+                    codex_access: Default::default(),
                     trust_workspace: false,
                 },
                 false,
@@ -3178,6 +3182,7 @@ mod tests {
                     images: vec![],
                     allow_edits: false,
                     codex_approvals: crate::runtime::CodexApprovals::default(),
+                    codex_access: Default::default(),
                     trust_workspace: false,
                 },
                 true,
@@ -3229,6 +3234,7 @@ mod tests {
                 images: vec![],
                 allow_edits: false,
                 codex_approvals: crate::runtime::CodexApprovals::default(),
+                codex_access: Default::default(),
                 trust_workspace: false,
             },
             false,
@@ -3303,6 +3309,7 @@ mod tests {
                     images: vec![],
                     allow_edits: false,
                     codex_approvals: crate::runtime::CodexApprovals::default(),
+                    codex_access: Default::default(),
                     trust_workspace: false,
                 },
                 false,
@@ -3344,6 +3351,7 @@ mod tests {
                 images: vec![],
                 allow_edits: false,
                 codex_approvals: crate::runtime::CodexApprovals::default(),
+                codex_access: Default::default(),
                 trust_workspace: false,
             },
             false,
@@ -3380,6 +3388,7 @@ mod tests {
                 images: vec![],
                 allow_edits: false,
                 codex_approvals: crate::runtime::CodexApprovals::default(),
+                codex_access: Default::default(),
                 trust_workspace: false,
             },
             false,
@@ -3433,6 +3442,7 @@ mod tests {
                 images: vec![],
                 allow_edits: false,
                 codex_approvals: crate::runtime::CodexApprovals::default(),
+                codex_access: Default::default(),
                 trust_workspace: false,
             },
             false,
@@ -3488,6 +3498,7 @@ mod tests {
                 images: vec![],
                 allow_edits: false,
                 codex_approvals: crate::runtime::CodexApprovals::default(),
+                codex_access: Default::default(),
                 trust_workspace: false,
             },
             false,
@@ -3558,6 +3569,7 @@ mod tests {
                 images: vec![],
                 allow_edits: false,
                 codex_approvals: crate::runtime::CodexApprovals::default(),
+                codex_access: Default::default(),
                 trust_workspace: false,
             },
             false,
@@ -3687,6 +3699,7 @@ mod tests {
                 images: vec![],
                 allow_edits: false,
                 codex_approvals: crate::runtime::CodexApprovals::default(),
+                codex_access: Default::default(),
                 trust_workspace: false,
             },
             false,
@@ -3741,6 +3754,7 @@ mod tests {
                 images: vec![],
                 allow_edits: false,
                 codex_approvals: crate::runtime::CodexApprovals::default(),
+                codex_access: Default::default(),
                 trust_workspace: false,
             },
             false,
@@ -3777,6 +3791,7 @@ mod tests {
                 images: vec![],
                 allow_edits: false,
                 codex_approvals: crate::runtime::CodexApprovals::default(),
+                codex_access: Default::default(),
                 trust_workspace: false,
             },
             false,

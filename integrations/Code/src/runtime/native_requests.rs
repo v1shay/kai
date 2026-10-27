@@ -4,6 +4,25 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
+/// Codex workspace boundary. Read-only intent always wins over this setting.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CodexAccess {
+    #[default]
+    Workspace,
+    Full,
+}
+impl CodexAccess {
+    pub fn sandbox(self, edits: bool) -> &'static str {
+        if !edits { "read-only" } else if self == Self::Full { "danger-full-access" } else { "workspace-write" }
+    }
+    pub fn policy(self, edits: bool, project: &std::path::Path) -> Value {
+        if !edits { serde_json::json!({"type":"readOnly","networkAccess":false}) }
+        else if self == Self::Full { serde_json::json!({"type":"dangerFullAccess"}) }
+        else { serde_json::json!({"type":"workspaceWrite","writableRoots":[project],"networkAccess":false,"excludeSlashTmp":true,"excludeTmpdirEnvVar":true}) }
+    }
+}
+
 /// Command approval review is independent of filesystem sandbox permissions.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

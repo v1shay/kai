@@ -2717,6 +2717,7 @@ fn failed_run(agent: AgentKind, project: PathBuf, error: &str) -> Running {
         images: vec![],
         allow_edits: false,
         codex_approvals: crate::runtime::CodexApprovals::default(),
+        codex_access: Default::default(),
         trust_workspace: false,
         fork_session: false,
     });
@@ -4802,6 +4803,16 @@ fn composer_permissions_open_real_approval_controls_and_save_the_selected_mode(
         assert!(app.allow_edits);
         let old: workspace_state::WorkspaceState = serde_json::from_str("{}").unwrap();
         assert_eq!(old.codex_approvals, runtime::CodexApprovals::Ask);
+        assert_eq!(old.codex_access,runtime::CodexAccess::Workspace);
+        assert_eq!(app.codex_access,runtime::CodexAccess::Workspace);
+    });
+    cx.update(|window,cx|view.update(cx,|app,cx|app.show_modal(Modal::Permissions,window,cx)));
+    draw_frame(&view,cx);click_selector(cx,"workspace-access-2");
+    view.update(cx,|app,cx|{
+        assert!(app.allow_edits);assert_eq!(app.codex_access,runtime::CodexAccess::Full);
+        assert_eq!(app.codex_approvals,runtime::CodexApprovals::Never);
+        let restored:workspace_state::WorkspaceState=serde_json::from_slice(&serde_json::to_vec(&app.workspace_snapshot(cx)).unwrap()).unwrap();
+        assert_eq!(restored.codex_access,runtime::CodexAccess::Full);
     });
 }
 

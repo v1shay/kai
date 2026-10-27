@@ -720,6 +720,7 @@ struct Orbit {
     sidebar_width: f32,
     allow_edits: bool,
     codex_approvals: runtime::CodexApprovals,
+    codex_access: runtime::CodexAccess,
     starting: bool,
     launches:HashMap<String,chat_timing::Launch>,
     turn_timings:Vec<chat_timing::Record>,
@@ -1262,6 +1263,7 @@ impl Orbit {
             },
             allow_edits: false,
             codex_approvals: runtime::CodexApprovals::default(),
+            codex_access: Default::default(),
             starting: false,
             launches:HashMap::new(),
             timestamp_peek:0.,timestamp_direction:0.,timestamp_released:None,
@@ -1784,6 +1786,7 @@ impl Orbit {
                 }
             }
             Event::Handoff(token, result) => {
+                if self.voice_handoff_token(token) { self.voice_handoff_ready(result,cx);return; }
                 if self.context_pending.contains_key(&token) {
                     self.receive_context(token, result, cx);
                     cx.notify();
@@ -1807,7 +1810,10 @@ impl Orbit {
                     }
                 }
             }
-            Event::AgentSwitched(token, result) => self.handoff_bound(token, result, cx),
+            Event::AgentSwitched(token, result) => {
+                if self.voice_handoff_token(token) { self.voice_handoff_bound(token,result,cx); }
+                else { self.handoff_bound(token, result, cx); }
+            },
 
             Event::Model(id, generation, model, usage, packet) => {
                 if self.active.as_deref() == Some(&id) && self.generation == generation {
@@ -2955,6 +2961,7 @@ impl Orbit {
             model: self.request_model(),
             images: self.attachments.iter().map(|a| a.path.clone()).collect(),
             codex_approvals: self.codex_approvals,
+            codex_access: self.codex_access,
             trust_workspace: self
                 .trusted_workspaces
                 .contains(&(self.agent, execution_path)),
@@ -5195,7 +5202,7 @@ impl Orbit {
                                         MUTED,
                                     ))
                                     .child(if self.allow_edits {
-                                        "Build"
+                                        if self.agent==AgentKind::Codex && self.codex_access==runtime::CodexAccess::Full { "Full access" } else { "Build" }
                                     } else {
                                         "Read only"
                                     })

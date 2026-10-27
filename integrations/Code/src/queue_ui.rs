@@ -30,6 +30,7 @@ impl Orbit {
             agent: self.agent,
             model: self.model.clone(),
             allow_edits: self.allow_edits,
+            codex_access: self.codex_access,
             text: self.composer.read(cx).text(),
             images: self.attachments.iter().map(|a| a.path.clone()).collect(),
             context: self.context_references(),
@@ -127,6 +128,7 @@ impl Orbit {
             if prompt.agent != self.agent
                 || prompt.model != self.model
                 || prompt.allow_edits != self.allow_edits
+                || prompt.codex_access != self.codex_access
             {
                 self.hold_queue(&session, cx);
                 self.notice = Some("Queued prompt held because its agent, model, or permissions changed. Review the preserved draft before sending.".into());
@@ -205,6 +207,11 @@ impl Orbit {
         }
         if !self.workflow_budget_allows(None, None, Some((&session, &prompt.context)), cx) {
             self.hold_queue(&session, cx);
+            return;
+        }
+        if prompt.agent==AgentKind::Codex && prompt.codex_access!=self.codex_access {
+            self.hold_queue(&session,cx);
+            self.notice=Some("Queued prompt held because workspace access changed. Review its permissions before sending.".into());
             return;
         }
         self.model = prompt.model.clone();
@@ -539,6 +546,7 @@ mod regressions {
             agent: AgentKind::Codex,
             model: None,
             allow_edits,
+            codex_access: Default::default(),
             text: "Review when ready".into(),
             images: vec![],
             context: vec![],

@@ -845,6 +845,7 @@ read -r wait
             images: Vec::new(),
             allow_edits: true,
             codex_approvals: crate::runtime::CodexApprovals::default(),
+            codex_access: Default::default(),
             trust_workspace: false,
         })
         .unwrap();
@@ -911,6 +912,7 @@ read -r wait
                 images: Vec::new(),
                 allow_edits: false,
                 codex_approvals: crate::runtime::CodexApprovals::default(),
+                codex_access: Default::default(),
                 trust_workspace: false,
             })
             .unwrap();
@@ -1056,6 +1058,7 @@ for line in sys.stdin:
             images: Vec::new(),
             allow_edits: true,
             codex_approvals: crate::runtime::CodexApprovals::default(),
+            codex_access: Default::default(),
             trust_workspace: false,
         })
         .unwrap();
@@ -1116,6 +1119,7 @@ sleep 30
             images: Vec::new(),
             allow_edits: true,
             codex_approvals: crate::runtime::CodexApprovals::default(),
+            codex_access: Default::default(),
             trust_workspace: false,
         })
         .unwrap();
@@ -1172,6 +1176,7 @@ for line in sys.stdin:
             images: Vec::new(),
             allow_edits: true,
             codex_approvals: crate::runtime::CodexApprovals::default(),
+            codex_access: Default::default(),
             trust_workspace: false,
         })
         .unwrap();

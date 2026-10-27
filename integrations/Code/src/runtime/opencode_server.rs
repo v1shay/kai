@@ -2444,6 +2444,7 @@ server.serve_forever()
             images: vec![],
             allow_edits: true,
             codex_approvals: crate::runtime::CodexApprovals::default(),
+            codex_access: Default::default(),
             trust_workspace: false,
         };
         let first = launch(request.clone()).unwrap();
@@ -2602,6 +2603,7 @@ server.serve_forever()
             images: vec![],
             allow_edits: true,
             codex_approvals: crate::runtime::CodexApprovals::default(),
+            codex_access: Default::default(),
             trust_workspace: false,
         };
         let handle = launch(request).unwrap();
@@ -2682,6 +2684,7 @@ server.serve_forever()
             images: vec![],
             allow_edits: true,
             codex_approvals: crate::runtime::CodexApprovals::default(),
+            codex_access: Default::default(),
             trust_workspace: false,
         };
         let handle = launch_command(request).unwrap();
@@ -2729,6 +2732,7 @@ server.serve_forever()
             images: vec![],
             allow_edits: true,
             codex_approvals: crate::runtime::CodexApprovals::default(),
+            codex_access: Default::default(),
             trust_workspace: false,
         };
         let handle = launch_command(request).unwrap();
@@ -2768,6 +2772,7 @@ server.serve_forever()
             images: vec![],
             allow_edits: true,
             codex_approvals: crate::runtime::CodexApprovals::default(),
+            codex_access: Default::default(),
             trust_workspace: false,
         };
         let handle = launch_command(request).unwrap();
@@ -2806,6 +2811,7 @@ server.serve_forever()
             images: vec![],
             allow_edits: true,
             codex_approvals: crate::runtime::CodexApprovals::default(),
+            codex_access: Default::default(),
             trust_workspace: false,
         };
         let handle = launch_command(request).unwrap();
