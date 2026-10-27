@@ -1282,8 +1282,10 @@ impl Orbit {
             }
             return Ok(());
         }
-        if value["action"] == "native_answer" {
-            let answer = match &pending.request.kind {
+        if value["action"] == "native_answer" || value["action"] == "native_cancel" {
+            let answer = if value["action"] == "native_cancel" {
+                NativeAnswer::Cancel
+            } else { match &pending.request.kind {
                 NativeRequestKind::Approval { choices } => {
                     let choice = value["choice"].as_str().ok_or("Choose a response")?;
                     if !choices.iter().any(|c| c.id == choice) {
@@ -1318,7 +1320,7 @@ impl Orbit {
                     NativeAnswer::Answers(answers)
                 }
                 _ => return Err("This request needs its workspace controls".into()),
-            };
+            }};
             let result = if let Some(binding) = &pending.broker {
                 runtime::broker::control_child(
                     &binding.project,
@@ -1401,6 +1403,7 @@ impl Orbit {
             }
             _ => (serde_json::json!([]), serde_json::json!([])),
         };
-        serde_json::json!({"owner":format!("code:{owner}"),"token":token,"title":p.request.title,"detail":p.request.detail,"choices":choices,"questions":questions})
+        let kind=if matches!(p.request.kind,NativeRequestKind::Questions{..}){"questions"}else{"approval"};
+        serde_json::json!({"owner":format!("code:{owner}"),"token":token,"title":p.request.title,"detail":p.request.detail,"choices":choices,"questions":questions,"kind":kind})
     }
 }

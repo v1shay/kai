@@ -13,6 +13,19 @@ pub(super) struct SlashPicker {
     pub closing: bool,
 }
 impl Orbit {
+    pub(super) fn unified_slash_commands(&self)->serde_json::Value{
+        let mut entries:Vec<_>=commands::catalog(self.agent).iter().map(|c|serde_json::json!({"name":c.name,"description":c.description})).collect();
+        if let Some(names)=self.native_commands.get(&self.native_scope()){
+            entries.extend(names.iter().filter(|name|self.native_command_available(name)).take(128).map(|name|serde_json::json!({"name":name,"description":"Run through the installed CLI"})));
+        }
+        serde_json::json!(entries)
+    }
+    pub(super) fn accept_named_slash(&mut self,name:&str,window:&mut Window,cx:&mut Context<Self>)->Result<(),String>{
+        self.update_slash(window,cx);
+        let picker=self.slash.as_mut().filter(|p|!p.closing).ok_or("The command token changed")?;
+        picker.selected=picker.matches.iter().position(|c|c.name()==name).ok_or("That command is no longer available")?;
+        self.accept_slash(false,window,cx);Ok(())
+    }
     fn native_scope(&self) -> (AgentKind, PathBuf) {
         (
             self.agent,
@@ -184,13 +197,30 @@ impl Orbit {
             cx.notify();
             return;
         };
+        let span=self.composer.read(cx).command_span();
+        let text=self.composer.read(cx).text();
+        let inline=span.as_ref().is_some_and(|span|span.start>0);
         if complete {
             self.composer.update(cx, |input, cx| {
-                input.set_text(&format!("/{} ", command.name()), cx)
+                input.replace_command(command.name(),window,cx)
             });
             return;
         }
-        let text = self.composer.read(cx).text();
+        if inline {
+            match command {
+                Entry::Native(name)=>{
+                    self.composer.update(cx,|input,cx|input.replace_command(&name,window,cx));
+                    self.dismiss_slash(true,cx);
+                }
+                Entry::Local(command)=>{
+                    let mut draft=text.to_string();draft.replace_range(span.unwrap(),"");
+                    self.run_command(command,"",window,cx);
+                    self.composer.update(cx,|input,cx|input.set_text(&draft,cx));
+                    self.dismiss_slash(true,cx);
+                }
+            }
+            return;
+        }
         let arguments = text
             .trim()
             .split_once(char::is_whitespace)

@@ -315,14 +315,42 @@ impl TextInput {
         if self.secret.is_some()
             || self.marked_range.is_some()
             || !self.selected_range.is_empty()
-            || self.cursor_offset() != self.content.len()
         {
             return None;
         }
-        crate::commands::query(&self.content)
+        if self.cursor_offset() == self.content.len() {
+            if let Some(query)=crate::commands::query(&self.content){return Some(query);}
+        }
+        let span=crate::commands::span_at(&self.content,self.cursor_offset())?;
+        Some(&self.content[span.start+1..self.cursor_offset().min(span.end)])
+    }
+    pub fn command_span(&self)->Option<Range<usize>>{
+        self.command_query()?;
+        crate::commands::span_at(&self.content,self.cursor_offset()).or_else(||{
+            let query=crate::commands::query(&self.content)?;
+            Some(0..query.len()+1)
+        })
+    }
+    pub fn replace_command(&mut self,name:&str,window:&mut Window,cx:&mut Context<Self>){
+        let Some(span)=self.command_span() else{return};
+        let append_space=self.content[span.end..].chars().next().is_none_or(|c|!c.is_whitespace());
+        let range=self.offset_to_utf16(span.start)..self.offset_to_utf16(span.end);
+        self.replace_text_in_range(Some(range),&format!("/{name}{}",if append_space{" "}else{""}),window,cx);
     }
     pub fn set_command_navigation(&mut self, active: bool) {
         self.command_navigation = active;
+    }
+    pub fn command_caret(&self)->(Range<usize>,bool,Option<Range<usize>>){(self.selected_range.clone(),self.selection_reversed,self.marked_range.clone())}
+    pub fn set_command_caret_utf16(&mut self,offset:usize,cx:&mut Context<Self>)->bool{
+        if offset>self.content.encode_utf16().count(){return false;}
+        let byte=utf16_to_utf8(&self.content,offset);
+        if self.offset_to_utf16(byte)!=offset{return false;}
+        self.follow_command_caret((byte..byte,false,None),cx);true
+    }
+    pub fn follow_command_caret(&mut self,caret:(Range<usize>,bool,Option<Range<usize>>),cx:&mut Context<Self>){
+        if self.command_caret()==caret{return;}
+        self.selected_range=caret.0;self.selection_reversed=caret.1;self.marked_range=caret.2;
+        cx.emit(InputEvent::CursorChanged);cx.notify();
     }
     pub fn bounds(&self) -> Option<Bounds<Pixels>> {
         self.last_bounds
@@ -1316,6 +1344,20 @@ mod tests {
                 assert!(input.text().starts_with('c'));
             })
         });
+    }
+    #[gpui::test]
+    fn command_completion_preserves_unicode_prefix_suffix_and_undo(cx:&mut gpui::TestAppContext){
+        let(input,cx)=cx.add_window_view(TextInput::new);
+        cx.update(|window,cx|input.update(cx,|input,cx|{
+            input.set_text("日本語 before /mod after",cx);
+            let caret="日本語 before /mod".len();input.selected_range=caret..caret;
+            assert_eq!(input.command_query(),Some("mod"));
+            input.replace_command("model",window,cx);
+            assert_eq!(input.text(),"日本語 before /model after");
+            assert_eq!(input.cursor_offset(),"日本語 before /model".len());
+            input.undo_edit(cx);assert_eq!(input.text(),"日本語 before /mod after");
+            input.marked_range=Some(0..3);assert!(input.command_query().is_none());
+        }));
     }
     #[gpui::test]
     fn text_only_inputs_keep_plain_paste_and_secret_fields_cannot_enable_images(

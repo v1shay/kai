@@ -390,6 +390,7 @@ impl Orbit {
                 | "reject"
                 | "approval_stop"
                 | "native_answer"
+                | "native_cancel"
                 | "approval_next"
                 | "refresh"
                 | "workspace_settings"
@@ -415,7 +416,7 @@ impl Orbit {
                 return Err("Project is unavailable".into());
             }
         }
-        if navigates || action == "send" {
+        if navigates || matches!(action,"send"|"composer_command") {
             if request["draftBase"].as_str() != Some(self.composer.read(cx).text().as_str()) {
                 return Err("The IDE has a different draft. Both drafts are preserved; review the workspace before continuing.".into());
             }
@@ -446,6 +447,15 @@ impl Orbit {
             }
         }
         match action {
+            "composer_command"=>{
+                let name=request["name"].as_str().ok_or("Missing command")?;
+                let draft=request["draft"].as_str().filter(|v|v.len()<=input::MAX_DRAFT_BYTES && !v.contains('\0')).ok_or("Invalid draft")?;
+                let caret=request["caret"].as_u64().filter(|n|*n<=draft.encode_utf16().count() as u64).ok_or("Invalid caret")? as usize;
+                self.composer.update(cx,|input,cx|input.set_text(draft,cx));
+                if !self.composer.update(cx,|input,cx|input.set_command_caret_utf16(caret,cx)){return Err("Invalid caret".into());}
+                self.accept_named_slash(name,window,cx)?;
+                if self.modal.is_some() || self.agent_picker.is_some() || self.files_visible{reveal();}
+            }
             "chat" => {
                 let id = native_id(request, "id").ok_or("Invalid chat")?;
                 let session = self
@@ -528,7 +538,7 @@ impl Orbit {
                 if self.broker_panel.is_none(){self.toggle_children(window,cx)}
                 self.select_child(child.provider,child.id,cx);reveal();
             }
-            "approve" | "reject" | "approval_stop" | "native_answer" => {
+            "approve" | "reject" | "approval_stop" | "native_answer" | "native_cancel" => {
                 self.unified_approval(request, cx)?
             }
             "settings" => {
@@ -823,6 +833,7 @@ impl Orbit {
             "notice":self.notice.as_deref().unwrap_or("Kai · Code"),"attachments":self.attachments.iter().filter(|a|!self.attachment_removals.contains_key(&a.id)).map(|a|a.path.to_string_lossy().into_owned()).collect::<Vec<_>>(),"modelsLoading":self.controls_pending.contains(self.agent.command()),"models":models.iter().map(|m|json!({"model":m.id,"displayName":m.label,"resolvedModel":self.controls.get(self.agent.command()).and_then(|(_,v)|v.defaults.aliases.get(&m.id)).unwrap_or(&m.id),"supportedReasoningEfforts":m.reasoning_efforts.iter().map(|v|json!({"reasoningEffort":v})).collect::<Vec<_>>()})).collect::<Vec<_>>(),
             "selectedModel":self.model,"reasoningEffort":self.unified_effort().unwrap_or(""),"canGoBack":!self.unified_back.is_empty(),"canGoForward":!self.unified_forward.is_empty(),
             "agents":self.agents.iter().map(|a|json!({"id":a.kind.command(),"name":a.kind.name(),"available":a.available&&a.executable.is_some()})).collect::<Vec<_>>(),"selectedAgent":self.agent.command(),"workspaceVoiceChoice":self.voice_choice,"workspaceVoiceActive":self.voice_call.is_some(),"workspaceVoiceScene":self.voice_call.as_ref().map(|v|v.scene())});
+        snapshot["slashCommands"]=self.unified_slash_commands();
         snapshot["workspaceAccess"]=json!(if !self.allow_edits{"read-only"}else if self.agent!=AgentKind::Codex{"native"}else if self.codex_access==runtime::CodexAccess::Full{"full"}else{"workspace"});
         snapshot["workspaceApprovalPolicy"]=json!(match self.codex_approvals{runtime::CodexApprovals::Ask=>"ask",runtime::CodexApprovals::AutoReview=>"auto-review",runtime::CodexApprovals::Never=>"never"});
         snapshot["workspaceExecutionPath"]=json!(self.execution_root().unwrap_or_else(||self.project.clone()));
@@ -1189,6 +1200,20 @@ mod final_regressions {
     use std::prelude::v1::test;
 
     #[gpui::test]
+    fn native_notch_inline_command_uses_the_shared_picker_and_keeps_the_draft(cx:&mut TestAppContext){
+        let(view,cx)=crate::ui_tests::fixture(cx);
+        view.update_in(cx,|app,window,cx|{
+            let draft="🦀 please /motion continue";
+            let mut body=json!({"action":"composer_command","ownerToken":"stale","draftBase":app.composer.read(cx).text(),"draft":draft,"caret":"🦀 please /motion".encode_utf16().count(),"name":"motion"});
+            assert!(app.unified_command(&body,window,cx).is_err());
+            body["ownerToken"]=json!(app.unified_token());let before=app.motion;
+            app.unified_command(&body,window,cx).unwrap();assert_ne!(app.motion,before);
+            assert_eq!(app.composer.read(cx).text(),"🦀 please  continue");assert!(app.runs.is_empty());
+            assert!(app.unified_command(&body,window,cx).is_err());assert_eq!(app.motion,!before);
+        });
+    }
+
+    #[gpui::test]
     fn unified_completion_uses_the_runtime_outcome_and_keeps_failures_visible(
         cx: &mut TestAppContext,
     ) {
@@ -1242,6 +1267,23 @@ mod final_regressions {
             body["answers"]=json!({"q":["a"]});app.unified_command(&body,window,cx).unwrap();
             match answers.try_recv().unwrap(){runtime::NativeControl::Respond{id,answer:runtime::NativeAnswer::Answers(value)}=>{assert_eq!(id,"form");assert_eq!(value["q"],vec!["a"]);},_=>panic!("Expected native form response")}
             assert!(app.unified_command(&body,window,cx).is_err());assert!(answers.try_recv().is_err());
+        });
+    }
+    #[gpui::test]
+    fn unified_cancel_question_answers_the_request_without_stopping_the_agent(cx:&mut TestAppContext){
+        let(view,cx)=crate::ui_tests::fixture(cx);let(handle,answers)=RunHandle::interactive_test_handle();
+        view.update_in(cx,|app,window,cx|{
+            let mut run=crate::ui_tests::idle_run("Question".into());run.handle=handle;
+            let native=runtime::NativeRequest{id:"form".into(),method:"mcpServer/elicitation/request".into(),title:"Connected tool needs input".into(),detail:"Allow Gmail to update the draft?".into(),kind:runtime::NativeRequestKind::Questions{questions:vec![]}};
+            app.native_pending.insert("form".into(),native_request_ui::LiveRequest::new("fixture-session",run.parse_epoch,native));app.runs.insert("fixture-session".into(),run);
+            assert_eq!(app.unified_review()["kind"],"questions");
+            let token=app.unified_pending().unwrap().1;
+            let mut body=json!({"action":"native_cancel","threadId":"code:fixture-session","approvalRequestId":format!("stale:{token}")});
+            assert!(app.unified_command(&body,window,cx).is_err());assert!(answers.try_recv().is_err());
+            body["approvalRequestId"]=json!(token);app.unified_command(&body,window,cx).unwrap();
+            assert!(matches!(answers.try_recv().unwrap(),runtime::NativeControl::Respond{id,answer:runtime::NativeAnswer::Cancel}if id=="form"));
+            assert!(!app.runs["fixture-session"].handle.is_cancelled());
+            assert!(app.unified_command(&body,window,cx).is_err());
         });
     }
 }

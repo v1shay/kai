@@ -147,7 +147,7 @@ impl QuickChat {
                 return;
             }
             match event {
-                InputEvent::Changed => {
+                InputEvent::Changed | InputEvent::CursorChanged => {
                     this.sync_to_main(cx);
                 }
                 InputEvent::Submit => this.submit(window, cx),
@@ -225,10 +225,12 @@ impl QuickChat {
     }
     fn sync_to_main(&mut self, cx: &mut Context<Self>) {
         let text = self.composer.read(cx).text();
+        let caret=self.composer.read(cx).command_caret();
         let main = self.orbit.read(cx).composer.clone();
         if main.read(cx).text() != text {
             main.update(cx, |input, cx| input.set_text(&text, cx));
         }
+        main.update(cx,|input,cx|input.follow_command_caret(caret,cx));
     }
     fn sync_from_main(&mut self, cx: &mut Context<Self>) {
         let main = self.orbit.read(cx).composer.clone();
@@ -236,6 +238,8 @@ impl QuickChat {
         let follow = main.read(cx).is_dictating();
         self.composer
             .update(cx, |input, cx| input.follow_mirrored_dictation(follow, cx));
+        let navigation=self.orbit.read(cx).slash.as_ref().is_some_and(|p|!p.closing);
+        self.composer.update(cx,|input,_|input.set_command_navigation(navigation));
         if self.composer.read(cx).text() != text {
             self.composer
                 .update(cx, |input, cx| input.set_text(&text, cx));

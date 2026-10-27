@@ -10,6 +10,8 @@ struct KaiNativeReview:Decodable,Equatable {
     let owner:String,token:String,title:String,detail:String
     let choices:[KaiReviewOption]
     let questions:[KaiReviewQuestion]
+    let kind:String?
+    var isQuestion:Bool{kind == "questions" || !questions.isEmpty}
 }
 
 /// Native provider choices and forms anchored to the existing approval popout.
@@ -52,8 +54,8 @@ struct KaiNativeReview:Decodable,Equatable {
             let button=NSButton(title:choice.label,target:self,action:#selector(choose(_:)));button.bezelStyle = .rounded
             choiceIDs[ObjectIdentifier(button)]=choice.id;buttons.append(button);stack.addArrangedSubview(button)
         }
-        if !review.questions.isEmpty {
-            let button=NSButton(title:"Submit answers",target:self,action:#selector(submit));button.bezelStyle = .rounded;buttons.append(button);stack.addArrangedSubview(button)
+        if review.isQuestion {
+            let button=NSButton(title:review.questions.isEmpty ? "Continue":"Submit answers",target:self,action:#selector(submit));button.bezelStyle = .rounded;buttons.append(button);stack.addArrangedSubview(button)
         }
         status.stringValue="";status.font = .systemFont(ofSize:11);status.textColor = .secondaryLabelColor;stack.addArrangedSubview(status)
         let scroll=NSScrollView();scroll.drawsBackground=false;scroll.hasVerticalScroller=true;scroll.autohidesScrollers=true;scroll.documentView=stack
@@ -91,7 +93,7 @@ struct KaiNativeReview:Decodable,Equatable {
     func dismiss(){popover.close()}
     func update(_ state:KaiState){
         guard let review else{return}
-        if state.nativeReview?.token != review.token{popover.close();self.review=nil;return}
+        if state.nativeReview?.token != review.token || state.nativeReview?.owner != review.owner{popover.close();self.review=nil;return}
         if let pending,state.completedRequestId == pending {
             if let error=state.completedRequestError{self.pending=nil;buttons.forEach{$0.isEnabled=true};fields.values.forEach{$0.isEnabled=true};options.values.flatMap{$0}.forEach{$0.1.isEnabled=true};status.stringValue=error}
             else{popover.close();self.review=nil}

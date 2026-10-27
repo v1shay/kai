@@ -3669,7 +3669,7 @@ fn slash_escape_and_cursor_changes_keep_existing_panels_and_text(cx: &mut TestAp
     let (view, cx) = fixture(cx);
     cx.update(|window, cx| view.update(cx, |app, cx| app.toggle_files(window, cx)));
     cx.simulate_input("/status");
-    cx.simulate_keystrokes("left");
+    cx.simulate_keystrokes("cmd-left");
     draw_frame(&view, cx);
     cx.update(|_, cx| {
         assert!(view.read(cx).slash.is_none());
@@ -3684,6 +3684,16 @@ fn slash_escape_and_cursor_changes_keep_existing_panels_and_text(cx: &mut TestAp
         assert!(view.read(cx).files_visible);
     });
     assert_eq!(composer_text(&view, cx), "/status");
+}
+
+#[gpui::test]
+fn inline_slash_completes_at_the_caret_and_keeps_the_surrounding_draft(cx:&mut TestAppContext){
+    let(view,cx)=fixture(cx);
+    cx.simulate_input("日本語 please /mod");cx.simulate_keystrokes("tab");
+    assert_eq!(composer_text(&view,cx),"日本語 please /model ");
+    cx.simulate_keystrokes("enter");draw_frame(&view,cx);
+    cx.update(|_,cx|{assert!(view.read(cx).agent_picker.is_some());assert!(view.read(cx).runs.is_empty());});
+    assert_eq!(composer_text(&view,cx),"日本語 please  ");
 }
 
 #[gpui::test]

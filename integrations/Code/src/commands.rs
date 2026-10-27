@@ -385,6 +385,19 @@ pub fn query(text: &str) -> Option<&str> {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b':')))
     .then_some(word)
 }
+/// The token touching the caret, bounded by whitespace. URLs, filesystem paths,
+/// code fences and slash characters inside words are ordinary draft text.
+pub fn span_at(text: &str, caret: usize) -> Option<std::ops::Range<usize>> {
+    if !text.is_char_boundary(caret) { return None; }
+    // Tab completion leaves a separating space; Enter still accepts that token.
+    let caret=text[..caret].char_indices().next_back().filter(|(_,c)|*c==' ').map_or(caret,|(i,_)|i);
+    let prefix=&text[..caret];
+    let start=prefix.char_indices().rev().find(|(_,c)| c.is_whitespace()).map_or(0,|(i,c)|i+c.len_utf8());
+    let end=text[caret..].char_indices().find(|(_,c)|c.is_whitespace()).map_or(text.len(),|(i,_)|caret+i);
+    let token=&text[start..end];
+    if !token.starts_with('/') || token.len()>65 || caret<=start {return None;}
+    token[1..].bytes().all(|b|b.is_ascii_alphanumeric() || matches!(b,b'-'|b'_'|b':')).then_some(start..end)
+}
 /// Dispatch uses only the bounded first word; arguments may be multiline or
 /// longer than the small popup query without bypassing native validation.
 pub fn name(text: &str) -> Option<&str> {
@@ -450,6 +463,14 @@ pub fn lookup(agent: AgentKind, name: &str) -> Option<Command> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn inline_commands_follow_the_caret_without_matching_paths_or_urls(){
+        let text="日本語 please /mod then continue";
+        let caret=text.find(" then").unwrap();
+        let span=span_at(text,caret).unwrap();assert_eq!(&text[span],"/mod");
+        for text in ["https://host/path","please /tmp/file","please //comment","please word/model","please /a.rs"]{assert!(span_at(text,text.len()).is_none(),"{text}");}
+        let text="long draft\nplease /";assert_eq!(&text[span_at(text,text.len()).unwrap()],"/");
+    }
     #[test]
     fn each_provider_has_an_explicit_unique_bounded_catalog() {
         for agent in [

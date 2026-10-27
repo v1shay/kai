@@ -920,3 +920,53 @@ enabled. The prior bundle is retained as `Kai Unified 0.8.4 backup
 20261026-234612.app`. Strict bundle signature and all three executable/library
 hashes were verified. No active agent subprocesses were present in the previous
 observed instance when it exited.
+
+## 0.8.6 — native tool questions and commands at the caret
+
+Tool elicitation forms no longer go through the approval-only Yes/No route.
+Single boolean questions send their exact question ID and true/false answer;
+other forms open Kai's native answer controls. Empty confirmation forms retain
+their Continue control. Cancel answers the pending request without stopping the
+agent; Stop remains an explicit separate action. Background owner and invocation
+tokens remain mandatory, with stale and duplicate responses rejected. The
+compact command preview also uses the available height when no status is shown.
+
+Slash completion follows the caret inside a sentence and retains surrounding
+Unicode text, existing suffixes, and undo. Choosing a local control executes that
+control and preserves the remaining draft. Native CLI entries complete into the
+prompt without discarding its context. Paths and URLs remain ordinary text.
+Quick Chat now mirrors caret and IME state as well as the draft and enables the
+same keyboard navigation. The extended notch displays the same provider-scoped
+catalog inside its existing window and sends command choices through the shared
+picker, including UTF-16 caret validation, owner guards, draft conflict checks,
+and explicit acknowledgement before adopting the resulting draft.
+
+Verification: the full Rust suite passed 775 tests with 17 opt-in tests
+ignored; the additional final native-notch command bridge regression passed
+separately. The Swift suite ran 194 tests with one skip and no failures. These
+checks include tool form typing, request cancellation, duplicate/stale rejection,
+inline completion, draft preservation, Quick Chat keyboard input, and undo.
+The real native-window check exercised Unicode-caret command dispatch, remaining
+draft acknowledgement, and a background tool's typed No answer. Its wallpaper-
+enabled idle audit processed 579 status deliveries over 120 seconds without
+losing its surface. The signed animation/shortcut probe also passed.
+
+Both signed live voice routes passed with generated speech and muted ambient
+input: an existing Gemini chat using the app button, and a new Gemini draft using
+the shortcut. The existing-chat route verified the transferred cobalt-blue fact.
+Both produced user/assistant transcripts and new incoming audio after switching
+through the workspace, extended/compact notch, double-Command and Quick Chat,
+retained one session identity, and ended through explicit native Stop.
+
+The intermittent freeze is still not established as fixed. The latest read-only
+live sample showed the normal event loop rather than a deadlock. An isolated
+generated-speech media test connected, exchanged both transcripts, and received
+audio without the earlier microphone-disconnection error, but its older appshot
+context assertion did not pass. That older diagnostic is not counted as a passing
+context check; the separate signed product probes above did pass. The earlier
+intermittent microphone failure was not reproduced in these runs, and its cause
+has not been established.
+
+Installed **0.8.6 (20)** with a timestamped 0.8.5 backup, strict signature
+verification, and matching executable/library hashes. The running app was kept
+open because it hosts the active conversation; the update loads on relaunch.

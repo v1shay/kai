@@ -4437,6 +4437,11 @@ time.sleep(30)
             .unwrap(),
             json!({"action":"accept","content":{"count":3}})
         );
+        p.params=json!({"requestedSchema":{"properties":{"count":{"type":"boolean"}},"required":["count"]}});
+        for (text,expected) in [("true",true),("false",false)] {
+            assert_eq!(response(&p,&NativeAnswer::Answers(BTreeMap::from([("count".into(),vec![text.into()])]))).unwrap(),json!({"action":"accept","content":{"count":expected}}));
+        }
+        assert_eq!(response(&p,&NativeAnswer::Cancel).unwrap(),json!({"action":"cancel","content":null}));
     }
 }
 

@@ -64,6 +64,31 @@ private func auditCommand(_ bytes:UnsafePointer<UInt8>?,_ count:Int)->Bool{guard
    ui.cancelPending()
    print("Native window input: actual mouse events focus the composer and dispatch New")
   }else{fatalError("Missing native click targets")}
+  if let field=member(app,"composerField") as? NSTextField,let panel=field.window {
+   var state=try JSONSerialization.jsonObject(with:packet("workspace","gpt-6.1-sol")) as! [String:Any]
+   state["slashCommands"]=[["name":"motion","description":"Toggle motion"]]
+   runtime.receive(try JSONSerialization.data(withJSONObject:state));pump(0.1)
+   panel.makeKeyAndOrderFront(nil);field.selectText(nil)
+   let editor=field.currentEditor() as! NSTextView,draft="🦀 please /motion continue",caret="🦀 please /motion".utf16.count
+   editor.string=draft;field.stringValue=draft;editor.setSelectedRange(NSRange(location:caret,length:0))
+   app.controlTextDidChange(Notification(name:NSControl.textDidChangeNotification,object:field))
+   let picker=member(app,"slashPicker") as! NativeSlashPicker
+   precondition(picker.active,"The actual notch did not show mid-sentence commands")
+   precondition(app.control(field,textView:editor,doCommandBy:#selector(NSResponder.insertNewline(_:))),"Notch Enter did not accept the command")
+   let command=commands.last!;precondition(command["action"] as? String == "composer_command" && command["name"] as? String == "motion" && command["caret"] as? Int == caret,"Native command lost its exact caret or route")
+   state["composerDraft"]="🦀 please  continue";state["completedRequestId"]=command["requestId"]
+   runtime.receive(try JSONSerialization.data(withJSONObject:state));pump(0.1)
+   precondition(field.stringValue == "🦀 please  continue","Native command acknowledgement failed to synchronize the remaining draft")
+   state["approval"]=true;state["approvalThreadId"]="code:background";state["approvalRequestId"]="epoch:confirm";state["approvalSummary"]="Connected tool needs input\n\nAllow the tool to update a draft?"
+   state["nativeReview"]=["owner":"code:background","token":"epoch:confirm","kind":"questions","title":"Connected tool needs input","detail":"Allow the tool to update a draft?","choices":[],"questions":[["id":"confirm","header":"Confirm","question":"Allow the tool to update a draft?","secret":false,"multiple":false,"required":true,"options":[["id":"true","label":"Yes"],["id":"false","label":"No"]]]]] as [String:Any]
+   runtime.receive(try JSONSerialization.data(withJSONObject:state));pump(0.2)
+   let approval=member(app,"approvalUI") as! CompactApprovalView
+   approval.subviews.compactMap{$0 as? NSButton}.first{$0.accessibilityLabel()=="No"}!.performClick(nil)
+   precondition(commands.last?["action"] as? String == "native_answer" && commands.last?["answers"] as? [String:[String]] == ["confirm":["false"]],"Native tool confirmation sent an approval instead of a typed answer")
+   precondition(commands.last?["threadId"] as? String == "code:background" && commands.last?["approvalRequestId"] as? String == "epoch:confirm","Notch question lost its background owner")
+   state["approval"]=false;state.removeValue(forKey:"nativeReview");runtime.receive(try JSONSerialization.data(withJSONObject:state));pump(0.1)
+   print("Native notch: mid-sentence command input, exact Unicode caret, synchronized draft acknowledgement, and background tool Yes/No response passed")
+  }
   if let requested=ProcessInfo.processInfo.environment["KAI_COMPOSER_SOAK_SECONDS"].flatMap(Double.init),requested>0 {
    let seconds=min(180,requested),end=Date().addingTimeInterval(seconds);var iteration=0
    while Date()<end {

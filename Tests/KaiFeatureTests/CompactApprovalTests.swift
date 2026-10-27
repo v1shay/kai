@@ -47,6 +47,21 @@ final class CompactApprovalTests:XCTestCase {
         XCTAssertTrue(buttons.allSatisfy{view.bounds.contains($0.frame)})
         XCTAssertFalse(buttons[0].frame.intersects(buttons[1].frame))
     }
+    @MainActor func testToolFormsUseAnswersInsteadOfApprovalDecisions()throws{
+        var object:[String:Any]=["project":"/tmp","projects":[],"chats":[],"standaloneChats":[],"standalone":false,"threadId":"viewed-chat","threadName":"Chat","history":[],"readOnly":false,"approval":true,"approvalRequestId":"request","approvalThreadId":"background","approvalSummary":"Allow Gmail to update the draft?","activity":["scene":"permission","text":"Approval needed"],"activeTasks":[],"notice":"","attachments":[]]
+        object["nativeReview"]=["owner":"background","token":"request","title":"Connected tool needs input","detail":"Allow Gmail to update the draft?","kind":"questions","choices":[],"questions":[["id":"confirm","header":"Confirm","question":"Allow Gmail to update the draft?","secret":false,"multiple":false,"required":true,"options":[["id":"true","label":"Yes"],["id":"false","label":"No"]]]]] as [String:Any]
+        func request()throws->CompactApprovalRequest{try XCTUnwrap(CompactApprovalRequest(state:JSONDecoder().decode(KaiState.self,from:JSONSerialization.data(withJSONObject:object))))}
+        let boolean=try request()
+        XCTAssertEqual(boolean.response("approve")?.0,"native_answer")
+        XCTAssertEqual(boolean.response("approve")?.1["answers"] as? [String:[String]],["confirm":["true"]])
+        XCTAssertEqual(boolean.response("reject")?.1["answers"] as? [String:[String]],["confirm":["false"]])
+        var review=object["nativeReview"] as! [String:Any];review["questions"]=[];object["nativeReview"]=review
+        let form=try request();XCTAssertTrue(form.isQuestion);XCTAssertNil(form.response("approve"));XCTAssertEqual(form.response("reject")?.0,"native_cancel")
+        let view=CompactApprovalView(frame:CGRect(x:0,y:0,width:338,height:88));view.show(form)
+        var opened=false,decided=false;view.onReview={_ in opened=true};view.onDecision={_,_ in decided=true}
+        view.subviews.compactMap{$0 as? NSButton}.first{$0.accessibilityLabel()=="Answer question"}!.performClick(nil)
+        XCTAssertTrue(opened);XCTAssertFalse(decided)
+    }
     @MainActor func testPreviewIsLocalAndGlyphAnimationsAreFinite()throws{
         _=NSApplication.shared
         let view=CompactApprovalView(frame:CGRect(x:0,y:0,width:338,height:88)),preview=CompactApprovalRequest(preview:true)

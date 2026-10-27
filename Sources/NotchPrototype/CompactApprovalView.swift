@@ -18,6 +18,17 @@ struct CompactApprovalRequest:Equatable {
         return summary
     }
     func matches(_ state:KaiState)->Bool{!preview && state.approval && state.approvalRequestId == id && state.approvalThreadId == thread}
+    var isQuestion:Bool{review?.isQuestion == true}
+    var booleanQuestion:KaiReviewQuestion?{
+        guard let questions=review?.questions,questions.count == 1,let question=questions.first,!question.multiple,Set(question.options.map(\.id)) == Set(["true","false"]) else{return nil}
+        return question
+    }
+    /// A form is never an approval. Preserve its exact question ID and answer type.
+    func response(_ action:String)->(String,[String:Any])?{
+        guard isQuestion,action != "approval_stop" else{return (action,[:])}
+        if let question=booleanQuestion{return ("native_answer",["answers":[question.id:[action == "approve" ? "true":"false"]]])}
+        return action == "approve" ? nil:("native_cancel",[:])
+    }
     static func height(notch:CGFloat)->CGFloat{notch+112}
 }
 
@@ -46,8 +57,8 @@ struct CompactApprovalRequest:Equatable {
     required init?(coder:NSCoder){fatalError()}
     override func mouseDown(with event:NSEvent){}
     override func layout(){
-        super.layout();heading.frame=CGRect(x:0,y:bounds.height-14,width:bounds.width,height:12)
-        scroll.frame=CGRect(x:0,y:36,width:bounds.width,height:max(20,bounds.height-55))
+        super.layout();heading.frame=CGRect(x:0,y:bounds.height-16,width:bounds.width,height:14)
+        scroll.frame=CGRect(x:0,y:36,width:bounds.width,height:max(20,bounds.height-36-(heading.isHidden ? 0:20)))
         command.setFrameSize(CGSize(width:scroll.contentSize.width,height:scroll.contentSize.height));command.textContainer?.containerSize=CGSize(width:scroll.contentSize.width,height:.greatestFiniteMagnitude)
         if let container=command.textContainer{command.layoutManager?.ensureLayout(for:container);command.setFrameSize(CGSize(width:scroll.contentSize.width,height:max(scroll.contentSize.height,(command.layoutManager?.usedRect(for:container).height ?? 0)+2)))}
         nextButton.frame=CGRect(x:0,y:0,width:76,height:28)
@@ -62,21 +73,23 @@ struct CompactApprovalRequest:Equatable {
         nextButton.isHidden=request.count<2;nextButton.title="Next · \(request.count)"
         command.string=request.command;command.toolTip=request.summary;scroll.contentView.scroll(to:.zero)
         heading.stringValue="";heading.toolTip=nil;heading.isHidden=true
+        let labels=request.isQuestion ? [request.booleanQuestion == nil ? "Answer question":"Yes",request.booleanQuestion == nil ? "Cancel question":"No","Stop chat"]:["Approve","Don't approve","Stop chat"]
+        for (button,label) in zip(buttons,labels){button.toolTip=label;button.setAccessibilityLabel(label)}
         buttons.forEach{$0.isEnabled=true;$0.alphaValue=1;$0.animate()};needsLayout=true
     }
     func setProfile(_ profile:PetGradientProfile){buttons.forEach{$0.glyph.setProfile(profile,wave:false)}}
     func reset(){timeout?.cancel();timeout=nil;request=nil;pendingID=nil;buttons.forEach{$0.glyph.hide()};isHidden=true}
     func begin(_ id:String){
-        pendingID=id;buttons.forEach{$0.isEnabled=false;$0.alphaValue=0.45};heading.stringValue="Waiting for confirmation…";heading.isHidden=false
+        pendingID=id;buttons.forEach{$0.isEnabled=false;$0.alphaValue=0.45};heading.stringValue="Waiting for confirmation…";heading.isHidden=false;needsLayout=true
         let work=DispatchWorkItem{[weak self] in guard let self,self.pendingID == id else{return};self.finish(id,error:"No confirmation yet · check the chat before retrying")};timeout=work;DispatchQueue.main.asyncAfter(deadline:.now()+12,execute:work)
     }
     func finish(_ id:String?,error:String?){
         guard let id,pendingID == id else{return};timeout?.cancel();pendingID=nil
-        heading.stringValue=error ?? "";heading.toolTip=error;heading.isHidden=error == nil;buttons.forEach{$0.isEnabled=true;$0.alphaValue=1}
+        heading.stringValue=error ?? "";heading.toolTip=error;heading.isHidden=error == nil;buttons.forEach{$0.isEnabled=true;$0.alphaValue=1};needsLayout=true
     }
     @objc private func cycle(){guard pendingID == nil else{return};onCycle?()}
     @objc private func openReview(){if let review=request?.review{onReview?(review)}}
-    @objc private func decide(_ sender:ApprovalButton){guard pendingID == nil,let request else{return};onDecision?(sender.decision,request)}
+    @objc private func decide(_ sender:ApprovalButton){guard pendingID == nil,let request else{return};if request.response(sender.decision) == nil,let review=request.review{onReview?(review)}else{onDecision?(sender.decision,request)}}
 }
 
 @MainActor private final class ApprovalButton:NSButton {

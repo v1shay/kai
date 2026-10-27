@@ -35,6 +35,17 @@ fn click(cx: &mut VisualTestContext, selector: &'static str) {
 }
 
 #[gpui::test]
+fn quick_inline_slash_keeps_the_current_draft_and_uses_keyboard_completion(cx:&mut TestAppContext){
+    let(orbit,panel,cx)=fixture(cx);
+    cx.simulate_input(" please /mod");draw(&panel,cx);
+    assert!(cx.debug_bounds("slash-picker").is_some());
+    cx.simulate_keystrokes("tab");draw(&panel,cx);
+    assert_eq!(cx.update(|_,cx|panel.read(cx).composer.read(cx).text()),"Draft 🦀 please /model ");
+    cx.simulate_keystrokes("enter");draw(&panel,cx);
+    cx.update(|_,cx|{let app=orbit.read(cx);assert!(app.agent_picker.is_some());assert!(app.runs.is_empty());assert_eq!(app.composer.read(cx).text(),"Draft 🦀 please  ");});
+}
+
+#[gpui::test]
 fn quick_loaded_chat_reveals_without_an_active_main_window(cx: &mut TestAppContext) {
     let (orbit, panel, cx) = fixture(cx);
     cx.run_until_parked();

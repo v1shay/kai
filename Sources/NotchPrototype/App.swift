@@ -195,6 +195,9 @@ private final class NotchSurfaceHost:NSView {
 @MainActor final class KaiPetApp: NSObject, NSApplicationDelegate, NSTextFieldDelegate, NSTextViewDelegate {
     private var unifiedMenuItems=[NSMenuItem]()
     private let nativeReview=NativeRequestReview()
+    private let slashPicker=NativeSlashPicker()
+    private var pendingSlashID:String?
+    private var pendingSlashDraft:String?
     private var unifiedDraftBase=""
     private let workspaceMorph=WorkspaceMorph()
     private var quickChatVisible=false,workspaceVoiceRequest:String?
@@ -487,7 +490,7 @@ private final class NotchSurfaceHost:NSView {
         bridge.draftBaseProvider={ [weak self] in self?.unifiedDraftBase ?? "" }
         bridge.draftProvider={ [weak self] in self?.composerField?.stringValue ?? "" }
         bridge.onState={ [weak self] state in self?.receive(state) }
-        bridge.onError={ [weak self] error in guard let self else{return};if self.compactVoiceMode{self.failCompactVoice(error);return};self.chatVoice.stop();self.sounds.playScene("failure");self.earlierHistoryRequest=nil;self.historyControl.update(hasMore:false,loading:false);self.cancelShortcutInput();self.pendingAutoSend=false;self.sendingPrompt=nil;self.pendingFilesRequestID=nil;self.indicator.setFileLoading(false);self.finishExpandedChatLoading();if self.miniOpen{self.pinned=EmbeddedCodeRuntime.shared.active;self.compactWhileWorking=false;self.setOpen(EmbeddedCodeRuntime.shared.active,mini:EmbeddedCodeRuntime.shared.active)};self.miniUI.cancelPending();self.miniUI.setCodexMessage(error);self.syncMotion(force:true) }
+        bridge.onError={ [weak self] error in guard let self else{return};self.pendingSlashID=nil;self.slashPicker.hide();if self.compactVoiceMode{self.failCompactVoice(error);return};self.chatVoice.stop();self.sounds.playScene("failure");self.earlierHistoryRequest=nil;self.historyControl.update(hasMore:false,loading:false);self.cancelShortcutInput();self.pendingAutoSend=false;self.sendingPrompt=nil;self.pendingFilesRequestID=nil;self.indicator.setFileLoading(false);self.finishExpandedChatLoading();if self.miniOpen{self.pinned=EmbeddedCodeRuntime.shared.active;self.compactWhileWorking=false;self.setOpen(EmbeddedCodeRuntime.shared.active,mini:EmbeddedCodeRuntime.shared.active)};self.miniUI.cancelPending();self.miniUI.setCodexMessage(error);self.syncMotion(force:true) }
         speech.onModels={ [weak self] models in self?.updateVoiceMenu(models) }
         speech.onStatus={ [weak self] status in self?.featureStatusItem.title=status }
         media.onStatus={ [weak self] status in self?.featureStatusItem.title=status }
@@ -1108,6 +1111,7 @@ private final class NotchSurfaceHost:NSView {
     }
 
     private func setOpen(_ requested: Bool, mini requestedMini: Bool = false,userInitiated:Bool=false,forceReveal:Bool=false) {
+        if !requested || !requestedMini{slashPicker.hide()}
         if approvalPopout && (!requested || requestedMini){approvalPopout=false;approvalUI.reset()}
         if compactVoiceMode,userInitiated {voiceExpanded=requested && requestedMini}
         let presentation=CompactVoicePresentation.layout(active:compactVoiceMode,open:requested,expanded:requestedMini,manualExpansion:voiceExpanded)
@@ -1385,12 +1389,45 @@ private final class NotchSurfaceHost:NSView {
 
     private func layoutComposer(_ frame:CGRect,animated:Bool){guard let field=composerField else{return};let root=miniUI.layer.frame,h:CGFloat=18,modern=frame.height>40,target=CGRect(x:root.minX+frame.minX+10,y:root.minY+(modern ? frame.maxY-27:frame.midY-h/2-2.25),width:max(20,frame.width-(modern ? 20:73)),height:h);if animated{NSAnimationContext.runAnimationGroup{context in context.duration=0.42;context.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.7,0.25,1);field.animator().frame=target}}else{field.frame=target}}
     private func layoutConversation(_ frame:CGRect){guard let scroll=conversationScroll else{return};let root=miniUI.layer.frame;scroll.frame=CGRect(x:root.minX+frame.minX,y:root.minY+frame.minY,width:frame.width,height:frame.height)}
-    private func setPrompt(_ text:String,dictation:Bool=false){if dictation,let field=composerField{DictationComposerEditing.update(field,text:text)}else{composerField?.stringValue=text};miniUI.setComposerHasText(!text.isEmpty);syncMotion(force:!text.isEmpty)}
-    func controlTextDidChange(_ obj:Notification){miniUI.setComposerHasText(!(composerField?.stringValue.isEmpty ?? true));syncMotion(force:true)}
-    func control(_ control:NSControl,textView:NSTextView,doCommandBy selector:Selector)->Bool{if selector == #selector(NSResponder.insertNewline(_:)){sendPrompt();return true};return false}
+    private func setPrompt(_ text:String,dictation:Bool=false){slashPicker.hide();if dictation,let field=composerField{DictationComposerEditing.update(field,text:text)}else{composerField?.stringValue=text};miniUI.setComposerHasText(!text.isEmpty);syncMotion(force:!text.isEmpty)}
+    private func updateSlashPicker(){
+        guard miniOpen,let field=composerField,let editor=field.currentEditor() as? NSTextView,!editor.hasMarkedText() else{slashPicker.hide();return}
+        if slashPicker.superview == nil{scalableUI.addSubview(slashPicker);slashPicker.onAccept={[weak self] name in self?.acceptNativeSlash(name)}}
+        slashPicker.update(text:field.stringValue,selection:editor.selectedRange(),commands:latestState?.slashCommands ?? [],anchor:field.frame)
+    }
+    private func acceptNativeSlash(_ name:String){
+        guard pendingSlashID == nil,let field=composerField,let editor=field.currentEditor() as? NSTextView,NativeSlashToken.at(field.stringValue,selection:editor.selectedRange()) != nil else{return}
+        let id=UUID().uuidString;pendingSlashID=id;pendingSlashDraft=field.stringValue
+        slashPicker.hide();bridge.send("composer_command",["name":name,"draft":field.stringValue,"caret":editor.selectedRange().location,"requestId":id])
+    }
+    func controlTextDidChange(_ obj:Notification){miniUI.setComposerHasText(!(composerField?.stringValue.isEmpty ?? true));updateSlashPicker();syncMotion(force:true)}
+    func control(_ control:NSControl,textView:NSTextView,doCommandBy selector:Selector)->Bool{
+        if slashPicker.active {
+            switch selector {
+            case #selector(NSResponder.moveUp(_:)):slashPicker.move(-1);return true
+            case #selector(NSResponder.moveDown(_:)):slashPicker.move(1);return true
+            case #selector(NSResponder.cancelOperation(_:)):slashPicker.dismiss();return true
+            case #selector(NSResponder.insertTab(_:)),#selector(NSResponder.insertNewline(_:)):slashPicker.accept();return true
+            default:slashPicker.hide()
+            }
+        }
+        if selector == #selector(NSResponder.insertNewline(_:)){sendPrompt();return true};return false
+    }
 
-    private func sendPrompt(){if attachmentEncoding{pendingAttachmentSend=true;miniUI.setCodexMessage("Preparing images…");return};guard expandedChatRequest == nil,sendingPrompt == nil, !shortcutPreparation.busy else{return};if latestState?.threadId?.hasPrefix("code:") == true,latestState?.inputBlocked == true{miniUI.setCodexMessage("Code is busy or loading — your prompt is kept here.");return};let prompt=(composerField?.stringValue ?? "").trimmingCharacters(in:.whitespacesAndNewlines);guard !prompt.isEmpty || queuedImageCount>0 else{return};sendingPrompt=prompt;setMotion("running-left",replay:true);speech.cancelAudio();let requestID=UUID().uuidString;sendingPromptRequestID=requestID;bridge.send("send",["text":prompt,"requestId":requestID]);if compactOnSend{hidePetGallery(restore:false);autoCompact=false;compactWhileWorking=true;compactThreadID=latestState?.threadId;compactStartHistoryCount=latestState?.history.count ?? 0;pinned=true;setOpen(true,mini:false)}}
-    private func answerApproval(_ action:String){if action == "interrupt"{speech.cancelAudio()};var fields:[String:Any]=["requestId":miniUI.pendingRequestID ?? ""];if let id=latestState?.approvalThreadId{fields["threadId"]=id};if let id=latestState?.approvalRequestId{fields["approvalRequestId"]=id};bridge.send(action,fields)}
+    private func sendPrompt(){if attachmentEncoding{pendingAttachmentSend=true;miniUI.setCodexMessage("Preparing images…");return};guard pendingSlashID == nil,expandedChatRequest == nil,sendingPrompt == nil, !shortcutPreparation.busy else{return};if latestState?.threadId?.hasPrefix("code:") == true,latestState?.inputBlocked == true{miniUI.setCodexMessage("Code is busy or loading — your prompt is kept here.");return};let prompt=(composerField?.stringValue ?? "").trimmingCharacters(in:.whitespacesAndNewlines);guard !prompt.isEmpty || queuedImageCount>0 else{return};sendingPrompt=prompt;setMotion("running-left",replay:true);speech.cancelAudio();let requestID=UUID().uuidString;sendingPromptRequestID=requestID;bridge.send("send",["text":prompt,"requestId":requestID]);if compactOnSend{hidePetGallery(restore:false);autoCompact=false;compactWhileWorking=true;compactThreadID=latestState?.threadId;compactStartHistoryCount=latestState?.history.count ?? 0;pinned=true;setOpen(true,mini:false)}}
+    private func answerApproval(_ action:String){
+        if action == "interrupt"{speech.cancelAudio()}
+        var response=action,fields:[String:Any]=["requestId":miniUI.pendingRequestID ?? ""]
+        if let state=latestState,let request=CompactApprovalRequest(state:state),request.isQuestion {
+            guard let (mapped,extra)=request.response(action) else{
+                miniUI.cancelPending()
+                if let review=request.review{nativeReview.present(review,from:composerField ?? panel.contentView!){[weak self] action,fields in self?.bridge.send(action,fields)}}
+                return
+            }
+            response=mapped;fields.merge(extra){_,new in new}
+        }
+        if let id=latestState?.approvalThreadId{fields["threadId"]=id};if let id=latestState?.approvalRequestId{fields["approvalRequestId"]=id};bridge.send(response,fields)
+    }
 
     @objc private func previewCompactApproval(){
         guard latestState?.approval != true else{featureStatusItem?.title="Review the pending approval before starting a preview";return}
@@ -1434,8 +1471,10 @@ private final class NotchSurfaceHost:NSView {
         if request.preview{featureStatusItem?.title="Approval preview: \(action == "approve" ? "approved":action == "reject" ? "declined":"stopped") · nothing ran";dismissCompactApproval();return}
         guard let state=latestState,request.matches(state) else{return}
         if action == "approval_stop",chatVoice.threadID == request.thread{speech.cancelAudio();chatVoice.stop()}
+        guard let (response,extra)=request.response(action) else{return}
         let id=UUID().uuidString;approvalUI.begin(id)
-        bridge.send(action,["threadId":request.thread,"approvalRequestId":request.id,"requestId":id])
+        var fields=extra;fields["threadId"]=request.thread;fields["approvalRequestId"]=request.id;fields["requestId"]=id
+        bridge.send(response,fields)
     }
 
     private func synchronizeOwnerAttachments(_ state:KaiState){
@@ -1495,6 +1534,8 @@ private final class NotchSurfaceHost:NSView {
     }
 
     private func receive(_ state:KaiState){
+        let slashAccepted=pendingSlashID != nil && state.completedRequestId == pendingSlashID && state.completedRequestError == nil && composerField?.stringValue == pendingSlashDraft
+        if (pendingSlashID != nil && state.completedRequestId == pendingSlashID) || latestState?.ownerToken != state.ownerToken{pendingSlashID=nil;pendingSlashDraft=nil;slashPicker.hide()}
         defer{refreshMedia()}
         nativeReview.update(state)
         if EmbeddedCodeRuntime.shared.active {
@@ -1513,7 +1554,7 @@ private final class NotchSurfaceHost:NSView {
         if EmbeddedCodeRuntime.shared.active,let draft=state.composerDraft {
             let local=composerField?.stringValue ?? ""
             let changed=latestState?.threadId != state.threadId || latestState?.project != state.project
-            let accepted=state.completedRequestId == sendingPromptRequestID && sendingPromptRequestID != nil && state.completedRequestError == nil
+            let accepted=slashAccepted || (state.completedRequestId == sendingPromptRequestID && sendingPromptRequestID != nil && state.completedRequestError == nil)
             if UnifiedDraftHandoff.shouldAdopt(local:local,base:unifiedDraftBase,remote:draft,selectionChanged:changed,sendAccepted:accepted) {
                 unifiedDraftBase=draft
                 if !dictating && !finalizingDictation && !shortcutPreparation.busy{setPrompt(draft)}
