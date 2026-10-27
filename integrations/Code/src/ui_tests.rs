@@ -4853,3 +4853,18 @@ fn model_search_selects_the_filtered_native_model_without_losing_the_draft(cx:&m
     click_selector(cx,"model-choice-1");
     view.update(cx,|app,cx|{assert_eq!(app.model.as_deref(),Some("model-target"));assert_eq!(app.composer.read(cx).text(),"Keep my chat draft");});
 }
+
+#[gpui::test]
+fn new_chat_welcome_is_centered_in_its_full_content_area(cx:&mut TestAppContext){
+    let(view,cx)=fixture(cx);
+    view.update(cx,|app,_|{app.active=None;app.loading=false;app.rows.clear();});
+    for (width,height) in [(1180.,790.),(1520.,980.)]{
+        cx.simulate_resize(size(px(width),px(height)));
+        cx.draw(point(px(0.),px(0.)),size(px(width),px(height)),|_,_|view.clone().into_any_element());
+        let content=cx.debug_bounds("new-chat-content").expect("New-chat content");
+        let greeting=cx.debug_bounds("new-chat-greeting").expect("New-chat welcome");
+        assert!(content.size.height>px(300.));
+        assert!((content.center().x-greeting.center().x).abs()<px(1.));
+        assert!((content.center().y-greeting.center().y).abs()<px(1.),"Welcome must center in the content, not stick to its top: content={content:?}, greeting={greeting:?}");
+    }
+}

@@ -10,7 +10,7 @@ use std::{
     rc::Rc,
     sync::{
         Arc, Mutex, OnceLock,
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicU32, AtomicU64, Ordering},
         mpsc::{self, Receiver, SyncSender, TryRecvError},
     },
 };
@@ -45,6 +45,7 @@ struct CallbackState {
     wake: async_channel::Sender<()>,
     levels: Arc<[AtomicU32; 4]>,
     error: Mutex<Option<String>>,
+    received_audio_bytes:AtomicU64,
 }
 type Callback = unsafe extern "C" fn(*mut c_void, *const c_char);
 struct Api {
@@ -94,6 +95,7 @@ unsafe extern "C" fn callback(context: *mut c_void, text: *const c_char) {
             _=>{}
         }
     }
+    if value["type"]=="stats"{if let Some(bytes)=value["audioBytes"].as_u64(){state.received_audio_bytes.fetch_max(bytes,Ordering::Relaxed);}return}
     let event = match value["type"].as_str() {
         Some("level") => {
             if let Some(level) = value["level"].as_f64().filter(|n| n.is_finite()) {
@@ -179,6 +181,7 @@ impl Media {
             wake: wake_tx,
             levels: levels.clone(),
             error: Mutex::new(None),
+            received_audio_bytes:AtomicU64::new(0),
         });
         let script = CString::new(include_str!("../assets/voice/session.js"))?;
         let id = CString::new(session_id)?;
@@ -238,6 +241,7 @@ impl Media {
         }
         Ok(())
     }
+    pub fn received_audio_bytes(&self)->u64{self.state.received_audio_bytes.load(Ordering::Relaxed)}
     pub fn initial_prompt(&self, prompt: &str) -> Result<()> {
         ensure!(
             prompt.len() <= 32 * 1024 * 1024,

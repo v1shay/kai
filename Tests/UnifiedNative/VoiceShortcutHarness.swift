@@ -31,9 +31,9 @@ private func command(_ bytes:UnsafePointer<UInt8>?,_ count:Int)->Bool{
         let window=NSWindow(contentRect:CGRect(x:100,y:100,width:1000,height:700),styleMask:[.titled],backing:.buffered,defer:false);window.isReleasedWhenClosed=false
         runtime.start(window:window,command:command)
         defer{app.applicationWillTerminate(Notification(name:NSApplication.willTerminateNotification));NSApp.windows.forEach{$0.orderOut(nil)}}
-        var thread="code:existing",live=false,request:String?,scene="off",revision=0
+        var thread="code:existing",live=false,request:String?,scene="off",revision=0,draft="",deferVoiceAck=false
         func publish(){
-            var state:[String:Any] = ["project":"/private/tmp","projects":[],"chats":[],"standaloneChats":[],"standalone":true,"threadId":thread,"threadName":"Selected voice chat","history":[],"readOnly":false,"approval":false,"activity":["scene":"off","text":"Ready"],"activeTasks":[],"notice":"Voice fixture \(revision)","attachments":[],"composerDraft":"","ownerToken":"fixture-\(revision)","workspaceVoiceActive":live,"workspaceVoiceScene":scene,"selectedAgent":"codex","models":[]]
+            var state:[String:Any] = ["project":"/private/tmp","projects":[],"chats":[],"standaloneChats":[],"standalone":true,"threadId":thread,"threadName":"Selected voice chat","history":[],"readOnly":false,"approval":false,"activity":["scene":"off","text":"Ready"],"activeTasks":[],"notice":"Voice fixture \(revision)","attachments":[],"composerDraft":draft,"ownerToken":"fixture-\(revision)","workspaceVoiceActive":live,"workspaceVoiceScene":scene,"selectedAgent":"codex","models":[]]
             if let request{state["completedRequestId"]=request}
             runtime.receive(try! JSONSerialization.data(withJSONObject:state))
         }
@@ -41,8 +41,9 @@ private func command(_ bytes:UnsafePointer<UInt8>?,_ count:Int)->Bool{
             request=fields["requestId"] as? String;revision+=1
             switch fields["action"] as? String{
             case "new":thread="code:new-\(revision)";publish()
-            case "workspace_voice_prompt":live=true;scene="thinking";publish()
+            case "workspace_voice_prompt":if !deferVoiceAck{live=true;scene="thinking";publish()}
             case "voice_stop":live=false;scene="off";publish()
+            case "workspace_voice":live.toggle();scene=live ? "listening":"off";publish()
             default:break
             }
         }
@@ -105,6 +106,66 @@ private func command(_ bytes:UnsafePointer<UInt8>?,_ count:Int)->Bool{
         precondition(window.isVisible && window.frame == frame,"A short modifier tap disturbed the workspace")
         precondition(member(app,"workspaceNotchOverlay") as? Bool == false,"A short tap opened the notch over Code")
         precondition(!commands.dropFirst(tapCommands).contains{$0["action"] as? String == "workspace_voice_prompt"},"A short tap started voice")
+        // Voice begins in the current foreground workspace, preserving its
+        // unsent draft, window and owner. Status refreshes must not replay Code.
+        pump(0.4);draft="Keep this Code draft";publish();pump(0.05)
+        let beginVoice=commands.count,windowNumber=window.windowNumber
+        let pcm=VoicePromptBuffer();let signal=[Float](repeating:0.05,count:8000);_=signal.withUnsafeBufferPointer{pcm.append($0,sampleRate:24000)};recorder.audio=pcm.wave()!
+        modifiers(.command);pump(0.15);modifiers([]);pump(0.1)
+        precondition(live && thread=="code:existing","Foreground voice did not start in the selected chat")
+        precondition(window.isVisible && window.windowNumber==windowNumber && window.frame==frame,"Starting voice replaced or resized Code")
+        precondition(!commands.dropFirst(beginVoice).contains{["new","chat"].contains($0["action"] as? String ?? "")},"Foreground voice navigated away from its owner")
+        scene="listening";publish();scene="speaking";publish();pump(0.1)
+        precondition(!commands.dropFirst(beginVoice).contains{($0["action"] as? String)=="workspace_presentation" && ["expand","reopen"].contains($0["phase"] as? String ?? "")},"Voice status replayed the whole workspace entrance")
+        precondition((member(app,"composerField") as? NSTextField)?.stringValue==draft,"Voice replaced the unsent draft")
+        // Notch -> big Code -> actual double Command -> compact status keeps
+        // the SAME call alive, and a later explicit stop retires its indicator.
+        app.revealWorkspace();pump(1)
+        let dismissCommands=commands.count
+        pump(0.4);modifiers(.command);pump(0.02);modifiers([]);pump(0.03);modifiers(.command);pump(0.02);modifiers([]);pump(1)
+        precondition(live,"Double Command ended voice while hiding Code")
+        precondition(!window.isVisible && (member(app,"panel") as? NSPanel)?.isVisible==true,"Voice dismissal did not retain compact status")
+        precondition((member(app,"indicator") as? NotchIndicatorEngine)?.mode == .listening,"Compacted call lost its live waveform")
+        precondition(!commands.dropFirst(dismissCommands).contains{$0["action"] as? String=="voice_stop"},"Surface dismissal sent a hang-up")
+        runtime.workspaceFocusProvider={false};pump(0.4);modifiers(.command);pump(0.15);modifiers([]);pump(0.7)
+        precondition(!live,"Explicit voice hold did not end the same call")
+        precondition((member(app,"panel") as? NSPanel)?.isVisible==false,"An ended voice call left a ghost compact notch")
+        precondition((member(app,"indicator") as? NotchIndicatorEngine)?.mode == .off,"An ended voice call left a stale provider logo")
+        // Starting with the app's own voice button follows the same dismissal
+        // policy. Folding into extended chat preserves its transcript surface.
+        draft="";publish();runtime.workspaceFocusProvider={true};app.revealWorkspace();pump(1)
+        (member(app,"miniUI") as? MiniAppInterface)?.onVoice?();pump(0.05)
+        precondition(live,"Native voice button failed to begin its shared call")
+        let foldCommands=commands.count;app.collapseWorkspace();pump(0.85)
+        precondition(live && member(app,"miniOpen") as? Bool==true,"Folding Code into extended chat ended voice")
+        precondition(!commands.dropFirst(foldCommands).contains{$0["action"] as? String=="voice_stop"},"Extended handoff sent a hang-up")
+        (member(app,"miniUI") as? MiniAppInterface)?.onVoice?();pump(0.1)
+        precondition(!live && member(app,"miniOpen") as? Bool==true,"Explicit stop closed the user's expanded transcript")
+        app.dismissUnifiedSurface();pump(0.4);app.revealWorkspace();pump(1)
+        // A dispatched voice request may be acknowledged after dismissal.
+        // Its startup indicator and deadline must survive that surface change.
+        runtime.workspaceFocusProvider={false};app.dismissUnifiedSurface();pump(0.4)
+        deferVoiceAck=true;let pendingCommands=commands.count
+        pump(0.4);modifiers(.command);pump(0.15);modifiers([]);pump(0.03)
+        precondition(commands.dropFirst(pendingCommands).contains{$0["action"] as? String=="workspace_voice_prompt"},"Delayed voice request was not dispatched")
+        app.dismissUnifiedSurface();pump(0.03)
+        precondition(member(app,"workspaceVoiceRequest") as? String != nil && member(app,"voiceLaunchTimeout") != nil,"Hiding discarded the in-flight call's acknowledgement deadline")
+        let thinkingDeadline=Date().addingTimeInterval(0.6)
+        while (member(app,"indicator") as? NotchIndicatorEngine)?.mode != .thinking,Date()<thinkingDeadline{pump(0.01)}
+        precondition((member(app,"indicator") as? NotchIndicatorEngine)?.mode == .thinking,"Pending call failed to animate into thinking")
+        let pendingIndicator=member(app,"indicator") as! NotchIndicatorEngine
+        let thinkingToken=member(pendingIndicator,"sceneToken") as! Int
+        let delayedRequest=request;request=nil
+        for _ in 0..<20{revision+=1;publish();pump(0.01)}
+        request=delayedRequest
+        precondition(member(pendingIndicator,"sceneToken") as? Int==thinkingToken,"Owner updates restarted the thinking morph instead of preserving its animation")
+        live=true;scene="listening";publish();deferVoiceAck=false
+        let listeningDeadline=Date().addingTimeInterval(0.6)
+        while (member(app,"indicator") as? NotchIndicatorEngine)?.mode != .listening,Date()<listeningDeadline{pump(0.01)}
+        precondition((member(app,"indicator") as? NotchIndicatorEngine)?.mode == .listening,"Late voice acknowledgement lost the compact waveform")
+        pump(0.4);modifiers(.command);pump(0.15);modifiers([]);pump(0.7)
+        precondition(!live && (member(app,"panel") as? NSPanel)?.isVisible==false,"Late-acknowledged call did not stop and retire")
+        runtime.workspaceFocusProvider={true};app.revealWorkspace();pump(1)
         // The same real modifier handler must still dismiss the big form.
         pump(0.4);modifiers(.command);pump(0.02);modifiers([]);pump(0.03);modifiers(.command);pump(0.02);modifiers([]);pump(1)
         precondition(!window.isVisible,"Double Command no longer dismissed the big form")

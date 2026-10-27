@@ -260,11 +260,10 @@ impl QuickChat {
     pub(super) fn hide(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.sync_to_main(cx);
         self.visible = false;
-        // Hiding a live microphone has no useful UI feedback; stop dictation
-        // while preserving the draft and every running agent.
+        // One-shot dictation belongs to this editor. Conversational voice
+        // belongs to the shared chat and continues through surface dismissal.
         self.orbit.update(cx, |app, cx| {
             app.stop_dictation(cx);
-            app.stop_voice(cx);
             if app.overlay_window == Some(window.window_handle().window_id()) {
                 app.overlay_window = None;
                 app.dismiss_panel(window, cx);

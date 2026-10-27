@@ -4592,6 +4592,7 @@ impl Orbit {
     }
     fn home(&self, _cx: &Context<Self>) -> impl IntoElement {
         let greeting = div()
+            .debug_selector(||"new-chat-greeting".into())
             .flex()
             .flex_col()
             .items_center()
@@ -5982,7 +5983,7 @@ impl Render for Orbit {
                             )
                         },
                     )
-                    .when(self.active.is_none(), |s| s.child(entrance.container(WorkspacePart::Content).flex_1().min_h(px(0.)).child(self.home(cx))))
+                    .when(self.active.is_none(), |s| s.child(entrance.container(WorkspacePart::Content).debug_selector(||"new-chat-content".into()).flex_1().min_h(px(0.)).w_full().flex().flex_col().child(self.home(cx))))
                     .when(self.active.is_some(), |s| {
                         s.child(
                             entrance.container(WorkspacePart::Content)

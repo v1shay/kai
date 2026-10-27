@@ -1503,15 +1503,37 @@ fn start_voice_probe(window:WindowHandle<Orbit>,cx:&mut App)->anyhow::Result<()>
                     assert_eq!(snapshot["readOnly"],false);assert_eq!(snapshot["composerBusy"],true);
                     assert!(!snapshot["sessionActivity"]["text"].as_str().unwrap_or("").contains("Connecting"));
                     assert!(snapshot["effectiveModel"].as_str().is_some_and(|s|!s.is_empty()));assert!(snapshot["effectiveReasoningEffort"].as_str().is_some_and(|s|!s.is_empty()));assert!(app.model.is_none(),"Resolved defaults were incorrectly pinned");
-                    app.stop_voice(cx);cx.notify();return true
+                    cx.notify();return true
                 }false
             }).expect("Read packaged voice state");
             if ready{complete=true;break}
         }
         assert!(complete,"Packaged native voice did not produce both transcripts");
+        // Exercise the actual surface sequence with one live WebRTC session.
+        let (session,owner)=window.update(cx,|app,_,_|{let call=app.voice_call.as_ref().unwrap();(call.session_id.clone(),call.owner.clone())}).expect("Voice identity");
+        let _=cx.update(|_|reveal());Timer::after(Duration::from_secs(1)).await;
+        let _=cx.update(|_|emit(&json!({"type":"probeDoubleCommand"})));Timer::after(Duration::from_secs(1)).await;
+        window.update(cx,|app,_,_|{let call=app.voice_call.as_ref().expect("Double Command hung up voice");assert_eq!(call.session_id,session);assert!(call.active);assert!(!app.runs[&owner].handle.is_cancelled());}).expect("Compacted live voice");
+        let _=cx.update(|_|reveal());Timer::after(Duration::from_secs(1)).await;
+        let _=cx.update(|_|collapse());Timer::after(Duration::from_millis(850)).await;
+        let _=cx.update(|cx|cx.update_global::<quick_chat::Controller,_>(|service,cx|service.toggle(cx).expect("Open Quick Chat during voice")));
+        Timer::after(Duration::from_millis(500)).await;
+        let _=cx.update(|cx|cx.update_global::<quick_chat::Controller,_>(|service,cx|service.dismiss(cx)));
+        Timer::after(Duration::from_millis(500)).await;
+        let before_audio=window.update(cx,|app,_,_|{let call=app.voice_call.as_ref().expect("Quick Chat dismissal hung up voice");assert_eq!(call.session_id,session);assert_eq!(call.owner,owner);assert!(call.active);app.runs[&owner].handle.steer("Please say exactly: lifecycle continuity verified. Do not use tools.").expect("Speak after surface transitions");call.media.received_audio_bytes()}).expect("Voice continued in original chat");
+        let mut received=false;
+        for _ in 0..160{Timer::after(Duration::from_millis(250)).await;if window.update(cx,|app,_,_|{assert!(app.voice_error.is_none(),"Voice failed across surfaces: {:?}",app.voice_error);let call=app.voice_call.as_ref().expect("Voice vanished during surface transition");assert_eq!(call.session_id,session);call.active && call.media.received_audio_bytes()>before_audio}).expect("Live audio after collapse"){received=true;break}}
+        assert!(received,"The same WebRTC session did not receive audio after notch/workspace/Quick Chat transitions");
+        window.update(cx,|app,_,cx|app.stop_voice(cx)).expect("Explicit voice stop");
         Timer::after(Duration::from_secs(3)).await;
         window.update(cx,|app,_,_|assert!(app.voice_call.is_none(),"Packaged voice stop left its media alive")).expect("Check voice teardown");
-        eprintln!("Kai packaged voice: real transcripts, live draft ownership, editable voice status, resolved model/effort, unpinned CLI defaults, and native stop passed");
+        Timer::after(Duration::from_secs(1)).await;
+        let _=cx.update(|_|{
+            let function=HOST.with(|host|unsafe{libc::dlsym(host.borrow().as_ref().unwrap()._library,c"kai_unified_diagnostics".as_ptr())});
+            let diagnostics:unsafe extern "C" fn()->u32=unsafe{std::mem::transmute(function)};
+            assert_eq!(unsafe{diagnostics()} & 3,0,"Explicit stop left a ghost notch or reopened Code");
+        });
+        eprintln!("Kai packaged voice: real transcripts, live draft ownership, editable voice status, resolved model/effort, unpinned CLI defaults, and same-session notch/workspace/Double-Command/Quick Chat continuity, real incoming audio after transitions, and explicit native stop passed");
         let _=cx.update(|cx|cx.quit());
     }).detach();Ok(())
 }

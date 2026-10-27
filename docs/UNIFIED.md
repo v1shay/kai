@@ -709,3 +709,53 @@ installed at the existing experimental destination. Signatures and all three
 executable/library hashes match the tested bundle. Backup:
 `Kai Unified 0.8.0 backup 20261026-170402.app`. The running app and agents were left
 alone; relaunch to load this update and reopen the same existing chat.
+
+### 0.8.2 voice lifetime and surface consistency
+
+Surface dismissal no longer sends a voice-stop command. Double-Command, folding
+Code into the extended notch, and hiding Quick Chat retain the shared call;
+the voice button and the configured voice hold remain explicit hang-up actions.
+Compact status follows live work/voice ownership and retires after that ownership
+ends. Voice's shutdown tail cannot reopen the coding-completion popout; ordinary
+coding completion keeps its existing behavior. Quick Chat dismissal restores
+compact live status without creating a new voice session.
+
+Workspace focus reconciliation records actual foreground boundaries. Arming a
+voice shortcut over an already foreground Code window does not replay Code's
+entrance on subsequent owner updates. The selected chat, window and unsent draft
+are retained. Existing-chat voice can start while its draft remains unsent.
+A dispatched voice request keeps its real acknowledgement deadline when its UI
+is dismissed. Its connecting indicator and the input listening/thinking morphs
+retain their animation across repeated state updates.
+
+The new-chat content wrapper supplies the flex column needed by the centered
+welcome. A native GPUI geometry regression verifies centering in the full content
+area at two window sizes.
+
+Verification includes 753 passing Code tests (16 opt-in tests ignored), the
+190-test Swift suite with one skip and no failures, and the native state harness
+for focus, approval routing, retained window/chat/draft, morph reversal and Quick
+Chat ownership. The production modifier harness covers all voice actions on
+Command/Option/Fn, silent release, pre-roll/context retention, foreground startup
+with an existing draft, no repeated workspace entrance, UI voice start, direct
+extended-notch handoff, Double-Command without hang-up, explicit hang-up with no
+ghost provider indicator, delayed acknowledgement after dismissal and stable
+thinking animation through repeated owner updates.
+
+The final native suite ran 190 tests with one skip and no failures. The signed
+0.8.2 (16) candidate is installed at the existing experimental destination;
+signatures and all executable/library hashes were verified. The prior build is
+retained as `Kai Unified 0.8.1 backup 20261026-173638.app`. No running app or agent
+was stopped.
+
+Live verification remains pending desktop unlock. macOS reported
+`IOConsoleLocked = Yes`; WebKit reported a visible but occluded host and deferred
+its microphone request until the startup deadline. The signed foreground-window
+probe also cannot assume Code is frontmost while the console is locked. Neither
+attempt is recorded as a pass. After unlock, rerun both the packaged morph probe
+and `--unified-voice-probe` in isolated smoke-test mode. The latter retains and
+checks the same voice session/owner through workspace expansion, Double-Command,
+extended-notch return and Quick Chat dismissal, then asks that session to speak
+again and requires new incoming WebRTC audio bytes before explicit hang-up. It
+also checks that hang-up leaves no ghost notch. Its media remains diagnostic
+generated audio; ambient microphone tracks are disabled.
