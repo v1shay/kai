@@ -3,6 +3,7 @@ set -euo pipefail
 root=${0:A:h:h}
 harness=StateHarness
 [[ "${1:-}" != voice ]] || harness=VoiceShortcutHarness
+[[ "${1:-}" != history ]] || harness=SavedHistoryHarness
 staging=$(mktemp -d /private/tmp/kai-native-tests.XXXXXX)
 trap 'rm -rf "$staging"' EXIT
 product="$staging/Kai Native Tests.app"

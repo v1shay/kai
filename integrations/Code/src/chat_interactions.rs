@@ -106,10 +106,13 @@ pub fn decode(text: &str) -> Option<ChatInteraction> {
 }
 
 pub fn decode_with_context(text: &str) -> Option<(ChatInteraction, Option<String>)> {
-    if text.len() > 256 * 1024 {
+    if text.len() > 2 * 1024 * 1024 {
         return None;
     }
-    let mut value: Value = serde_json::from_str(text).ok()?;
+    decode_value_with_context(serde_json::from_str(text).ok()?)
+}
+
+pub(crate) fn decode_value_with_context(mut value:Value)->Option<(ChatInteraction,Option<String>)>{
     if value["orbit_interaction"] != 1 {
         return None;
     }
@@ -119,7 +122,16 @@ pub fn decode_with_context(text: &str) -> Option<(ChatInteraction, Option<String
         .filter(|value| value.len() <= 64 && !value.contains(['\n', '\r']))
         .map(str::to_owned);
     let card = value.get_mut("card")?.take();
-    Some((serde_json::from_value(card).ok()?, context))
+    let mut card:ChatInteraction=serde_json::from_value(card).ok()?;
+    if let ChatInteraction::Status{title,details,..}=&mut card
+        && title=="File changes"
+        && let Ok(item)=serde_json::from_str::<Value>(details)
+        && item["type"]=="fileChange"
+        && let Some(changes)=item["changes"].as_array()
+        && changes.iter().all(|c|c["path"].is_string() && c["diff"].is_string()){
+        *details=changes.iter().map(|c|format!("{}\n{}",c["path"].as_str().unwrap(),c["diff"].as_str().unwrap())).collect::<Vec<_>>().join("\n\n");
+    }
+    Some((card, context))
 }
 
 /// Preserve long interaction bodies without turning a continuation into raw

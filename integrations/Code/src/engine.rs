@@ -1536,7 +1536,7 @@ impl HistoryState {
             pair.after.rewrite(&map);
         }
         let saved = SavedViewport {
-            version: 1,
+            version: 2,
             id: id.into(),
             page,
             local_head: self.local_head,
@@ -1581,7 +1581,7 @@ impl HistoryState {
         let saved: SavedViewport = read_bounded(&folder.join("manifest.json"), VIEWPORT_BYTES)?;
         anyhow::ensure!(
             page <= 1_000_000_000
-                && saved.version == 1
+                && matches!(saved.version,1|2)
                 && saved.id == session.id
                 && saved.page == page
                 && saved.pages.len() <= 4096
@@ -1614,20 +1614,28 @@ impl HistoryState {
                 .ok_or_else(|| anyhow::anyhow!("Missing viewport artifact"))
         };
         let mut pairs = saved.pages;
-        let selected = pairs
+        let mut selected = pairs
             .remove(&page)
             .ok_or_else(|| anyhow::anyhow!("Saved viewport boundary unavailable"))?;
         let mut state = Self::from_checkpoint(
-            selected.after.clone(),
+            if saved.version==1{selected.before.clone()}else{selected.after.clone()},
             generation,
             saved.local_head,
             store,
             session,
             &mut resolve,
         )?;
+        // Version-one viewports cached physical fragments that could cut an
+        // app-owned card in half. Replay their original source checkpoint with
+        // the structured pager, preserving the selected chat and scroll page.
+        let (messages,has_older)=if saved.version==1{
+            let messages=state.next(store,session,selected.limit)?;
+            selected.after=state.checkpoint();state.retain_artifacts();
+            let older=state.has_older();(messages,older)
+        }else{(saved.messages,saved.has_older)};
         state.next_page = page + 1;
         state.represented_range = saved.range;
-        state.pages.insert(page, saved.has_older);
+        state.pages.insert(page, has_older);
         pairs.insert(page, selected);
         for (number, mut pair) in pairs {
             pair.before.rewrite(&rewrite);
@@ -1643,9 +1651,9 @@ impl HistoryState {
         }
         fs::write(
             state.cache_dir.join(format!("{page}.json")),
-            serde_json::to_vec(&saved.messages)?,
+            serde_json::to_vec(&messages)?,
         )?;
-        Ok((state, saved.messages, saved.has_older))
+        Ok((state, messages, has_older))
     }
     fn from_checkpoint(
         c: CursorCheckpoint,
@@ -2649,6 +2657,29 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[test]
+    fn old_saved_viewport_replays_original_checkpoint_instead_of_encoded_fragments(){
+        let root=temp_root();let mut session=imported(&root);session.transcript_path=None;
+        let store=Store::open(&root.join("history.sqlite3")).unwrap();store.upsert_session(&session).unwrap();
+        let card=crate::chat_interactions::ChatInteraction::Status{title:"Changes".into(),details:"+let source = \"☃ literal \\n\"\n".repeat(18000),status:crate::chat_interactions::InteractionStatus::Completed};
+        store.save_message(&session.id,"assistant",&crate::chat_interactions::serialize_interaction(&card)).unwrap();
+        let mut state=HistoryState::new(&session,1,&store).unwrap();let first=state.next(&store,&session,200).unwrap();state.cache(&first,state.has_older()).unwrap();let expected=state.next(&store,&session,200).unwrap();state.cache(&expected,state.has_older()).unwrap();
+        let saved=root.join("viewport");state.persist_viewport(&saved,&session.id,1,&store).unwrap();
+        let name:String=serde_json::from_slice(&fs::read(saved.join("current.json")).unwrap()).unwrap();let folder=saved.join(name);let manifest=folder.join("manifest.json");
+        let mut value:serde_json::Value=serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();value["version"]=serde_json::json!(1);value["messages"][0]["text"]=serde_json::json!("STALE ENCODED CARD FRAGMENT");
+        // Version-one sparse indexes also lacked card boundaries. Retain their
+        // original dense checkpoints and remove only the new disposable footer.
+        for asset in value["assets"].as_array_mut().unwrap(){
+            let path=folder.join(asset["name"].as_str().unwrap());let bytes=fs::read(&path).unwrap();
+            if bytes.len()>=16 && &bytes[bytes.len()-16..bytes.len()-8]==b"KAICARD1"{
+                let count=u64::from_le_bytes(bytes[bytes.len()-8..].try_into().unwrap()) as usize;
+                fs::OpenOptions::new().write(true).open(&path).unwrap().set_len((bytes.len()-16-count*16) as u64).unwrap();
+                asset["stamp"]=serde_json::to_value(crate::history_artifact::FileStamp::read(&path).unwrap()).unwrap();
+            }
+        }
+        fs::write(manifest,serde_json::to_vec(&value).unwrap()).unwrap();drop(state);
+        let(restored,actual,_)=HistoryState::restore_viewport(&saved,&session,2,1,&store).unwrap();assert_eq!(actual,expected);assert_eq!(restored.next_page,2);drop(restored);drop(store);fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn durable_viewport_restores_deep_twenty_mb_native_local_and_opencode_without_replay() {
         for kind in ["native", "compressed", "local", "opencode"] {

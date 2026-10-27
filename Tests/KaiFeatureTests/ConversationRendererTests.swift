@@ -7,6 +7,19 @@ final class ConversationRendererTests:XCTestCase {
         let data=try JSONSerialization.data(withJSONObject:["id":id,"kind":"assistant","lines":[["text":text,"style":""]]])
         return try JSONDecoder().decode(KaiMessage.self,from:data)
     }
+    @MainActor func testSavedToolCardLinksToItsExactSharedWorkspaceDetail()throws {
+        let text=NSTextView(),scroll=NSScrollView();scroll.documentView=text
+        let renderer=ConversationRenderer(mathRenderer:MathRenderer())
+        let row:[String:Any]=["id":"row-7","kind":"activity","detailId":"7-abc123","lines":[["text":"File changes","style":"activity"]]]
+        let message=try JSONDecoder().decode(KaiMessage.self,from:JSONSerialization.data(withJSONObject:row))
+        _=renderer.render([message],threadID:"existing",in:text,scroll:scroll,renderMath:false,palette:[.white])
+        let storage=try XCTUnwrap(text.textStorage),range=(text.string as NSString).range(of:"File changes")
+        let link=try XCTUnwrap(storage.attribute(.link,at:range.location,effectiveRange:nil) as? URL)
+        XCTAssertEqual(link.scheme,"kai-interaction");XCTAssertEqual(link.host,"details")
+        XCTAssertEqual(URLComponents(url:link,resolvingAgainstBaseURL:false)?.queryItems?.first?.value,"7-abc123")
+        XCTAssertEqual(text.string,"\u{fffc} File changes\n")
+        XCTAssertEqual(storage.attribute(.toolTip,at:range.location,effectiveRange:nil) as? String,"Show full details in Code")
+    }
     @MainActor func testLargeHistoryStreamingReplacesOnlyChangedMessageAndPreservesSelection()throws {
         let scroll=NSScrollView(frame:CGRect(x:0,y:0,width:350,height:250)),text=NSTextView(frame:CGRect(x:0,y:0,width:350,height:20000))
         scroll.documentView=text

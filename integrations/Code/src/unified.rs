@@ -585,6 +585,13 @@ impl Orbit {
                 self.unified_notch_sources=paths;
                 self.add_attachments(additions,cx);
             }
+            "interaction_details"=>{
+                let id=request["id"].as_str().ok_or("Missing interaction")?;
+                let index=id.split_once('-').and_then(|(n,_)|n.parse::<usize>().ok()).ok_or("Invalid interaction")?;
+                if self.unified_detail_id(index).as_deref()!=Some(id){return Err("This interaction changed; select its current card".into())}
+                if self.expanded_tools.insert(index){self.interaction_animations.insert(index,(Instant::now(),true,0.));}
+                self.list.scroll_to_reveal_item(index);
+            }
             "workspace_expand" => reveal(),
             "draft" => {
                 let text=request["text"].as_str().ok_or("Missing draft")?;
@@ -791,6 +798,17 @@ impl Orbit {
         snapshot["workspaceVoiceError"]=json!(self.voice_error);snapshot["historyEarlier"]=json!(self.unified_history_end.as_ref().is_some_and(|(owner,_)|owner==&self.unified_token()) || self.history_offset>0 || self.navigation_history);snapshot["approvalCount"]=json!(self.unified_pending_ids().len());snapshot["workspaceMotion"]=json!(self.motion);snapshot["workspaceTextMorph"]=json!(self.unified_text_morph);snapshot
 
     }
+    fn unified_detail_id(&self,index:usize)->Option<String>{
+        use std::hash::{Hash,Hasher};
+        let (title,details)=match &self.rows.get(index)?.block{
+            MessageBlock::Activity{label,details}=>(label,details),
+            MessageBlock::Interaction(chat_interactions::ChatInteraction::Status{title,details,..}|chat_interactions::ChatInteraction::Delegation{title,details,..})=>(title,details),
+            _=>return None,
+        };
+        if details.is_empty(){return None}
+        let mut hash=std::collections::hash_map::DefaultHasher::new();title.hash(&mut hash);details.hash(&mut hash);
+        Some(format!("{index}-{:016x}",hash.finish()))
+    }
     fn unified_history(&self) -> Vec<Value> {
         let mut history = Vec::new();
         let mut role = "assistant".to_owned();
@@ -849,7 +867,10 @@ impl Orbit {
                     ),
                     chat_interactions::ChatInteraction::Status { title, details, .. }
                     | chat_interactions::ChatInteraction::Delegation { title, details, .. } => {
-                        ("activity", format!("{title} · {details}"), "activity")
+                        ("activity", if matches!(title.as_str(),"Thinking"|"Plan"|"Agent plan"|"Completed"|"Stopped"|"Agent failed"){
+                            let preview=presentation::card_detail_text(title,details.lines().find(|l|!l.trim().is_empty()).unwrap_or("")).0;
+                            if preview.is_empty(){title.clone()}else{format!("{title} · {}",bounded(&preview,140))}
+                        }else{title.clone()}, "activity")
                     }
                     chat_interactions::ChatInteraction::Question(q) => {
                         ("assistant", q.prompt.clone(), "heading")
@@ -862,7 +883,7 @@ impl Orbit {
                     }
                 },
             };
-            history.push(json!({"id":format!("row-{index}"),"kind":if kind.starts_with("user"){"user"}else if kind=="activity"{"activity"}else{"assistant"},"lines":[{"text":bounded(&text,4000),"style":style}],"agent":role.split(':').nth(1).unwrap_or(self.agent.command()),"speechText":if kind.starts_with("user") || kind=="activity" || style=="code" {String::new()}else{bounded(&text,4000)}}));
+            history.push(json!({"id":format!("row-{index}"),"kind":if kind.starts_with("user"){"user"}else if kind=="activity"{"activity"}else{"assistant"},"lines":[{"text":bounded(&text,4000),"style":style}],"detailId":self.unified_detail_id(index),"agent":role.split(':').nth(1).unwrap_or(self.agent.command()),"speechText":if kind.starts_with("user") || kind=="activity" || style=="code" {String::new()}else{bounded(&text,4000)}}));
         }
         budget_history(history)
     }
@@ -1035,6 +1056,37 @@ mod tests {
                     .unwrap()
                     .starts_with("code:draft-")
             );
+        });
+    }
+    #[gpui::test]
+    #[ignore="Replay one selected saved reply through Code and export its actual native-notch packet"]
+    fn existing_saved_reply_exports_compact_native_history(cx:&mut TestAppContext){
+        let(view,cx)=crate::ui_tests::fixture(cx);
+        view.update(cx,|app,cx|{
+            let source=std::fs::read_to_string(std::env::var("KAI_SAVED_HISTORY_FIXTURE").expect("Select saved fixture")).unwrap();
+            let store=crate::store::Store::open(std::path::Path::new(":memory:")).unwrap();
+            let session=SessionSummary{id:"existing-saved-probe".into(),title:"Existing saved reply".into(),agent:AgentKind::Codex,project_path:app.project.clone(),execution_path:None,updated_at:0,external_id:None,transcript_path:None};
+            store.upsert_session(&session).unwrap();store.save_message(&session.id,"assistant",&source).unwrap();app.active=Some(session.id.clone());app.sessions.push(session.clone());
+            let mut cursor=crate::store::MessageCursor::new(false);let mut messages=vec![];
+            while cursor.has_older(){let mut page=store.lazy_messages(&session.id,&mut cursor,200).unwrap();page.append(&mut messages);messages=page;}
+            app.loading=false;app.rows=messages.into_iter().flat_map(|m|presentation::message_blocks(&m.role,&m.text).into_iter().enumerate().map(move|(i,block)|Row{role:(i==0).then(||m.role.clone()),block})).collect();app.list.reset(app.rows.len());
+            let snapshot=app.unified_snapshot(cx);let history=snapshot["history"].as_array().unwrap();
+            assert!(history.iter().any(|r|r["detailId"].is_string()));
+            for row in history{for line in row["lines"].as_array().unwrap(){let text=line["text"].as_str().unwrap();assert!(!text.contains("\\u003c")&&!text.contains("\"orbit_interaction\"")&&!text.contains("diff --git"),"Saved tool source spilled into native notch");if row["kind"]=="activity"{assert!(text.chars().count()<200);}}}
+            let path=std::env::var("KAI_SAVED_HISTORY_PACKET").expect("Select native packet output");std::fs::write(path,serde_json::to_vec(&snapshot).unwrap()).unwrap();
+            eprintln!("Actual existing saved reply exported through Code into {} compact native-notch rows",history.len());
+        });
+    }
+    #[gpui::test]
+    fn saved_tool_status_is_compact_in_notch_and_opens_exact_full_card(cx:&mut TestAppContext){
+        let(view,cx)=crate::ui_tests::fixture(cx);
+        view.update_in(cx,|app,window,cx|{
+            app.loading=false;app.composer.update(cx,|input,cx|input.set_text("Keep my draft",cx));
+            app.rows=vec![Row{role:Some("assistant:codex".into()),block:MessageBlock::Interaction(chat_interactions::ChatInteraction::Status{title:"Changes".into(),details:"diff --git a/View.swift b/View.swift\n+let text = \"actual source\"\n".repeat(1000),status:chat_interactions::InteractionStatus::Completed})}];
+            let snapshot=app.unified_snapshot(cx);let row=&snapshot["history"][0];assert_eq!(row["lines"][0]["text"],"Changes");assert!(!row.to_string().contains("diff --git"));
+            let mut command=request(app,"interaction_details",cx);command["id"]=row["detailId"].clone();
+            app.unified_command(&command,window,cx).unwrap();assert!(app.expanded_tools.contains(&0));assert_eq!(app.composer.read(cx).text(),"Keep my draft");
+            app.rows[0].block=MessageBlock::Activity{label:"New tool".into(),details:"Different source".into()};assert!(app.unified_command(&command,window,cx).is_err());
         });
     }
     #[gpui::test]

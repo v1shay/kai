@@ -8,6 +8,8 @@ use std::{
     os::unix::fs::OpenOptionsExt,
     sync::Arc,
 };
+#[path="store_cards.rs"]
+mod cards;
 const CHUNK: usize = 64 * 1024;
 const ENTRY: u64 = 2048;
 #[derive(Default, serde::Serialize, serde::Deserialize)]
@@ -55,9 +57,11 @@ impl Fence {
 struct ScanState {
     fence: Fence,
     harness: HarnessState,
+    #[serde(default)] cards:cards::Scanner,
 }
 impl ScanState {
     fn feed(&mut self, byte: u8, assistant: bool) -> Option<std::ops::Range<usize>> {
+        self.cards.feed(byte,assistant && !self.harness.hidden() && self.fence.language.is_none());
         let hidden_before = self.harness.hidden();
         let range = self
             .harness
@@ -83,6 +87,7 @@ type FilteredContext = (Option<String>, Vec<std::ops::Range<usize>>, Option<usiz
 pub struct PlainIndex {
     file: File,
     artifact: Arc<crate::history_artifact::HistoryArtifact>,
+    cards:cards::Cache,
 }
 impl PlainIndex {
     pub(crate) fn artifact(&self) -> Arc<crate::history_artifact::HistoryArtifact> {
@@ -91,7 +96,7 @@ impl PlainIndex {
     pub(crate) fn restore(artifact: Arc<crate::history_artifact::HistoryArtifact>) -> Result<Self> {
         Ok(Self {
             file: File::open(&artifact.path)?,
-            artifact,
+            artifact,cards:cards::Cache::default(),
         })
     }
     pub fn new_cancellable(
@@ -110,7 +115,12 @@ impl PlainIndex {
         let mut index = Self {
             file,
             artifact: crate::history_artifact::HistoryArtifact::own(path),
+            cards:cards::Cache::default(),
         };
+        let card_path=std::env::temp_dir().join(format!("orbit-local-cards-{}",uuid::Uuid::new_v4()));
+        let mut card_file=OpenOptions::new().read(true).write(true).create_new(true).mode(0o600).open(&card_path)?;
+        let _card_artifact=crate::history_artifact::HistoryArtifact::own(card_path);
+        let mut card_count=0u64;
         let mut state = ScanState::default();
         let mut buffer = vec![0; CHUNK];
         let length = blob.size() as usize;
@@ -129,9 +139,20 @@ impl PlainIndex {
             blob.read_at_exact(&mut buffer[..count], offset)?;
             for &byte in &buffer[..count] {
                 state.feed(byte, assistant);
+                if let Some(range)=state.cards.completed.take(){cards::write(&mut card_file,range)?;card_count+=1;}
             }
         }
+        card_file.seek(SeekFrom::Start(0))?;std::io::copy(&mut card_file,&mut index.file)?;
+        index.file.write_all(cards::MAGIC)?;index.file.write_all(&card_count.to_le_bytes())?;
         Ok(index)
+    }
+    pub fn text(&mut self,blob:&Blob<'_>,offset:usize,end:usize,assistant:bool,body:&str,cancelled:&impl Fn()->bool)->Result<(Option<String>,String,Option<usize>)>{
+        // Old saved viewport indexes predate structured-card boundaries. Rebuild
+        // that disposable index against the original, unchanged SQLite body.
+        if cards::count(&mut self.file)?.is_none(){*self=Self::new_cancellable(blob,assistant,cancelled)?;}
+        let (language,hidden,skip)=self.filter(blob,offset,end,assistant,body.as_bytes())?;
+        let text=cards::project(&mut self.file,&mut self.cards,blob,offset,end,body,hidden)?;
+        Ok((language,text,skip))
     }
     /// Filter a physical text slice using the exact context at its byte offset.
     /// The index and replay use constant-sized buffers, including hidden spans.

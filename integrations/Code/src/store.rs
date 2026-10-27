@@ -1389,20 +1389,9 @@ impl Store {
                 let mut raw = vec![0; end - start];
                 blob.read_at_exact(&mut raw, start)?;
                 let text = std::str::from_utf8(&raw)?;
-                let (language, hidden, _) = if let Some(index) = index.as_mut() {
-                    index.filter(&blob, start, end, role == "assistant", text.as_bytes())?
-                } else {
-                    (None, Vec::new(), None)
-                };
-                let mut visible = String::new();
-                let mut at = 0;
-                for range in hidden {
-                    if range.start >= at {
-                        visible.push_str(&text[at..range.start]);
-                    }
-                    at = at.max(range.end);
-                }
-                visible.push_str(&text[at..]);
+                let (language,visible,_)=if let Some(index)=index.as_mut(){
+                    index.text(&blob,start,end,role=="assistant",text,cancelled)?
+                }else{(None,text.to_owned(),None)};
                 if let Some(text) = (if language.is_some() {
                     Some(visible)
                 } else {
@@ -1513,31 +1502,10 @@ impl Store {
                 ));
             }
             scanned += raw.len();
-            let (code_language, hidden, skip_before) =
-                if let Some((row, index)) = &mut cursor.code_index {
-                    if *row == id {
-                        index.filter(&blob, start, end, role == "assistant", text.as_bytes())?
-                    } else {
-                        (None, Vec::new(), None)
-                    }
-                } else {
-                    (None, Vec::new(), None)
-                };
-            let visible = if hidden.is_empty() {
-                None
-            } else {
-                let mut visible = String::with_capacity(text.len());
-                let mut at = 0;
-                for range in hidden {
-                    if range.start >= at {
-                        visible.push_str(&text[at..range.start]);
-                    }
-                    at = at.max(range.end);
-                }
-                visible.push_str(&text[at..]);
-                Some(visible)
-            };
-            let text = visible.as_deref().unwrap_or(text);
+            let (code_language,visible,skip_before)=if let Some((row,index))=&mut cursor.code_index {
+                if *row==id{index.text(&blob,start,end,role=="assistant",text,cancelled)?}else{(None,text.to_owned(),None)}
+            }else{(None,text.to_owned(),None)};
+            let text=visible.as_str();
             // A disk snapshot knows the opening boundary of a hidden envelope.
             // Jump over its entire body instead of producing hundreds of empty
             // pages for a giant injected context string.
@@ -2446,6 +2414,41 @@ mod tests {
             )
             .unwrap();
         assert!(unchanged);
+    }
+    #[test]
+    fn saved_cards_remain_typed_across_blob_pages_without_changing_source(){
+        use crate::chat_interactions::{ChatInteraction,InteractionStatus};
+        let store=Store::open(Path::new(":memory:")).unwrap();store.upsert_session(&session("cards","Saved cards")).unwrap();
+        let details="diff --git a/view.swift b/view.swift\n+let text = \"☃ literal \\n and <tag> `ticks`\"\n".repeat(8000);
+        let card=ChatInteraction::Status{title:"Changes".into(),details:details.clone(),status:InteractionStatus::Completed};
+        let source=format!("Before\n{}\nAfter",crate::chat_interactions::serialize_interaction(&card));
+        store.save_message("cards","assistant",&source).unwrap();
+        let mut cursor=MessageCursor::new(false);let mut pages=vec![];
+        while cursor.has_older(){let mut page=store.lazy_messages("cards",&mut cursor,200).unwrap();assert!(page.iter().map(|m|m.text.len()).sum::<usize>()<220*1024);page.append(&mut pages);pages=page;}
+        let mut actual=String::new();let mut prose=String::new();
+        for page in pages{for block in crate::presentation::message_blocks("assistant",&page.text){match block{
+            crate::presentation::MessageBlock::Interaction(ChatInteraction::Status{title,details,..})=>{assert_eq!(title,"Changes");actual.push_str(&details)},
+            crate::presentation::MessageBlock::Paragraph(text)=>prose.push_str(&text),
+            other=>panic!("Saved card leaked into {other:?}"),
+        }}}
+        assert_eq!(actual,details);assert_eq!(prose,"BeforeAfter");
+        let stored:String=store.connection.query_row("select text from messages where session_id='cards'",[],|r|r.get(0)).unwrap();assert_eq!(stored,source);
+        // A literal example in a fenced code block remains source code.
+        let fenced=format!("```xml\n{}\n```",source);store.upsert_session(&session("literal","Literal")).unwrap();store.save_message("literal","assistant",&fenced).unwrap();
+        let mut cursor=MessageCursor::new(false);let mut raw=0;while cursor.has_older(){for page in store.lazy_messages("literal",&mut cursor,200).unwrap(){raw+=page.text.len();}}assert_eq!(raw,fenced.len());
+    }
+    #[test]
+    #[ignore="Read-only replay of an explicitly selected saved reply copied into an isolated fixture"]
+    fn existing_saved_reply_keeps_cards_typed_on_every_page(){
+        let source=std::fs::read_to_string(std::env::var("KAI_SAVED_HISTORY_FIXTURE").expect("Select a saved reply fixture")).unwrap();
+        let store=Store::open(Path::new(":memory:")).unwrap();store.upsert_session(&session("existing","Existing reply")).unwrap();store.save_message("existing","assistant",&source).unwrap();
+        let mut cursor=MessageCursor::new(false);let mut cards=0;
+        while cursor.has_older(){for page in store.lazy_messages("existing",&mut cursor,200).unwrap(){for block in crate::presentation::message_blocks("assistant",&page.text){match block{
+            crate::presentation::MessageBlock::Interaction(_)=>cards+=1,
+            crate::presentation::MessageBlock::Paragraph(text)|crate::presentation::MessageBlock::Code{text,..}|crate::presentation::MessageBlock::RichParagraph{text,..}=>assert!(!text.contains("\"orbit_interaction\"") && !text.contains("\\u003c") && !text.contains("\"status\":\"working\""),"Encoded saved card leaked into visible prose"),
+            _=>{},
+        }}}}
+        assert!(cards>100,"Saved fixture did not exercise the older card history");eprintln!("Actual saved SQLite reply: {cards} typed cards across every page; original data unchanged");
     }
     #[test]
     fn incremental_blob_pages_preserve_a_twenty_mb_unicode_message_and_code_context() {

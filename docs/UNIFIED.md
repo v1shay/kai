@@ -667,3 +667,45 @@ destination, with signatures and all executable/library hashes verified. The
 prior 0.7.1 bundle is retained as `Kai Unified 0.7.1 backup 20261026-162120.app`.
 No running app or agent was stopped. Quit and relaunch the experimental app after
 ongoing runs finish to load the update.
+
+### 0.8.1 existing saved replies and native tool summaries
+
+The 0.8.0 native-import fix missed large replies already saved in Kai's SQLite
+store. Its 64 KiB byte pages could split an app-owned interaction envelope,
+exposing escaped JSON/diff fragments as ordinary Markdown. Separately, the native
+notch adapter flattened status details into an italic activity label.
+
+The sparse local-history index now records app-owned card boundaries on disk.
+Each physical slice reconstructs a complete typed fragment, with one decoded
+card cached during paging. Source strings, escaped backslashes, Unicode and
+fenced literal examples retain their content. Valid legacy file-change envelopes
+render paths and literal diffs. The original SQLite messages and native history
+are unchanged. Version-one saved viewports replay their original source
+checkpoint through the corrected pager, retaining their selected chat/page;
+version-two snapshots retain the normal direct restoration path.
+
+The native notch exports concise status labels and bounded prose previews.
+Clickable activity titles open their exact details in the shared Code workspace
+through the existing morph. The command checks both chat ownership and a
+content-derived card identifier before expanding and scrolling to the row.
+It preserves drafts and rejects stale card links.
+
+Verification: the full Code suite passed 751 tests (15 ignored); the subsequently
+added legacy-viewport migration regression also passed. The Swift suite ran 190
+tests with one skipped and no failures. A read-only copy of the user's exact
+874,101-byte saved reply passed every page with 273 typed cards and no escaped
+envelope spill. Its actual Code snapshot exported 100 compact native-notch rows;
+the native AppKit harness rendered those rows, verified clean visible text,
+clicked the exact detail link and entered the original workspace morph.
+Synthetic large Unicode/escaped diffs retain every source byte across pages;
+fenced examples stay literal. The new regressions are in `store.rs`, `engine.rs`,
+`unified.rs`, `ConversationRendererTests.swift` and `SavedHistoryHarness.swift`.
+
+The migration regression also removes the new boundary footer from an older
+page's sparse index, then verifies source replay restores the same typed page
+instead of its deliberately stale cached fragment. The final signed 0.8.1 (15)
+bundle passed the packaged morph/reversal/Double-Command/Quick Chat probe and was
+installed at the existing experimental destination. Signatures and all three
+executable/library hashes match the tested bundle. Backup:
+`Kai Unified 0.8.0 backup 20261026-170402.app`. The running app and agents were left
+alone; relaunch to load this update and reopen the same existing chat.

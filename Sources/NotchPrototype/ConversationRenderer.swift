@@ -207,6 +207,10 @@ import AppKit
                 prefix.addAttributes(content.attributes(at:0,effectiveRange:nil),range:NSRange(location:0,length:prefix.length))
                 content.insert(prefix,at:0)
             }
+            if let detailId=block.detailId,block.kind=="activity",content.length>0 {
+                var url=URLComponents();url.scheme="kai-interaction";url.host="details";url.queryItems=[URLQueryItem(name:"id",value:detailId)]
+                if let link=url.url{content.addAttributes([.link:link,.toolTip:"Show full details in Code"],range:NSRange(location:0,length:content.length-1))}
+            }
             let oldRange=index < ranges.count ? ranges[index] : NSRange(location:blockStart,length:0)
             if collectRevealRanges,prependCount == 0,!dirtyMathBlocks.contains(index),didChangeThread || block.kind == "assistant",
                let suffix=TextRevealChange.suffix(old:storage.attributedSubstring(from:oldRange).string,new:content.string){
