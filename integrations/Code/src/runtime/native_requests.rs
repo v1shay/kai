@@ -87,6 +87,7 @@ pub enum NativeAnswer {
 }
 #[derive(Debug, Clone)]
 pub enum NativeControl {
+    Snapshot(async_channel::Sender<Result<crate::response_buffer::ResponseSource,String>>),
     Respond {
         id: String,
         answer: NativeAnswer,

@@ -723,9 +723,10 @@ impl Session {
         }
         Ok(())
     }
-    fn controls(&mut self, pipes: &mut Pipes, cx: &NativeContext) -> Result<()> {
+    fn controls(&mut self, pipes: &mut Pipes, parser:&mut StreamParser, cx: &NativeContext) -> Result<()> {
         while let Ok(control) = cx.control.try_recv() {
             match control {
+            NativeControl::Snapshot(reply)=>{let _=reply.try_send(parser.rendered_source().map_err(|e|e.to_string()));}
             NativeControl::Respond{id,answer}=>{
                 if let Some(permission)=self.pending.get(&id) {
                     let result = if let Some(request) = &permission.extension {
@@ -780,7 +781,7 @@ fn wait(
                 "ACP agent did not answer its initialization request"
             );
         }
-        session.controls(pipes, cx)?;
+        session.controls(pipes, parser, cx)?;
         if let Some(value) = pipes.next(cx)? {
             if value["id"] == id && value.get("method").is_none() {
                 if let Some(error) = value.get("error") {

@@ -72,6 +72,8 @@ mod theme_controls;
 mod ui_tests;
 mod unified;
 mod text_decode;
+mod chat_flow;
+mod live_history;
 mod chat_timing;
 mod workspace_motion;
 mod usage;
@@ -697,6 +699,9 @@ struct Orbit {
     send_after_load: Option<handoff_ui::Submission>,
     expanded_tools: HashSet<usize>,
     interaction_animations: HashMap<usize, (Instant, bool, f32)>,
+    expanded_work: HashSet<usize>,
+    flow_index:chat_flow::Index,
+    work_animations: HashMap<usize,(Instant,bool,f32)>,
     question_choices: HashMap<String, (String, Instant)>,
     project_generation: u64,
     project: PathBuf,
@@ -748,6 +753,7 @@ struct Orbit {
     history_visible: std::ops::Range<usize>,
     navigation: Entity<chat_navigation::ScrollRail>,
     navigation_history: bool,
+    live_history:Option<live_history::View>,
     navigation_previous: Option<bool>,
     history_clock: u64,
     history_animation: Option<Instant>,
@@ -1061,7 +1067,8 @@ impl Orbit {
                     this.queue_workspace_save(cx);
                     this.navigation
                         .update(cx, |rail, cx| rail.scrolled(start, this.rows.len(), cx));
-                    if is_scrolled && start < 3 {
+                    let stream_edge=this.active.as_ref().and_then(|id|this.runs.get(id)).and_then(|r|r.stream_start).is_some_and(|at|start>=at.saturating_sub(3)&&start<=at+3);
+                    if is_scrolled && (start < 3||stream_edge) {
                         this.load_history_page(true, cx);
                     }
                 });
@@ -1236,6 +1243,8 @@ impl Orbit {
             send_after_load: None,
             expanded_tools: HashSet::new(),
             interaction_animations: HashMap::new(),
+            expanded_work:HashSet::new(),work_animations:HashMap::new(),
+            flow_index:Default::default(),
             question_choices: HashMap::new(),
             project_generation: 0,
             project: root,
@@ -1288,6 +1297,7 @@ impl Orbit {
             history_visible: 0..0,
             navigation,
             navigation_history: false,
+            live_history:None,
             navigation_previous: None,
             history_clock: 0,
             history_animation: None,
@@ -2047,6 +2057,8 @@ impl Orbit {
                     .into_iter()
                     .map(|(ix, state)| (ix + count, state))
                     .collect();
+                self.expanded_work=std::mem::take(&mut self.expanded_work).into_iter().map(|ix|ix+count).collect();
+                self.work_animations=std::mem::take(&mut self.work_animations).into_iter().map(|(ix,state)|(ix+count,state)).collect();
                 if let Some(start) = &mut self.pending_response_start {
                     *start += count;
                 }
@@ -2357,6 +2369,7 @@ impl Orbit {
         self.rows.clear();
         self.expanded_tools.clear();
         self.interaction_animations.clear();
+        self.expanded_work.clear();self.work_animations.clear();self.live_history=None;
         self.question_choices.clear();
         self.history_pages.clear();
         self.deferred_rows.clear();
@@ -2497,6 +2510,7 @@ impl Orbit {
         self.rows.clear();
         self.expanded_tools.clear();
         self.interaction_animations.clear();
+        self.expanded_work.clear();self.work_animations.clear();self.live_history=None;
         self.question_choices.clear();
         self.history_pages.clear();
         self.deferred_rows.clear();
@@ -2520,6 +2534,8 @@ impl Orbit {
         cx.notify();
     }
     fn load_history_page(&mut self, older: bool, cx: &mut Context<Self>) {
+        if older&&self.load_live_history(cx){return}
+        if !older{self.live_history=None;}
         if self.loading_earlier
             || self.loading
             || self
@@ -2566,6 +2582,8 @@ impl Orbit {
                     .map(move |(ix, block)| Row {
                         role: if ix == 0 {
                             Some(message.role.clone())
+                        } else if message.role.split(':').next()==Some("user"){
+                            Some("user:continuation".into())
                         } else {
                             message
                                 .role
@@ -3729,7 +3747,7 @@ impl Orbit {
         run.parse_pending = true;
         let revision = run.revision;
         let epoch = run.parse_epoch;
-        let mut offset = run.text.len().saturating_sub(6000);
+        let mut offset = run.text.len().saturating_sub(64*1024);
         while !run.text.is_char_boundary(offset) {
             offset += 1;
         }
@@ -3745,7 +3763,7 @@ impl Orbit {
         let id = id.to_owned();
         let job = cx
             .background_executor()
-            .spawn(async move { presentation::live_blocks(&tail) });
+            .spawn(async move { presentation::live_page_blocks(&tail) });
         cx.spawn(async move |this, cx| {
             let blocks = job.await;
             let _ = this.update(cx, |this, cx| {
@@ -3782,19 +3800,11 @@ impl Orbit {
         self.pending_response_start = Some(start);
         let old = self.rows.len();
         self.rows.truncate(start);
-        if run.live_earlier {
-            self.rows.push(Row {
-                role: Some(format!("assistant:{}", run.agent.command())),
-                block: MessageBlock::Paragraph(
-                    "Earlier output is saved. Showing the live tail…".into(),
-                ),
-            });
-        }
         for (ix, block) in run.live_blocks.iter().enumerate() {
             self.rows.push(Row {
                 role: Some(format!(
                     "{}:{}",
-                    if ix == 0 && !run.live_earlier {
+                    if ix == 0 {
                         "assistant"
                     } else {
                         "continuation"
@@ -4687,16 +4697,23 @@ impl Orbit {
             self.prefetch_completion_action(ix, cx);
         }
         let decode_source=self.rows.get(ix).and_then(|row|{
-            if row.role.as_deref().is_some_and(|role|role.starts_with("user")){return None}
-            match &row.block{MessageBlock::Paragraph(text)|MessageBlock::Heading(text)|MessageBlock::Quote(text)|MessageBlock::RichParagraph{text,..}|MessageBlock::ListItem{text,..}|MessageBlock::Voice{speaker:chat_interactions::Speaker::Assistant,text,..}=>Some(text.clone()),_=>None}
+            if chat_flow::user(row)&&!matches!(&row.block,MessageBlock::Voice{..}){return None}
+            match &row.block{MessageBlock::Paragraph(text)|MessageBlock::Heading(text)|MessageBlock::Quote(text)|MessageBlock::RichParagraph{text,..}|MessageBlock::ListItem{text,..}|MessageBlock::Voice{text,..}=>Some(text.clone()),_=>None}
         });
         let decoded=if unified::decode_enabled(self.motion && self.unified_text_morph)&&unified::workspace_frame(self.motion).content_visible(){decode_source.as_ref().map(|source|{
             let voice=matches!(self.rows.get(ix).map(|r|&r.block),Some(MessageBlock::Voice{..}));
-            let (frame,active)=if voice{self.unified_text_decode.voice_frame(ix,source,Instant::now())}else{self.unified_text_decode.frame(ix,source,Instant::now())};if active{window.request_animation_frame();}frame
+            let (frame,active)=if voice{self.unified_text_decode.voice_frame(ix,source,Instant::now())}else{self.unified_text_decode.frame(ix,source,Instant::now())};if active{request_motion_frame(window,cx);}frame
         })}else{None};
         let Some(row) = self.rows.get(ix) else {
             return div().into_any_element();
         };
+        let work=self.flow_index.work.get(ix).cloned().flatten();
+        let work_reveal=work.as_ref().map(|span|self.work_reveal(span.start)).unwrap_or(1.);
+        if let Some(span)=&work{if work_reveal<=0.001{
+            return if ix==span.start{div().w_full().max_w(px(800.)).mx_auto().child(self.work_summary(span.start,cx)).into_any_element()}else{div().h(px(0.)).into_any_element()}
+        }}
+        let command=self.flow_index.commands.get(ix).cloned().flatten();
+        if command.as_ref().is_some_and(|span|span.start!=ix){return div().h(px(0.)).into_any_element()}
         // Retain the app-owned boundary for exact prompt attribution, without
         // rendering a second Undo control above the completion card.
         if checkpoint_ui::row_checkpoint(row).is_some() {
@@ -4714,70 +4731,28 @@ impl Orbit {
         let list_link_owner = link_owner.clone();
         let timing=self.row_timing(ix).cloned();
         let timestamp=timing.as_ref().and_then(|t|if row.role.as_deref()==Some("user"){Some(t.submitted_ms)}else{t.first_output_ms.or(t.finished_ms)}).and_then(chrono::DateTime::from_timestamp_millis).map(|at|at.with_timezone(&chrono::Local).format("%-I:%M %p").to_string());
-        let user = row.role.as_deref() == Some("user");
+        let user = chat_flow::user(row);
         let row_agent = agent_for_role(row.role.as_deref(), self.transcript_agent());
         let mut content = div()
             .debug_selector(move || format!("transcript-content-{ix}"))
-            .w_full()
+            .when(!user,|s|s.w_full())
             .min_w(px(0.))
-            .max_w(px(800.))
-            .py(px(4.));
-        if let Some(role) = &row.role
-            && row_has_header(Some(role))
-        {
-            content = content.mt(px(24.)).child(
-                div()
-                    .debug_selector(move || {
-                        format!(
-                            "transcript-provider-{ix}-{}",
-                            if user { "user" } else { row_agent.command() }
-                        )
-                    })
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .mb_2()
-                    .text_size(theme::ui_px(11.))
-                    .text_color(rgb(MUTED))
-                    .when(role != "user", |s| {
-                        s.child(icon(agent_icon(row_agent), 14., agent_color(row_agent)))
-                    })
-                    .child(if role == "user" {
-                        "You"
-                    } else {
-                        agent_name(row_agent)
-                    })
-                    .when_some(timestamp,|s,stamp|s.child(div().flex_1()).child(div().debug_selector(move||format!("message-timestamp-{ix}")).font_family(theme::mono_font()).text_size(theme::mono_px(9.)).text_color(rgb(MUTED)).opacity(self.timestamp_opacity()).child(stamp))),
-            );
+            .max_w(px(if user{600.}else{800.}))
+            .py(px(4.))
+            .when(user,|s|s.bg(rgba(self.appearance.tint(GLASS_SURFACE))).rounded_xl().px_4().py_3());
+        if !user&&row_has_header(row.role.as_deref()){
+            content=content.child(div().debug_selector(move||format!("transcript-provider-{ix}-{}",row_agent.command())).mb_1().child(icon(agent_icon(row_agent),14.,agent_color(row_agent))));
         }
-        content = match &row.block {
+        if !user&&row_has_header(row.role.as_deref())&&self.row_timing(ix).is_some_and(|t|t.finished_ms.is_none()){
+            if let Some(elapsed)=self.elapsed_label(){content=content.child(div().mb_3().pb_2().border_b_1().border_color(rgba(0xebebeb12)).text_size(theme::ui_px(11.)).text_color(rgb(MUTED)).child(format!("Working for {elapsed}")));}
+        }
+        if let Some(span)=command{let(details,status)=chat_flow::grouped_command(&self.rows,span);content=content.child(self.interaction_card(ix,&chat_interactions::ChatInteraction::Status{title:if matches!(status,chat_interactions::InteractionStatus::Working|chat_interactions::InteractionStatus::Started){"Running commands"}else{"Ran commands"}.into(),details,status},row_agent,cx));}else{content = match &row.block {
             MessageBlock::Voice {
-                speaker,
+                speaker:_,
                 text,
                 highlights,
             } => content.child(
                 div()
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(rgba(0xebebeb16))
-                    .bg(rgba(self.appearance.tint(GLASS_SURFACE)))
-                    .px_3()
-                    .py_2()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .mb_1()
-                            .text_size(theme::ui_px(10.))
-                            .text_color(rgb(MUTED))
-                            .child(icon("assets/kai/status/listening.svg", 16., MUTED))
-                            .child(if *speaker == chat_interactions::Speaker::User {
-                                "You"
-                            } else {
-                                agent_name(row_agent)
-                            }),
-                    )
                     .child(
                         div()
                             .text_size(theme::ui_px(14.))
@@ -4804,24 +4779,12 @@ impl Orbit {
                     .text_size(theme::ui_px(14.))
                     .line_height(theme::ui_line_height(24.))
                     .text_color(rgb(TEXT))
-                    .when(user, |s| {
-                        s.bg(rgba(self.appearance.tint(GLASS_SURFACE)))
-                            .rounded_lg()
-                            .px_4()
-                            .py_3()
-                    })
                     .child(decoded.clone().unwrap_or_else(||text.clone())),
             ),
             MessageBlock::RichParagraph { text, highlights } => content.child(
                 div()
                     .text_size(theme::ui_px(14.))
                     .line_height(theme::ui_line_height(23.))
-                    .when(user, |s| {
-                        s.bg(rgba(self.appearance.tint(GLASS_SURFACE)))
-                            .rounded_lg()
-                            .px_4()
-                            .py_3()
-                    })
                     .child(rich_text(
                         ("markdown", ix),
                         decoded.as_deref().unwrap_or(text),
@@ -4966,6 +4929,8 @@ impl Orbit {
                 )
             }
         };
+        }
+        if let Some(stamp)=timestamp.filter(|_|user){content=content.child(div().mt_1().text_size(theme::ui_px(9.)).text_color(rgb(MUTED)).opacity(self.timestamp_opacity()).child(stamp));}
         if let Some(t)=timing.filter(|t|t.elapsed_ms.is_some() && !user && (ix+1==self.rows.len() || self.rows.get(ix+1).is_some_and(|r|r.role.as_deref()==Some("user")))){
             let label=match t.outcome.as_deref(){Some("failed")=>"Failed after",Some("stopped")=>"Stopped after",_=>"Worked for"};
             content=content.child(div().debug_selector(move||format!("turn-duration-{ix}")).mt_2().font_family(theme::mono_font()).text_size(theme::mono_px(10.)).text_color(rgb(MUTED)).child(format!("{label} {}",chat_timing::duration(t.elapsed_ms.unwrap()))));
@@ -4991,13 +4956,15 @@ impl Orbit {
                     .inset_0(),
                 )
             })
-            .child(content.when_some(entrance, |content, (opacity, offset)| {
+            .child(div().w_full().max_w(px(800.)).flex().flex_col()
+            .when(work.as_ref().is_some_and(|span|ix==span.start),|s|s.child(self.work_summary(work.as_ref().unwrap().start,cx)))
+            .child(div().w_full().flex().when(user,|s|s.justify_end()).when(!user,|s|s.justify_start()).child(content.when_some(entrance, |content, (opacity, offset)| {
                 content
                     .opacity(opacity)
                     .relative()
                     .left(px(8. * offset))
                     .top(px(5. * offset))
-            }))
+            }).when(work.is_some()&&work_reveal<1.,|s|s.max_h(Self::estimated_row_height(row,px(800.))*work_reveal).overflow_hidden().opacity(work_reveal)))))
             .into_any_element()
     }
     fn composer(&self, window: &Window, cx: &Context<Self>) -> impl IntoElement {
@@ -5405,6 +5372,7 @@ impl Orbit {
 }
 impl Render for Orbit {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.flow_index=chat_flow::Index::new(&self.rows);
         if let Some(at)=self.timestamp_released{if at.elapsed()<Duration::from_millis(180){request_motion_frame(window,cx);}else{self.timestamp_peek=0.;self.timestamp_released=None;}}
         use workspace_motion::Part as WorkspacePart;
         let entrance=unified::workspace_frame(self.motion);
@@ -5912,7 +5880,7 @@ impl Render for Orbit {
                             ),
                     )
                     .when(
-                        (self.has_older || self.has_newer) && status.is_none(),
+                        (self.has_older || self.has_newer) && (status.is_none()||self.live_history.is_some()||self.active.as_ref().and_then(|id|self.runs.get(id)).is_some_and(|r|r.live_earlier)),
                         |s| {
                             s.child(
                                 div()
@@ -5971,7 +5939,7 @@ impl Render for Orbit {
                                                 .child(if self.loading_earlier {
                                                     "Loading history…"
                                                 } else {
-                                                    "Load earlier messages"
+                                                    if status.is_some(){"Load earlier work"}else{"Load earlier messages"}
                                                 })
                                                 .on_click(cx.listener(|this, _, _, cx| {
                                                     this.load_history_page(true, cx)

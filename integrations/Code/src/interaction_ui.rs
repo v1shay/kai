@@ -22,6 +22,15 @@ fn disclosure_fraction(progress: f32, open: bool, from: f32) -> f32 {
 }
 
 impl Orbit {
+    pub(super) fn work_reveal(&self,ix:usize)->f32{
+        self.work_animations.get(&ix).map(|(at,open,from)|disclosure_fraction(if self.motion{at.elapsed().as_secs_f32()/0.32}else{1.},*open,*from)).unwrap_or(if self.expanded_work.contains(&ix){1.}else{0.})
+    }
+    pub(super) fn work_summary(&self,ix:usize,cx:&Context<Self>)->AnyElement{
+        let label=self.row_timing(ix).and_then(|t|t.elapsed_ms).map(|ms|format!("Worked for {}",chat_timing::duration(ms))).unwrap_or_else(||"Worked".into());
+        div().id(("work-summary",ix)).debug_selector(move||format!("work-summary-{ix}")).flex().items_center().gap_2().py_2().text_size(theme::ui_px(11.)).text_color(rgb(MUTED)).cursor_pointer()
+            .child(icon(if self.expanded_work.contains(&ix){"chevron-down"}else{"chevron-right"},12.,MUTED)).child(label)
+            .on_click(cx.listener(move|this,_,_,cx|{let from=this.work_reveal(ix);let open=if this.expanded_work.remove(&ix){false}else{this.expanded_work.insert(ix);true};this.work_animations.insert(ix,(Instant::now(),open,from));let anchor=this.list.logical_scroll_top();this.list.reset(this.rows.len());this.list.scroll_to(anchor);cx.notify();})).into_any_element()
+    }
     fn interaction_reveal(&self, ix: usize) -> f32 {
         let expanded = self.expanded_tools.contains(&ix);
         self.interaction_animations
@@ -260,22 +269,18 @@ impl Orbit {
         let expanded = self.expanded_tools.contains(&ix);
         let reveal = self.interaction_reveal(ix);
         div()
-            .rounded_lg()
             .overflow_hidden()
-            .border_1()
-            .border_color(rgba(0xebebeb16))
-            .bg(rgba(self.appearance.tint(GLASS_SURFACE)))
             .child(
                 div()
                     .id(("interaction", ix))
                     .debug_selector(move || format!("interaction-{ix}"))
-                    .min_h(px(36.))
-                    .px_3()
-                    .py_2()
+                    .min_h(px(24.))
+                    .py_1()
                     .flex()
                     .items_center()
                     .gap_2()
-                    .text_size(crate::theme::ui_px(12.))
+                    .text_size(crate::theme::ui_px(11.))
+                    .text_color(rgb(MUTED))
                     .cursor_pointer()
                     .hover(|s| s.bg(rgba(GLASS_HOVER)))
                     .child(icon(symbol, 14., color))
@@ -363,7 +368,7 @@ impl Orbit {
                         cx.notify();
                     })),
             )
-            .when(thinking && reveal<0.01 && !details.is_empty(),|s|s.child(div().px_3().pb_2().text_size(crate::theme::ui_px(11.)).line_height(crate::theme::ui_line_height(18.)).text_color(rgb(MUTED)).child(short(&preview,120))))
+            .when(thinking && reveal<0.01 && !details.is_empty(),|s|s.child(div().pb_1().text_size(crate::theme::ui_px(11.)).line_height(crate::theme::ui_line_height(18.)).text_color(rgb(MUTED)).child(short(&preview,120))))
             .when(reveal > 0. && !details.is_empty(), |s| {
                 s.child(
                     div()

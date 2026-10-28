@@ -53,10 +53,11 @@ impl Orbit {
     pub(super) fn quick_chat_surface(
         &mut self,
         composer: &Entity<TextInput>,
-        scroll: &ScrollHandle,
+        scroll: &ListState,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        self.flow_index=chat_flow::Index::new(&self.rows);
         self.advance_chat_surface(window, cx);
         // The main window may be hidden or inactive while this surface owns
         // the chat. Advance its transcript reveal here too; otherwise loaded
@@ -70,6 +71,8 @@ impl Orbit {
             request_motion_frame(window, cx);
         }
         self.tick_composer_controls(window, cx);
+        let enabled=unified::decode_enabled(self.motion&&self.unified_text_morph);
+        composer.update(cx,|input,_|input.set_reveal_enabled(enabled));
         self.tick_panel_popover(window, cx);
         self.tick_slash(window, cx);
         self.refresh_slash(window, cx);
@@ -113,9 +116,8 @@ impl Orbit {
         };
         let input = composer.clone();
         let send_focus = composer.clone();
-        let rows = (self.rows.len().saturating_sub(8)..self.rows.len())
-            .map(|ix| self.row(ix, window, cx))
-            .collect::<Vec<_>>();
+        let empty=self.rows.is_empty();
+        let transcript=list(scroll.clone(),cx.processor(|this,ix,window,cx|this.row(ix,window,cx))).size_full();
         let artwork = self
             .background
             .read(cx)
@@ -246,9 +248,7 @@ impl Orbit {
                     .flex_1()
                     .min_h(px(0.))
                     .w_full()
-                    .overflow_y_scroll()
-                    .track_scroll(scroll)
-                    .when(rows.is_empty(), |view| {
+                    .when(empty, |view| {
                         view.child(
                             div()
                                 .h(px(150.))
@@ -266,7 +266,7 @@ impl Orbit {
                                 ),
                         )
                     })
-                    .children(rows),
+                    .when(!empty,|view|view.child(transcript)),
             )
             .when_some(status, |surface, status| {
                 surface.child(

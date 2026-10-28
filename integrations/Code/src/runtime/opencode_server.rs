@@ -1630,6 +1630,7 @@ impl Session {
     fn controls(&mut self, api: &Api, parser: &mut StreamParser, cx: &NativeContext) -> Result<()> {
         while let Ok(control) = cx.control.try_recv() {
             match control {
+                NativeControl::Snapshot(reply)=>{let _=reply.try_send(parser.rendered_source().map_err(|e|e.to_string()));}
                 NativeControl::Respond { id, answer } => {
                     if let Some(pending) = self.pending.get(&id) {
                         if !pending.reviewable && !matches!(answer, NativeAnswer::Cancel) {

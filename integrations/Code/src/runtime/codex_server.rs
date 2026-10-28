@@ -2639,6 +2639,7 @@ impl Session {
         ctx: &NativeContext,
     ) -> Result<()> {
         match control {
+            NativeControl::Snapshot(reply)=>{let _=reply.try_send(self.parser.rendered_source().map_err(|e|e.to_string()));}
             NativeControl::Respond { id, answer } => {
                 let pending = self
                     .pending
@@ -3203,6 +3204,21 @@ send({'method':'thread/realtime/closed','params':{'threadId':'12345678-1234-4234
         let final_text=state.parser.rendered_output();assert!(final_text.contains("Hello 🐈"));assert!(!final_text.contains("friend"));assert_eq!(state.parser.interactions.len(),1);assert!(state.parser.live_interactions.is_empty());
         state.voice_notification("thread/realtime/item/completed",&done,&ctx).unwrap();assert_eq!(state.parser.interactions.len(),1);
         state.voice_notification("thread/realtime/item/started",&json!({"threadId":"thread","item":item}),&ctx).unwrap();assert_eq!(state.parser.interactions.len(),1,"A replayed start duplicated the finalized segment");
+    }
+    #[test]fn live_snapshot_reads_the_retained_source_without_a_provider_rpc(){
+        let(handle,ctx)=native_handle(0);*ctx.group.lock().unwrap()=None;
+        let mut state=Session::default();state.parser.output.push_str(&"Earlier work 🐈\n".repeat(9000));
+        let received=handle.live_snapshot().unwrap();let request=ctx.control.try_recv().unwrap();
+        let mut child=std::process::Command::new("/usr/bin/true").stdin(std::process::Stdio::piped()).spawn().unwrap();let mut stdin=child.stdin.take().unwrap();
+        state.control(request,&mut stdin,&ctx).unwrap();let source=received.try_recv().unwrap().unwrap();assert!(source.len()>64*1024);assert!(source.tail(1024).unwrap().contains("Earlier work"));child.wait().unwrap();
+    }
+    #[test]fn canonical_voice_relay_does_not_split_or_duplicate_the_written_answer(){
+        let mut state=Session::default();state.parser.output.push_str("Read [source](https://example.com/ter");
+        state.parser.interaction(crate::chat_interactions::ChatInteraction::Speaker{speaker:crate::chat_interactions::Speaker::Assistant,text:"Read this source".into()},"voice-relay");
+        state.parser.output.push_str("ra/).");
+        let text=state.parser.rendered_output();assert!(text.contains("https://example.com/terra/"));assert!(!text.contains("Read this source"));
+        state.parser.interaction(crate::chat_interactions::ChatInteraction::Speaker{speaker:crate::chat_interactions::Speaker::User,text:"Thanks".into()},"next-user");
+        state.parser.interaction(crate::chat_interactions::ChatInteraction::Speaker{speaker:crate::chat_interactions::Speaker::Assistant,text:"Welcome".into()},"next-voice");assert!(state.parser.rendered_output().contains("Welcome"));
     }
     #[test]
     fn legacy_voice_deltas_keep_separate_utterances_and_clear_retracted_text(){

@@ -907,7 +907,7 @@ impl Orbit {
                         "assistant"
                     },
                     text.clone(),
-                    "text",
+                    "voice",
                 ),
                 MessageBlock::Activity { label, .. } => ("activity", label.clone(), "activity"),
                 MessageBlock::TableRow { cells, .. } => (role.as_str(), cells.join(" | "), "text"),

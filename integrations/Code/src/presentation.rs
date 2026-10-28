@@ -516,6 +516,7 @@ impl MarkdownState {
 
 /// Bounded Markdown rows, parsed off the UI thread. HTML never executes.
 pub fn blocks(text: &str) -> Vec<MessageBlock> {
+    let coherent=coherent_voice_source(text);let text=coherent.as_ref();
     if let Some(blocks) = interaction_blocks(text) {
         return blocks;
     }
@@ -539,6 +540,13 @@ pub fn live_blocks(text: &str) -> Vec<MessageBlock> {
     } else {
         text
     };
+    live_page_blocks(text)
+}
+
+/// Caller owns the byte budget; unlike the small tail helper this retains the
+/// complete loaded page so scrolling never silently drops earlier work.
+pub(crate) fn live_page_blocks(text:&str)->Vec<MessageBlock>{
+    let coherent=coherent_voice_source(text);let text=coherent.as_ref();
     if matches!(text.trim_start().as_bytes().first(), Some(b'{' | b'['))
         && (!text.contains("</orbit_interaction>") || serde_json::from_str::<Value>(text).is_ok())
     {
@@ -606,6 +614,49 @@ pub fn live_blocks(text: &str) -> Vec<MessageBlock> {
         }
     }
     message_blocks("assistant", &text[begin..end])
+}
+
+/// A spoken relay of the backend answer is an alternate presentation of that
+/// answer, not a second response. Scope this to each user utterance; independent
+/// voice-only exchanges stay intact. Removing the owned separators also rejoins
+/// Markdown links that a voice event arrived in the middle of.
+fn coherent_voice_source(text:&str)->std::borrow::Cow<'_,str>{
+    if !text.contains("<orbit_interaction")||!text.contains("\"speaker\""){return text.into()}
+    let protected=code_protected_ranges(text);let mut markers=vec![];let mut written=vec![false];let mut group=0;let mut cursor=0;let mut search=0;
+    while let Some(at)=text[search..].find("<orbit_interaction").map(|i|i+search){
+        search=at+1;if protected.iter().any(|r|r.contains(&at)){continue}
+        let Some(("orbit_interaction",body))=opening_tag(text,at)else{continue};
+        if !text[at..body].contains("version=\"1\""){continue}
+        let(end,after)=closing_tag(text,body,"orbit_interaction",&protected);
+        let Some((card,_))=chat_interactions::decode_with_context(&text[body..end])else{continue};
+        written[group]|=!text[cursor..at].trim().is_empty();
+        if matches!(card,ChatInteraction::Speaker{speaker:Speaker::User,..}){group+=1;written.push(false)}
+        if matches!(card,ChatInteraction::Speaker{speaker:Speaker::Assistant,..}){markers.push((at..after,group))}
+        cursor=after;search=after;
+    }
+    written[group]|=!text[cursor..].trim().is_empty();let mut omit=vec![];
+    for (mut range,g) in markers{if written[g]{
+        if text[..range.start].ends_with("\n\n"){range.start-=2}if text[range.end..].starts_with("\n\n"){range.end+=2}omit.push(range)
+    }}
+    if omit.is_empty(){return text.into()}
+    let mut result=String::with_capacity(text.len());let mut cursor=0;
+    for range in omit{if range.start>cursor{result.push_str(&text[cursor..range.start])}cursor=cursor.max(range.end)}result.push_str(&text[cursor..]);result.into()
+}
+
+#[cfg(test)]mod coherent_voice_tests{
+ use super::*;
+ #[test]fn written_answer_rejoins_links_and_hides_its_spoken_relay(){
+  let spoken=chat_interactions::serialize_interaction(&ChatInteraction::Speaker{speaker:Speaker::Assistant,text:"Here are three quick headlines".into()});
+  let source=format!("Read [OpenAI](https://openai.com/ter\n\n{spoken}\n\nra/) for details.");
+  let blocks=live_page_blocks(&source);assert!(!blocks.iter().any(|b|matches!(b,MessageBlock::Voice{..})));
+  assert!(blocks.iter().any(|b|matches!(b,MessageBlock::RichParagraph{highlights,..} if highlights.iter().any(|(_,style)|matches!(style,InlineStyle::Link(url) if url.as_ref()=="https://openai.com/terra/")))));
+ }
+ #[test]fn a_separate_voice_exchange_and_literal_examples_are_preserved(){
+  let user=chat_interactions::serialize_interaction(&ChatInteraction::Speaker{speaker:Speaker::User,text:"Thanks".into()});
+  let spoken=chat_interactions::serialize_interaction(&ChatInteraction::Speaker{speaker:Speaker::Assistant,text:"You are welcome".into()});
+  let source=format!("Written answer\n\n{user}\n\n{spoken}");assert!(blocks(&source).iter().any(|b|matches!(b,MessageBlock::Voice{speaker:Speaker::Assistant,text,..} if text=="You are welcome")));
+  let literal=format!("Example:\n```xml\n{spoken}\n```");assert_eq!(coherent_voice_source(&literal).as_ref(),literal);
+ }
 }
 
 fn markdown_blocks(text: &str) -> Vec<MessageBlock> {

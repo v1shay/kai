@@ -310,6 +310,7 @@ impl Orbit {
     }
 
     pub(super) fn restore_live_tail(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.live_history=None;
         let Some(run) = self.runs.get_mut(id) else {
             return;
         };

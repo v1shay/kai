@@ -868,7 +868,7 @@ fn resolve_history_session(
 }
 
 fn parse_messages(messages: Vec<runtime::TranscriptMessage>) -> Vec<ParsedMessage> {
-    messages
+    coherent_history_messages(messages)
         .into_iter()
         .map(|message| {
             let text = if let Some(language) = &message.code_language
@@ -892,6 +892,32 @@ fn parse_messages(messages: Vec<runtime::TranscriptMessage>) -> Vec<ParsedMessag
             }
         })
         .collect()
+}
+
+fn coherent_history_messages(messages:Vec<runtime::TranscriptMessage>)->Vec<runtime::TranscriptMessage>{
+    let speaker=|m:&runtime::TranscriptMessage|{
+        if m.role.split(':').next()!=Some("tool"){return None}
+        match crate::chat_interactions::decode_with_context(&m.text)?.0{crate::chat_interactions::ChatInteraction::Speaker{speaker,..}=>Some(speaker),_=>None}
+    };
+    let mut groups=vec![false];let mut assignments=Vec::with_capacity(messages.len());let mut group=0;
+    for m in &messages{
+        let role=m.role.split(':').next().unwrap_or("");
+        if role=="user"||speaker(m)==Some(crate::chat_interactions::Speaker::User){group+=1;groups.push(false)}
+        if matches!(role,"assistant"|"continuation")&&!m.text.trim().is_empty(){groups[group]=true}
+        assignments.push(group);
+    }
+    messages.into_iter().zip(assignments).filter_map(|(m,g)|(!(groups[g]&&speaker(&m)==Some(crate::chat_interactions::Speaker::Assistant))).then_some(m)).collect()
+}
+
+#[cfg(test)]mod coherent_chat_tests{
+ use super::*;
+ #[test]fn existing_history_keeps_one_answer_and_separate_voice_followups(){
+  let message=|role:&str,text:String|runtime::TranscriptMessage{role:role.into(),text,code_language:None};
+  let voice=|speaker,text:&str|message("tool",crate::chat_interactions::encode(&crate::chat_interactions::ChatInteraction::Speaker{speaker,text:text.into()}));
+  use crate::chat_interactions::Speaker;
+  let messages=vec![message("user","News".into()),message("assistant","Written headlines".into()),voice(Speaker::Assistant,"Spoken headlines"),voice(Speaker::User,"Thanks"),voice(Speaker::Assistant,"Welcome")];
+  let result=coherent_history_messages(messages);assert_eq!(result.len(),4);assert!(result.iter().all(|m|!m.text.contains("Spoken headlines")));assert!(result.iter().any(|m|m.text.contains("Welcome")));
+ }
 }
 
 enum NativeHistory {

@@ -395,13 +395,16 @@ impl Orbit {
         }
         text
     }
-    pub(super) fn tick_composer_controls(&mut self, window: &mut Window, cx: &Context<Self>) {
+    pub(super) fn tick_composer_controls(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let enabled=unified::decode_enabled(self.motion&&self.unified_text_morph);
+        self.composer.update(cx,|input,_|input.set_reveal_enabled(enabled));
         let mut animate = false;
         self.interaction_animations.retain(|_, (t, _, _)| {
             let live = self.motion && t.elapsed() < Duration::from_millis(320);
             animate |= live;
             live
         });
+        self.work_animations.retain(|_,(t,_,_)|{let live=self.motion&&t.elapsed()<Duration::from_millis(320);animate|=live;live});
         if self.motion
             && self
                 .question_choices

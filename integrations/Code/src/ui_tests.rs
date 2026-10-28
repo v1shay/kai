@@ -116,6 +116,29 @@ pub(super) fn draw_frame(view: &Entity<Orbit>, cx: &mut VisualTestContext) {
     });
 }
 
+#[gpui::test]
+fn chat_flow_aligns_user_bubbles_and_groups_commands_with_reopenable_finished_work(cx:&mut TestAppContext){
+    let(view,cx)=fixture(cx);
+    view.update(cx,|app,cx|{
+        app.loading=false;app.active=Some("fixture-session".into());app.rows=vec![
+            Row{role:Some("user".into()),block:MessageBlock::Paragraph("Hello".into())},
+            Row{role:Some("assistant:codex".into()),block:MessageBlock::Paragraph("I will check the files".into())},
+            Row{role:Some("continuation:codex".into()),block:MessageBlock::Activity{label:"Terminal command".into(),details:"pwd".into()}},
+            Row{role:Some("continuation:codex".into()),block:MessageBlock::Activity{label:"Terminal command".into(),details:"ls".into()}},
+            Row{role:Some("continuation:codex".into()),block:MessageBlock::Paragraph("Here is the final answer".into())},
+        ];app.list.reset(app.rows.len());cx.notify();
+    });
+    draw_frame(&view,cx);
+    let user=cx.debug_bounds("transcript-content-0").unwrap();let assistant=cx.debug_bounds("transcript-content-1").unwrap();
+    assert!(user.left()>assistant.left(),"User bubble did not anchor to the opposite edge");
+    assert!(cx.debug_bounds("interaction-2").is_some());assert!(cx.debug_bounds("interaction-3").is_none(),"Each command rendered a separate row");
+    view.update(cx,|app,cx|{app.rows.push(Row{role:Some("continuation:codex".into()),block:MessageBlock::Interaction(chat_interactions::ChatInteraction::Status{title:"Completed".into(),details:String::new(),status:chat_interactions::InteractionStatus::Completed})});app.list.reset(app.rows.len());cx.notify();});
+    draw_frame(&view,cx);assert!(cx.debug_bounds("work-summary-1").is_some());assert!(cx.debug_bounds("transcript-content-4").is_some());
+    // GPUI retains old debug selectors across frames; use measured list rows.
+    cx.update(|_,cx|{let app=view.read(cx);assert_eq!(app.work_reveal(1),0.);assert!(app.list.bounds_for_item(2).is_none_or(|b|b.size.height==px(0.)),"Collapsed command still occupies the transcript");});
+    click_selector(cx,"work-summary-1");draw_frame(&view,cx);cx.update(|_,cx|assert_eq!(view.read(cx).work_reveal(1),1.));assert!(cx.debug_bounds("interaction-2").is_some(),"Finished work could not be reopened");
+}
+
 fn freeze_list_entrances(view: &Entity<Orbit>, cx: &mut VisualTestContext) {
     cx.update(|window, cx| {
         view.update(cx, |app, cx| {
@@ -1325,7 +1348,7 @@ fn streaming_text_enters_once_without_refading_older_messages(cx: &mut TestAppCo
     view.update(cx, |app, cx| {
         app.active = Some("fixture-session".into());
         app.rows = vec![Row {
-            role: Some("user".into()),
+            role: Some("assistant:codex".into()),
             block: MessageBlock::Paragraph("An already visible message".into()),
         }];
         app.list.reset(1);

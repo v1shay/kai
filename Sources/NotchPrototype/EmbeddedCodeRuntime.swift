@@ -98,7 +98,7 @@ enum UnifiedDraftHandoff {
     var voiceHost:NSView?{app?.unifiedVoiceHost()}
     func diagnostics()->UInt32{app?.unifiedPresentationDiagnostics() ?? 0}
     func toggle(){app?.toggleUnifiedSurface()}
-    func collapse(){app?.collapseWorkspace()}
+    func collapse(){app?.foldWorkspace()}
     func quickSurface(_ window:NSWindow,show:Bool)->Bool{app?.transitionQuickSurface(window,show:show) ?? false}
 }
 

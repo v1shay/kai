@@ -273,6 +273,7 @@ private final class NotchSurfaceHost:NSView {
     private var morphWork = [DispatchWorkItem](),petClickWork:DispatchWorkItem?
     private let petSelection=PetSelectionPreferences(defaults:.standard)
     private let textRevealPreferences=TextRevealPreferences(),textReveal=ConversationTextReveal()
+    private let dictationTextReveal=ConversationTextReveal()
     private var ownerAttachmentImages=[(path:String,image:NSImage)](),attachmentOwnerPaths=[String]()
     private var morphingText=false,textMorphItem:NSMenuItem?
     private let petAppIcon=PetAppIcon()
@@ -1277,6 +1278,12 @@ private final class NotchSurfaceHost:NSView {
     }
     @objc func collapseWorkspace(){
         if workspaceMorph.expanded && !workspaceIsForeground{expandToRunningChat();return}
+        foldWorkspace()
+    }
+    // An explicit request from Code already identifies the surface to fold.
+    // WindowServer focus may still be settling after a reveal; only the global
+    // shortcut uses focus to choose a background overlay instead of a fold.
+    func foldWorkspace(){
         workspaceNotchOverlay=false
         guard let window=EmbeddedCodeRuntime.shared.workspaceWindow,let panel else{return}
         pinned=true;compactWhileWorking=false;autoCompact=false
@@ -1538,7 +1545,16 @@ private final class NotchSurfaceHost:NSView {
 
     private func layoutComposer(_ frame:CGRect,animated:Bool){guard let field=composerField else{return};let root=miniUI.layer.frame,h:CGFloat=18,modern=frame.height>40,target=CGRect(x:root.minX+frame.minX+10,y:root.minY+(modern ? frame.maxY-27:frame.midY-h/2-2.25),width:max(20,frame.width-(modern ? 20:73)),height:h);if animated{NSAnimationContext.runAnimationGroup{context in context.duration=0.42;context.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.7,0.25,1);field.animator().frame=target}}else{field.frame=target}}
     private func layoutConversation(_ frame:CGRect){guard let scroll=conversationScroll else{return};let root=miniUI.layer.frame;scroll.frame=CGRect(x:root.minX+frame.minX,y:root.minY+frame.minY,width:frame.width,height:frame.height)}
-    private func setPrompt(_ text:String,dictation:Bool=false){slashPicker.hide();if dictation,let field=composerField{DictationComposerEditing.update(field,text:text)}else{composerField?.stringValue=text};miniUI.setComposerHasText(!text.isEmpty);syncMotion(force:!text.isEmpty)}
+    private func setPrompt(_ text:String,dictation:Bool=false){
+        slashPicker.hide();dictationTextReveal.finish()
+        if dictation,let field=composerField{
+            let previous=field.stringValue;DictationComposerEditing.update(field,text:text)
+            if morphingText,let suffix=TextRevealChange.suffix(old:previous,new:text){
+                DispatchQueue.main.async{[weak self,weak field] in guard let self,let field,field.stringValue==text,let editor=field.currentEditor() as? NSTextView,editor.string==text else{return};self.dictationTextReveal.reveal([suffix],in:editor,loading:false)}
+            }
+        }else{composerField?.stringValue=text}
+        miniUI.setComposerHasText(!text.isEmpty);syncMotion(force:!text.isEmpty)
+    }
     private func updateSlashPicker(){
         guard miniOpen,let field=composerField,let editor=field.currentEditor() as? NSTextView,!editor.hasMarkedText() else{slashPicker.hide();return}
         if slashPicker.superview == nil{scalableUI.addSubview(slashPicker);slashPicker.onAccept={[weak self] name in self?.acceptNativeSlash(name)}}
@@ -1549,7 +1565,7 @@ private final class NotchSurfaceHost:NSView {
         let id=UUID().uuidString;pendingSlashID=id;pendingSlashDraft=field.stringValue
         slashPicker.hide();bridge.send("composer_command",["name":name,"draft":field.stringValue,"caret":editor.selectedRange().location,"requestId":id])
     }
-    func controlTextDidChange(_ obj:Notification){miniUI.setComposerHasText(!(composerField?.stringValue.isEmpty ?? true));updateSlashPicker();syncMotion(force:true)}
+    func controlTextDidChange(_ obj:Notification){dictationTextReveal.finish();miniUI.setComposerHasText(!(composerField?.stringValue.isEmpty ?? true));updateSlashPicker();syncMotion(force:true)}
     func control(_ control:NSControl,textView:NSTextView,doCommandBy selector:Selector)->Bool{
         if slashPicker.active {
             switch selector {
@@ -1980,6 +1996,7 @@ private final class NotchSurfaceHost:NSView {
         syncConversationTheme()
     }
     private func closeNotch(keepExpanded:Bool=false){
+        dictationTextReveal.finish()
         passiveVoice=passiveVoice || chatVoice.active || (EmbeddedCodeRuntime.shared.active && latestState?.workspaceVoiceActive == true)
         beforeVoiceShortcut=nil;voiceShortcutArmed=false
         voiceExpanded=false;voiceApprovalMenuItem?.isHidden=true

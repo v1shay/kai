@@ -92,6 +92,7 @@ import AppKit
             let style=line.style,base=AppTypography.ui(ofSize:9),font:NSFont
             switch style {case "activity":font=NSFontManager.shared.convert(AppTypography.ui(ofSize:8),toHaveTrait:.italicFontMask);case "heading":font=AppTypography.ui(ofSize:9,weight:.semibold);case "code":font=AppTypography.code(ofSize:8,weight:.regular);default:font=base}
             let paragraph=NSMutableParagraphStyle();paragraph.lineSpacing=2
+            if block.kind == "user"{paragraph.alignment = .right;paragraph.headIndent=40;paragraph.firstLineHeadIndent=40}
             paragraph.paragraphSpacing=lineIndex == visualLines.count-1 ? 5:0
             if block.kind == "activity" {paragraph.headIndent=17}
             let start=content.length
@@ -212,7 +213,7 @@ import AppKit
                 if let link=url.url{content.addAttributes([.link:link,.toolTip:"Show full details in Code"],range:NSRange(location:0,length:content.length-1))}
             }
             let oldRange=index < ranges.count ? ranges[index] : NSRange(location:blockStart,length:0)
-            if collectRevealRanges,prependCount == 0,!dirtyMathBlocks.contains(index),didChangeThread || block.kind == "assistant",
+            if collectRevealRanges,prependCount == 0,!dirtyMathBlocks.contains(index),didChangeThread || block.kind == "assistant" || block.lines.contains(where:{$0.style == "voice"}),
                let suffix=TextRevealChange.suffix(old:storage.attributedSubstring(from:oldRange).string,new:content.string){
                 revealRanges.append(NSRange(location:blockStart+suffix.location,length:suffix.length))
             }

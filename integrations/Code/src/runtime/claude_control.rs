@@ -280,6 +280,7 @@ impl Session {
         ctx: &NativeContext,
     ) -> Result<()> {
         match control {
+            NativeControl::Snapshot(reply)=>{let _=reply.try_send(self.parser.rendered_source().map_err(|e|e.to_string()));}
             NativeControl::Respond { id, answer } => {
                 let pending = self
                     .pending

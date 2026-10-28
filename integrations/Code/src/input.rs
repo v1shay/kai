@@ -60,6 +60,9 @@ pub struct TextInput {
     is_selecting: bool,
     dictation: Option<DictationTail>,
     mirrored_dictation: bool,
+    reveal_enabled:bool,
+    dictation_decode:crate::text_decode::TextDecode,
+    reveal_text:Option<SharedString>,
     command_navigation: bool,
     scroll: ScrollHandle,
     secret: Option<SecretLayout>,
@@ -199,6 +202,7 @@ impl TextInput {
             is_selecting: false,
             dictation: None,
             mirrored_dictation: false,
+            reveal_enabled:false,dictation_decode:Default::default(),reveal_text:None,
             command_navigation: false,
             scroll: ScrollHandle::new(),
             secret: None,
@@ -387,6 +391,7 @@ impl TextInput {
     /// Mirror the main draft's dictation follow behavior with independent geometry.
     pub fn follow_mirrored_dictation(&mut self, follow: bool, cx: &mut Context<Self>) {
         if self.mirrored_dictation != follow {
+            if follow{self.dictation_decode.seed(0,&self.content,std::time::Instant::now());}
             self.mirrored_dictation = follow;
             cx.notify();
         }
@@ -396,6 +401,7 @@ impl TextInput {
             return;
         }
         self.dictation = Some(DictationTail::default());
+        self.dictation_decode.seed(0,&self.content,std::time::Instant::now());
         self.selected_range = self.content.len()..self.content.len();
         self.selection_reversed = false;
         self.marked_range = None;
@@ -442,6 +448,7 @@ impl TextInput {
             cx.notify();
         }
     }
+    pub fn set_reveal_enabled(&mut self,enabled:bool){self.reveal_enabled=enabled;}
 
     fn cancel_dictation(&mut self, cx: &mut Context<Self>) {
         if self.dictation.take().is_some() {
@@ -988,6 +995,9 @@ fn shape_input(
     window: &Window,
     style: &gpui::TextStyle,
 ) -> Vec<WrappedLine> {
+    shape_input_text(input,width,window,style,None)
+}
+fn shape_input_text(input:&TextInput,width:Pixels,window:&Window,style:&gpui::TextStyle,display:Option<SharedString>)->Vec<WrappedLine>{
     let (text, color) = if input.content.is_empty() {
         (input.placeholder.clone(), rgb(0x929292).into())
     } else {
@@ -999,6 +1009,7 @@ fn shape_input(
             style.color,
         )
     };
+    let text=display.unwrap_or(text);
     let run = TextRun {
         len: text.len(),
         font: style.font(),
@@ -1159,7 +1170,9 @@ impl Element for TextElement {
         }
         let mut origin = bounds.origin;
         let height = window.line_height();
-        for line in &state.lines {
+        let animated=self.input.read(cx).reveal_text.clone();
+        let paint_lines=animated.map(|text|shape_input_text(self.input.read(cx),bounds.size.width,window,&window.text_style(),Some(text)));
+        for line in paint_lines.as_ref().unwrap_or(&state.lines) {
             let _ = line.paint(origin, height, gpui::TextAlign::Left, None, window, cx);
             origin.y += line.size(height).height;
         }
@@ -1178,6 +1191,9 @@ impl Element for TextElement {
 
 impl Render for TextInput {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.reveal_enabled&&(self.dictation.is_some()||self.mirrored_dictation)&&self.secret.is_none()&&!self.editor_mode&&self.marked_range.is_none()&&self.selected_range.is_empty()&&!self.is_selecting{
+            let (text,active)=self.dictation_decode.voice_frame(0,&self.content,std::time::Instant::now());self.reveal_text=Some(text.into());if active{let entity=cx.entity().downgrade();_window.on_next_frame(move|_,cx|{if let Some(entity)=entity.upgrade(){cx.notify(entity.entity_id());}});}
+        }else{self.reveal_text=None;}
         if (self.dictation.is_some() || self.mirrored_dictation)
             && self.selected_range.is_empty()
             && self.selected_range.end == self.content.len()
@@ -1251,6 +1267,22 @@ impl Focusable for TextInput {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
     }
+}
+
+#[cfg(test)]mod dictation_reveal_tests{
+ use super::*;use std::prelude::v1::test;
+ #[gpui::test]fn dictated_glyphs_animate_without_changing_the_draft_caret_or_undo(cx:&mut gpui::TestAppContext){
+  let(input,cx)=cx.add_window_view(TextInput::new);
+  input.update(cx,|input,cx|{input.set_text("Typed prefix ",cx);input.begin_dictation(cx);input.set_reveal_enabled(true);assert!(input.apply_dictation("New words 🐈",cx));});
+  cx.draw(point(px(0.),px(0.)),size(px(500.),px(180.)),|_,_|input.clone().into_any_element());
+  input.update(cx,|input,cx|{
+   assert_eq!(input.text(),"Typed prefix New words 🐈");assert_eq!(input.selected_range,input.content.len()..input.content.len());
+   assert!(input.reveal_text.as_ref().unwrap().starts_with("Typed prefix "));
+   input.end_dictation(cx);
+  });
+  cx.draw(point(px(0.),px(0.)),size(px(500.),px(180.)),|_,_|input.clone().into_any_element());
+  input.update(cx,|input,_|assert!(input.reveal_text.is_none()));
+ }
 }
 
 pub fn bind_keys(cx: &mut App) {

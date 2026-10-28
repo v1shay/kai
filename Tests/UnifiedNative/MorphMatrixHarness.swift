@@ -51,6 +51,12 @@ private func member(_ object:Any,_ key:String)->Any?{guard let value=Mirror(refl
     hide();precondition(panel.isVisible,"Interrupted morph forgot its return surface")
     morph.motionEnabled=false;show();hide();precondition(quick.alphaValue == 1 && !quick.ignoresMouseEvents,"Reduced motion left the window invisible or blocked")
     morph.motionEnabled=true;foreground=true;app.revealWorkspace();settle();foreground=false;app.workspaceFocusChanged();show();precondition(workspace.isVisible,"Opening mini Code over another app closed the background workspace");hide();precondition(workspace.isVisible,"Dismissing mini Code closed the background workspace")
+    // Code's explicit fold must not become a background overlay when native
+    // focus lags a reveal or changes before the owner request is dispatched.
+    app.revealWorkspace();pump(0.025);runtime.collapse();settle()
+    precondition(!workspace.isVisible && panel.isVisible && member(app,"miniOpen") as? Bool == true,"Explicit fold during reveal became a background overlay")
+    app.revealWorkspace();settle();runtime.collapse();settle()
+    precondition(!workspace.isVisible && panel.isVisible && member(app,"miniOpen") as? Bool == true,"Explicit fold depended on WindowServer focus")
     precondition((member(app,"latestState") as? KaiState)?.threadId == "code:matrix","A presentation transition navigated the conversation")
     print("Native morph matrix passed: compact/extended/workspace ↔ mini Code, direct Control-Option, double-Command, rapid reversals, reduced motion, background retention, shared conversation, restored input and window levels")
  }

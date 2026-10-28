@@ -138,7 +138,8 @@ pub struct QuickChat {
     visible: bool,
     show_generation: u64,
     shown_at:f64,
-    transcript_scroll: ScrollHandle,
+    transcript_scroll: ListState,
+    transcript_follow:bool,
     transcript_revision: Option<(Option<String>, usize, Option<u64>)>,
     _subscriptions: Vec<Subscription>,
 }
@@ -215,13 +216,18 @@ impl QuickChat {
             let _ = weak.update(cx, |this, cx| this.hide(window, cx));
             false // Closing this surface never tears down an agent/runtime.
         });
+        let transcript_scroll=ListState::new(0,ListAlignment::Bottom,px(400.));
+        transcript_scroll.set_scroll_handler(cx.listener(|this,event:&ListScrollEvent,_,cx|{
+            this.transcript_follow=!event.is_scrolled;let earlier=event.is_scrolled&&event.visible_range.start<3;let weak=this.orbit.downgrade();
+            if earlier{cx.defer(move|cx|{let _=weak.update(cx,|app,cx|app.load_history_page(true,cx));});}
+        }));
         Self {
             orbit,
             composer,
             visible: false,
             show_generation: 0,
             shown_at:0.,
-            transcript_scroll: ScrollHandle::new(),
+            transcript_scroll,transcript_follow:true,
             transcript_revision: None,
             _subscriptions: vec![
                 input_changes,
@@ -340,13 +346,17 @@ impl Render for QuickChat {
                 .transcript_revision
                 .as_ref()
                 .is_none_or(|previous| previous.0 != revision.0);
-            let at_bottom = self.transcript_scroll.offset().y
-                <= -self.transcript_scroll.max_offset().height + px(32.);
+            let anchor=self.transcript_scroll.logical_scroll_top();
+            let at_bottom = self.transcript_follow;
+            self.transcript_scroll.reset(revision.1);
             self.transcript_revision = Some(revision);
             if session_changed || at_bottom {
-                self.transcript_scroll.scroll_to_bottom();
+                self.transcript_scroll.scroll_to(ListOffset{item_ix:self.orbit.read(cx).rows.len(),offset_in_item:px(0.)});
+            }else{
+                self.transcript_scroll.scroll_to(anchor);
             }
         }
+        if !self.orbit.read(cx).work_animations.is_empty()||!self.orbit.read(cx).interaction_animations.is_empty(){let anchor=self.transcript_scroll.logical_scroll_top();self.transcript_scroll.reset(self.orbit.read(cx).rows.len());self.transcript_scroll.scroll_to(anchor);}
         // Legacy workspace helpers focus their own composer after selection.
         // Redirect only that handle; search/model/permission fields keep focus.
         let main_focus = self.orbit.read(cx).composer.read(cx).focus_handle.clone();

@@ -5,6 +5,10 @@ struct Entry{source:String,fingerprint:u64,prefix:usize,started:Instant}
 #[derive(Default)]
 pub(super) struct TextDecode{rows:HashMap<usize,Entry>}
 impl TextDecode {
+    pub fn seed(&mut self,row:usize,source:&str,now:Instant){
+        let mut hash=std::collections::hash_map::DefaultHasher::new();source.hash(&mut hash);
+        self.rows.insert(row,Entry{source:source.into(),fingerprint:hash.finish(),prefix:source.len(),started:now.checked_sub(Duration::from_secs(1)).unwrap_or(now)});
+    }
     pub fn frame(&mut self,row:usize,source:&str,now:Instant)->(String,bool){
         self.frame_mode(row,source,now,false)
     }

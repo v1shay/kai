@@ -1085,3 +1085,38 @@ duplicate prevention, and stable earlier words. The signed animation probe and
 both real generated-speech voice routes passed. Installed **0.8.9 (23)** with
 strict signature/hash verification and a timestamped 0.8.8 backup. The running
 conversation was retained; relaunch to load the update.
+
+## 0.9.0 — conversational transcript and unified voice rendering
+
+User messages align right; assistant prose aligns left without enclosing every
+activity in a card. Commands group into a compact disclosure, and completed
+turns fold intermediate work into a reopenable summary above the final answer.
+Active runs retain earlier work for on-demand paging. Mini Code uses its own
+virtual transcript list rather than showing only the last eight rows.
+
+Written output and its spoken relay render as one answer in both live and saved
+history. Suppressing a redundant relay also preserves Markdown split by that
+event. Independent voice-only replies remain visible. Live user voice and
+dictation use the short suffix unjumble without changing draft content, caret,
+selection, or undo; motion preferences still apply.
+
+Live history snapshots use a read-only worker channel and bounded resident
+pages. They do not steer or restart the running agent. Chat switches and run
+epochs guard asynchronous results against entering another conversation.
+
+Verification: 792 Rust tests passed (17 ignored), and 198 Swift tests completed
+with one skipped and no failures. The native composer probe passed actual mouse
+focus, mid-sentence commands, Unicode caret handling, synchronized drafts,
+background tool responses, model controls, and permission controls.
+
+Explicit Code folds now bypass the global shortcut's background-overlay choice.
+This prevents a focus change or an interrupted reveal from leaving the workspace
+open when Code requested a fold. Global shortcuts still preserve the existing
+background workspace when opening the notch over another app.
+
+The native morph matrix and signed animation probe passed after this routing
+fix. Both signed generated-speech voice routes passed: existing Gemini context
+through the mini Code voice button, and a new-chat voice shortcut starting in
+Codex. Each retained the live session and incoming audio across surface changes
+and verified explicit stop. Release **0.9.0 (24)** retains the running app until
+the user relaunches.

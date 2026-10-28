@@ -3,6 +3,17 @@ import XCTest
 @testable import NotchPrototype
 
 final class ConversationTextRevealTests:XCTestCase {
+    @MainActor func testStandardFieldEditorCanRevealWithoutMutatingTextOrCaret()throws{
+        _=NSApplication.shared
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion{throw XCTSkip("Reduced Motion disables text reveal")}
+        let text=NSTextView(frame:CGRect(x:0,y:0,width:360,height:80)),scroll=NSScrollView(frame:CGRect(x:0,y:0,width:360,height:80))
+        text.font = .systemFont(ofSize:13);text.string="Typed prefix and new dictated words 🐈";text.textColor = .white;scroll.documentView=text
+        if let container=text.textContainer{text.layoutManager?.ensureLayout(for:container)}
+        let range=NSRange(location:13,length:20);text.setSelectedRange(NSRange(location:(text.string as NSString).length,length:0));let caret=text.selectedRange(),original=text.textStorage!.copy() as! NSAttributedString
+        let reveal=ConversationTextReveal();reveal.reveal([range],in:text,loading:false)
+        XCTAssertGreaterThan(reveal.snapshotCount,0);XCTAssertEqual(text.textStorage!,original);XCTAssertEqual(text.selectedRange(),caret)
+        reveal.finish();XCTAssertNil(text.layoutManager?.temporaryAttribute(.foregroundColor,atCharacterIndex:range.location,effectiveRange:nil));XCTAssertEqual(text.textStorage!,original)
+    }
     private func message(_ text:String,kind:String="assistant")throws->KaiMessage {
         try JSONDecoder().decode(KaiMessage.self,from:JSONSerialization.data(withJSONObject:["id":"answer","kind":kind,"lines":[["text":text,"style":""]]]))
     }

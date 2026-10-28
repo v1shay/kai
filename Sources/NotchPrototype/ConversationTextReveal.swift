@@ -35,7 +35,8 @@ enum TextRevealChange {
 /// text mutations, per-frame layout, blur, or per-character layers.
 @MainActor final class ConversationTextReveal {
     static let duration=0.28,maximumTiles=24,maximumGlyphs=512
-    private weak var text:NSTextView?,manager:InteractionLayoutManager?
+    private weak var text:NSTextView?,manager:NSLayoutManager?
+    private var maskedCharacters=[NSRange]()
     private var tiles=[CALayer](),cleanup:DispatchWorkItem?
     private var generation=UUID()
     private(set) var snapshotCount=0
@@ -44,7 +45,8 @@ enum TextRevealChange {
     func finish(){
         guard !tiles.isEmpty else{return}
         generation=UUID();cleanup?.cancel();cleanup=nil
-        manager?.revealGlyphRanges=[]
+        (manager as? InteractionLayoutManager)?.revealGlyphRanges=[]
+        if let manager{for range in maskedCharacters{let clipped=NSIntersectionRange(range,NSRange(location:0,length:manager.textStorage?.length ?? 0));if clipped.length>0{manager.removeTemporaryAttribute(.foregroundColor,forCharacterRange:clipped)}}};maskedCharacters=[]
         tiles.forEach{$0.removeAllAnimations();$0.removeFromSuperlayer()};tiles=[]
         text?.needsDisplay=true;text=nil;manager=nil
     }
@@ -52,7 +54,7 @@ enum TextRevealChange {
     func reveal(_ ranges:[NSRange],in text:NSTextView,loading:Bool){
         finish();snapshotCount=0
         guard !ranges.isEmpty,!text.isHiddenOrHasHiddenAncestor,!NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
-              let manager=text.layoutManager as? InteractionLayoutManager,
+              let manager=text.layoutManager,
               let container=text.textContainer,let storage=text.textStorage,storage.length>0 else{return}
         let origin=text.textContainerOrigin
         let visible=text.visibleRect.offsetBy(dx:-origin.x,dy:-origin.y)
@@ -108,7 +110,10 @@ enum TextRevealChange {
             }
         }
         // The real string is always complete for copy, links and accessibility.
-        manager.revealGlyphRanges=hidden
+        if let custom=manager as? InteractionLayoutManager{custom.revealGlyphRanges=hidden}else{
+            maskedCharacters=hidden.map{manager.characterRange(forGlyphRange:$0,actualGlyphRange:nil)}
+            for range in maskedCharacters{manager.addTemporaryAttribute(.foregroundColor,value:NSColor.clear,forCharacterRange:range)}
+        }
         CATransaction.commit()
         guard !tiles.isEmpty else{return}
         self.text=text;self.manager=manager;text.needsDisplay=true

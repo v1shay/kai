@@ -121,6 +121,7 @@ pub struct RunHandle {
     /// Coalesced readiness signal; closes when the producer has finished.
     pub wake: async_channel::Receiver<()>,
     control: Option<SyncSender<NativeControl>>,
+    history_requests:Option<SyncSender<async_channel::Sender<std::result::Result<ResponseSource,String>>>>,
     deferred_native_stop: bool,
     cancelled: Arc<AtomicBool>,
     process_group: Arc<Mutex<Option<i32>>>,
@@ -154,6 +155,7 @@ fn native_handle(pid: i32) -> (RunHandle, NativeContext) {
             },
             wake,
             control: Some(control_tx),
+            history_requests:None,
             deferred_native_stop: true,
             cancelled: cancelled.clone(),
             process_group: group.clone(),
@@ -198,6 +200,7 @@ impl RunHandle {
             },
             wake,
             control: None,
+            history_requests:None,
             deferred_native_stop: false,
             cancelled: Arc::new(AtomicBool::new(false)),
             process_group: Arc::new(Mutex::new(None)),
@@ -225,6 +228,7 @@ impl RunHandle {
             events: EventReceiver { inner: rx, budget },
             wake: wake_rx,
             control: None,
+            history_requests:None,
             deferred_native_stop: false,
             cancelled: Arc::new(AtomicBool::new(false)),
             process_group: Arc::new(Mutex::new(None)),
@@ -246,6 +250,10 @@ impl RunHandle {
     }
     pub fn interrupt(&self) -> Result<()> {
         self.send_control(NativeControl::Interrupt)
+    }
+    pub(crate) fn live_snapshot(&self)->Result<async_channel::Receiver<std::result::Result<ResponseSource,String>>>{
+        let(tx,rx)=async_channel::bounded(1);
+        if let Some(requests)=&self.history_requests{requests.try_send(tx).map_err(|_|anyhow::anyhow!("History snapshot is busy"))?;}else{self.send_control(NativeControl::Snapshot(tx))?;}Ok(rx)
     }
     #[allow(dead_code)] // Reserved capability-gated native controls; typed UI uses dedicated methods.
     pub fn native_command(&self, method: &str, params: Value) -> Result<()> {
@@ -847,11 +855,13 @@ fn launch_mode_internal(request: RunRequest, cli_command: bool, native: bool) ->
         budget,
     };
     let finalized_source = Arc::new(Mutex::new(None));
+    let(history_tx,history_rx)=mpsc::sync_channel::<async_channel::Sender<std::result::Result<ResponseSource,String>>>(1);
     let handle = RunHandle {
         settled,
         events,
         wake,
         control: None,
+        history_requests:Some(history_tx),
         deferred_native_stop: false,
         cancelled: cancelled.clone(),
         process_group: group.clone(),
@@ -918,6 +928,7 @@ fn launch_mode_internal(request: RunRequest, cli_command: bool, native: bool) ->
         let mut failure = None;
         let _ = send(&tx, RuntimeEvent::Status("Connecting".into()), &cancelled);
         'running: loop {
+            while let Ok(reply)=history_rx.try_recv(){let _=reply.try_send(parser.rendered_source().map_err(|e|e.to_string()));}
             if cancelled.load(Ordering::Acquire) {
                 break;
             }
@@ -1545,7 +1556,15 @@ impl StreamParser {
         }
         let mut output = ResponseBuffer::default();
         let mut cursor = 0;
+        let speaker=|marker:&str|{
+            let body=marker.split_once('>')?.1.strip_suffix("</orbit_interaction>")?;
+            match crate::chat_interactions::decode_with_context(body)?.0{crate::chat_interactions::ChatInteraction::Speaker{speaker,..}=>Some(speaker),_=>None}
+        };
+        let mut written=vec![];let mut group_start=0;
+        self.interactions.for_each(|offset,marker|{if speaker(marker)==Some(crate::chat_interactions::Speaker::User){written.push(offset>group_start);group_start=offset}Ok(())})?;
+        written.push(self.output.len()>group_start);let mut group=0;
         self.interactions.for_each(|offset, marker| {
+            match speaker(marker){Some(crate::chat_interactions::Speaker::User)=>group+=1,Some(crate::chat_interactions::Speaker::Assistant) if written[group]=>return Ok(()),_=>{}}
             let offset = offset.min(self.output.len()).max(cursor);
             self.output.copy_range_to(cursor, offset, &mut output)?;
             output.push_str("\n\n");
