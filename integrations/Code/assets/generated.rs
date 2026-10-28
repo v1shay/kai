@@ -3,6 +3,7 @@ pub fn asset(path: &str) -> Option<&'static [u8]> {
     let path = path.strip_prefix("assets/").unwrap_or(path);
     let key = path.strip_suffix(".svg").unwrap_or(path);
     Some(match key {
+        "bolt" => include_bytes!("bolt.svg"),
         "model-moon" => include_bytes!("model-moon.svg"),
         "model-earth" => include_bytes!("model-earth.svg"),
         "model-sun" => include_bytes!("model-sun.svg"),

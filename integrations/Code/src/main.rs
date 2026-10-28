@@ -545,6 +545,7 @@ struct Orbit {
     unified_forward:Vec<SessionSummary>,
     unified_navigating:bool,
     unified_text_morph:bool,
+    fast_transition:Option<Instant>,
     reasoning_efforts:std::collections::BTreeMap<String,String>,
     unified_children:Vec<runtime::broker::ChildSnapshot>,
     unified_text_decode:text_decode::TextDecode,
@@ -1078,6 +1079,7 @@ impl Orbit {
             unified_text_morph:restored.as_ref().is_none_or(|s|s.text_morph),
             unified_history_end:None,unified_history_wait:false,
             unified_back:vec![],unified_forward:vec![],unified_navigating:false,
+            fast_transition:None,
             reasoning_efforts:restored.as_ref().map(|s|s.reasoning_efforts.clone()).unwrap_or_default(),
             unified_children:vec![],
             unified_text_decode:Default::default(),
@@ -2968,7 +2970,7 @@ impl Orbit {
             }
         };
         let context_scope = self.context_scope();
-        let request = RunRequest { reasoning_effort:self.request_effort(),
+        let request = RunRequest { service_tier:self.request_service_tier(), reasoning_effort:self.request_effort(),
             agent: self.agent,
             executable,
             project: execution_path.clone(),
@@ -5141,7 +5143,7 @@ impl Orbit {
                                         agent_color(self.agent),
                                     ))
                                     .when_some(composer_design::model_glyph(&self.effective_model_label()),|s,glyph|s.child(icon(glyph,14.,TEXT)))
-                                    .child(composer_design::display_label(&self.effective_model_label()))
+                                    .child(composer_design::display_label(self.effective_model_label().split(" · ").next().unwrap_or("")))
                                     .child(icon("chevron-down", 10., MUTED))
                                     .on_click(cx.listener(
                                         |this, event: &ClickEvent, window, cx| {
@@ -5149,6 +5151,8 @@ impl Orbit {
                                         },
                                     )),
                             )
+                            .child(self.thinking_chip(cx))
+                            .when(self.fast_supported(),|s|s.child(self.fast_button(cx)))
                             .child(
                                 div()
                                     .id("mode")
@@ -5259,17 +5263,7 @@ impl Orbit {
                     .text_size(theme::ui_px(10.))
                     .text_color(rgb(0x707070))
                     .child(self.elapsed_label().map(|elapsed|format!("Working for {elapsed}")).unwrap_or_else(||self.dictation_status.unwrap_or(if running{"Working locally"}else{"Local session"}).to_owned()))
-                    .child(
-                        div()
-                            .id("context-usage")
-                            .debug_selector(|| "context-usage".into())
-                            .cursor_pointer()
-                            .hover(|s| s.text_color(rgb(TEXT)))
-                            .child("Status · context")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.show_modal(Modal::Status, window, cx)
-                            })),
-                    )
+                    .child(self.usage_footer(cx))
                     .child(if running {
                         "↵ Queue · /steer Send now"
                     } else {
@@ -5286,6 +5280,8 @@ fn is_dark(appearance: WindowAppearance) -> bool {
 }
 impl Orbit {
     fn advance_chat_surface(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.motion && self.fast_transition.is_some_and(|at|at.elapsed()<Duration::from_millis(600)){request_motion_frame(window,cx);}
+
         self.sync_sidebar_activity(cx);
         self.prepare_native_requests(window, cx);
         self.advance_voice(cx);

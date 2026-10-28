@@ -634,6 +634,10 @@ impl Orbit {
             }
             "interaction_details"=>{
                 let id=request["id"].as_str().ok_or("Missing interaction")?;
+                if let Some(index)=id.strip_prefix("work-").and_then(|s|s.parse::<usize>().ok()){
+                    if !chat_flow::Index::new(&self.rows).work.get(index).is_some_and(|r|r.as_ref().is_some_and(|r|r.start==index)){return Err("This turn changed".into())}
+                    if !self.expanded_work.remove(&index){self.expanded_work.insert(index);}cx.notify();return Ok(())
+                }
                 let index=id.split_once('-').and_then(|(n,_)|n.parse::<usize>().ok()).ok_or("Invalid interaction")?;
                 if self.unified_detail_id(index).as_deref()!=Some(id){return Err("This interaction changed; select its current card".into())}
                 if self.expanded_tools.insert(index){self.interaction_animations.insert(index,(Instant::now(),true,0.));}
@@ -732,6 +736,9 @@ impl Orbit {
                 self.unified_history_end=None;self.unified_history_wait=false;
                 if self.history_offset>0 || self.navigation_history{if let Some(id)=self.active.clone(){if self.runs.contains_key(&id){self.restore_live_tail(&id,cx)}else{self.load_history_page(false,cx)}}}
             }
+            "usage_reset"=>{self.consume_usage_reset(request["creditId"].as_str().ok_or("Missing reset credit")?,cx)?;}
+            "fast_mode"=>{self.toggle_fast(cx);}
+            "usage_refresh"=>{self.controls.remove(self.agent.command());self.refresh_unified_models(cx);}
             "refresh" | "models" => {self.refresh_unified_models(cx);}
             // Settings stay explicit: unsupported actions cannot launch another runtime.
             _ => return Err(format!("Open the Code workspace to use {action}")),
@@ -862,6 +869,8 @@ impl Orbit {
         snapshot["workspaceExecutionPath"]=json!(self.execution_root().unwrap_or_else(||self.project.clone()));
         snapshot["providerDefaultModel"]=json!(self.provider_default_model());snapshot["effectiveModel"]=json!(effective_model);snapshot["effectiveReasoningEffort"]=json!(effective_effort);snapshot["voiceModel"]=json!(self.voice_call.as_ref().map(|_|voice::REALTIME_MODEL));
         if let Some(elapsed)=self.elapsed_label(){if let Some(text)=snapshot["sessionActivity"]["text"].as_str().map(str::to_owned){snapshot["sessionActivity"]["text"]=json!(format!("{text} · {elapsed}"));}}
+        snapshot["usageResets"]=json!(self.controls.get(self.agent.command()).and_then(|(_,c)|c.defaults.reset_credits.as_ref()));
+        snapshot["fastMode"]=json!(self.fast_enabled());snapshot["fastSupported"]=json!(self.fast_supported());snapshot["usageSummary"]=json!(self.usage_summary());snapshot["usageWindows"]=json!(self.usage_windows().iter().map(|w|json!({"label":w.window_title().unwrap_or_else(||w.label.clone()),"remaining":w.remaining_text(),"fraction":((100.-w.used_percent)/100.).clamp(0.,1.),"reset":w.resets_at.and_then(|t|chrono::DateTime::from_timestamp(t,0)).map(|t|format!("Resets {}",t.with_timezone(&chrono::Local).format("%b %-d at %-I:%M %p")))})).collect::<Vec<_>>());snapshot["usageAccount"]=json!(self.controls.get(self.agent.command()).and_then(|(_,c)|c.account.clone()));snapshot["usageUpdated"]=json!(self.controls.get(self.agent.command()).map(|(at,_)|format!("Updated {}s ago",at.elapsed().as_secs())));
         snapshot["workspaceVoiceError"]=json!(self.voice_error);snapshot["historyEarlier"]=json!(self.unified_history_end.as_ref().is_some_and(|(owner,_)|owner==&self.unified_token()) || self.history_offset>0 || self.navigation_history);snapshot["approvalCount"]=json!(self.unified_pending_ids().len());snapshot["workspaceMotion"]=json!(self.motion);snapshot["workspaceTextMorph"]=json!(self.unified_text_morph);snapshot
 
     }
@@ -878,6 +887,7 @@ impl Orbit {
     }
     fn unified_history(&self) -> Vec<Value> {
         let mut history = Vec::new();
+        let flow=chat_flow::Index::new(&self.rows);
         let mut role = "assistant".to_owned();
         let end = self.unified_history_end.as_ref().filter(|(owner,_)|owner==&self.unified_token() && !self.unified_history_wait).map_or(self.rows.len(),|(_,end)|(*end).min(self.rows.len()));
         let start = end.saturating_sub(100);
@@ -887,6 +897,11 @@ impl Orbit {
             }
         }
         for (index, row) in self.rows.iter().enumerate().take(end).skip(start) {
+            if let Some(span)=flow.work.get(index).and_then(|r|r.as_ref()){
+                let expanded=self.expanded_work.contains(&span.start);
+                if index==span.start.max(start){history.push(json!({"id":format!("work-summary-{}",span.start),"kind":"activity","lines":[{"text":if expanded{"Hide work"}else{"Show work"},"style":"activity"}],"detailId":format!("work-{}",span.start),"speechText":""}));}
+                if !expanded{continue}
+            }
             if let Some(r) = &row.role {
                 role = r.clone()
             }

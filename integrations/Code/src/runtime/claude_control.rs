@@ -835,7 +835,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"A
 read -r wait
 "#).unwrap();
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
-        let handle = launch(RunRequest { reasoning_effort:None,
+        let handle = launch(RunRequest { service_tier:None, reasoning_effort:None,
             agent: AgentKind::Claude,
             executable,
             project: root.clone(),
@@ -902,7 +902,7 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"result":"
 read -r wait
 "#)).unwrap();
             fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
-            let handle = launch(RunRequest { reasoning_effort:None,
+            let handle = launch(RunRequest { service_tier:None, reasoning_effort:None,
                 agent: AgentKind::Claude,
                 executable,
                 project: root.clone(),
@@ -1048,7 +1048,7 @@ for line in sys.stdin:
         break
 "#).unwrap();
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
-        let handle = launch(RunRequest { reasoning_effort:None,
+        let handle = launch(RunRequest { service_tier:None, reasoning_effort:None,
             agent: AgentKind::Claude,
             executable,
             project: root.clone(),
@@ -1109,7 +1109,7 @@ printf '%s' ready > ready
 sleep 30
 "#).unwrap();
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
-        let handle = launch(RunRequest { reasoning_effort:None,
+        let handle = launch(RunRequest { service_tier:None, reasoning_effort:None,
             agent: AgentKind::Claude,
             executable,
             project: root.clone(),
@@ -1166,7 +1166,7 @@ for line in sys.stdin:
         time.sleep(30)
 "#).unwrap();
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
-        let handle = launch(RunRequest { reasoning_effort:None,
+        let handle = launch(RunRequest { service_tier:None, reasoning_effort:None,
             agent: AgentKind::Claude,
             executable,
             project: root.clone(),

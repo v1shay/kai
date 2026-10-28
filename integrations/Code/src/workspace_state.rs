@@ -267,7 +267,7 @@ impl WorkspaceState {
             self.agent = "codex".into();
         }
         self.turn_timings.retain(|t|t.key.len()<=128&&t.session.len()<=512&&t.submitted_ms>0);if self.turn_timings.len()>1024{self.turn_timings.drain(..self.turn_timings.len()-1024);}
-        self.reasoning_efforts.retain(|key,value|valid_text(key,512)&&matches!(value.as_str(),"none"|"minimal"|"low"|"medium"|"high"|"xhigh"|"max"|"ultra"));while self.reasoning_efforts.len()>512{self.reasoning_efforts.pop_first();}
+        self.reasoning_efforts.retain(|key,value|valid_text(key,512)&&((key=="codex:service-tier"&&matches!(value.as_str(),"fast"|"default"))||matches!(value.as_str(),"none"|"minimal"|"low"|"medium"|"high"|"xhigh"|"max"|"ultra")));while self.reasoning_efforts.len()>512{self.reasoning_efforts.pop_first();}
         self.model = self.model.filter(|m| valid_text(m, 256));
         self.active_chat = self.active_chat.filter(|id| valid_text(id, 512));
         let mut seen = HashSet::with_capacity(8);

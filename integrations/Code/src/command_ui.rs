@@ -13,6 +13,14 @@ pub(super) struct SlashPicker {
     pub closing: bool,
 }
 impl Orbit {
+    pub(super) fn consume_usage_reset(&mut self,id:&str,cx:&mut Context<Self>)->Result<(),String>{
+        if self.agent!=AgentKind::Codex || self.controls_pending.contains("codex"){return Err("An account operation is already running".into())}
+        let credits=self.controls.get("codex").and_then(|(_,c)|c.defaults.reset_credits.as_ref()).ok_or("No current reset credits")?;
+        if !credits["credits"].as_array().is_some_and(|rows|rows.iter().any(|v|v["id"]==id&&v["status"]=="available")){return Err("This reset credit is no longer available".into())}
+        let executable=self.agents.iter().find(|a|a.kind==AgentKind::Codex).and_then(|a|a.executable.clone()).ok_or("Codex is not installed")?;
+        let project=self.model_project();let id=id.to_owned();let owner=self.unified_token();let key=uuid::Uuid::new_v4().to_string();self.controls_pending.insert("codex");
+        cx.spawn(async move|this,cx|{let result=cx.background_executor().spawn(async move{agent_controls::consume_reset(&executable,&project,&id,&key).map_err(|e|e.to_string())}).await;let _=this.update(cx,|app,cx|{app.controls_pending.remove("codex");app.controls.remove("codex");if app.unified_token()==owner{app.notice=Some(match result{Ok(value)=>match value.as_str(){"reset"=>"Usage limit reset".into(),"nothingToReset"=>"Your usage limits do not need a reset".into(),"noCredit"=>"No reset credit remains".into(),_=>"This credit has already been redeemed".into()},Err(error)=>error});}app.refresh_unified_models(cx);cx.notify();});}).detach();cx.notify();Ok(())
+    }
     pub(super) fn unified_slash_commands(&self)->serde_json::Value{
         let mut entries:Vec<_>=commands::catalog(self.agent).iter().map(|c|serde_json::json!({"name":c.name,"description":c.description})).collect();
         if let Some(names)=self.native_commands.get(&self.native_scope()){
@@ -820,7 +828,7 @@ impl Orbit {
             "Idle"
         }
     }
-    fn reported_limit_windows(&self) -> Vec<usage::LimitWindow> {
+    pub(super) fn reported_limit_windows(&self) -> Vec<usage::LimitWindow> {
         let usage = self
             .active
             .as_ref()
@@ -869,7 +877,7 @@ impl Orbit {
                     .filter(|n| n.is_finite() && (0. ..=100.).contains(n))
             {
                 limits.push(agent_controls::LimitWindow {
-                    label: "codex primary".into(),
+                    label: format!("{} primary",self.agent.command()),
                     used_percent: used,
                     duration_minutes: None,
                     resets_at: usage.limit_resets_at,
@@ -878,8 +886,24 @@ impl Orbit {
             }
         }
         limits.retain(usage::LimitWindow::valid);
+        limits.sort_by(|a,b|b.used_percent.total_cmp(&a.used_percent).then(a.label.cmp(&b.label)));
         limits.truncate(32);
         limits
+    }
+    pub(super) fn usage_windows(&self)->Vec<usage::LimitWindow>{
+        let mut limits=self.reported_limit_windows();
+        if let Some(u)=self.active.as_ref().and_then(|id|self.usage.get(id)).filter(|u|u.context_limit.is_some_and(|n|n>0)){
+            if let (Some(used),Some(size))=(u.context_used,u.context_limit){limits.push(usage::LimitWindow{label:"Context window".into(),used_percent:(used as f64/size as f64*100.).clamp(0.,100.),duration_minutes:None,resets_at:None,reported_at_ms:None});}
+        }limits
+    }
+    pub(super) fn usage_summary(&self)->String{
+        self.usage_windows().first().map(|w|format!("{} · {}{}",self.agent.name(),w.remaining_text(),if w.label=="Context window"{" context"}else{""})).unwrap_or_else(||format!("{} usage",self.agent.name()))
+    }
+    pub(super) fn usage_footer(&self,cx:&Context<Self>)->AnyElement{
+        let quota=self.usage_windows().first().cloned();let fraction=quota.as_ref().map(|w|((100.-w.used_percent)/100.)as f32);
+        div().id("provider-usage-footer").debug_selector(||"provider-usage-footer".into()).h(px(20.)).flex().items_center().gap_2().cursor_pointer().child(icon(agent_icon(self.agent),12.,agent_color(self.agent)))
+        .when_some(fraction,|s,t|s.child(div().w(px(36.)).h(px(3.)).rounded_full().bg(rgba(0xffffff18)).child(div().w(px(36.*t)).h_full().rounded_full().bg(rgb(composer_design::intensity(1.-t))))))
+        .child(self.usage_summary()).on_click(cx.listener(|this,event:&ClickEvent,window,cx|{this.toggle_panel_from_click(Modal::Status,event.position(),true,window,cx);})).into_any_element()
     }
     pub(super) fn usage_panel(&self, height: Pixels, cx: &mut Context<Self>) -> AnyElement {
         let session = self.active.as_ref().and_then(|id| {
@@ -958,6 +982,7 @@ impl Orbit {
                                     .child(limit.remaining_text()),
                             ),
                     )
+                    .child(div().w_full().h(px(4.)).rounded_full().bg(rgba(0xffffff14)).child(div().w(relative(((100.-limit.used_percent)/100.)as f32)).h_full().rounded_full().bg(rgb(composer_design::intensity((limit.used_percent/100.)as f32)))))
                     .when_some(duration, |row, duration| {
                         row.child(
                             div()
@@ -1118,6 +1143,13 @@ impl Orbit {
                     .text_color(rgb(MUTED))
                     .child(note.clone()),
             );
+        }
+        if let Some(credits)=controls.and_then(|c|c.defaults.reset_credits.as_ref()){
+            details=details.child(div().text_color(rgb(MUTED)).child(format!("Banked resets · {} available",credits["availableCount"].as_u64().unwrap_or(0))));
+            for credit in credits["credits"].as_array().into_iter().flatten(){
+                let id=credit["id"].as_str().unwrap_or("").to_owned();let available=credit["status"]=="available"&&!pending;
+                details=details.child(div().rounded_md().p_2().bg(rgba(GLASS_SURFACE)).child(div().child(credit["title"].as_str().unwrap_or("Full reset").to_owned())).child(div().text_size(theme::ui_px(10.)).text_color(rgb(MUTED)).child(credit["description"].as_str().unwrap_or("").to_owned())).when_some(credit["expiresAt"].as_i64().and_then(|t|chrono::DateTime::from_timestamp(if t>10_000_000_000{t/1000}else{t},0)),|s,t|s.child(div().text_size(theme::ui_px(10.)).text_color(rgb(MUTED)).child(format!("Expires {}",t.with_timezone(&chrono::Local).format("%b %-d at %-I:%M %p"))))).when(available,|s|s.child(div().id(SharedString::from(format!("reset-{id}"))).cursor_pointer().text_color(rgb(ACCENT)).child("Use reset").on_click(cx.listener(move|this,_,_,cx|{if let Err(error)=this.consume_usage_reset(&id,cx){this.notice=Some(error);cx.notify();}})))));
+            }
         }
         div()
             .id("status-content")

@@ -362,7 +362,7 @@ impl Orbit {
                                             ))
                                             .child(
                                                 div().min_w(px(0.)).text_ellipsis().child(
-                                                    self.effective_model_label(),
+                                                    composer_design::display_label(self.effective_model_label().split(" · ").next().unwrap_or("")),
                                                 ),
                                             )
                                             .child(icon("chevron-down", 10., MUTED))
@@ -378,6 +378,8 @@ impl Orbit {
                                                 },
                                             )),
                                     )
+                            .child(self.thinking_chip(cx))
+                            .when(self.fast_supported(),|s|s.child(self.fast_button(cx)))
                                     .child(
                                         div()
                                             .id("quick-permissions")
@@ -457,6 +459,7 @@ impl Orbit {
                                     ),
                             ),
                     )
+                    .child(self.usage_footer(cx))
                     .child(
                         div()
                             .px_1()

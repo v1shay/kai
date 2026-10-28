@@ -228,7 +228,7 @@ impl Orbit {
         } else {
             prompt
         };
-        let request = RunRequest { reasoning_effort:None,
+        let request = RunRequest { service_tier:None, reasoning_effort:None,
             agent: member.agent,
             executable,
             project: team.project.clone(),

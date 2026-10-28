@@ -1326,7 +1326,7 @@ for line in sys.stdin:
   emit({'jsonrpc':'2.0','id':5,'result':{'stopReason':'end_turn'}})
 "#,
         );
-        let request = RunRequest { reasoning_effort:None,
+        let request = RunRequest { service_tier:None, reasoning_effort:None,
             agent: crate::discovery::AgentKind::Gemini,
             executable,
             project: root.clone(),
@@ -1402,7 +1402,7 @@ for line in sys.stdin:
   emit({'jsonrpc':'2.0','id':v['id'],'result':{'stopReason':'end_turn'}})
 "#,
         );
-        let request = RunRequest { reasoning_effort:None,
+        let request = RunRequest { service_tier:None, reasoning_effort:None,
             agent: crate::discovery::AgentKind::Gemini,
             executable,
             project: root.clone(),
@@ -1454,7 +1454,7 @@ for line in sys.stdin:
   emit({'jsonrpc':'2.0','id':5,'result':{'stopReason':'cancelled'}})
 "#,
         );
-        let request = RunRequest { reasoning_effort:None,
+        let request = RunRequest { service_tier:None, reasoning_effort:None,
             agent: crate::discovery::AgentKind::Gemini,
             executable,
             project: root.clone(),
@@ -1674,7 +1674,7 @@ for line in sys.stdin:
   emit({'jsonrpc':'2.0','id':5,'result':{'stopReason':'end_turn'}})
 "#,
         );
-        let handle = super::super::launch_cli_command(RunRequest { reasoning_effort:None,
+        let handle = super::super::launch_cli_command(RunRequest { service_tier:None, reasoning_effort:None,
             agent: AgentKind::Cursor,
             executable,
             project: root.clone(),
@@ -1774,7 +1774,7 @@ for line in sys.stdin:
  emit({'jsonrpc':'2.0','id':v['id'],'result':r})
 "#.replace("ACK",if correct{"True"}else{"False"});
    std::fs::write(&path,script).unwrap();std::fs::set_permissions(&path,std::fs::Permissions::from_mode(0o700)).unwrap();
-   let request=RunRequest{agent:AgentKind::Gemini,executable:path,project:root.clone(),prompt:"Verify native thinking".into(),resume_id:None,fork_session:false,model:Some("model-b".into()),reasoning_effort:Some("high".into()),images:vec![],allow_edits:false,trust_workspace:false,codex_access:Default::default(),codex_approvals:Default::default()};
+   let request=RunRequest{service_tier:None,agent:AgentKind::Gemini,executable:path,project:root.clone(),prompt:"Verify native thinking".into(),resume_id:None,fork_session:false,model:Some("model-b".into()),reasoning_effort:Some("high".into()),images:vec![],allow_edits:false,trust_workspace:false,codex_access:Default::default(),codex_approvals:Default::default()};
    let handle=launch(request).unwrap();let mut confirmed=false;let mut text=String::new();let mut failure=None;
    while let Ok(event)=handle.events.recv_timeout(Duration::from_secs(5)){match event{RuntimeEvent::Usage(usage)=>{confirmed |= usage.reasoning_effort.as_deref()==Some("high");},RuntimeEvent::Text(value)=>text.push_str(&value),RuntimeEvent::Failed(error)=>{failure=Some(error);break},RuntimeEvent::Finished=>break,_=>{}}}
    handle.cancel();if correct{assert!(failure.is_none(),"{failure:?}");assert!(confirmed && text.contains("NATIVE_THINKING_CONFIRMED"));}else{assert!(failure.as_deref().is_some_and(|error|error.contains("did not confirm")));assert!(!text.contains("NATIVE_THINKING_CONFIRMED"));}

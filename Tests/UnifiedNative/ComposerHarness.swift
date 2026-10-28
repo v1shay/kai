@@ -14,7 +14,7 @@ private func auditCommand(_ bytes:UnsafePointer<UInt8>?,_ count:Int)->Bool{guard
   var owner="composer-owner"
   func packet(_ access:String,_ model:String)->Data{
    let models=["gpt-6-luna","gpt-6.1-terra","gpt-6.1-sol","gpt-6-astra"].map{["model":$0,"displayName":$0,"supportedReasoningEfforts":[["reasoningEffort":"low"],["reasoningEffort":"medium"],["reasoningEffort":"high"]]] as [String:Any]}
-   let value:[String:Any]=["project":"/private/tmp","projects":[],"chats":[],"standaloneChats":[],"standalone":true,"threadId":"code:composer","threadName":"A native composer","history":[["id":"first-user","kind":"user","lines":[["text":"A short new conversation","style":""]]],["id":"first-reply","kind":"assistant","lines":[["text":"Replies stay just above the composer.","style":""]]]],"readOnly":false,"approval":false,"activity":["scene":"off","text":"Ready"],"sessionActivity":["scene":"off","text":"Ready"],"activeTasks":[],"notice":"Ready","attachments":[],"selectedAgent":"codex","agents":[["id":"codex","name":"Codex","available":true]],"models":models,"ownerToken":owner,"composerDraft":"","effectiveModel":model,"effectiveReasoningEffort":"medium","workspaceAccess":access,"workspaceApprovalPolicy":"ask","workspaceExecutionPath":"/private/tmp/project"]
+   let value:[String:Any]=["project":"/private/tmp","projects":[],"chats":[],"standaloneChats":[],"standalone":true,"threadId":"code:composer","threadName":"A native composer","history":[["id":"first-user","kind":"user","lines":[["text":"A short new conversation","style":""]]],["id":"first-reply","kind":"assistant","lines":[["text":"Replies stay just above the composer.","style":""]]]],"readOnly":false,"approval":false,"activity":["scene":"off","text":"Ready"],"sessionActivity":["scene":"off","text":"Ready"],"activeTasks":[],"notice":"Ready","attachments":[],"selectedAgent":"codex","fastSupported":true,"fastMode":false,"usageSummary":"Codex · 83% left","usageWindows":[["label":"Weekly limit","remaining":"83% left","fraction":0.83]],"usageAccount":"Pro","usageUpdated":"Updated just now","agents":[["id":"codex","name":"Codex","available":true]],"models":models,"ownerToken":owner,"composerDraft":"","effectiveModel":model,"effectiveReasoningEffort":"medium","workspaceAccess":access,"workspaceApprovalPolicy":"ask","workspaceExecutionPath":"/private/tmp/project"]
    return try! JSONSerialization.data(withJSONObject:value)
   }
   runtime.receive(packet("workspace","gpt-6.1-sol"));pump();app.expandToRunningChat();pump()
@@ -31,12 +31,15 @@ private func auditCommand(_ bytes:UnsafePointer<UInt8>?,_ count:Int)->Bool{guard
   for id in ["gpt-6-luna","gpt-6.1-terra","gpt-6.1-sol","gpt-6-astra"]{precondition(ModelIdentity.image(id) != nil,"Missing model vector \(id)")}
   let modelMenu=ui.settingsMenu("model")!;precondition(modelMenu.items.filter{$0.image != nil}.count==4,"Model menus do not carry all four family glyphs")
   ui.setComposerHasText(true);precondition(model.opacity==1 && permission.opacity==1,"Typing hides the composer controls");ui.setComposerHasText(false)
-  let effortMenu=ui.settingsMenu("effort")!,slider=effortMenu.items.compactMap{$0.view as? ReasoningSliderControl}.first!
-  precondition(slider.levels==["low","medium","high"] && slider.selected==1,"Wrong native model-specific levels")
-  let before=commands.count;_ = slider.accessibilityPerformIncrement();precondition(commands.count==before+1 && commands.last?["effort"] as? String == "high","Slider does not dispatch native effort")
+  let bolt=member(ui,"fastBolt") as! CALayer;precondition(!bolt.isHidden,"Advertised Fast Mode is missing");let fastBefore=commands.count;_ = ui.handleClick(CGPoint(x:input.frame.minX+bolt.frame.midX,y:input.frame.minY+bolt.frame.midY));precondition(commands.count==fastBefore+1 && commands.last?["action"] as? String == "fast_mode","Fast Mode did not reach owner")
+  let quota=member(ui,"usageLabel") as! CATextLayer;precondition((quota.string as? String)?.contains("83% left")==true,"Usage footer does not show remaining");_ = ui.handleClick(CGPoint(x:quota.frame.midX,y:quota.frame.midY));let popup=member(ui,"composerPopover") as! ComposerGlassPopover;precondition(popup.visible,"Usage did not open its custom glass panel");popup.dismiss()
+  let chip=member(ui,"effortChip") as! CALayer;ui.handleHover(CGPoint(x:input.frame.minX+chip.frame.midX,y:input.frame.minY+chip.frame.midY));precondition(popup.visible,"Thinking hover did not open its custom glass panel");popup.dismiss()
+  let choices=ui.thinkingRows(),choice=choices.last!
+  precondition(choices.map(\.value)==["low","medium","high"],"Wrong native model-specific levels");precondition((member(choice,"tiles") as? CALayer)?.sublayers?.count==160,"Missing Monocode tile shimmer")
+  let before=commands.count;_ = choice.accessibilityPerformPress();precondition(commands.count==before+1 && commands.last?["effort"] as? String == "high","Thinking option does not dispatch native effort")
   let staleMenu=ui.permissionMenu()!,full=staleMenu.items.first{$0.title=="Full access"}!
   _=NSApp.sendAction(full.action!,to:full.target,from:full);precondition(commands.last?["access"] as? String == "full" && commands.last?["approvals"] == nil,"Sandbox symbol coupled access to approvals")
-  owner="another-owner";runtime.receive(packet("workspace","gpt-6.1-terra"));pump(0.1);let after=commands.count;_ = slider.accessibilityPerformDecrement();_ = NSApp.sendAction(full.action!,to:full.target,from:full);precondition(commands.count==after,"Stale slider or permission menu changed another chat")
+  owner="another-owner";runtime.receive(packet("workspace","gpt-6.1-terra"));pump(0.1);let after=commands.count;_ = choice.accessibilityPerformPress();_ = NSApp.sendAction(full.action!,to:full.target,from:full);precondition(commands.count==after,"Stale thinking option or permission menu changed another chat")
   var palettes=[[CGColor]]()
   for (access,id) in [("read-only","gpt-6-luna"),("workspace","gpt-6.1-terra"),("full","gpt-6-astra")]{runtime.receive(packet(access,id));pump(0.3);palettes.append(permission.colors as! [CGColor])}
   precondition(palettes[0] != palettes[1] && palettes[1] != palettes[2],"Permission colors do not reflect actual sandbox")
@@ -113,6 +116,6 @@ private func auditCommand(_ bytes:UnsafePointer<UInt8>?,_ count:Int)->Bool{guard
    precondition(catalog.pets.filter{$0.kind=="local"}.allSatisfy{$0.sourceURL != nil},"Local pets still point at packaged copies")
    print("Native libraries: Google Sans and Geist in settings, shared font dispatch, real editor repaint, and live external pet sources passed")
   }
-  print("Native composer: four vector model glyphs, per-model animated slider, exact effort dispatch, independent gradient permissions, stale-owner rejection, typed-draft controls, and narrow layouts passed")
+  print("Native composer: four vector model glyphs, per-model tile shimmer choices, exact effort dispatch, independent gradient permissions, stale-owner rejection, typed-draft controls, and narrow layouts passed")
  }
 }

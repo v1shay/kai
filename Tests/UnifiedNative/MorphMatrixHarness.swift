@@ -1,13 +1,16 @@
 import AppKit
 
 private func command(_ bytes:UnsafePointer<UInt8>?,_ count:Int)->Bool{true}
+@MainActor private final class FocusAuditWindow:NSWindow {
+ override func makeKeyAndOrderFront(_ sender:Any?){precondition(NSApp.isActive,"Morph requested GPUI key focus before application activation");super.makeKeyAndOrderFront(sender)}
+}
 private func member(_ object:Any,_ key:String)->Any?{guard let value=Mirror(reflecting:object).children.first(where:{$0.label == key})?.value else{return nil};let mirror=Mirror(reflecting:value);return mirror.displayStyle == .optional ? mirror.children.first?.value:value}
 
 @main struct MorphMatrixAudit {
  @MainActor static func main()throws{
     _=NSApplication.shared
     UserDefaults.standard.set(true,forKey:"unifiedPreferencesSeeded");UserDefaults.standard.set(false,forKey:"soundsEnabled");UserDefaults.standard.set(false,forKey:"speakResponses");UserDefaults.standard.set(false,forKey:"spotifyMedia");UserDefaults.standard.set(false,forKey:"youtubeMedia")
-    let workspace=NSWindow(contentRect:CGRect(x:100,y:100,width:1000,height:700),styleMask:[.titled],backing:.buffered,defer:false)
+    let workspace=FocusAuditWindow(contentRect:CGRect(x:100,y:100,width:1000,height:700),styleMask:[.titled],backing:.buffered,defer:false)
     // GPUI's borderless mini window explicitly permits key focus. Plain
     // NSWindow refuses it and cannot represent foreground approval routing.
     let quick=NotchPanel(contentRect:CGRect(x:350,y:200,width:680,height:520),styleMask:[.borderless],backing:.buffered,defer:false)
@@ -57,6 +60,9 @@ private func member(_ object:Any,_ key:String)->Any?{guard let value=Mirror(refl
     precondition(!workspace.isVisible && panel.isVisible && member(app,"miniOpen") as? Bool == true,"Explicit fold during reveal became a background overlay")
     app.revealWorkspace();settle();runtime.collapse();settle()
     precondition(!workspace.isVisible && panel.isVisible && member(app,"miniOpen") as? Bool == true,"Explicit fold depended on WindowServer focus")
+    foreground=true;app.revealWorkspace();settle();app.foldWorkspace();pump(0.20)
+    precondition(workspace.isVisible && !morph.expanded,"Fixture did not catch the retiring Code window")
+    show();hide();precondition(!workspace.isVisible && panel.isVisible && member(app,"miniOpen") as? Bool == true,"Mini Code reopened a workspace that was already folding to the notch")
     precondition((member(app,"latestState") as? KaiState)?.threadId == "code:matrix","A presentation transition navigated the conversation")
     print("Native morph matrix passed: compact/extended/workspace ↔ mini Code, direct Control-Option, double-Command, rapid reversals, reduced motion, background retention, shared conversation, restored input and window levels")
  }

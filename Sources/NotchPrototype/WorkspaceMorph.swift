@@ -21,6 +21,13 @@ import AppKit
     static let collapseDuration:TimeInterval=0.60
     nonisolated static func destination(saved:CGRect?,screen:CGRect)->CGRect {screen}
     private let curve=CAMediaTimingFunction(controlPoints:0.16,0.84,0.20,1)
+    private func present(_ window:NSWindow){
+        // GPUI's inactive-window key callback resigns synchronously while its
+        // window-state lock is held. AppKit can reenter that same callback and
+        // deadlock. Show the contour immediately; only assign key focus after
+        // this application is actually active.
+        if NSApp.isActive{window.makeKeyAndOrderFront(nil)}else{window.orderFront(nil)}
+    }
 
     /// The incoming surface owns glass during an app-to-app handoff. Retiring
     /// the outgoing backdrop must not cancel its live contour or content fade.
@@ -84,7 +91,7 @@ import AppKit
         self.host=host;host.wantsLayer=true
         let mask=CAShapeLayer();mask.frame=host.bounds;previousMask=host.layer?.mask;host.layer?.mask=mask;clip=mask
         animate(mask,from:contour.map{local($0,in:host,window:window)} ?? Self.outline(local(source,in:host,window:window),notch:sourceNotch ?? expanding,radius:sourceRadius),to:Self.outline(local(target,in:host,window:window),notch:targetNotch ?? !expanding,radius:targetRadius),duration:duration,delay:delay)
-        if !backdrop{window.makeKeyAndOrderFront(nil);return}
+        if !backdrop{present(window);return}
         // A single glass backdrop bridges the menu-bar gap. It sits UNDER the
         // live workspace, so each real UI component is visible as it arrives.
         let union=source.union(target)
@@ -95,10 +102,11 @@ import AppKit
         panel.contentView=glass;shell=panel
         let glassMask=CAShapeLayer();glass.layer?.mask=glassMask
         animate(glassMask,from:contour.map{Self.convert($0){CGPoint(x:$0.x-union.minX,y:$0.y-union.minY)}} ?? Self.outline(source.offsetBy(dx:-union.minX,dy:-union.minY),notch:sourceNotch ?? expanding,radius:sourceRadius),to:Self.outline(target.offsetBy(dx:-union.minX,dy:-union.minY),notch:targetNotch ?? !expanding,radius:targetRadius),duration:duration,delay:delay)
-        window.makeKeyAndOrderFront(nil);panel.order(.below,relativeTo:window.windowNumber)
+        present(window);panel.order(.below,relativeTo:window.windowNumber)
     }
     func expand(_ window:NSWindow,from source:CGRect,replay:Bool=false,destination:CGRect?=nil,sourceNotch:Bool=true,crossfade:Bool=false,sourceRadius:CGFloat=10,destinationRadius:CGFloat=10,completion:@escaping()->Void={}){
-        if expanded && !transitioning && !replay{window.makeKeyAndOrderFront(nil);completion();return}
+        NSApp.activate(ignoringOtherApps:true)
+        if expanded && !transitioning && !replay{present(window);completion();return}
         CATransaction.begin();CATransaction.setDisableActions(true);defer{CATransaction.commit()}
         let contour=transitioning ? liveContour():nil
         let returningOpacity=originalContentOpacity.map{_ in host?.layer?.presentation()?.opacity ?? host?.layer?.opacity ?? 1}
@@ -119,7 +127,6 @@ import AppKit
             window.alphaValue=0;window.orderFront(nil)
             NSAnimationContext.runAnimationGroup{context in context.duration=0.12;window.animator().alphaValue=1}
         }
-        NSApp.activate(ignoringOtherApps:true)
         let finish=DispatchWorkItem{[weak self,weak window] in
             guard let self,self.revision==token,let window else{return}
             self.transitioning=false;self.clearVisuals();window.alphaValue=1

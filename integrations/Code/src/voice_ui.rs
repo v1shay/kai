@@ -431,7 +431,7 @@ impl Orbit {
             .and_then(|a| a.executable.clone())
             .ok_or_else(|| anyhow::anyhow!("Codex is unavailable"))?;
         let settings=&self.voice_call.as_ref().unwrap().settings;
-        let request = RunRequest { reasoning_effort:settings.effort.clone(),
+        let request = RunRequest { service_tier:self.request_service_tier(), reasoning_effort:settings.effort.clone(),
             agent: AgentKind::Codex,
             executable,
             project: project.clone(),

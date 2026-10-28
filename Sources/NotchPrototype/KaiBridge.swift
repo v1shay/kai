@@ -33,7 +33,17 @@ struct KaiCodeConnectionState:Decodable {let connected:Bool;let enabled:Bool;let
 extension KeyedDecodingContainer {
     func decode(_ type:EmptyHistory.Type,forKey key:Key)throws->EmptyHistory {try decodeIfPresent(type,forKey:key) ?? EmptyHistory()}
 }
+struct KaiQuota:Decodable {let label:String;let remaining:String;let reset:String?;let fraction:Double}
+struct KaiReset:Decodable {let id:String;let title:String?;let description:String?;let status:String;let expiresAt:Double?}
+struct KaiResets:Decodable {let availableCount:Int;let credits:[KaiReset]}
 struct KaiState: Decodable {
+    let usageResets:KaiResets?
+    let fastMode:Bool?
+    let fastSupported:Bool?
+    let usageWindows:[KaiQuota]?
+    let usageSummary:String?
+    let usageAccount:String?
+    let usageUpdated:String?
     let interfaceFont:String?
     let codeFont:String?
     let slashCommands:[KaiSlashCommand]?

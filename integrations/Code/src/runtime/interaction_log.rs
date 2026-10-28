@@ -20,6 +20,11 @@ pub(super) struct InteractionLog {
     updates: std::collections::BTreeMap<usize,String>,
 }
 impl InteractionLog {
+    pub(super) fn insert_at(&mut self,offset:usize,marker:String)->Result<usize>{
+        let mut next=Self::default();let mut marker=Some(marker);let mut index=None;
+        self.for_each(|at,text|{if at>offset{if let Some(text)=marker.take(){index=Some(next.len());next.push((offset,text))?;}}next.push((at,text.into()))})?;
+        if let Some(text)=marker{index=Some(next.len());next.push((offset,text))?;}*self=next;Ok(index.unwrap())
+    }
     pub(super) fn is_empty(&self) -> bool {
         self.count == 0
     }

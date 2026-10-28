@@ -1120,3 +1120,57 @@ through the mini Code voice button, and a new-chat voice shortcut starting in
 Codex. Each retained the live session and incoming audio across surface changes
 and verified explicit stop. Release **0.9.0 (24)** retains the running app until
 the user relaunches.
+
+## 0.9.1 — thinking shimmer, provider usage, and Fast Mode
+
+Thinking controls show the current level in a colored chip. Hover opens a custom
+glass panel of provider-advertised choices. Each choice uses MonoCode's 32×5
+deterministic tile mask, distance stagger, and three 1.4-second fill pulses, with
+a five-second fade and its own intensity palette. The native implementation
+uses Core Animation; Code paints only the hovered effect. Reduced Motion keeps
+a static highlight. No background animation timer runs for a closed picker.
+The source reference is `hardbeat920/monocode` at
+`26465c620977f3951d0a532a0f7db32c3c179007`; its MIT license is bundled.
+
+An animated bolt enables the exact fast service tier advertised by the selected
+Codex model, including `priority` on the installed CLI. The same setting reaches
+new/resumed turns and voice requests. It persists across relaunches, leaves
+permissions and reasoning independent, and is absent for unsupported providers
+and models.
+
+Full Code, mini Code, and the extended notch expose a compact usage footer.
+Quota windows are sorted by remaining capacity, with bars showing remaining
+amounts. The glass details include reported account/plan, quota resets, context
+usage, refresh, and Codex banked resets where supplied. Reset redemption uses
+the native idempotent RPC and validates the current credit before dispatch.
+Codex quotas come from App Server. Claude OAuth, Gemini Code Assist, and OpenCode
+Go quotas use their own signed-in provider endpoints; credentials stay in the
+worker, never in logs, arguments, or UI. Other harnesses retain their actual
+native context-usage reporting; their context capacity is labeled as context,
+never presented as an account allowance or borrowed from Codex.
+
+Codex's explicit `final_answer` phase now marks the complete final response.
+Completed commentary folds above that response even for a turn with no tools.
+The extended notch can reopen and fold work in place. Retained source and lazy
+history paging keep earlier work accessible without rendering every past item.
+
+Release checks exposed an inactive-window GPUI key-focus deadlock. Native morphs
+now request app activation first and assign key focus only while the application
+is active; the contour can appear immediately without waiting for focus. The
+native transition matrix guards this ordering, including rapid reversals and
+background workspace retention.
+
+Opening mini Code during a workspace collapse now captures the logical retiring
+state rather than treating its still-visible window as the return destination.
+The incoming surface retires the outgoing glass backdrop, and the old fold
+completion cannot steal focus from mini Code. The native matrix exercises this
+overlap and verifies return to the extended notch.
+
+Verification: the full Rust run passed 794 tests; its one outdated picker-close
+assertion was corrected and all five composer regressions passed on rerun.
+All 15 account-control tests and three provider-quota parsing tests passed.
+The native composer checks exercised the custom hover/usage panels, real bolt
+dispatch, thinking selection, stale-owner rejection, and narrow layouts. The
+final native morph matrix, signed animation probe, and both generated-speech
+voice routes passed. Installed **0.9.1 (25)** with signature/hash verification
+and a timestamped 0.9.0 backup; the running conversation was retained.

@@ -28,6 +28,7 @@ enum ModelIdentity {
 }
 
 enum EffortAppearance {
+    static func color(_ value:String,fraction:CGFloat)->NSColor{let values:[String:UInt32]=["none":0xa8b4c4,"minimal":0x83d6ff,"low":0x51d9bd,"medium":0x8996ff,"high":0xff9870,"xhigh":0xf079cd,"max":0xf4b942,"ultra":0xa855f7];guard let hex=values[value]else{return color(fraction)};return NSColor(srgbRed:CGFloat((hex>>16)&255)/255,green:CGFloat((hex>>8)&255)/255,blue:CGFloat(hex&255)/255,alpha:1)}
     static let stops:[UInt32]=[0xb6dfff,0x9692ff,0xe879ce,0xff785c,0xff5565]
     static func color(_ fraction:CGFloat)->NSColor {
         let scaled=min(1,max(0,fraction))*CGFloat(stops.count-1),index=min(stops.count-2,Int(scaled)),t=scaled-CGFloat(index)

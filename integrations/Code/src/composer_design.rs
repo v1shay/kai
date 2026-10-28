@@ -1,6 +1,5 @@
 //! Shared composer identity and discrete native reasoning controls.
 use super::*;
-use std::{cell::Cell,rc::Rc};
 
 pub fn model_glyph(model:&str)->Option<&'static str>{
     let lower=model.to_lowercase();let tokens=lower.split(|c:char|!c.is_alphanumeric()).collect::<Vec<_>>();
@@ -20,12 +19,31 @@ pub fn intensity(value:f32)->u32{
     (channel(16)<<16)|(channel(8)<<8)|channel(0)
 }
 pub fn title(value:&str)->String{if value=="xhigh"{"Extra high".into()}else{let mut chars=value.chars();chars.next().map_or_else(String::new,|c|c.to_uppercase().collect::<String>()+chars.as_str())}}
+pub fn effort_color(value:&str,fraction:f32)->u32{match value{"none"=>0xa8b4c4,"minimal"=>0x83d6ff,"low"=>0x51d9bd,"medium"=>0x8996ff,"high"=>0xff9870,"xhigh"=>0xf079cd,"max"=>0xf4b942,"ultra"=>0xa855f7,_=>intensity(fraction)}}
+#[cfg(test)]
 fn index_at(bounds:Bounds<Pixels>,position:Point<Pixels>,count:usize)->Option<usize>{
     if count==0 || f32::from(bounds.size.width)<=18.{return None}
     let fraction=((f32::from(position.x-bounds.origin.x)-9.)/(f32::from(bounds.size.width)-18.)).clamp(0.,1.);
     Some((fraction*(count.saturating_sub(1))as f32).round()as usize)
 }
 impl Orbit{
+    pub(super) fn fast_supported(&self)->bool{
+        self.agent==AgentKind::Codex && self.controls.get("codex").is_some_and(|(_,c)|self.model.clone().or_else(||self.effective_model_settings().0).is_some_and(|m|c.defaults.fast_models.contains_key(&m)))
+    }
+    pub(super) fn fast_enabled(&self)->bool{self.reasoning_efforts.get("codex:service-tier").is_some_and(|v|v=="fast")}
+    pub(super) fn request_service_tier(&self)->Option<String>{if self.agent!=AgentKind::Codex{return None}Some(if self.fast_enabled(){self.controls.get("codex").and_then(|(_,c)|self.request_model().or_else(||self.effective_model_settings().0).and_then(|m|c.defaults.fast_models.get(&m).cloned())).unwrap_or_else(||"default".into())}else{"default".into()})}
+    pub(super) fn toggle_fast(&mut self,cx:&mut Context<Self>){if self.fast_supported(){let next=if self.fast_enabled(){"default"}else{"fast"};self.reasoning_efforts.insert("codex:service-tier".into(),next.into());self.fast_transition=Some(Instant::now());self.queue_workspace_save(cx);cx.notify();}}
+    pub(super) fn fast_button(&self,cx:&Context<Self>)->AnyElement{
+        let on=self.fast_enabled();let phase=self.fast_transition.filter(|_|self.motion).map(|at|(at.elapsed().as_secs_f32()/0.6).min(1.)).unwrap_or(1.);let pulse=(phase*std::f32::consts::PI).sin();
+        div().id("fast-mode").debug_selector(||"fast-mode".into()).h(px(26.)).w(px(28.)).rounded_md().flex().items_center().justify_center().cursor_pointer().bg(linear_gradient(45.,linear_color_stop(rgba(if on{0xffd26b38}else{0xffffff08}),0.),linear_color_stop(rgba(if on{0xff883314}else{0xffffff08}),1.))).border_1().border_color(rgba(if on{0xffda6b60}else{0xffffff08})).child(icon("bolt",15.+4.*pulse,if on{0xffdf85}else{MUTED}).with_transformation(Transformation::rotate(radians(pulse*0.18)))).on_click(cx.listener(|this,_,_,cx|this.toggle_fast(cx))).into_any_element()
+    }
+    pub(super) fn thinking_chip(&self,cx:&Context<Self>)->AnyElement{
+        let Some(model)=self.effort_model_choice().filter(|m|!m.reasoning_efforts.is_empty())else{return div().into_any_element()};
+        let value=self.unified_effort().map(str::to_owned).or_else(||self.effective_model_settings().1).unwrap_or_default();let i=model.reasoning_efforts.iter().position(|e|e==&value).unwrap_or(0);let t=i as f32/model.reasoning_efforts.len().saturating_sub(1).max(1)as f32;
+        div().id("thinking-chip").debug_selector(||"thinking-chip".into()).px_2().h(px(26.)).rounded_md().flex().items_center().text_size(theme::ui_px(11.)).text_color(rgb(effort_color(&value,t))).bg(linear_gradient(90.,linear_color_stop(rgba((effort_color(&value,t)<<8)|0x24),0.),linear_color_stop(rgba((intensity((t+0.25).min(1.))<<8)|0x10),1.))).cursor_pointer().child(title(&value))
+        .on_mouse_move(cx.listener(|this,event:&MouseMoveEvent,window,cx|{if this.agent_picker.is_none(){this.toggle_agent_picker(event.position,window,cx);if let Some(p)=this.agent_picker.as_mut(){p.effort_only=true;p.anchor=event.position-point(px(20.),px(230.));}}}))
+        .on_click(cx.listener(|this,event:&ClickEvent,window,cx|{if this.agent_picker.as_ref().is_none_or(|p|p.closing){this.toggle_agent_picker(event.position(),window,cx);}if let Some(p)=this.agent_picker.as_mut(){p.effort_only=true;}})).into_any_element()
+    }
     fn effort_fraction(&self,count:usize,current:usize)->f32{
         let target=current as f32/count.saturating_sub(1).max(1)as f32;
         self.agent_picker.as_ref().and_then(|p|p.effort_motion).filter(|_|self.motion).map_or(target,|(at,from,to)|{
@@ -42,35 +60,19 @@ impl Orbit{
         let key=self.effort_key();self.reasoning_efforts.insert(key,effort.into());self.queue_workspace_save(cx);cx.notify();true
     }
     pub(super) fn reasoning_slider(&self,model:agent_controls::ModelChoice,cx:&Context<Self>)->AnyElement{
-        const WIDTH:f32=244.;let levels=model.reasoning_efforts;let count=levels.len();
+        let levels=model.reasoning_efforts;let count=levels.len();
         let selected=self.unified_effort().map(str::to_owned).or_else(||self.effective_model_settings().1);
-        let index=levels.iter().position(|level|Some(level)==selected.as_ref());let fraction=self.effort_fraction(count,index.unwrap_or(0));
-        let focus=self.agent_picker.as_ref().map(|picker|picker.effort_focus.clone()).unwrap_or_else(||self.focus.clone());
-        let down_focus=focus.clone();
-        let key_levels=levels.clone();
-        let bounds=Rc::new(Cell::new(Bounds::default()));let painted=bounds.clone();let down=bounds.clone();let drag=bounds.clone();
-        let down_levels=levels.clone();let drag_levels=levels.clone();let fill=intensity(fraction);let start=intensity((fraction-0.4).max(0.));
-        div().px_2().py_2().flex().flex_col().gap_1()
-            .child(div().flex().justify_between().text_size(theme::ui_px(10.)).text_color(rgb(MUTED)).child("Thinking").child(div().text_color(rgb(fill)).child(index.map(|i|title(&levels[i])).unwrap_or_else(||"Choose a level".into()))))
-            .child(div().id("reasoning-slider").debug_selector(||"reasoning-slider".into()).track_focus(&focus).w(px(WIDTH)).h(px(32.)).relative().cursor_pointer()
-                .child(canvas(move|next,_,_|painted.set(next),|_,_,_,_|{}).size_full())
-                .child(div().absolute().left(px(9.)).right(px(9.)).top(px(13.)).h(px(6.)).rounded_full().bg(rgba(0xffffff1c)))
-                .child(div().absolute().left(px(9.)).top(px(13.)).h(px(6.)).w(px(((WIDTH-18.)*fraction).max(6.))).rounded_full().bg(linear_gradient(90.,linear_color_stop(rgb(start),0.),linear_color_stop(rgb(fill),1.))))
-                .children(levels.iter().enumerate().map(|(i,_)|div().absolute().left(px(7.5+(WIDTH-18.)*i as f32/count.saturating_sub(1).max(1)as f32)).top(px(14.5)).size(px(3.)).rounded_full().bg(rgba(0xffffff88))))
-                .child(div().absolute().left(px((WIDTH-18.)*fraction)).top(px(7.)).size(px(18.)).rounded_full().bg(rgb(0xf4f6ff)).border_1().border_color(rgb(fill)).shadow_md().opacity(if index.is_some(){1.}else{0.5}))
-                .on_mouse_down(MouseButton::Left,cx.listener(move|this,event:&MouseDownEvent,window,cx|{cx.stop_propagation();down_focus.focus(window);if let Some(picker)=this.agent_picker.as_mut(){picker.effort_dragging=true;}if let Some(index)=index_at(down.get(),event.position,down_levels.len()){this.select_reasoning_effort(&down_levels[index],cx);}}))
-                .on_mouse_move(cx.listener(move|this,event:&MouseMoveEvent,_,cx|{if event.pressed_button==Some(MouseButton::Left) && this.agent_picker.as_ref().is_some_and(|p|p.effort_dragging){if let Some(index)=index_at(drag.get(),event.position,drag_levels.len()){if this.unified_effort()!=Some(drag_levels[index].as_str()){this.select_reasoning_effort(&drag_levels[index],cx);}}}}))
-                .on_mouse_up(MouseButton::Left,cx.listener(|this,_,_,_|{if let Some(picker)=this.agent_picker.as_mut(){picker.effort_dragging=false;}}))
-                .on_mouse_up_out(MouseButton::Left,cx.listener(|this,_,_,_|{if let Some(picker)=this.agent_picker.as_mut(){picker.effort_dragging=false;}}))
-                .on_key_down(cx.listener(move|this,event:&KeyDownEvent,_,cx|{
-                    let current=this.unified_effort().map(str::to_owned).or_else(||this.effective_model_settings().1);
-                    let index=key_levels.iter().position(|value|Some(value)==current.as_ref()).unwrap_or(0);
-                    let target=match event.keystroke.key.as_str(){"left"|"down"=>Some(index.saturating_sub(1)),"right"|"up"=>Some((index+1).min(key_levels.len().saturating_sub(1))),"home"=>Some(0),"end"=>Some(key_levels.len().saturating_sub(1)),_=>None};
-                    if let Some(index)=target{if let Some(level)=key_levels.get(index){cx.stop_propagation();this.select_reasoning_effort(level,cx);}}
-                })))
-            .child(div().flex().justify_between().children(levels.into_iter().enumerate().map(|(i,level)|{
-                let text=title(&level);div().id(SharedString::from(format!("reasoning-{level}"))).debug_selector({let level=level.clone();move||format!("reasoning-{level}")}).cursor_pointer().text_size(theme::ui_px(9.)).text_color(rgb(if index==Some(i){fill}else{MUTED})).child(text).on_click(cx.listener(move|this,_,_,cx|{this.select_reasoning_effort(&level,cx);}))
-            }))).into_any_element()
+        div().flex().flex_col().gap_1().child(div().px_2().py_1().text_size(theme::ui_px(10.)).text_color(rgb(MUTED)).child("Thinking intensity"))
+        .children(levels.into_iter().enumerate().map(|(i,level)|{
+            let color=effort_color(&level,i as f32/count.saturating_sub(1).max(1)as f32);let active=selected.as_ref()==Some(&level);
+            let elapsed=self.agent_picker.as_ref().and_then(|p|p.effort_hover.as_ref()).filter(|(v,_)|v==&level).map(|(_,at)|at.elapsed().as_secs_f32());let motion=self.motion;
+            let hover_level=level.clone();let select=level.clone();let text=title(&level);
+            div().id(SharedString::from(format!("reasoning-{level}"))).debug_selector(move||format!("reasoning-{level}")).h(px(34.)).w_full().relative().overflow_hidden().rounded_md().cursor_pointer().bg(rgba(if active{0xffffff14}else{0x00000000}))
+            .child(canvas(|bounds,_,_|bounds,move|bounds,_,window,_|{if let Some(t)=elapsed.filter(|t|*t<5.){let fade=if motion{((5.-t)/0.4).clamp(0.,1.)}else{0.7};for n in 0..160{let col=n%32;let row=n/32;let distance=(((col as f32-15.5)/15.5).powi(2)+((row as f32-2.)/2.).powi(2)).sqrt();let phase=((t-distance*0.42).max(0.)%1.4)/1.4;let filled=(n*73+n*n*19+23)%101<65;let pulse=if !motion{0.5}else if phase<0.26{phase/0.26}else if phase<0.52{1.-(phase-0.26)/0.26*0.82}else{0.18*(1.-(phase-0.52)/0.48)};let feather=((col as f32+0.5)/4.).min((31.5-col as f32)/4.).min(1.)*if row==0||row==4{0.2}else if row==1||row==3{0.65}else{1.};let alpha=(((if filled{pulse}else{0.09})*fade*feather)*210.)as u32;let w=bounds.size.width/32.;let h=bounds.size.height/5.;window.paint_quad(fill(Bounds::new(bounds.origin+point(w*col as f32,h*row as f32),size(w-px(0.7),h-px(0.7))),rgba((color<<8)|alpha)));}}}).absolute().size_full())
+            .child(div().relative().px_3().h_full().flex().items_center().justify_between().text_size(theme::ui_px(12.)).text_color(rgb(color)).child(text).when(active,|s|s.child("✓")))
+            .on_hover(cx.listener(move|this,hover:&bool,_,cx|{if let Some(p)=this.agent_picker.as_mut(){if *hover{p.effort_hover=Some((hover_level.clone(),Instant::now()));}else if p.effort_hover.as_ref().is_some_and(|(v,_)|v==&hover_level){p.effort_hover=None;}cx.notify();}}))
+            .on_click(cx.listener(move|this,_,_,cx|{this.select_reasoning_effort(&select,cx);this.dismiss_agent_picker();cx.notify();}))
+        })).into_any_element()
     }
 }
 #[cfg(test)]mod tests{
@@ -93,12 +95,20 @@ impl Orbit{
    let snapshot=app.unified_snapshot(cx);assert_eq!(snapshot["workspaceAccess"],"full");assert_eq!(snapshot["workspaceApprovalPolicy"],"never");
   }));
  }
- #[gpui::test]fn model_specific_slider_changes_real_settings_and_preserves_draft(cx:&mut TestAppContext){
+ #[gpui::test]fn model_specific_thinking_choices_preserve_draft(cx:&mut TestAppContext){
   let (view,cx)=crate::ui_tests::fixture(cx);
   cx.update(|window,cx|view.update(cx,|app,cx|{
    app.agent=AgentKind::Codex;app.model=Some("gpt-6.1-sol".into());app.native_models.insert(AgentKind::Codex,vec![agent_controls::ModelChoice{id:"gpt-6.1-sol".into(),label:"Sol".into(),reasoning_efforts:vec!["low".into(),"medium".into(),"high".into()]}]);app.composer.update(cx,|input,cx|input.set_text("Keep this draft",cx));app.toggle_agent_picker(point(px(700.),px(640.)),window,cx);
   }));
-  crate::ui_tests::draw_frame(&view,cx);let bounds=cx.debug_bounds("reasoning-slider").expect("native gradient slider");cx.simulate_click(point(bounds.right()-px(9.),bounds.center().y),Modifiers::none());
-  view.update(cx,|app,cx|{assert_eq!(app.unified_effort(),Some("high"));assert_eq!(app.request_effort().as_deref(),Some("high"));assert_eq!(app.composer.read(cx).text(),"Keep this draft");assert!(!app.select_reasoning_effort("ultra",cx));assert_eq!(app.unified_effort(),Some("high"));assert!(app.agent_picker.as_ref().unwrap().animating());});
+  crate::ui_tests::draw_frame(&view,cx);let bounds=cx.debug_bounds("reasoning-high").expect("model-specific thinking choice");cx.simulate_click(bounds.center(),Modifiers::none());
+  view.update(cx,|app,cx|{assert_eq!(app.unified_effort(),Some("high"));assert_eq!(app.request_effort().as_deref(),Some("high"));assert_eq!(app.composer.read(cx).text(),"Keep this draft");assert!(!app.select_reasoning_effort("ultra",cx));assert_eq!(app.unified_effort(),Some("high"));assert!(app.agent_picker.as_ref().is_none_or(|p|p.closing));});
+ }
+ #[gpui::test]fn fast_mode_requires_advertised_support_and_reaches_the_request(cx:&mut TestAppContext){
+  let(view,cx)=crate::ui_tests::fixture(cx);view.update(cx,|app,cx|{
+   app.agent=AgentKind::Codex;app.model=Some("fast-fixture".into());app.toggle_fast(cx);assert!(!app.fast_enabled());
+   let mut info=agent_controls::ControlInfo{defaults:Default::default(),auth:agent_controls::AuthState::Unknown,models:vec![],note:None,account:None,limits:vec![],catalog:None};info.defaults.fast_models.insert("fast-fixture".into(),"priority".into());app.controls.insert("codex",(Instant::now(),info));
+   app.toggle_fast(cx);assert_eq!(app.request_service_tier().as_deref(),Some("priority"));let saved=app.workspace_snapshot(cx).normalized();assert_eq!(saved.reasoning_efforts.get("codex:service-tier").map(String::as_str),Some("fast"));
+   app.agent=AgentKind::Gemini;assert!(app.request_service_tier().is_none());app.agent=AgentKind::Codex;app.toggle_fast(cx);assert_eq!(app.request_service_tier().as_deref(),Some("default"));
+  });
  }
 }

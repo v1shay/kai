@@ -450,6 +450,9 @@ private final class NotchSurfaceHost:NSView {
         miniUI.onFolder={ [weak self] path in guard let self else{return};self.bridge.send("folder",["path":path,"requestId":self.miniUI.pendingRequestID ?? ""]) }
         miniUI.onModel={ [weak self] model in self?.bridge.send("settings",["model":model]) }
         miniUI.onPermissions={ [weak self] access,approvals in var fields:[String:Any]=[:];if let access{fields["access"]=access};if let approvals{fields["approvals"]=approvals};self?.bridge.send("workspace_permissions",fields) }
+        miniUI.onUsageReset={ [weak self] id in self?.bridge.send("usage_reset",["creditId":id]) }
+        miniUI.onFast={ [weak self] in self?.bridge.send("fast_mode") }
+        miniUI.onUsageRefresh={ [weak self] in self?.bridge.send("usage_refresh") }
         miniUI.onSettings={ [weak self] model, effort in self?.bridge.send("settings",["model":model,"effort":effort]) }
         miniUI.onNavigate={ [weak self] direction in guard let self else{return};self.cancelShortcutHold();self.cancelShortcutInput();self.bridge.send("navigate",["direction":direction,"requestId":self.miniUI.pendingRequestID ?? ""]) }
         miniUI.onContextMode={ [weak self] lightweight in self?.contextLightweight=lightweight }
@@ -1296,7 +1299,7 @@ private final class NotchSurfaceHost:NSView {
         }){[weak self] in
             guard let self else{return}
             self.floatingTasks.setSuppressed(self.suppressFloatingTasks)
-            self.panel.makeKey();self.reviewNextFloatingTask()
+            if !self.quickChatVisible,self.showsNotchSurface{self.panel.makeKey();self.reviewNextFloatingTask()}
         }
     }
 
@@ -1372,7 +1375,7 @@ private final class NotchSurfaceHost:NSView {
     func prepareQuickOpening(){
         consumeQuickShortcutChord()
         guard quickPrepared == nil,!(quickChatVisible && quickWindow?.isVisible == true),let panel else{return}
-        let fromWorkspace=workspaceIsForeground && EmbeddedCodeRuntime.shared.workspaceWindow?.isVisible == true
+        let fromWorkspace=workspaceMorph.expanded && workspaceIsForeground && EmbeddedCodeRuntime.shared.workspaceWindow?.isVisible == true
         let width=open ? expandedWidth:notchWidth,height=open ? popoutHeight:notchHeight
         let notch=CGRect(x:panel.frame.midX-width/2,y:panel.frame.maxY-height,width:width,height:height)
         let source=fromWorkspace ? EmbeddedCodeRuntime.shared.workspaceWindow!.frame:(panel.isVisible ? (mask.presentation()?.path ?? mask.path).map{panel.convertToScreen($0.boundingBoxOfPath)} ?? notch:notch)
@@ -1387,7 +1390,7 @@ private final class NotchSurfaceHost:NSView {
         if show{
             let reversing=quickMorph.transitioning
             let prepared=quickPrepared;quickPrepared=nil
-            let fromWorkspace=(prepared?.workspace ?? (workspaceIsForeground && EmbeddedCodeRuntime.shared.workspaceWindow?.isVisible == true)) || (workspaceMorph.transitioning && workspaceMorph.expanded)
+            let fromWorkspace=(prepared?.workspace ?? (workspaceMorph.expanded && workspaceIsForeground && EmbeddedCodeRuntime.shared.workspaceWindow?.isVisible == true)) || (workspaceMorph.transitioning && workspaceMorph.expanded)
             if !reversing || fromWorkspace{quickReturn=fromWorkspace ? .workspace:prepared?.returnTo ?? (miniOpen && panel.isVisible ? .extended:open && panel.isVisible ? .compact:.hidden)}
             let notchFrame=CGRect(x:panel.frame.midX-(open ? expandedWidth:notchWidth)/2,y:panel.frame.maxY-(open ? popoutHeight:notchHeight),width:open ? expandedWidth:notchWidth,height:open ? popoutHeight:notchHeight)
             let source=prepared?.source ?? (fromWorkspace ? EmbeddedCodeRuntime.shared.workspaceWindow!.frame:(panel.isVisible ? (mask.presentation()?.path ?? mask.path).map{panel.convertToScreen($0.boundingBoxOfPath)} ?? notchFrame:notchFrame))
@@ -1395,6 +1398,7 @@ private final class NotchSurfaceHost:NSView {
             if fromWorkspace,let workspace=EmbeddedCodeRuntime.shared.workspaceWindow{
                 workspaceMorph.collapse(workspace,to:window.frame,targetNotch:false,retireContent:true,targetRadius:20,backdrop:false,completion:{})
             }
+            if workspaceMorph.transitioning && !workspaceMorph.expanded{workspaceMorph.retireBackdrop()}
             quickMorph.expand(window,from:source,replay:true,destination:window.frame,sourceNotch:!fromWorkspace,crossfade:true,destinationRadius:20){[weak self] in self?.syncWorkspacePet()}
             // Retire the existing notch through its own morph, while the shared
             // contour carries the boundary into the live mini workspace.
@@ -2145,7 +2149,7 @@ private final class NotchSurfaceHost:NSView {
         guard latestState?.threadId == threadID,let view=conversationText,let scroll=conversationScroll else{return}
         ConversationViewport.bottom(view,in:scroll)
     }
-    func textView(_ textView:NSTextView,clickedOnLink link:Any,at charIndex:Int)->Bool{guard let url=(link as? URL) ?? (link as? String).flatMap(URL.init(string:)) else{return false};if url.scheme == "kai-interaction",url.host == "details",let id=URLComponents(url:url,resolvingAgainstBaseURL:false)?.queryItems?.first(where:{$0.name == "id"})?.value,latestState?.history.contains(where:{$0.detailId == id}) == true{bridge.send("interaction_details",["id":id]);expandWorkspace();return true};if url.scheme == "kai-file-action",let action=url.host,let path=URLComponents(url:url,resolvingAgainstBaseURL:false)?.queryItems?.first(where:{$0.name == "path"})?.value,path.hasPrefix("/"){fileActions.perform(action,url:URL(fileURLWithPath:path));return true};if url.scheme == "kai-reply",let answer=URLComponents(url:url,resolvingAgainstBaseURL:false)?.queryItems?.first(where:{$0.name == "answer"})?.value{NSPasteboard.general.clearContents();NSPasteboard.general.setString(answer,forType:.string);return true};if url.isFileURL{miniUI.previewFile(url);return true};guard ["http","https"].contains(url.scheme?.lowercased() ?? "") else{return false};NSWorkspace.shared.open(url);return true}
+    func textView(_ textView:NSTextView,clickedOnLink link:Any,at charIndex:Int)->Bool{guard let url=(link as? URL) ?? (link as? String).flatMap(URL.init(string:)) else{return false};if url.scheme == "kai-interaction",url.host == "details",let id=URLComponents(url:url,resolvingAgainstBaseURL:false)?.queryItems?.first(where:{$0.name == "id"})?.value,latestState?.history.contains(where:{$0.detailId == id}) == true{bridge.send("interaction_details",["id":id]);if !id.hasPrefix("work-"){expandWorkspace()};return true};if url.scheme == "kai-file-action",let action=url.host,let path=URLComponents(url:url,resolvingAgainstBaseURL:false)?.queryItems?.first(where:{$0.name == "path"})?.value,path.hasPrefix("/"){fileActions.perform(action,url:URL(fileURLWithPath:path));return true};if url.scheme == "kai-reply",let answer=URLComponents(url:url,resolvingAgainstBaseURL:false)?.queryItems?.first(where:{$0.name == "answer"})?.value{NSPasteboard.general.clearContents();NSPasteboard.general.setString(answer,forType:.string);return true};if url.isFileURL{miniUI.previewFile(url);return true};guard ["http","https"].contains(url.scheme?.lowercased() ?? "") else{return false};NSWorkspace.shared.open(url);return true}
 
     private func beginDictation(trigger:DictationTrigger){
         revealNotchForInput()

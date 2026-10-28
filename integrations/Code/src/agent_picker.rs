@@ -10,8 +10,8 @@ pub(super) struct Picker {
     _search_subscription:Subscription,
     closing_from: f32,
     pub effort_motion:Option<(Instant,f32,f32)>,
-    pub effort_focus:FocusHandle,
-    pub effort_dragging:bool,
+    pub effort_only:bool,
+    pub effort_hover:Option<(String,Instant)>,
     max_height:f32,
     auth_pulse: Option<(&'static str, Instant)>,
 }
@@ -29,7 +29,7 @@ impl Picker {
         }
     }
     pub fn animating(&self) -> bool {
-        self.effort_motion.is_some_and(|(at,_,_)|at.elapsed()<Duration::from_millis(340)) || self.started.elapsed() < Duration::from_millis(if self.closing { 120 } else { 320 })
+        self.effort_hover.as_ref().is_some_and(|(_,at)|at.elapsed()<Duration::from_secs(5)) || self.effort_motion.is_some_and(|(at,_,_)|at.elapsed()<Duration::from_millis(340)) || self.started.elapsed() < Duration::from_millis(if self.closing { 120 } else { 320 })
             || self
                 .auth_pulse
                 .is_some_and(|(_, t)| t.elapsed() < Duration::from_millis(360))
@@ -113,7 +113,7 @@ impl Orbit {
             started: Instant::now(),
             closing: false,
             closing_from: 1.,
-            auth_pulse: None,effort_motion:None,effort_focus:cx.focus_handle(),effort_dragging:false,max_height:f32::from(height)-16.,
+            auth_pulse: None,effort_only:false,effort_hover:None,effort_motion:None,max_height:f32::from(height)-16.,
         });
         self.refresh_controls(false, cx);
         cx.notify();
@@ -305,6 +305,8 @@ impl Orbit {
             return div().into_any_element();
         };
         let reveal = picker.reveal(self.motion);
+        if picker.effort_only{return anchored().position(picker.anchor).snap_to_window_with_margin(px(8.)).child(div().id("thinking-popover").w(px(264.)).p_2().rounded_lg().bg(rgba(appearance::MENU_SURFACE)).border_1().border_color(rgba(0xffffff24)).shadow_lg().opacity(reveal.clamp(0.,1.)).occlude().on_mouse_down_out(cx.listener(|this,_,_,cx|{this.dismiss_agent_picker();cx.notify();})).when_some(self.effort_model_choice(),|s,m|s.child(self.reasoning_slider(m,cx)))).into_any_element()}
+
         let controls = self
             .controls
             .get(self.agent.command())

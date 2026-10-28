@@ -1,5 +1,6 @@
-//! On-demand native account and model controls. Never opens credential files.
-//! Uses bounded, read-only status/catalog commands and App Server metadata RPCs.
+//! On-demand native account/model controls and bounded metadata RPCs.
+//! Credential-backed quota reads stay in an isolated worker; only normalized
+//! usage windows return to the owner, never credentials or raw HTTP responses.
 use crate::{discovery::AgentKind, runtime::valid_model_id};
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
@@ -46,6 +47,8 @@ pub struct CatalogItem {
 
 #[derive(Clone, Debug, Default)]
 pub struct ModelDefaults {
+    pub reset_credits:Option<Value>,
+    pub fast_models:std::collections::HashMap<String,String>,
     pub model:Option<String>,
     pub effort:Option<String>,
     pub efforts:std::collections::HashMap<String,String>,
@@ -691,6 +694,7 @@ fn codex_snapshot(responses: &std::collections::BTreeMap<u64, Value>) -> Control
     if let Some(models)=responses.get(&2).and_then(|r|r.pointer("/result/data")).and_then(Value::as_array){
         for model in models{
             if let Some(id)=model.get("model").or_else(||model.get("id")).and_then(Value::as_str).filter(|id|valid_model_id(id)){
+                if let Some(tier)=["serviceTiers","additionalSpeedTiers"].iter().flat_map(|key|model[*key].as_array().into_iter().flatten()).filter_map(|v|v.as_str().or_else(||v["id"].as_str())).find(|id|matches!(*id,"fast"|"priority")){info.defaults.fast_models.insert(id.into(),tier.into());}
                 if model["isDefault"]==true{info.defaults.model=Some(id.into());}
                 if let Some(effort)=model["defaultReasoningEffort"].as_str().filter(|v|valid_model_id(v)){info.defaults.efforts.insert(id.into(),effort.into());}
             }
@@ -702,6 +706,11 @@ fn codex_snapshot(responses: &std::collections::BTreeMap<u64, Value>) -> Control
     }
     if let Some(result) = responses.get(&3).and_then(|v| v.get("result")) {
         info.limits = crate::usage::codex_limit_windows(result, false);
+        if let Some(raw)=result.get("rateLimitResetCredits").filter(|v|v["availableCount"].as_u64().is_some()){
+            let text=|v:&Value,key:&str|v[key].as_str().map(|s|s.chars().filter(|c|!c.is_control()).take(500).collect::<String>());
+            let credits:Vec<_>=raw["credits"].as_array().into_iter().flatten().take(32).filter(|c|c["id"].as_str().is_some_and(|id|valid_model_id(id))).map(|c|serde_json::json!({"id":c["id"],"title":text(c,"title"),"description":text(c,"description"),"expiresAt":c["expiresAt"].as_i64().or_else(||c["expiresAt"].as_str().and_then(|s|chrono::DateTime::parse_from_rfc3339(s).ok()).map(|t|t.timestamp())),"status":c["status"]})).collect();
+            info.defaults.reset_credits=Some(serde_json::json!({"availableCount":raw["availableCount"],"credits":credits}));
+        }
     }
 
     let missing: Vec<_> = [(1, "account"), (2, "models"), (3, "rate limits")]
@@ -720,6 +729,13 @@ fn codex_snapshot(responses: &std::collections::BTreeMap<u64, Value>) -> Control
         ));
     }
     info
+}
+pub fn consume_reset(executable:&Path,project:&Path,id:&str,key:&str)->Result<String>{
+    anyhow::ensure!(valid_model_id(id),"Invalid reset credit");
+    let responses=codex_rpc(executable,project,&[(1,"account/rateLimitResetCredit/consume",serde_json::json!({"creditId":id,"idempotencyKey":key}))])?;
+    let reply=responses.get(&1).context("Reset response missing")?;
+    let outcome=reply["result"]["outcome"].as_str().context("Reset was not accepted")?;
+    anyhow::ensure!(matches!(outcome,"reset"|"nothingToReset"|"noCredit"|"alreadyRedeemed"),"Unexpected reset result");Ok(outcome.into())
 }
 
 /// Native SDK initialize returns a model catalog without creating a prompt.
@@ -1642,6 +1658,8 @@ pub fn inspect_model_project(kind:AgentKind,executable:&Path,home:&Path,project:
    Err(error)=>{info.note=Some(format!("Native model capabilities: {error}"));}
   }
  }
+ if Some(home)==dirs::home_dir().as_deref() && matches!(kind,AgentKind::Claude|AgentKind::Gemini|AgentKind::OpenCode){if let Ok(output)=probe_with_limit(Path::new("/usr/bin/python3"),&["-c",include_str!("../native_helpers/provider_usage.py"),kind.command(),home.to_str().unwrap_or("")],home,Duration::from_secs(11),64*1024){if output.success{if let Ok(windows)=serde_json::from_slice::<Vec<LimitWindow>>(&output.stdout){info.limits=windows.into_iter().filter(LimitWindow::valid).take(32).collect();}}}}
+
  info
 }
 fn acp_model_metadata(kind:AgentKind,executable:&Path,project:&Path,selected:Option<&str>)->Result<(Vec<ModelChoice>,ModelDefaults)>{

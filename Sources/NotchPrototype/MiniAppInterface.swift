@@ -228,6 +228,12 @@ private final class AttachmentLayer:CALayer {
     let layer=CALayer()
     private var renderingScale:CGFloat=NSScreen.main?.backingScaleFactor ?? 2
     func setRenderingScale(_ scale:CGFloat){renderingScale=scale;NotchSizing.updateTextResolution(layer,scale:scale)}
+    var onUsageReset:((String)->Void)?
+    var onFast:(()->Void)?
+    var onUsageRefresh:(()->Void)?
+    private let composerPopover=ComposerGlassPopover()
+    private let effortLabel=CATextLayer(),fastBolt=CALayer(),usageLabel=CATextLayer(),usageTrack=CALayer(),usageFill=CALayer()
+    private var fastWasOn:Bool?
     var onSettings: ((String,String)->Void)?
     var onModel:((String)->Void)?
     var onPermissions:((String?,String?)->Void)?
@@ -298,7 +304,8 @@ private final class AttachmentLayer:CALayer {
         configure(voiceButton,"◉",14,.white.withAlphaComponent(0.7));voiceButton.alignmentMode = .center;input.addSublayer(voiceButton);voiceWaveform.contentsGravity = .resizeAspect;voiceWaveform.frame=CGRect(x:4,y:4,width:14,height:14);voiceButton.addSublayer(voiceWaveform)
         permissionGlyph.startPoint=CGPoint(x:0,y:0);permissionGlyph.endPoint=CGPoint(x:1,y:1);permissionGlyph.mask=permissionMask;permissionMask.contentsGravity = .resizeAspect;input.addSublayer(permissionGlyph)
         modelIcon.contentsGravity = .resizeAspect;modelChip.addSublayer(modelIcon);configure(modelName,"",7.8,.white.withAlphaComponent(0.84),.medium);modelName.truncationMode = .middle;modelChip.addSublayer(modelName);input.addSublayer(modelChip)
-        effortChip.backgroundColor=NSColor.white.withAlphaComponent(0.11).cgColor;effortChip.cornerRadius=2;effortFill.anchorPoint=CGPoint(x:0,y:0.5);effortFill.startPoint=CGPoint(x:0,y:0.5);effortFill.endPoint=CGPoint(x:1,y:0.5);effortFill.cornerRadius=2;effortChip.addSublayer(effortFill);effortThumb.cornerRadius=3;effortThumb.backgroundColor=NSColor.white.cgColor;effortChip.addSublayer(effortThumb);input.addSublayer(effortChip)
+        effortChip.backgroundColor=NSColor.white.withAlphaComponent(0.11).cgColor;effortChip.cornerRadius=2;effortFill.anchorPoint=CGPoint(x:0,y:0.5);effortFill.startPoint=CGPoint(x:0,y:0.5);effortFill.endPoint=CGPoint(x:1,y:0.5);effortFill.cornerRadius=2;effortChip.addSublayer(effortFill);effortThumb.isHidden=true;effortThumb.cornerRadius=3;effortThumb.backgroundColor=NSColor.white.cgColor;effortChip.addSublayer(effortThumb);input.addSublayer(effortChip)
+        configure(effortLabel,"",8,.white,.medium);effortFill.mask=effortLabel;fastBolt.contentsGravity = .resizeAspect;input.addSublayer(fastBolt);configure(usageLabel,"",7,.white.withAlphaComponent(0.6));layer.addSublayer(usageLabel);usageTrack.cornerRadius=1;usageTrack.backgroundColor=NSColor.white.withAlphaComponent(0.12).cgColor;layer.addSublayer(usageTrack);usageFill.cornerRadius=1;usageFill.backgroundColor=NSColor.systemMint.cgColor;usageTrack.addSublayer(usageFill)
         pendingHighlight.opacity=0;pendingHighlight.cornerRadius=4;pendingHighlight.masksToBounds=true;pendingHighlight.backgroundColor=NSColor.white.withAlphaComponent(0.12).cgColor;pendingHighlight.borderColor=NSColor.white.withAlphaComponent(0.28).cgColor;pendingHighlight.borderWidth=0.6;pendingRibbon.colors=[NSColor.clear.cgColor,NSColor.white.withAlphaComponent(0.5).cgColor,NSColor.clear.cgColor];pendingRibbon.startPoint=CGPoint(x:0,y:0.5);pendingRibbon.endPoint=CGPoint(x:1,y:0.5);pendingHighlight.addSublayer(pendingRibbon);layer.addSublayer(pendingHighlight)
         installFlow()
     }
@@ -419,7 +426,7 @@ private final class AttachmentLayer:CALayer {
         setFrame(preview,CGRect(x:layer.bounds.width-previewWidth-4,y:31,width:previewWidth,height:layer.bounds.height-39),animated:animated)
         setFrame(main,target,animated:animated); let w=target.width,h=target.height
         message.frame=CGRect(x:5,y:h-18,width:max(0,w-26),height:12);closeButton.frame=CGRect(x:max(0,w-20),y:h-21,width:16,height:18);layoutPathHits();actionBar.frame=CGRect(x:5,y:h-37,width:max(0,w-10),height:13);layoutActions();settingsBar.frame=CGRect(x:5,y:h-53,width:max(0,w-10),height:13);layoutSettings()
-        let minX=(usesUnifiedComposer || projectIntrudesComposer) && !projectsCollapsed && !previewOpen ? left.frame.maxX+9:18,maxX=paired ? fileX-4:(previewOpen ? layer.bounds.width-leftWidth-8:(filesOpen ? layer.bounds.width-drawerWidth-9:layer.bounds.width-18)),composerW=min(260,max(70,maxX-minX)),idealX=(minX+maxX-composerW)/2,inputX=min(max(idealX,minX),maxX-composerW),composerFrame=CGRect(x:inputX,y:0,width:composerW,height:usesUnifiedComposer ? 58:28);setFrame(input,composerFrame,animated:animated);composerFrameChanged?(composerFrame,animated);setFrame(imageStrip,CGRect(x:inputX+8,y:usesUnifiedComposer ? 64:34,width:max(0,composerW-16),height:32),animated:animated);layoutImages();let texts=input.sublayers?.compactMap{$0 as? CATextLayer} ?? []
+        let minX=(usesUnifiedComposer || projectIntrudesComposer) && !projectsCollapsed && !previewOpen ? left.frame.maxX+9:18,maxX=paired ? fileX-4:(previewOpen ? layer.bounds.width-leftWidth-8:(filesOpen ? layer.bounds.width-drawerWidth-9:layer.bounds.width-18)),composerW=min(260,max(70,maxX-minX)),idealX=(minX+maxX-composerW)/2,inputX=min(max(idealX,minX),maxX-composerW),composerFrame=CGRect(x:inputX,y:usesUnifiedComposer ? 14:0,width:composerW,height:usesUnifiedComposer ? 58:28);setFrame(input,composerFrame,animated:animated);composerFrameChanged?(composerFrame,animated);setFrame(imageStrip,CGRect(x:inputX+8,y:usesUnifiedComposer ? 78:34,width:max(0,composerW-16),height:32),animated:animated);layoutImages();let texts=input.sublayers?.compactMap{$0 as? CATextLayer} ?? []
         if usesUnifiedComposer {
             texts.first?.string=composerW<190 ? "type or hold":"Type, or hold";texts.first?.frame=CGRect(x:10,y:36,width:60,height:12)
             command.frame=CGRect(x:composerW<190 ? 70:74,y:32,width:61,height:19);command.sublayers?.first?.frame=CGRect(x:5,y:4,width:54,height:11)
@@ -430,7 +437,7 @@ private final class AttachmentLayer:CALayer {
         }
         setFrame(send,CGRect(x:composerW-28,y:2,width:25,height:25),animated:animated);voiceButton.frame=CGRect(x:composerW-53,y:3,width:22,height:22);sendShade.frame=send.bounds;sendGlass.frame=send.bounds;let p=CGMutablePath();p.move(to:CGPoint(x:9,y:14.5));p.addLine(to:CGPoint(x:13,y:18.5));p.addLine(to:CGPoint(x:17,y:14.5));p.move(to:CGPoint(x:13,y:18.5));p.addLine(to:CGPoint(x:13,y:7.5));arrow.path=p;arrow.frame=send.bounds
         layoutComposerControls()
-        let conversationBottom:CGFloat=(imageStrip.sublayers?.isEmpty == false) ? (usesUnifiedComposer ? 100:68):(usesUnifiedComposer ? 62:32)
+        let conversationBottom:CGFloat=(usesUnifiedComposer ? 14:0)+((imageStrip.sublayers?.isEmpty == false) ? (usesUnifiedComposer ? 100:68):(usesUnifiedComposer ? 62:32))
         conversationFrameChanged?(CGRect(x:target.minX+2,y:conversationBottom,width:max(0,target.width-4),height:max(0,h-56-conversationBottom)))
     }
 
@@ -443,6 +450,7 @@ private final class AttachmentLayer:CALayer {
             if attachment.closeContains(local){remove(attachment)}
             return true
         }
+        if usesUnifiedComposer,usageLabel.frame.union(usageTrack.frame).insetBy(dx:-4,dy:-3).contains(point){showUsagePopover();return true}
         var targets=[(frame:CGRect,limit:CGRect,action:()->Void)]()
         func add(_ rect:CGRect,limit:CGRect?=nil,_ action:@escaping()->Void){
             targets.append((rect,limit ?? layer.bounds,action))
@@ -457,7 +465,7 @@ private final class AttachmentLayer:CALayer {
         }
         add(inMain(closeButton.frame),limit:main.frame){[self] in onClose?()}
         if !previewOpen{add(projectToggle.frame){[self] in toggleProjects()}}
-        for (rect,id) in composerHits {add(rect.offsetBy(dx:input.frame.minX,dy:input.frame.minY),limit:input.frame){[self] in if id=="permissions"{showPermissionsMenu()}else{showSettingsMenu(id)}}}
+        for (rect,id) in composerHits {add(rect.offsetBy(dx:input.frame.minX,dy:input.frame.minY),limit:input.frame){[self] in if id=="permissions"{showPermissionsMenu()}else if id=="fast"{onFast?()}else{showSettingsMenu(id)}}}
         let composerActions:[(CGRect,()->Void)]=[(send.frame,{[self] in onSend?()}),(voiceButton.frame,{[self] in onVoice?()})]
         for (frame,action) in composerActions {
             add(frame.offsetBy(dx:input.frame.minX,dy:input.frame.minY),limit:input.frame.insetBy(dx:0,dy:-4),action)
@@ -535,6 +543,7 @@ private final class AttachmentLayer:CALayer {
         return (result.0,result.1)
     }
     func handleHover(_ point:CGPoint?) {
+        if let point,usesUnifiedComposer,effortChip.frame.offsetBy(dx:input.frame.minX,dy:input.frame.minY).contains(point),!composerPopover.visible{showThinkingPopover()}
         let fileHover=point.flatMap{fileAction(at:$0)}
         preview.setActionHover(preview.representedURL == fileHover?.url ? fileHover?.action:nil)
         for row in fileRows{row.setActionHover(row.url == fileHover?.url ? fileHover?.action:nil)}
@@ -587,6 +596,7 @@ private final class AttachmentLayer:CALayer {
         let nextStandalone=state.standaloneChats.filter{!hiddenChats.contains($0.id) && !activeIDs.contains($0.id)}
         let nextCode=(state.codeChats ?? []).filter{!hiddenChats.contains($0.id) && !activeIDs.contains($0.id)}
         let sidebarChanged=codeChats != nextCode || selectedProject != state.project || selectedThread != state.threadId || projects != nextProjects || chats != nextChats || standaloneChats != nextStandalone || elsewhere != active || modelState?.finishedTasks != state.finishedTasks
+        if modelState?.ownerToken != state.ownerToken || modelState?.selectedModel != state.selectedModel{composerPopover.dismiss()}
         modelState=state
         selectedProject=state.project;selectedThread=state.threadId;approvalNeeded=state.approval;turnActive=state.activeTurnId != nil
         projects=nextProjects;chats=nextChats;standaloneChats=nextStandalone;codeChats=nextCode
@@ -644,10 +654,8 @@ private final class AttachmentLayer:CALayer {
     private func selectedEffortModel(_ state:KaiState)->KaiModel? {
         state.models?.first{$0.model==state.selectedModel} ?? state.models?.first{$0.model==state.effectiveModel || ($0.resolvedModel != nil && $0.resolvedModel==state.effectiveModel)}
     }
-    private func effortMenuItem(_ model:KaiModel,state:KaiState)->NSMenuItem {
-        let item=NSMenuItem(),slider=ReasoningSliderControl(levels:model.supportedReasoningEfforts.map(\.reasoningEffort),current:state.reasoningEffort.flatMap{$0.isEmpty ? nil:$0} ?? state.effectiveReasoningEffort)
-        slider.onCommit={ [weak self,weak item] effort in guard let self,self.modelState?.ownerToken==state.ownerToken,self.modelState?.selectedModel==state.selectedModel else{item?.menu?.cancelTracking();return};self.onSettings?(state.selectedModel ?? "",effort);item?.menu?.cancelTracking() };item.view=slider;return item
-    }
+    private func effortMenuItem(_ model:KaiModel,state:KaiState)->NSMenuItem {let item=NSMenuItem(title:"Thinking intensity…",action:#selector(openThinkingPanel),keyEquivalent:"");item.target=self;return item}
+    @objc private func openThinkingPanel(){showThinkingPopover()}
     private func layoutComposerControls(){
         let shown=usesUnifiedComposer
         permissionGlyph.isHidden = !shown;modelChip.isHidden = !shown;effortChip.isHidden = !shown
@@ -656,7 +664,7 @@ private final class AttachmentLayer:CALayer {
         let name=state.effectiveModel ?? state.selectedModel ?? state.providerDefaultModel ?? "Model"
         let levels=selectedEffortModel(state)?.supportedReasoningEfforts.map(\.reasoningEffort) ?? []
         let effort=state.reasoningEffort.flatMap{$0.isEmpty ? nil:$0} ?? state.effectiveReasoningEffort ?? ""
-        let key=[name,effort,levels.joined(separator:","),state.workspaceAccess ?? "",state.workspaceApprovalPolicy ?? "",String(Double(input.bounds.width)),String(Double(renderingScale))]
+        let key=[name,effort,levels.joined(separator:","),state.workspaceAccess ?? "",state.workspaceApprovalPolicy ?? "",String(Double(input.bounds.width)),String(state.fastMode == true),String(state.fastSupported == true),state.usageSummary ?? "",String(Double(renderingScale))]
         guard key != composerControlKey else{return};composerControlKey=key
         input.colors=[NSColor.white.withAlphaComponent(0.085).cgColor,NSColor.white.withAlphaComponent(0.035).cgColor];input.borderColor=NSColor.white.withAlphaComponent(0.16).cgColor
         let width=input.bounds.width,hasEffort = !levels.isEmpty && width>=215
@@ -667,17 +675,33 @@ private final class AttachmentLayer:CALayer {
         let oldColors=permissionGlyph.presentation()?.colors ?? permissionGlyph.colors
         permissionGlyph.colors=colors.map(\.cgColor)
         let transition=CABasicAnimation(keyPath:"colors");transition.fromValue=oldColors;transition.toValue=permissionGlyph.colors;transition.duration=NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0:0.25;permissionGlyph.add(transition,forKey:"sandboxLevel")
-        let modelWidth=max(16,width-91-(hasEffort ? 35:0));modelChip.frame=CGRect(x:30,y:6,width:modelWidth,height:17)
+        let fast=state.fastSupported == true;let modelWidth=max(16,width-91-(hasEffort ? 52:0)-(fast ? 22:0));modelChip.frame=CGRect(x:30,y:6,width:modelWidth,height:17)
         let image=ModelIdentity.image(name);modelIcon.contentsScale=renderingScale;permissionMask.contentsScale=renderingScale;modelIcon.contents=image;modelIcon.frame=CGRect(x:0,y:2,width:13,height:13);modelIcon.isHidden=image==nil
         let textX:CGFloat=image==nil ? 0:18;modelName.frame=CGRect(x:textX,y:2,width:max(0,modelWidth-textX),height:12);modelName.string=ModelIdentity.title(name);modelName.contentsScale=renderingScale
-        effortChip.isHidden = !hasEffort;effortChip.frame=CGRect(x:width-88,y:12,width:25,height:4)
-        let fraction=CGFloat(levels.firstIndex(of:effort) ?? 0)/CGFloat(max(1,levels.count-1)),color=EffortAppearance.color(fraction)
-        let oldThumb=effortThumb.presentation()?.position ?? effortThumb.position,oldFill=effortFill.presentation()?.bounds.width ?? effortFill.bounds.width,oldGradient=effortFill.presentation()?.colors ?? effortFill.colors
-        CATransaction.begin();CATransaction.setDisableActions(true);effortFill.frame=CGRect(x:0,y:0,width:max(3,25*fraction),height:4);effortFill.colors=[EffortAppearance.color(max(0,fraction-0.4)).cgColor,color.cgColor];effortThumb.frame=CGRect(x:25*fraction-3,y:-1,width:6,height:6);CATransaction.commit()
-        if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {let move=CASpringAnimation(keyPath:"position");move.fromValue=oldThumb;move.toValue=effortThumb.position;move.stiffness=290;move.damping=28;move.duration=0.34;effortThumb.add(move,forKey:"effort");let fill=CABasicAnimation(keyPath:"bounds.size.width");fill.fromValue=oldFill;fill.toValue=effortFill.bounds.width;fill.duration=0.28;effortFill.add(fill,forKey:"effort");let tint=CABasicAnimation(keyPath:"colors");tint.fromValue=oldGradient;tint.toValue=effortFill.colors;tint.duration=0.28;effortFill.add(tint,forKey:"intensity")}
+        effortChip.isHidden = !hasEffort;effortChip.backgroundColor=nil;effortChip.frame=CGRect(x:width-108-(fast ? 22:0),y:6,width:50,height:18)
+        let fraction=CGFloat(levels.firstIndex(of:effort) ?? 0)/CGFloat(max(1,levels.count-1)),color=EffortAppearance.color(effort,fraction:fraction)
+        effortFill.frame=effortChip.bounds;effortFill.colors=[color.cgColor,EffortAppearance.color(min(1,fraction+0.25)).cgColor];effortLabel.frame=CGRect(x:0,y:3,width:50,height:12);effortLabel.string=effort=="xhigh" ? "Extra high":effort.capitalized;effortLabel.contentsScale=renderingScale
+        fastBolt.isHidden = !fast;fastBolt.frame=CGRect(x:width-78,y:7,width:17,height:17);fastBolt.contents=NSImage(systemSymbolName:state.fastMode == true ? "bolt.fill":"bolt",accessibilityDescription:"Fast mode")?.withSymbolConfiguration(.init(paletteColors:[state.fastMode == true ? .systemYellow:.secondaryLabelColor]))
+        if fastWasOn != state.fastMode {fastWasOn=state.fastMode;if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion{let pulse=CAKeyframeAnimation(keyPath:"transform.scale");pulse.values=[1,0.68,1.32,0.94,1];pulse.keyTimes=[0,0.15,0.45,0.7,1];pulse.duration=0.5;fastBolt.add(pulse,forKey:"charge");fastBolt.shadowColor=NSColor.systemYellow.cgColor;fastBolt.shadowRadius=8;fastBolt.shadowOpacity=state.fastMode == true ? 0.8:0;let glow=CABasicAnimation(keyPath:"shadowRadius");glow.fromValue=1;glow.toValue=8;glow.duration=0.4;fastBolt.add(glow,forKey:"chargeGlow")}}
+        usageLabel.string=state.usageSummary ?? "";usageLabel.frame=CGRect(x:input.frame.minX+42,y:1,width:max(0,width-42),height:11);usageTrack.frame=CGRect(x:input.frame.minX+5,y:5,width:30,height:2);usageFill.frame=CGRect(x:0,y:0,width:30*CGFloat(state.usageWindows?.first?.fraction ?? 0),height:2);usageTrack.isHidden=state.usageWindows?.isEmpty != false
         composerHits=[(permissionGlyph.frame.insetBy(dx:-4,dy:-4),"permissions"),(modelChip.frame,"model")]
+        if fast{composerHits.append((fastBolt.frame.insetBy(dx:-3,dy:-4),"fast"))}
         if hasEffort{composerHits.append((effortChip.frame.insetBy(dx:-4,dy:-9),"effort"))}
     }
+    func thinkingRows()->[EffortTileRow]{
+        guard let state=modelState,let model=selectedEffortModel(state)else{return []};let levels=model.supportedReasoningEfforts.map(\.reasoningEffort),current=state.reasoningEffort.flatMap{$0.isEmpty ? nil:$0} ?? state.effectiveReasoningEffort
+        return levels.enumerated().map{i,value in let row=EffortTileRow(value:value,title:value=="xhigh" ? "Extra high":value.capitalized,index:i,count:levels.count,selected:value==current);row.commit={[weak self] value in guard let self,self.modelState?.ownerToken==state.ownerToken,self.modelState?.selectedModel==state.selectedModel else{return};self.onSettings?(state.selectedModel ?? "",value);self.composerPopover.dismiss()};return row}
+    }
+    private func showThinkingPopover(){let rows=thinkingRows();if !rows.isEmpty{composerPopover.show(title:"Thinking intensity",rows:rows,at:NSEvent.mouseLocation)}}
+    private func showUsagePopover(){
+        guard let state=modelState else{return};var rows:[NSView]=[]
+        for text in [state.usageAccount,state.usageUpdated].compactMap({$0})+(state.usageWindows ?? []).map({$0.label+" · "+$0.remaining+($0.reset.map{"\n"+$0} ?? "")}) {let row=NSTextField(wrappingLabelWithString:text);row.font=AppTypography.ui(ofSize:10,weight:.medium);rows.append(row)}
+        if let resets=state.usageResets{rows.append(NSTextField(labelWithString:"Banked resets · \(resets.availableCount) available"));for credit in resets.credits{let expiry=credit.expiresAt.map{Date(timeIntervalSince1970:$0>10_000_000_000 ? $0/1000:$0).formatted(date:.abbreviated,time:.shortened)};let text=(credit.title ?? "Full reset")+(expiry.map{" · expires "+$0} ?? "");let row=NSButton(title:text,target:self,action:#selector(useUsageReset(_:)));row.identifier=NSUserInterfaceItemIdentifier(credit.id);row.bezelStyle = .inline;row.isEnabled=credit.status=="available";rows.append(row)}}
+        let refresh=NSButton(title:"Refresh usage",target:self,action:#selector(refreshUsage));refresh.bezelStyle = .inline;rows.append(refresh)
+        composerPopover.show(title:(state.agents?.first{$0.id==state.selectedAgent}?.name ?? "Agent")+" usage",rows:rows,at:NSEvent.mouseLocation)
+    }
+    @objc private func useUsageReset(_ button:NSButton){guard let id=button.identifier?.rawValue,modelState?.usageResets?.credits.contains(where:{$0.id==id&&$0.status=="available"})==true else{return};composerPopover.dismiss();onUsageReset?(id)}
+    @objc private func refreshUsage(){composerPopover.dismiss();onUsageRefresh?()}
     private func showPermissionsMenu(){permissionMenu()?.popUp(positioning:nil,at:NSEvent.mouseLocation,in:nil)}
     func permissionMenu()->NSMenu? {
         guard let state=modelState else{return nil};let menu=NSMenu()
@@ -690,7 +714,7 @@ private final class AttachmentLayer:CALayer {
         return menu
     }
     @objc private func selectPermission(_ item:NSMenuItem){guard let values=item.representedObject as? [String],values.count==3,values[2]==(modelState?.ownerToken ?? "") else{return};onPermissions?(values[0]=="access" ? values[1]:nil,values[0]=="approvals" ? values[1]:nil)}
-    private func showSettingsMenu(_ kind:String){settingsMenu(kind)?.popUp(positioning:nil,at:NSEvent.mouseLocation,in:nil)}
+    private func showSettingsMenu(_ kind:String){if kind=="effort"{showThinkingPopover();return};settingsMenu(kind)?.popUp(positioning:nil,at:NSEvent.mouseLocation,in:nil)}
     func settingsMenu(_ kind:String)->NSMenu? {
         guard let state=modelState,let models=state.models else{return nil}
         let menu=NSMenu()
@@ -762,7 +786,7 @@ private final class AttachmentLayer:CALayer {
 
     private func collapse(_ group:CALayer,_ expanded:Bool) { let fade=CABasicAnimation(keyPath:"opacity");fade.fromValue=group.presentation()?.opacity ?? group.opacity;fade.toValue=expanded ? 1:0;fade.duration=0.26;fade.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.7,0.25,1);CATransaction.begin();CATransaction.setDisableActions(true);group.opacity=expanded ? 1:0;group.setAffineTransform(.identity);CATransaction.commit();group.add(fade,forKey:"collapse") }
 
-    func setVisible(_ visible:Bool,duration:Double) { if !visible{handleHover(nil)};let fade=CABasicAnimation(keyPath:"opacity");fade.fromValue=layer.presentation()?.opacity ?? layer.opacity;fade.toValue=visible ? 1:0;fade.duration=duration*0.72;fade.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.65,0.25,1);CATransaction.begin();CATransaction.setDisableActions(true);layer.opacity=visible ? 1:0;CATransaction.commit();layer.add(fade,forKey:"visibility");notifyPreviewContent() }
+    func setVisible(_ visible:Bool,duration:Double) { if !visible{composerPopover.dismiss();handleHover(nil)};let fade=CABasicAnimation(keyPath:"opacity");fade.fromValue=layer.presentation()?.opacity ?? layer.opacity;fade.toValue=visible ? 1:0;fade.duration=duration*0.72;fade.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.65,0.25,1);CATransaction.begin();CATransaction.setDisableActions(true);layer.opacity=visible ? 1:0;CATransaction.commit();layer.add(fade,forKey:"visibility");notifyPreviewContent() }
 
     func setProfile(_ profile:PetGradientProfile,animated:Bool) {
         defer{if usesUnifiedComposer{input.colors=[NSColor.white.withAlphaComponent(0.085).cgColor,NSColor.white.withAlphaComponent(0.035).cgColor];input.borderColor=NSColor.white.withAlphaComponent(0.16).cgColor}}

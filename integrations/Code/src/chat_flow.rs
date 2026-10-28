@@ -34,6 +34,11 @@ pub(super) fn completed_work(rows:&[Row],ix:usize)->Option<std::ops::Range<usize
     let turn=(0..=ix).rev().find(|i|user(&rows[*i])).map_or(0,|i|i+1);
     let end=(ix+1..rows.len()).find(|i|user(&rows[*i])).unwrap_or(rows.len());
     let completion=(turn..end).rev().find(|i|matches!(&rows[*i].block,MessageBlock::Interaction(ChatInteraction::Status{title,status:InteractionStatus::Completed,..}) if title=="Completed"))?;
+    if let Some(final_start)=(turn..completion).rev().find(|i|matches!(&rows[*i].block,MessageBlock::Interaction(ChatInteraction::Status{title,..}) if title=="Final answer")){
+        let first=(turn..=final_start).find(|i|!matches!(&rows[*i].block,MessageBlock::Activity{label,..} if label=="Prompt changes"))?;
+        if rows[first..final_start].iter().any(|r|matches!(&r.block,MessageBlock::Interaction(ChatInteraction::NativeRequest(_)|ChatInteraction::Question(_)|ChatInteraction::Status{status:InteractionStatus::Failed,..}))){return None}
+        return (ix>=first&&ix<=final_start).then_some(first..final_start+1)
+    }
     let last_action=(turn..completion).rev().find(|i|matches!(&rows[*i].block,MessageBlock::Activity{label,..} if label!="Prompt changes")||matches!(&rows[*i].block,MessageBlock::Interaction(ChatInteraction::Status{title,..}) if title!="Completed"))?;
     if !(last_action+1..completion).any(|i|matches!(&rows[i].block,MessageBlock::Paragraph(_)|MessageBlock::RichParagraph{..}|MessageBlock::Heading(_)|MessageBlock::ListItem{..}|MessageBlock::Code{..})){return None}
     let first=(turn..=last_action).find(|i|!matches!(&rows[*i].block,MessageBlock::Activity{label,..} if label=="Prompt changes"))?;
@@ -54,5 +59,10 @@ pub(super) fn completed_work(rows:&[Row],ix:usize)->Option<std::ops::Range<usize
   assert_eq!(completed_work(&rows,1),None);rows.push(row(MessageBlock::Interaction(ChatInteraction::Status{title:"Completed".into(),details:String::new(),status:InteractionStatus::Completed})));
   assert_eq!(completed_work(&rows,1),Some(1..3));assert_eq!(completed_work(&rows,3),None);
   assert!(user(&row(MessageBlock::Voice{speaker:Speaker::User,text:"Hello".into(),highlights:vec![]})));
+ }
+ #[test]fn explicit_final_phase_folds_commentary_even_without_any_tool_call(){
+  let status=|title:&str|row(MessageBlock::Interaction(ChatInteraction::Status{title:title.into(),details:String::new(),status:InteractionStatus::Completed}));
+  let mut rows=vec![row(MessageBlock::Paragraph("Here is my plan".into())),status("Final answer"),row(MessageBlock::Paragraph("The actual final result".into()))];
+  assert_eq!(completed_work(&rows,0),None);rows.push(status("Completed"));assert_eq!(completed_work(&rows,0),Some(0..2));assert_eq!(completed_work(&rows,2),None);
  }
 }

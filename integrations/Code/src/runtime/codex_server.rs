@@ -254,7 +254,7 @@ fn input(request: &RunRequest) -> Value {
     );
     Value::Array(values)
 }
-fn turn_params(thread:&str,request:&RunRequest)->Value{json!({"threadId":thread,"input":input(request),"approvalPolicy":request.codex_approvals.policy(),"approvalsReviewer":request.codex_approvals.reviewer(),"effort":request.reasoning_effort,"summary":"detailed","sandboxPolicy":request.codex_access.policy(request.allow_edits,&request.project)})}
+fn turn_params(thread:&str,request:&RunRequest)->Value{json!({"threadId":thread,"input":input(request),"approvalPolicy":request.codex_approvals.policy(),"approvalsReviewer":request.codex_approvals.reviewer(),"effort":request.reasoning_effort,"summary":"detailed","serviceTier":request.service_tier,"sandboxPolicy":request.codex_access.policy(request.allow_edits,&request.project)})}
 fn thread_params(request: &RunRequest) -> Value {
     let mut params = json!({"cwd":request.project,
         "approvalPolicy":request.codex_approvals.policy(),
@@ -262,6 +262,7 @@ fn thread_params(request: &RunRequest) -> Value {
         "sandbox":request.codex_access.sandbox(request.allow_edits),
         "config":{"features.default_mode_request_user_input":true}});
 
+    if let Some(tier)=&request.service_tier{params["serviceTier"]=json!(tier);params["config"]["features.fast_mode"]=json!(true);}
     if let Some(effort)=&request.reasoning_effort{params["config"]["model_reasoning_effort"]=json!(effort);}
     if let Some(model) = &request.model {
         params["model"] = json!(model);
@@ -2009,11 +2010,16 @@ impl Session {
         match item["type"].as_str().unwrap_or("") {
             "agentMessage" => {
                 self.parser.begin(id);
-                if completed && item["text"].is_string() {
+                let mut events=if completed && item["text"].is_string() {
                     self.parser.snapshot(item["text"].as_str().unwrap_or(""))
                 } else {
                     Vec::new()
-                }
+                };
+                if item["phase"]=="final_answer" && self.tool_streamed.insert(format!("final-boundary:{id}")){
+                    let marker=crate::chat_interactions::serialize_interaction(&crate::chat_interactions::ChatInteraction::Status{title:"Final answer".into(),details:String::new(),status:crate::chat_interactions::InteractionStatus::Completed});
+                    match self.parser.interactions.insert_at(self.parser.current_start,marker){Ok(inserted)=>{for index in self.parser.live_interactions.values_mut(){if *index>=inserted{*index+=1;}}},Err(error)=>self.parser.storage_error=Some(error.to_string())}
+                    events.push(self.parser.replacement());
+                }events
             }
             "collabAgentToolCall" | "collabToolCall" => {
                 let mut value = item.clone();
@@ -3132,7 +3138,7 @@ mod tests {
         path
     }
     fn request(path: &std::path::Path) -> RunRequest {
-        RunRequest { reasoning_effort:None,
+        RunRequest { service_tier:None, reasoning_effort:None,
             agent: AgentKind::Codex,
             executable: path.into(),
             project: std::env::temp_dir(),
@@ -3262,6 +3268,16 @@ send({'method':'thread/realtime/closed','params':{'threadId':'12345678-1234-4234
         let mut r=request(std::path::Path::new("/fixture"));r.model=Some("exact-model".into());r.reasoning_effort=Some("high".into());
         assert_eq!(thread_params(&r)["model"],"exact-model");assert_eq!(turn_params("thread",&r)["effort"],"high");
         r.reasoning_effort=None;assert!(turn_params("thread",&r)["effort"].is_null());
+        r.service_tier=Some("fast".into());assert_eq!(thread_params(&r)["serviceTier"],"fast");assert_eq!(turn_params("thread",&r)["serviceTier"],"fast");
+        r.service_tier=Some("default".into());assert_eq!(turn_params("thread",&r)["serviceTier"],"default");
+    }
+    #[test]fn explicit_final_phase_marks_the_whole_final_message_after_preceding_work(){
+        let mut state=Session::default();state.item(&json!({"id":"comment","type":"agentMessage","text":"Working on it"}),true);
+        state.parser.interaction(crate::chat_interactions::ChatInteraction::Status{title:"Ran commands".into(),details:"pwd".into(),status:crate::chat_interactions::InteractionStatus::Completed},"tool");
+        state.parser.begin("final");state.parser.delta("Final **answer**");
+        state.item(&json!({"id":"final","type":"agentMessage","phase":"final_answer","text":"Final **answer**"}),true);
+        let source=state.parser.rendered_output();assert!(source.find("Ran commands").unwrap()<source.find("Final answer").unwrap());assert!(source.find("Final answer").unwrap()<source.find("Final **answer**").unwrap());
+        let count=state.parser.interactions.len();state.item(&json!({"id":"final","type":"agentMessage","phase":"final_answer","text":"Final **answer**"}),true);assert_eq!(state.parser.interactions.len(),count);
     }
     #[test]
     fn native_voice_uses_webrtc_same_chat_approvals_and_survives_delegated_turn_completion() {
@@ -4505,7 +4521,7 @@ time.sleep(30)
    for edits in [false,true] {
     for approvals in [CodexApprovals::Ask,CodexApprovals::AutoReview,CodexApprovals::Never] {
      for resume in [false,true] {
-      let req=RunRequest{agent:AgentKind::Codex,executable:"/fixture/codex".into(),project:"/fixture/workspace".into(),prompt:"Continue".into(),resume_id:resume.then(||"native".into()),fork_session:false,model:None,reasoning_effort:None,images:vec![],allow_edits:edits,trust_workspace:false,codex_access:access,codex_approvals:approvals};
+      let req=RunRequest{service_tier:None,agent:AgentKind::Codex,executable:"/fixture/codex".into(),project:"/fixture/workspace".into(),prompt:"Continue".into(),resume_id:resume.then(||"native".into()),fork_session:false,model:None,reasoning_effort:None,images:vec![],allow_edits:edits,trust_workspace:false,codex_access:access,codex_approvals:approvals};
       let thread=thread_params(&req);let turn=turn_params("native",&req);
       assert_eq!(thread["sandbox"],access.sandbox(edits));assert_eq!(turn["sandboxPolicy"],access.policy(edits,&req.project));
       assert_eq!(turn["approvalPolicy"],approvals.policy());assert_eq!(thread["approvalPolicy"],approvals.policy());
@@ -4527,7 +4543,7 @@ time.sleep(30)
   for (edits,access,inside_ok,outside_ok) in [(false,CodexAccess::Workspace,false,false),(true,CodexAccess::Workspace,true,false),(true,CodexAccess::Full,true,true)] {
    let inside=project.join("inside.txt");let outside=root.join("outside.txt");let _=std::fs::remove_file(&inside);let _=std::fs::remove_file(&outside);
    let prompt=format!("/usr/bin/printf inside > '{}'; /usr/bin/printf outside > '{}'; /usr/bin/printf ACCESS_PROBE_DONE",inside.display(),outside.display());
-   let request=RunRequest{agent:AgentKind::Codex,executable:std::env::var("KAI_NATIVE_TEST_EXECUTABLE").unwrap_or_else(|_|"/opt/homebrew/bin/codex".into()).into(),project:project.clone(),prompt,resume_id:None,fork_session:false,model:None,reasoning_effort:None,images:vec![],allow_edits:edits,trust_workspace:false,codex_access:access,codex_approvals:CodexApprovals::Never};
+   let request=RunRequest{service_tier:None,agent:AgentKind::Codex,executable:std::env::var("KAI_NATIVE_TEST_EXECUTABLE").unwrap_or_else(|_|"/opt/homebrew/bin/codex".into()).into(),project:project.clone(),prompt,resume_id:None,fork_session:false,model:None,reasoning_effort:None,images:vec![],allow_edits:edits,trust_workspace:false,codex_access:access,codex_approvals:CodexApprovals::Never};
    let handle=maintenance(request,"command/exec",json!({})).unwrap();let mut finished=false;
    while let Ok(event)=handle.events.recv_timeout(Duration::from_secs(20)) {
     match event {RuntimeEvent::Failed(e)=>panic!("{e}"),RuntimeEvent::Request(_)=>panic!("Never ask unexpectedly raised an approval"),RuntimeEvent::Finished=>{finished=true;break},_=>{}}
