@@ -218,8 +218,8 @@ impl QuickChat {
         });
         let transcript_scroll=ListState::new(0,ListAlignment::Bottom,px(400.));
         transcript_scroll.set_scroll_handler(cx.listener(|this,event:&ListScrollEvent,_,cx|{
-            this.transcript_follow=!event.is_scrolled;let earlier=event.is_scrolled&&event.visible_range.start<3;let weak=this.orbit.downgrade();
-            if earlier{cx.defer(move|cx|{let _=weak.update(cx,|app,cx|app.load_history_page(true,cx));});}
+            this.transcript_follow=!event.is_scrolled;let earlier=event.is_scrolled;let start=event.visible_range.start;let generation=this.orbit.read(cx).generation;let weak=this.orbit.downgrade();
+            if earlier{cx.defer(move|cx|{let _=weak.update(cx,|app,cx|{if generation==app.generation && app.history_near_top(start){app.load_history_page(true,cx);}});});}
         }));
         Self {
             orbit,

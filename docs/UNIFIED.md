@@ -1196,3 +1196,27 @@ The signed packaged morph probe passed, including reversal, extended-notch
 return, double-Command dismissal, and exclusive Quick Chat. Both signed
 generated-speech voice handoff and new-chat shortcut checks passed. Installed
 **0.9.2 (26)** with a verified 0.9.1 backup, leaving the running app open.
+
+## 0.9.3 — fill folded history across source pages
+
+Large completed responses can occupy an entire byte-limited history page,
+excluding the prompt and earlier turns. Folding that page can remove its scroll
+extent, preventing the previous scroll-triggered loader from ever retrieving
+those messages. Code and mini Code now fill an underfilled viewport from the
+existing bounded history cursor. Scrolling near the first visible messages
+loads earlier pages even when hundreds of hidden work rows precede them.
+
+Only one page request runs at a time. Automatic requests stop at the same cursor
+after an I/O failure; a deliberate retry remains available. Earlier source
+pages retain lazy hydration and bounded decoded residency.
+
+Verification: 808 application regressions passed (17 ignored). The final three
+folded-history checks passed, including a real asynchronous saved-history load
+with two responses larger than 600KB each. It recovered both prompts and final
+answers without opening Worked, traversed more than eight pages, and retained
+at most eight decoded pages. The failure/retry test also exercises a visible
+top edge after 302 raw rows.
+
+The signed packaged transition probe passed. Installed **0.9.3 (27)** with
+signature and binary-hash verification and a timestamped 0.9.2 backup; the
+running conversation was retained.

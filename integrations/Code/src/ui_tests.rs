@@ -117,6 +117,94 @@ pub(super) fn draw_frame(view: &Entity<Orbit>, cx: &mut VisualTestContext) {
 }
 
 #[gpui::test]
+fn folded_giant_cached_turns_fill_the_chat_with_all_prompt_final_pairs(cx:&mut TestAppContext){
+    use chat_interactions::{ChatInteraction,InteractionStatus};
+    let(view,cx)=fixture(cx);
+    let flush=view.update(cx,|app,_|{
+        let session=app.sessions[0].clone();
+        let details="command output ".repeat(640);
+        for turn in 0..2{
+            app.engine.save(session.clone(),"user",format!("Prompt {turn}"));
+            let mut body=String::new();
+            for _ in 0..80{
+                body.push_str(&chat_interactions::serialize_interaction(&ChatInteraction::Status{title:"Terminal command".into(),details:details.clone(),status:InteractionStatus::Completed}));
+                body.push_str("\n\n");
+            }
+            assert!(body.len()>600*1024,"Fixture must cross several real byte-budget pages");
+            body.push_str(&chat_interactions::serialize_interaction(&ChatInteraction::Status{title:"Final answer".into(),details:String::new(),status:InteractionStatus::Completed}));
+            body.push_str(&format!("\n\nFinal {turn}\n\n"));
+            body.push_str(&chat_interactions::serialize_interaction(&ChatInteraction::Status{title:"Completed".into(),details:String::new(),status:InteractionStatus::Completed}));
+            app.engine.save(session.clone(),"assistant",body);
+        }
+        app.engine.flush()
+    });
+    flush.recv_timeout(Duration::from_secs(5)).unwrap();
+    view.update(cx,|app,cx|{
+        app.active=Some("fixture-session".into());app.loading=true;
+        app.engine.load(app.sessions[0].clone(),app.generation);cx.notify();
+    });
+    let deadline=Instant::now()+Duration::from_secs(15);let mut saw_initial=false;let mut frames=0;
+    loop{
+        cx.run_until_parked();
+        view.update(cx,|app,cx|{
+            while let Ok(event)=app.engine.events.try_recv(){
+                match event{
+                    Event::Loaded(_,_,ref messages,has_older,_)=>{
+                        assert!(has_older,"The first real page should stop inside the giant latest response");
+                        assert!(!messages.iter().any(|m|m.role=="user"),"A small fixture would miss the missing-prompt regression");saw_initial=true;app.receive(event,cx);
+                    },
+                    Event::OlderLoaded(..)|Event::HistoryPage(..)|Event::HistoryRange(..)=>app.receive(event,cx),
+                    Event::Error(error)=>panic!("History worker failed: {error}"),
+                    _=>{}
+                }
+            }
+        });
+        draw_frame(&view,cx);frames+=1;
+        let ready=view.update(cx,|app,_|saw_initial&&!app.loading&&!app.loading_earlier&&!app.has_older&&app.history_pending.is_empty()&&["Prompt 0","Final 0","Prompt 1","Final 1"].iter().all(|expected|app.rows.iter().enumerate().any(|(ix,row)|matches!(&row.block,MessageBlock::Paragraph(text) if text==expected)&&app.flow_index.visible(ix,&app.expanded_work))));
+        if ready{break}
+        assert!(Instant::now()<deadline,"Folded history never hydrated its prompt/final sequence without user interaction (frames={frames})");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    view.update(cx,|app,_|{
+        assert!(app.expanded_work.is_empty(),"The user must not have to open Worked to recover history");
+        assert!(app.history_pages.len()>8,"Exercise page eviction across giant hidden work");
+        assert!(app.history_pages.iter().filter(|p|p.resident).count()<=8,"Keep decoded history bounded");
+        assert!(!app.navigation_history);
+        assert!(app.rows.iter().enumerate().filter(|(_,row)|matches!(&row.block,MessageBlock::Interaction(ChatInteraction::Status{title,..}) if title=="Terminal command")).all(|(ix,_)|app.flow_index.work[ix].is_some()||app.flow_index.hidden[ix]));
+    });
+}
+
+#[gpui::test]
+fn folded_history_fill_stops_after_io_failure_but_allows_manual_retry(cx:&mut TestAppContext){
+    use chat_interactions::{ChatInteraction,InteractionStatus};
+    let(view,cx)=fixture(cx);
+    view.update(cx,|app,cx|{
+        app.active=Some("fixture-session".into());
+        let mut messages=vec![engine::ParsedMessage{role:"user".into(),blocks:vec![MessageBlock::Paragraph("Prompt".into())]}];
+        for _ in 0..300{messages.push(engine::ParsedMessage{role:"assistant".into(),blocks:vec![MessageBlock::Interaction(ChatInteraction::Status{title:"Terminal command".into(),details:"printf done".into(),status:InteractionStatus::Completed})]});}
+        messages.push(engine::ParsedMessage{role:"tool".into(),blocks:vec![MessageBlock::Interaction(ChatInteraction::Status{title:"Final answer".into(),details:String::new(),status:InteractionStatus::Completed})]});
+        messages.push(engine::ParsedMessage{role:"assistant".into(),blocks:vec![MessageBlock::Paragraph("Final".into())]});
+        messages.push(engine::ParsedMessage{role:"tool".into(),blocks:vec![MessageBlock::Interaction(ChatInteraction::Status{title:"Completed".into(),details:String::new(),status:InteractionStatus::Completed})]});
+        app.receive(Event::Loaded("fixture-session".into(),app.generation,messages,true,false),cx);
+    });
+    draw_frame(&view,cx);cx.run_until_parked();
+    view.update(cx,|app,cx|{
+        assert!(app.history_near_top(302),"Hundreds of folded source rows must not prevent recognizing the projected top edge");
+        assert!(app.loading_earlier,"An underfilled folded page must request older history automatically");
+        assert_eq!(app.history_fill_position,Some((app.generation,0)));
+        app.receive(Event::LoadError("fixture-session".into(),app.generation,"Fixture read failed".into()),cx);
+        assert!(!app.loading_earlier);
+    });
+    for _ in 0..5{draw_frame(&view,cx);cx.run_until_parked();}
+    view.update(cx,|app,cx|{
+        assert!(!app.loading_earlier,"The failed cursor must not retry on every animation frame");
+        assert_eq!(app.history_offset,0);
+        app.load_history_page(true,cx);
+        assert!(app.loading_earlier,"An explicit user retry must still be allowed");
+    });
+}
+
+#[gpui::test]
 fn completion_remeasures_folded_rows_without_a_rail_seek_or_manual_list_reset(cx:&mut TestAppContext){
  let(view,cx)=fixture(cx);let status=|title:&str|MessageBlock::Interaction(chat_interactions::ChatInteraction::Status{title:title.into(),details:String::new(),status:chat_interactions::InteractionStatus::Completed});
  view.update(cx,|app,cx|{app.loading=false;app.active=Some("fixture-session".into());app.finalizing.insert("fixture-session".into());app.rows.clear();for n in 0..2{for(role,block)in [("user",MessageBlock::Paragraph(format!("Prompt {n}\n{}","Details\n".repeat(8)))),("assistant:codex",MessageBlock::Paragraph("I am checking this\n".repeat(12))),("continuation:codex",MessageBlock::Activity{label:"Terminal command".into(),details:"pwd".into()}),("continuation:codex",status("Final answer")),("continuation:codex",MessageBlock::Paragraph(format!("Final answer {n}\n{}","Result\n".repeat(30)))),("continuation:codex",status(if n==0{"Completed"}else{"Working"}))]{app.rows.push(Row{role:Some(role.into()),block});}}app.list.reset(app.rows.len());app.following_bottom=false;app.list.scroll_to(ListOffset{item_ix:8,offset_in_item:px(0.)});cx.notify();});

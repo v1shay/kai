@@ -748,6 +748,7 @@ struct Orbit {
     loading_earlier: bool,
     has_older: bool,
     history_offset: usize,
+    history_fill_position: Option<(u64,usize)>,
     has_newer: bool,
     history_anchor: Option<ListOffset>,
     history_pages: Vec<HistoryPage>,
@@ -1073,7 +1074,7 @@ impl Orbit {
                     this.navigation
                         .update(cx, |rail, cx| rail.scrolled(start, this.rows.len(), cx));
                     let stream_edge=this.active.as_ref().and_then(|id|this.runs.get(id)).and_then(|r|r.stream_start).is_some_and(|at|start>=at.saturating_sub(3)&&start<=at+3);
-                    if is_scrolled && (start < 3||stream_edge) {
+                    if is_scrolled && (this.history_near_top(start)||stream_edge) {
                         this.load_history_page(true, cx);
                     }
                 });
@@ -1294,6 +1295,7 @@ impl Orbit {
             loading_earlier: false,
             has_older: false,
             history_offset: 0,
+            history_fill_position: None,
             has_newer: false,
             history_anchor: None,
             history_pages: vec![],
@@ -2016,6 +2018,7 @@ impl Orbit {
                 self.history_pending.clear();
                 self.history_failed.clear();
                 self.history_offset = 0;
+                self.history_fill_position = None;
                 self.history_visible = self.rows.len().saturating_sub(40)..self.rows.len();
                 self.list.reset(self.rows.len());
                 if let Some(anchor) = self.history_anchor.take() {
@@ -5982,6 +5985,7 @@ impl Render for Orbit {
                                         .on_scroll_wheel(cx.listener(|this,event:&ScrollWheelEvent,_,cx|this.peek_timestamps(event,cx)))
                                         .pl(px(32.))
                                         .child(transcript)
+                                        .child(self.history_fill_probe(&self.list,cx))
                                         .child(self.chat_navigation())
                                 }),
                         )

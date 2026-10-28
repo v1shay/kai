@@ -22,6 +22,30 @@ fn disclosure_fraction(progress: f32, open: bool, from: f32) -> f32 {
 }
 
 impl Orbit {
+    pub(super) fn history_near_top(&self, raw_start:usize)->bool {
+        (0..raw_start.min(self.rows.len()))
+            .filter(|ix|self.flow_index.visible(*ix,&self.expanded_work)).take(3).count()<3
+    }
+    /// Raw pages can contain only the middle of a long completed turn. Once
+    /// folded, that page may have no scroll extent at all. Fill the viewport
+    /// from the existing bounded cursor without requiring work to be opened.
+    pub(super) fn history_fill_probe(&self,scroll:&ListState,cx:&Context<Self>)->AnyElement {
+        if !self.has_older || self.loading || self.loading_earlier || self.history_fill_position==Some((self.generation,self.history_offset)){return div().into_any_element()}
+        let scroll=scroll.clone();let weak=cx.weak_entity();let generation=self.generation;
+        canvas(move|_,_,cx|{
+            if scroll.viewport_bounds().size.height>px(0.) && scroll.max_offset_for_scrollbar().height<=px(1.) {
+                cx.defer(move|cx|{let _=weak.update(cx,|this,cx|{
+                    let position=(this.generation,this.history_offset);
+                    if generation==this.generation && this.has_older && !this.loading && !this.loading_earlier && this.history_fill_position!=Some(position) {
+                        this.load_history_page(true,cx);
+                        // Retry only after cursor progress or an explicit user
+                        // request, so an I/O failure cannot spin every frame.
+                        if this.loading_earlier{this.history_fill_position=Some(position);}
+                    }
+                });});
+            }
+        },|_,_,_,_|{}).absolute().inset_0().into_any_element()
+    }
     pub(super) fn transcript_flow(&self)->chat_flow::Index{
         let id=self.active.as_deref();
         let running=id.and_then(|id|self.runs.get(id));

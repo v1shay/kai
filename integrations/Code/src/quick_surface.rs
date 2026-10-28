@@ -267,7 +267,7 @@ impl Orbit {
                                 ),
                         )
                     })
-                    .when(!empty,|view|view.child(transcript)),
+                    .when(!empty,|view|view.child(transcript).child(self.history_fill_probe(scroll,cx))),
             )
             .when_some(status, |surface, status| {
                 surface.child(
