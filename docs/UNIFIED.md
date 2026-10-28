@@ -1221,6 +1221,22 @@ The signed packaged transition probe passed. Installed **0.9.3 (27)** with
 signature and binary-hash verification and a timestamped 0.9.2 backup; the
 running conversation was retained.
 
+## 0.9.5 — centered typing cursor and a single approval action row
+
+The extended composer's AppKit text cell now centers its drawing and live field
+editor in the same text row, correcting the cursor that appeared above the
+placeholder. Expanded approval review moves the provider's exact SVG choices to
+the existing bottom action row instead of drawing a second set inside the body.
+Forms retain their input controls and submit action; Boolean questions retain
+direct Yes/No controls. Closing review restores the compact action row without
+resolving the request. Provider choice IDs and background owner tokens are preserved.
+
+Verification: 204 Swift tests, one skipped, zero failures. The native composer
+harness verifies the focused cursor geometry, a single bounded SVG review row,
+exact provider choice dispatch, review close/reopen, and background tool answers.
+Installed the signed **0.9.5 (29)** bundle with three-binary hash verification and
+a timestamped 0.9.4 backup. The existing running session is left open.
+
 ## 0.9.4 — SVG approvals, shared pet identities, and composer alignment
 
 Notch approval choices, review, and inbox cycling use animated SVG controls.

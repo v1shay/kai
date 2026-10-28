@@ -72,6 +72,12 @@ private func auditCommand(_ bytes:UnsafePointer<UInt8>?,_ count:Int)->Bool{guard
    func click(_ point:CGPoint){let up=NSEvent.mouseEvent(with:.leftMouseUp,location:point,modifierFlags:[],timestamp:ProcessInfo.processInfo.systemUptime,windowNumber:panel.windowNumber,context:nil,eventNumber:1,clickCount:1,pressure:0)!;NSApp.postEvent(up,atStart:false);let down=NSEvent.mouseEvent(with:.leftMouseDown,location:point,modifierFlags:[],timestamp:ProcessInfo.processInfo.systemUptime,windowNumber:panel.windowNumber,context:nil,eventNumber:0,clickCount:1,pressure:1)!;panel.sendEvent(down);pump(0.1)}
    click(field.convert(CGPoint(x:field.bounds.midX,y:field.bounds.midY),to:nil))
    precondition(panel.firstResponder is NSTextView,"The actual notch window did not focus its composer")
+   precondition(field.cell is ComposerTextCell,"The live composer retained the top-aligned default text cell")
+   let focusedEditor=field.currentEditor() as! NSTextView
+   let lineHeight=focusedEditor.layoutManager!.defaultLineHeight(for:field.font!)
+   let insertionLine=field.convert(CGRect(origin:focusedEditor.textContainerOrigin,size:CGSize(width:1,height:lineHeight)),from:focusedEditor)
+   precondition(abs(insertionLine.midY-field.bounds.midY)<2,"The typing cursor is not vertically centered with the editing row")
+   print("Native composer: focused typing cursor centered in the actual editing row")
    let rect=new.0.offsetBy(dx:ui.layer.frame.minX+main.frame.minX+bar.frame.minX,dy:ui.layer.frame.minY+main.frame.minY+bar.frame.minY),before=commands.count
    click(scalable.convert(CGPoint(x:rect.midX,y:rect.midY),to:nil))
    precondition(commands.count>before && commands.last?["action"] as? String == "new","The actual notch window swallowed its New button")
@@ -105,6 +111,17 @@ private func auditCommand(_ bytes:UnsafePointer<UInt8>?,_ count:Int)->Bool{guard
    precondition(commands.last?["action"] as? String == "native_answer" && commands.last?["answers"] as? [String:[String]] == ["confirm":["false"]],"Native tool confirmation sent an approval instead of a typed answer")
    precondition(commands.last?["threadId"] as? String == "code:background" && commands.last?["approvalRequestId"] as? String == "epoch:confirm","Notch question lost its background owner")
    state["completedRequestId"]=commands.last?["requestId"];state["approval"]=false;state.removeValue(forKey:"nativeReview");runtime.receive(try JSONSerialization.data(withJSONObject:state));pump(0.1)
+   state["approval"]=true;state["approvalRequestId"]="epoch:command"
+   state["nativeReview"]=["owner":"code:background","token":"epoch:command","kind":"approval","title":"Approve terminal command","detail":"printf 'Approval test'","questions":[],"choices":[["id":"accept","label":"Allow once"],["id":"cancel","label":"Stop turn"],["id":"acceptForSession","label":"Allow for this session"]]] as [String:Any]
+   runtime.receive(try JSONSerialization.data(withJSONObject:state));pump(0.1);pressApproval("review");pump(0.35)
+   let visibleActions=approval.subviews.compactMap{$0 as? ApprovalButton}.filter{!$0.isHidden}
+   precondition(Set(visibleActions.compactMap{$0.accessibilityLabel()})==Set(["Allow once","Stop turn","Allow for this session","Review request"]),"Expanded review duplicated its primary action controls")
+   precondition(visibleActions.allSatisfy{approval.bounds.contains($0.frame)},"Review actions escaped the animated footer")
+   if let host=approval.window?.contentView,let bitmap=host.bitmapImageRepForCachingDisplay(in:host.bounds){host.cacheDisplay(in:host.bounds,to:bitmap);if let png=bitmap.representation(using:.png,properties:[:]){try png.write(to:URL(fileURLWithPath:"/private/tmp/kai-v095-review.png"))}}
+   visibleActions.first{$0.accessibilityLabel()=="Allow for this session"}!.performClick(nil)
+   precondition(commands.last?["choice"] as? String=="acceptForSession" && commands.last?["approvalRequestId"] as? String=="epoch:command","Review footer did not preserve the exact provider choice")
+   state["completedRequestId"]=commands.last?["requestId"];state["approval"]=false;state.removeValue(forKey:"nativeReview");runtime.receive(try JSONSerialization.data(withJSONObject:state));pump(0.1);app.expandToRunningChat();pump(0.3)
+   print("Native approval review: one SVG action row, bounded footer, exact provider choice and background owner passed")
    print("Native notch: mid-sentence command input, exact Unicode caret, synchronized draft acknowledgement, and background tool Yes/No response passed")
   }
   if let requested=ProcessInfo.processInfo.environment["KAI_COMPOSER_SOAK_SECONDS"].flatMap(Double.init),requested>0 {

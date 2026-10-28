@@ -26,6 +26,8 @@ struct KaiNativeReview:Decodable,Equatable {
     private var send:((String,[String:Any])->Void)?
     private var content:NSView?,contentStack:NSStackView?,contentScroll:NSScrollView?
     private var embedded=false,contentWidth:CGFloat=390
+    private var externalActions=false
+    var actionControls:[ApprovalButton]{buttons.compactMap{$0 as? ApprovalButton}}
     private var profile:PetGradientProfile?
     func setProfile(_ profile:PetGradientProfile){self.profile=profile;buttons.compactMap{$0 as? ApprovalButton}.forEach{$0.glyph.setProfile(profile,wave:false)}}
     var onResolution:(()->Void)?
@@ -38,12 +40,12 @@ struct KaiNativeReview:Decodable,Equatable {
         popover.contentViewController=controller;popover.contentSize=view.frame.size;popover.behavior = .transient
         popover.show(relativeTo:anchor.bounds,of:anchor,preferredEdge:.minY)
     }
-    func inlineContent(_ review:KaiNativeReview,width:CGFloat,send:@escaping(String,[String:Any])->Void)->NSView {
-        if embedded,self.review?.token==review.token,self.review?.owner==review.owner,abs(contentWidth-width)<0.5,let content{self.send=send;return content}
-        return build(review,width:width,embedded:true,send:send)
+    func inlineContent(_ review:KaiNativeReview,width:CGFloat,externalActions:Bool=false,send:@escaping(String,[String:Any])->Void)->NSView {
+        if embedded,self.review==review,self.externalActions==externalActions,abs(contentWidth-width)<0.5,let content{self.send=send;return content}
+        return build(review,width:width,embedded:true,externalActions:externalActions,send:send)
     }
-    private func build(_ review:KaiNativeReview,width:CGFloat,embedded:Bool,send:@escaping(String,[String:Any])->Void)->NSView {
-        popover.close();popover.contentViewController=nil;self.review=review;self.send=send;pending=nil;self.embedded=embedded;contentWidth=width
+    private func build(_ review:KaiNativeReview,width:CGFloat,embedded:Bool,externalActions:Bool=false,send:@escaping(String,[String:Any])->Void)->NSView {
+        popover.close();popover.contentViewController=nil;self.review=review;self.send=send;pending=nil;self.embedded=embedded;self.externalActions=externalActions;contentWidth=width
         fields.removeAll();options.removeAll();buttons=[];choiceIDs=[:]
         let root:NSView
         if embedded{root=NSView();root.appearance=NSAppearance(named:.darkAqua)}else{let effect=NSVisualEffectView();effect.material = .popover;effect.blendingMode = .behindWindow;effect.state = .active;root=effect}
@@ -69,13 +71,13 @@ struct KaiNativeReview:Decodable,Equatable {
         for choice in review.choices {
             let name=(choice.id+" "+choice.label).lowercased()
             let scene=name.contains("stop") || name.contains("cancel") ? "pause":name.contains("decline") || name.contains("reject") ? "failure":name.contains("matching") || name.contains("always") || name.contains("session") ? "permission":"success"
-            let button=ApprovalButton(action:choice.id,label:choice.label,scene:scene);button.target=self;button.action=#selector(choose(_:));button.widthAnchor.constraint(equalToConstant:32).isActive=true;button.heightAnchor.constraint(equalToConstant:28).isActive=true
+            let button=ApprovalButton(action:choice.id,label:choice.label,scene:scene);button.target=self;button.action=#selector(choose(_:));if !externalActions{button.widthAnchor.constraint(equalToConstant:32).isActive=true;button.heightAnchor.constraint(equalToConstant:28).isActive=true}
             if let profile{button.glyph.setProfile(profile,wave:false)};button.animate()
-            choiceIDs[ObjectIdentifier(button)]=choice.id;buttons.append(button);choices.addArrangedSubview(button)
+            choiceIDs[ObjectIdentifier(button)]=choice.id;buttons.append(button);if !externalActions{choices.addArrangedSubview(button)}
         }
-        if !review.choices.isEmpty{stack.addArrangedSubview(choices)}
+        if !externalActions && !review.choices.isEmpty{stack.addArrangedSubview(choices)}
         if review.isQuestion {
-            let button=ApprovalButton(action:"submit",label:review.questions.isEmpty ? "Continue":"Submit answers",scene:"success");button.target=self;button.action=#selector(submit);button.widthAnchor.constraint(equalToConstant:32).isActive=true;button.heightAnchor.constraint(equalToConstant:28).isActive=true;if let profile{button.glyph.setProfile(profile,wave:false)};button.animate();buttons.append(button);stack.addArrangedSubview(button)
+            let button=ApprovalButton(action:"submit",label:review.questions.isEmpty ? "Continue":"Submit answers",scene:"success");button.target=self;button.action=#selector(submit);if !externalActions{button.widthAnchor.constraint(equalToConstant:32).isActive=true;button.heightAnchor.constraint(equalToConstant:28).isActive=true};if let profile{button.glyph.setProfile(profile,wave:false)};button.animate();buttons.append(button);if !externalActions{stack.addArrangedSubview(button)}
         }
         status.constraints.filter{$0.firstAttribute == .width && $0.secondItem == nil}.forEach{$0.isActive=false};status.stringValue="";status.font = .systemFont(ofSize:11);status.textColor = .secondaryLabelColor;status.preferredMaxLayoutWidth=textWidth;status.widthAnchor.constraint(equalToConstant:textWidth).isActive=true;stack.addArrangedSubview(status)
         let scroll=NSScrollView();scroll.drawsBackground=false;scroll.hasVerticalScroller=true;scroll.autohidesScrollers=true;scroll.scrollerStyle = .overlay;scroll.documentView=stack

@@ -122,7 +122,21 @@ private class ImageDropView:NSView {
     override func performDragOperation(_ sender:NSDraggingInfo)->Bool{let images=images(sender);guard !images.isEmpty else{return false};imageDropped?(images);return true}
 }
 
+/// NSTextField's default field editor hugs the top of a taller editing row.
+/// Use the same centered text rect for drawing, clicking and live editing.
+final class ComposerTextCell:NSTextFieldCell {
+    override func drawingRect(forBounds rect:NSRect)->NSRect{
+        let base=super.drawingRect(forBounds:rect),face=font ?? AppTypography.ui(ofSize:10)
+        let measured=attributedStringValue.boundingRect(with:CGSize(width:max(1,base.width),height:.greatestFiniteMagnitude),options:[.usesLineFragmentOrigin,.usesFontLeading]).height
+        let height=min(base.height,ceil(max(face.ascender-face.descender+face.leading,measured)))
+        return CGRect(x:base.minX,y:base.midY-height/2,width:base.width,height:height)
+    }
+    override func edit(withFrame rect:NSRect,in controlView:NSView,editor:NSText,delegate:Any?,event:NSEvent?){super.edit(withFrame:drawingRect(forBounds:rect),in:controlView,editor:editor,delegate:delegate,event:event)}
+    override func select(withFrame rect:NSRect,in controlView:NSView,editor:NSText,delegate:Any?,start:Int,length:Int){super.select(withFrame:drawingRect(forBounds:rect),in:controlView,editor:editor,delegate:delegate,start:start,length:length)}
+}
+
 private final class ComposerField:NSTextField {
+    override class var cellClass:AnyClass?{get{ComposerTextCell.self}set{}}
     override func acceptsFirstMouse(for event:NSEvent?)->Bool{true}
     var imagesEntered:(()->Void)?,imagesDropped:(([NSImage])->Void)?
     override init(frame:NSRect){super.init(frame:frame);registerForDraggedTypes([.fileURL,.png,.tiff]+NSImage.imageTypes.map{NSPasteboard.PasteboardType($0)})}

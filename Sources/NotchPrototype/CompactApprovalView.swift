@@ -47,6 +47,17 @@ struct CompactApprovalRequest:Equatable {
     private let heading=NSTextField(labelWithString:""),scroll=NSScrollView(),command=NSTextView()
     private let buttons=[("approve","Approve","success"),("reject","Don't approve","failure"),("approval_stop","Stop chat","pause")].map{ApprovalButton(action:$0.0,label:$0.1,scene:$0.2)}
     private let reviewButton=ApprovalButton(action:"review",label:"Review request",scene:"review"),inlineReview=NativeRequestReview()
+    private var reviewControls=[ApprovalButton]()
+    private var actionRow:[ApprovalButton]{
+        guard reviewExpanded,request?.booleanQuestion == nil,!reviewControls.isEmpty else{return buttons+[reviewButton]}
+        let extras=request?.isQuestion == true ? Array(buttons.dropFirst()):reviewControls.contains{$0.scene == "pause"} ? []:[buttons[2]]
+        return reviewControls+extras+[reviewButton]
+    }
+    private func updateActionRow(){
+        let visible=actionRow
+        for button in buttons+reviewControls+[reviewButton]{button.isHidden = !visible.contains{$0 === button}}
+        needsLayout=true
+    }
     private var visibilityRevision=0
     private var inlineBody:NSView?,timeout:DispatchWorkItem?,hoverClose:DispatchWorkItem?,hoverArea:NSTrackingArea?,localMonitor:Any?,globalMonitor:Any?
     var preferredHeight:CGFloat{reviewExpanded ? max(88,min(maximumReviewHeight,inlineReview.preferredHeight)+44):88}
@@ -92,16 +103,21 @@ struct CompactApprovalRequest:Equatable {
         command.setFrameSize(CGSize(width:scroll.contentSize.width,height:scroll.contentSize.height));command.textContainer?.containerSize=CGSize(width:scroll.contentSize.width,height:.greatestFiniteMagnitude)
         if let container=command.textContainer{command.layoutManager?.ensureLayout(for:container);command.setFrameSize(CGSize(width:scroll.contentSize.width,height:max(scroll.contentSize.height,(command.layoutManager?.usedRect(for:container).height ?? 0)+2)))}
         nextButton.frame=CGRect(x:0,y:0,width:32,height:28)
-        let visible=buttons+[reviewButton],width=CGFloat(visible.count)*42-10,start=bounds.midX-width/2
-        for (index,button) in visible.enumerated(){button.frame=CGRect(x:start+CGFloat(index)*42,y:0,width:32,height:28)}
+        let visible=actionRow,step=min(42,max(32,(bounds.width-(nextButton.isHidden ? 0:36))/CGFloat(max(1,visible.count)))),width=CGFloat(visible.count)*step-(step-32),start=(bounds.width-width)/2+(nextButton.isHidden ? 0:18)
+        for (index,button) in visible.enumerated(){button.frame=CGRect(x:start+CGFloat(index)*step,y:0,width:32,height:28)}
     }
     private func prepareInline(){
         guard let request else{return};let review=request.displayReview
-        let body=inlineReview.inlineContent(review,width:max(190,bounds.width)){[weak self] action,fields in
+        let body=inlineReview.inlineContent(review,width:max(190,bounds.width),externalActions:true){[weak self] action,fields in
             guard let self,let current=self.request,current.id==request.id,current.thread==request.thread,self.pendingID==nil else{return}
             if let id=fields["requestId"] as? String{self.begin(id)};self.setReviewExpanded(false);self.onReviewAction?(action,fields,current)
         }
         if inlineBody !== body{inlineBody?.removeFromSuperview();inlineBody=body;addSubview(body,positioned:.below,relativeTo:heading)}
+        let controls=inlineReview.actionControls
+        for old in reviewControls where !controls.contains(where:{$0 === old}){old.removeFromSuperview()}
+        reviewControls=controls
+        for button in controls where button.superview !== self{addSubview(button)}
+        updateActionRow()
     }
     func setReviewExpanded(_ expanded:Bool,pinned:Bool=false){
         guard !expanded || (request != nil && pendingID==nil) else{return}
@@ -109,6 +125,7 @@ struct CompactApprovalRequest:Equatable {
         guard reviewExpanded != expanded else{return}
         reviewExpanded=expanded
         if expanded{prepareInline();monitorOutsideClicks();reviewButton.animate(looping:true);if let review=request?.displayReview{onReview?(review)}}else{removeMonitors();reviewButton.animate(looping:false)}
+        updateActionRow()
         visibilityRevision+=1;let revision=visibilityRevision,duration:TimeInterval=NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0.1:0.28
         scroll.isHidden=false;inlineBody?.isHidden=false
         if expanded{inlineBody?.alphaValue=0}else{scroll.alphaValue=0}
@@ -120,7 +137,7 @@ struct CompactApprovalRequest:Equatable {
     func show(_ request:CompactApprovalRequest){
         guard self.request != request else{return}
         let changed=self.request?.id != request.id || self.request?.thread != request.thread
-        if changed{setReviewExpanded(false);inlineReview.dismiss();inlineBody?.removeFromSuperview();inlineBody=nil}
+        if changed{setReviewExpanded(false);reviewControls.forEach{$0.removeFromSuperview()};reviewControls=[];inlineReview.dismiss();inlineBody?.removeFromSuperview();inlineBody=nil}
         self.request=request;if changed{timeout?.cancel();pendingID=nil}
         if reviewButton.superview == nil{addSubview(reviewButton)}
         reviewButton.isHidden=false
@@ -131,11 +148,11 @@ struct CompactApprovalRequest:Equatable {
         let labels=request.isQuestion ? [request.booleanQuestion == nil ? "Answer question":"Yes",request.booleanQuestion == nil ? "Cancel question":"No","Stop chat"]:["Approve","Don't approve","Stop chat"]
         for (button,label) in zip(buttons,labels){button.toolTip=label;button.setAccessibilityLabel(label)}
         buttons.forEach{$0.isEnabled=pendingID == nil;$0.alphaValue=pendingID == nil ? 1:0.45;$0.animate()};reviewButton.isEnabled=pendingID == nil;reviewButton.alphaValue=pendingID == nil ? 1:0.45;reviewButton.animate(looping:reviewExpanded);nextButton.isEnabled=pendingID == nil
-        if reviewExpanded{prepareInline()};needsLayout=true
+        if reviewExpanded{prepareInline()};updateActionRow()
     }
     func receive(_ state:KaiState){inlineReview.update(state);finish(state.completedRequestId,error:state.completedRequestError)}
     func setProfile(_ profile:PetGradientProfile){(buttons+[reviewButton,nextButton]).forEach{$0.glyph.setProfile(profile,wave:false)};inlineReview.setProfile(profile)}
-    func reset(){visibilityRevision+=1;timeout?.cancel();timeout=nil;hoverClose?.cancel();removeMonitors();inlineReview.dismiss();inlineBody?.removeFromSuperview();inlineBody=nil;reviewExpanded=false;reviewPinned=false;request=nil;pendingID=nil;scroll.layer?.removeAllAnimations();scroll.isHidden=false;scroll.alphaValue=1;heading.isHidden=true;(buttons+[reviewButton]).forEach{$0.glyph.hide();$0.isEnabled=true;$0.alphaValue=1};nextButton.isEnabled=true;isHidden=true}
+    func reset(){visibilityRevision+=1;timeout?.cancel();timeout=nil;hoverClose?.cancel();removeMonitors();reviewControls.forEach{$0.glyph.hide();$0.removeFromSuperview()};reviewControls=[];inlineReview.dismiss();inlineBody?.removeFromSuperview();inlineBody=nil;reviewExpanded=false;reviewPinned=false;request=nil;pendingID=nil;scroll.layer?.removeAllAnimations();scroll.isHidden=false;scroll.alphaValue=1;heading.isHidden=true;(buttons+[reviewButton]).forEach{$0.glyph.hide();$0.isEnabled=true;$0.alphaValue=1};nextButton.isEnabled=true;isHidden=true}
     func begin(_ id:String){
         pendingID=id;(buttons+[reviewButton]).forEach{$0.isEnabled=false;$0.alphaValue=0.45};nextButton.isEnabled=false;heading.stringValue="Waiting for confirmation…";heading.isHidden=false;needsLayout=true
         let work=DispatchWorkItem{[weak self] in guard let self,self.pendingID == id else{return};self.finish(id,error:"No confirmation yet · check the chat before retrying")};timeout=work;DispatchQueue.main.asyncAfter(deadline:.now()+12,execute:work)

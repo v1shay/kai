@@ -3,6 +3,37 @@ import XCTest
 @testable import NotchPrototype
 
 final class CompactApprovalTests:XCTestCase {
+    @MainActor func testExpandedReviewHasOneActionRowAndPreservesProviderChoices()throws{
+        _=NSApplication.shared
+        var object=try JSONSerialization.jsonObject(with:approvalFixture()) as! [String:Any]
+        object["nativeReview"]=["owner":"background","token":"request","title":"Approve command","detail":"Run a harmless command?","kind":"approval","questions":[],"choices":[["id":"accept","label":"Allow once"],["id":"cancel","label":"Stop turn"],["id":"acceptForSession","label":"Allow for this session"]]] as [String:Any]
+        let request=try XCTUnwrap(CompactApprovalRequest(state:JSONDecoder().decode(KaiState.self,from:JSONSerialization.data(withJSONObject:object))))
+        let view=CompactApprovalView(frame:CGRect(x:0,y:0,width:338,height:200));view.show(request);view.isHidden=false
+        func visible()->[NSButton]{view.subviews.compactMap{$0 as? NSButton}.filter{!$0.isHidden}}
+        view.setReviewExpanded(true,pinned:true);view.layoutSubtreeIfNeeded()
+        XCTAssertEqual(visible().compactMap{$0.accessibilityLabel()},["Review request","Allow once","Stop turn","Allow for this session"])
+        func nestedButtons(_ root:NSView)->[NSButton]{root.subviews.flatMap{($0 as? NSButton).map{[$0]} ?? nestedButtons($0)}}
+        let bodyButtons=view.subviews.filter{!($0 is NSButton)}.flatMap(nestedButtons)
+        XCTAssertTrue(bodyButtons.isEmpty,"The review body duplicated the footer's action controls")
+        var sent:[String:Any]?
+        view.onReviewAction={action,fields,selected in XCTAssertEqual(action,"native_answer");XCTAssertEqual(selected.id,"request");sent=fields}
+        visible().first{$0.accessibilityLabel()=="Allow for this session"}!.performClick(nil)
+        XCTAssertEqual(sent?["choice"] as? String,"acceptForSession")
+        XCTAssertEqual(sent?["threadId"] as? String,"background");XCTAssertEqual(sent?["approvalRequestId"] as? String,"request")
+        XCTAssertFalse(view.reviewExpanded);XCTAssertEqual(visible().count,4)
+        view.finish(sent?["requestId"] as? String,error:"Retry")
+        view.setReviewExpanded(true,pinned:true);view.setReviewExpanded(false)
+        XCTAssertEqual(visible().compactMap{$0.accessibilityLabel()},["Approve","Don't approve","Stop chat","Review request"])
+        view.reset()
+    }
+    private func approvalFixture()throws->Data{
+        try JSONSerialization.data(withJSONObject:["project":"/tmp","projects":[],"chats":[],"standaloneChats":[],"standalone":false,"threadId":"viewed-chat","threadName":"Chat","history":[],"readOnly":false,"approval":true,"approvalRequestId":"request","approvalThreadId":"background","approvalSummary":"swift test","activity":["scene":"permission","text":"Approval needed"],"activeTasks":[],"notice":"","attachments":[]] as [String:Any])
+    }
+    @MainActor func testComposerTextRectCentersEmptyAndTypedLines()throws{
+        let cell=ComposerTextCell(textCell:"");cell.font=NSFont.systemFont(ofSize:10);cell.isBordered=false;cell.isBezeled=false
+        let bounds=CGRect(x:0,y:0,width:220,height:24)
+        for text in ["","hello","Type, or hold"]{cell.stringValue=text;let rect=cell.drawingRect(forBounds:bounds);XCTAssertEqual(rect.midY,bounds.midY,accuracy:0.5);XCTAssertLessThan(rect.height,18);XCTAssertGreaterThan(rect.height,10)}
+    }
     private func state(id:String="request",thread:String="background",summary:String="swift test")throws->KaiState{
         let object:[String:Any]=["project":"/tmp","projects":[],"chats":[],"standaloneChats":[],"standalone":false,"threadId":"viewed-chat","threadName":"Chat","history":[],"readOnly":false,"approval":true,"approvalRequestId":id,"approvalThreadId":thread,"approvalSummary":summary,"activity":["scene":"permission","text":"Approval needed"],"activeTasks":[],"notice":"","attachments":[]]
         return try JSONDecoder().decode(KaiState.self,from:JSONSerialization.data(withJSONObject:object))
