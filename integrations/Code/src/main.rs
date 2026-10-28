@@ -4688,10 +4688,11 @@ impl Orbit {
         }
         let decode_source=self.rows.get(ix).and_then(|row|{
             if row.role.as_deref().is_some_and(|role|role.starts_with("user")){return None}
-            match &row.block{MessageBlock::Paragraph(text)|MessageBlock::Heading(text)|MessageBlock::Quote(text)|MessageBlock::RichParagraph{text,..}|MessageBlock::ListItem{text,..}=>Some(text.clone()),_=>None}
+            match &row.block{MessageBlock::Paragraph(text)|MessageBlock::Heading(text)|MessageBlock::Quote(text)|MessageBlock::RichParagraph{text,..}|MessageBlock::ListItem{text,..}|MessageBlock::Voice{speaker:chat_interactions::Speaker::Assistant,text,..}=>Some(text.clone()),_=>None}
         });
         let decoded=if unified::decode_enabled(self.motion && self.unified_text_morph)&&unified::workspace_frame(self.motion).content_visible(){decode_source.as_ref().map(|source|{
-            let (frame,active)=self.unified_text_decode.frame(ix,source,Instant::now());if active{window.request_animation_frame();}frame
+            let voice=matches!(self.rows.get(ix).map(|r|&r.block),Some(MessageBlock::Voice{..}));
+            let (frame,active)=if voice{self.unified_text_decode.voice_frame(ix,source,Instant::now())}else{self.unified_text_decode.frame(ix,source,Instant::now())};if active{window.request_animation_frame();}frame
         })}else{None};
         let Some(row) = self.rows.get(ix) else {
             return div().into_any_element();

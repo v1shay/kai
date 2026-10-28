@@ -40,6 +40,7 @@ struct VoiceState {
     coding: bool,
     preparing_context:bool,
     segments: HashMap<String, (String, ResponseBuffer)>,
+    flat_ids: HashMap<String,String>,
     final_ids: std::collections::HashSet<String>,
     final_order: std::collections::VecDeque<String>,
 }
@@ -1325,27 +1326,38 @@ impl Session {
         }
         Ok(())
     }
-    fn spoken(&mut self, id: &str, role: &str, text: &str, ctx: &NativeContext) -> Result<()> {
+    fn spoken(&mut self, id: &str, role: &str, text: &str, final_result:bool, ctx: &NativeContext) -> Result<()> {
         let speaker = match role {
             "user" => crate::chat_interactions::Speaker::User,
             "assistant" => crate::chat_interactions::Speaker::Assistant,
             _ => return Ok(()),
         };
+        let prefix=format!("voice:{id}:");
         let mut start = 0;
         while start < text.len() {
             let mut end = (start + 48 * 1024).min(text.len());
             while !text.is_char_boundary(end) {
                 end -= 1;
             }
-            let events = self.parser.interaction(
+            let events = self.parser.upsert_interaction(
                 crate::chat_interactions::ChatInteraction::Speaker {
                     speaker,
                     text: text[start..end].into(),
                 },
-                &format!("voice:{id}:{start}"),
+                &format!("{prefix}{start}"),
             );
             self.events(events, ctx)?;
             start = end;
+        }
+        if final_result {
+            // Final recognition may correct or shorten a partial segment.
+            let keys:Vec<_>=self.parser.live_interactions.keys().filter(|key|key.strip_prefix(&prefix).is_some_and(|suffix|suffix.parse::<usize>().is_ok())).cloned().collect();
+            for key in keys{
+                if key.strip_prefix(&prefix).and_then(|s|s.parse::<usize>().ok()).is_some_and(|start|start>=text.len()){
+                    let events=self.parser.upsert_interaction(crate::chat_interactions::ChatInteraction::Speaker{speaker,text:String::new()},&key);self.events(events,ctx)?;
+                }
+                self.parser.live_interactions.remove(&key);
+            }
         }
         Ok(())
     }
@@ -1409,6 +1421,7 @@ impl Session {
                     voice.canonical = true;
                 }
                 if item["type"] == "transcriptSegment" {
+                    if self.voice.as_ref().is_some_and(|voice|voice.final_ids.contains(id)){return Ok(())}
                     let role = item["role"].as_str().unwrap_or("");
                     let text = item["text"].as_str().unwrap_or("");
                     if method.ends_with("/completed") {
@@ -1423,7 +1436,7 @@ impl Session {
                             }
                         }
                         voice.segments.remove(id);
-                        self.spoken(id, role, text, ctx)?;
+                        self.spoken(id, role, text, true, ctx)?;
                         send(
                             &ctx.tx,
                             RuntimeEvent::Voice(crate::voice::Signal::Transcript {
@@ -1441,6 +1454,7 @@ impl Session {
                             let mut buffer = ResponseBuffer::default();
                             buffer.push_str(text);
                             voice.segments.insert(id.into(), (role.into(), buffer));
+                            self.spoken(id,role,text,false,ctx)?;
                         }
                     }
                 }
@@ -1452,12 +1466,14 @@ impl Session {
                 {
                     buffer.push_str(p["delta"].as_str().unwrap_or(""));
                     let text = buffer.snapshot()?.tail(64 * 1024)?;
+                    let role=role.clone();
+                    self.spoken(id,&role,&text,false,ctx)?;
                     send(
                         &ctx.tx,
                         RuntimeEvent::Voice(crate::voice::Signal::Transcript {
                             session_id,
                             id: id.into(),
-                            role: role.clone(),
+                            role,
                             text,
                             final_result: false,
                         }),
@@ -1476,6 +1492,7 @@ impl Session {
                 let id = format!("flat:{role}");
                 let final_result = method.ends_with("/done");
                 let voice = self.voice.as_mut().expect("voicepresent");
+                let live_id=voice.flat_ids.entry(id.clone()).or_insert_with(||uuid::Uuid::new_v4().to_string()).clone();
                 let (_, buffer) = voice
                     .segments
                     .entry(id.clone())
@@ -1487,16 +1504,11 @@ impl Session {
                     buffer.push_str(p["delta"].as_str().unwrap_or(""));
                 }
                 let text = buffer.snapshot()?.tail(64 * 1024)?;
+                self.spoken(&live_id,role,&text,final_result,ctx)?;
                 if final_result {
-                    self.stream_sequence = self.stream_sequence.wrapping_add(1);
-                    self.spoken(
-                        &format!("{id}:{}", self.stream_sequence),
-                        role,
-                        p["text"].as_str().unwrap_or(""),
-                        ctx,
-                    )?;
                     if let Some(v) = &mut self.voice {
                         v.segments.remove(&id);
+                        v.flat_ids.remove(&id);
                     }
                 }
                 send(
@@ -3176,6 +3188,31 @@ send({'method':'thread/realtime/closed','params':{'threadId':'12345678-1234-4234
             seen |= crate::presentation::message_blocks("assistant",&source).iter().any(|b|matches!(b,crate::presentation::MessageBlock::Interaction(crate::chat_interactions::ChatInteraction::Status{title,details,..})if title=="Thinking"&&!details.is_empty()));
         }
         handle.cancel();assert!(seen,"Native subscription did not emit readable reasoning with detailed summaries");eprintln!("Real Codex subscription streamed a readable reasoning summary in {:.1}s",started.elapsed().as_secs_f64());
+    }
+    #[test]
+    fn voice_partials_update_one_transcript_card_and_final_corrections_replace_it(){
+        let (_handle,ctx)=native_handle(0);*ctx.group.lock().unwrap()=None;
+        let mut state=Session::default();state.thread="thread".into();state.voice=Some(VoiceState{id:"voice".into(),..Default::default()});
+        let item=json!({"id":"segment","type":"transcriptSegment","role":"assistant","text":"Hello"});
+        state.voice_notification("thread/realtime/item/started",&json!({"threadId":"thread","item":item}),&ctx).unwrap();
+        assert!(state.parser.rendered_output().contains("Hello"),"Initial transcript must appear before completion");
+        state.voice_notification("thread/realtime/item/transcript/delta",&json!({"threadId":"thread","itemId":"segment","delta":" 🐈 friend"}),&ctx).unwrap();
+        let partial=state.parser.rendered_output();assert!(partial.contains("Hello 🐈 friend"));assert_eq!(state.parser.interactions.len(),1);
+        let done=json!({"threadId":"thread","item":{"id":"segment","type":"transcriptSegment","role":"assistant","text":"Hello 🐈"}});
+        state.voice_notification("thread/realtime/item/completed",&done,&ctx).unwrap();
+        let final_text=state.parser.rendered_output();assert!(final_text.contains("Hello 🐈"));assert!(!final_text.contains("friend"));assert_eq!(state.parser.interactions.len(),1);assert!(state.parser.live_interactions.is_empty());
+        state.voice_notification("thread/realtime/item/completed",&done,&ctx).unwrap();assert_eq!(state.parser.interactions.len(),1);
+        state.voice_notification("thread/realtime/item/started",&json!({"threadId":"thread","item":item}),&ctx).unwrap();assert_eq!(state.parser.interactions.len(),1,"A replayed start duplicated the finalized segment");
+    }
+    #[test]
+    fn legacy_voice_deltas_keep_separate_utterances_and_clear_retracted_text(){
+        let (_handle,ctx)=native_handle(0);*ctx.group.lock().unwrap()=None;let mut state=Session::default();state.thread="thread".into();state.voice=Some(VoiceState{id:"voice".into(),..Default::default()});
+        for (delta,done) in [("First words","First words."),("Retracted","")]{
+            state.voice_notification("thread/realtime/transcript/delta",&json!({"threadId":"thread","role":"assistant","delta":delta}),&ctx).unwrap();
+            assert!(state.parser.rendered_output().contains(delta));
+            state.voice_notification("thread/realtime/transcript/done",&json!({"threadId":"thread","role":"assistant","text":done}),&ctx).unwrap();
+        }
+        let text=state.parser.rendered_output();assert!(text.contains("First words."));assert!(!text.contains("Retracted"));assert!(state.parser.live_interactions.is_empty());assert!(state.voice.as_ref().unwrap().flat_ids.is_empty());
     }
     #[test]
     fn reasoning_sections_update_one_card_and_final_snapshot_replaces_stream(){

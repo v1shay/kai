@@ -1064,3 +1064,24 @@ transition backdrop is visible throughout the handoffs and rapid reversals.
 The overlap matrix and signed product animation probe passed. Installed
 **0.8.8 (22)** with strict signature/hash verification and a timestamped 0.8.7
 backup. The running app was retained; relaunch to load the glass fix.
+
+## 0.8.9 — live voice text with a short suffix unjumble
+
+Realtime transcript deltas now update one native voice message in the ordinary
+run transcript before the segment completes. Its final recognition replaces the
+same interaction, including corrections, shortening, or retracted text. Replayed
+canonical events do not duplicate the segment; legacy flat events retain a
+separate identity for each utterance. Finalized segments release their live keys.
+The existing owner path carries these updates into full Code, mini Code, and Kai.
+
+Assistant voice rows use a 160 ms paint-only unjumble on newly arriving text.
+Earlier words stay resolved when another delta arrives. User speech remains
+readable immediately. The existing text-animation preference and Reduced Motion
+policy still apply; UTF-8 lengths and citation offsets remain unchanged.
+
+Verification: 23 voice regressions and all three text-decode tests passed,
+including partial-before-final delivery, Unicode corrections, retractions,
+duplicate prevention, and stable earlier words. The signed animation probe and
+both real generated-speech voice routes passed. Installed **0.8.9 (23)** with
+strict signature/hash verification and a timestamped 0.8.8 backup. The running
+conversation was retained; relaunch to load the update.
