@@ -315,6 +315,12 @@ impl Orbit {
             && self.session_conflict.is_none()
     }
     fn dispatch_unified(&mut self, request: Value, window: &mut Window, cx: &mut Context<Self>) {
+        // Presentation updates must never replace the acknowledgement of a
+        // prompt or decision that the native controls are still waiting for.
+        if request["action"]=="pet_visuals"{
+            if let Err(error)=self.unified_command(&request,window,cx){eprintln!("Kai pet presentation: {error}")}
+            return;
+        }
         if request["action"] == "workspace_presentation"{
             HOST.with(|host|{if let Some(host)=host.borrow_mut().as_mut(){host.workspace_motion.set_at(request["phase"].as_str().unwrap_or("hidden"),request["started"].as_f64().filter(|t|t.is_finite()&&*t>0.).unwrap_or_else(workspace_motion::now))}});
             if matches!(request["phase"].as_str(),Some("expand"|"reopen")){
@@ -455,6 +461,11 @@ impl Orbit {
             }
         }
         match action {
+            "pet_visuals"=>{
+                let visuals:HashMap<String,crate::task_pets::Visual>=serde_json::from_value(request["pets"].clone()).map_err(|_|"Invalid pet visuals")?;
+                if visuals.len()>128 || visuals.values().any(|v|!v.valid()){return Err("Invalid pet visual dimensions".into())}
+                self.task_pet_visuals=visuals;cx.notify();
+            }
             "typography"=>{
                 let interface=request["interfaceFont"].as_str().ok_or("Missing interface font")?;
                 let code=request["codeFont"].as_str().ok_or("Missing code font")?;
@@ -640,6 +651,7 @@ impl Orbit {
                 }
                 let index=id.split_once('-').and_then(|(n,_)|n.parse::<usize>().ok()).ok_or("Invalid interaction")?;
                 if self.unified_detail_id(index).as_deref()!=Some(id){return Err("This interaction changed; select its current card".into())}
+                if let Some(MessageBlock::Interaction(chat_interactions::ChatInteraction::Delegation{agent:Some(child),..}))=self.rows.get(index).map(|r|&r.block) && let Some(child)=self.unified_children.iter().find(|c|c.id==*child).cloned(){if self.broker_panel.is_none(){self.toggle_children(window,cx)}self.select_child(child.provider,child.id,cx);return Ok(())}
                 if self.expanded_tools.insert(index){self.interaction_animations.insert(index,(Instant::now(),true,0.));}
                 self.list.scroll_to_reveal_item(index);
             }
@@ -974,7 +986,8 @@ impl Orbit {
                     }
                 },
             };
-            history.push(json!({"id":format!("row-{index}"),"kind":if kind.starts_with("user"){"user"}else if kind=="activity"{"activity"}else{"assistant"},"lines":[{"text":bounded(&text,4000),"style":style}],"detailId":self.unified_detail_id(index),"agent":role.split(':').nth(1).unwrap_or(self.agent.command()),"speechText":if kind.starts_with("user") || kind=="activity" || style=="code" {String::new()}else{bounded(&text,4000)}}));
+            let child=match &row.block{MessageBlock::Interaction(chat_interactions::ChatInteraction::Delegation{agent:Some(id),..})=>self.unified_children.iter().find(|c|c.id==*id).map(child_id),_=>None};
+            history.push(json!({"id":format!("row-{index}"),"kind":if kind.starts_with("user"){"user"}else if kind=="activity"{"activity"}else{"assistant"},"lines":[{"text":bounded(&text,4000),"style":style}],"detailId":self.unified_detail_id(index),"childId":child,"agent":role.split(':').nth(1).unwrap_or(self.agent.command()),"speechText":if kind.starts_with("user") || kind=="activity" || style=="code" {String::new()}else{bounded(&text,4000)}}));
         }
         budget_history(history)
     }
@@ -1600,6 +1613,9 @@ impl Orbit{
   assert!(REENTERED.get(),"State delivery held the owner borrow across AppKit reentry");
   assert!(STABLE.get(),"Replacing cached state invalidated the lent native bytes");
   REENTERED.set(false);assert!(super::voice_host().is_none());assert!(REENTERED.get(),"Media host lookup held the owner borrow across AppKit reentry");
+  HOST.with(|h|{let mut h=h.borrow_mut();h.as_mut().unwrap().completed=Some("approval-response".into());h.as_mut().unwrap().error=Some("original-result".into());});
+  cx.update(|window,cx|view.update(cx,|app,cx|app.dispatch_unified(json!({"action":"pet_visuals","ownerToken":app.unified_token(),"pets":{}}),window,cx)));
+  HOST.with(|h|{let h=h.borrow();let h=h.as_ref().unwrap();assert_eq!(h.completed.as_deref(),Some("approval-response"),"Pet presentation consumed the native decision acknowledgement");assert_eq!(h.error.as_deref(),Some("original-result"));});
  }
 }
 

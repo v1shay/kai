@@ -8,6 +8,8 @@ import AppKit
     private var renderedThreadID:String?,renderedBlocks=[KaiMessage](),renderedRanges=[NSRange]()
     private var renderedMessageIDs=[String]()
     private var mathBlocks=[String:Set<Int>](),dirtyMathBlocks=Set<Int>()
+    private var taskPets=[String:InlineTaskPet]()
+    func setTaskPets(_ pets:[String:InlineTaskPet])->Bool{guard taskPets.mapValues(\.key) != pets.mapValues(\.key) else{return false};taskPets=pets;invalidateAll();return true}
     private(set) var lastReplacedBlockCount=0
     private(set) var prependedCharacterCount=0
     private(set) var mappedAnchorCharacter:Int?
@@ -197,7 +199,10 @@ import AppKit
                 }
             }
             }
-            if let iconID=IntegrationIcons.id(for:block.lines.map(\.text).joined(separator:" ")),block.kind == "activity",let image=IntegrationIcons.image(iconID,color:palette.first!) {
+            if block.kind=="activity",let child=block.childId,let pet=taskPets[child]{
+                let attachment=NSTextAttachment();attachment.image=NSImage(size:CGSize(width:16,height:15));attachment.bounds=CGRect(x:0,y:-3,width:16,height:15)
+                let prefix=NSMutableAttributedString(attachment:attachment);prefix.addAttribute(.kaiInlinePet,value:pet,range:NSRange(location:0,length:1));prefix.append(NSAttributedString(string:" ",attributes:content.attributes(at:0,effectiveRange:nil)));content.insert(prefix,at:0)
+            }else if let iconID=IntegrationIcons.id(for:block.lines.map(\.text).joined(separator:" ")),block.kind == "activity",let image=IntegrationIcons.image(iconID,color:palette.first!) {
                 let attachment=NSTextAttachment();attachment.image=image;attachment.bounds=CGRect(x:0,y:-2,width:9,height:9)
                 let prefix=NSMutableAttributedString(attachment:attachment);prefix.append(NSAttributedString(string:"  "));if content.length>0{prefix.addAttributes(content.attributes(at:0,effectiveRange:nil),range:NSRange(location:0,length:prefix.length))};content.insert(prefix,at:0)
             } else if block.kind == "activity",content.length>0 {

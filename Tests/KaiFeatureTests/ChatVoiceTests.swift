@@ -15,16 +15,16 @@ final class ChatVoiceTests:XCTestCase {
     @MainActor func testExpandedApprovalControlsRemainClickableDuringVoice()throws {
         let object:[String:Any] = ["threadId":"chat","project":"/tmp","projects":[],"chats":[],"standaloneChats":[],"standalone":false,"threadName":"Chat","history":[],"readOnly":false,"approval":true,"activity":["scene":"permission","text":"Approve command"],"activeTasks":[],"notice":"Approval needed","attachments":[]]
         let state=try JSONDecoder().decode(KaiState.self,from:JSONSerialization.data(withJSONObject:object))
-        func labels(in layer:CALayer)->[CATextLayer] {
-            (layer.sublayers ?? []).flatMap{child in (child as? CATextLayer).map{[$0]} ?? labels(in:child)}
+        func layers(in layer:CALayer)->[CALayer] {
+            (layer.sublayers ?? []).flatMap{[$0]+layers(in:$0)}
         }
         for size in [CGSize(width:354,height:257),CGSize(width:700,height:500)] {
             let ui=MiniAppInterface();ui.layout(in:CGRect(origin:.zero,size:size))
             ui.setState(state);ui.setVoiceActive(true);ui.setVisible(false,duration:0);ui.setVisible(true,duration:0)
             var decisions=[String]();ui.onApprove={decisions.append("approve")};ui.onReject={decisions.append("reject")}
-            for title in ["Approve","Reject"] {
-                let label=try XCTUnwrap(labels(in:ui.layer).first{$0.string as? String == title})
-                let point=label.convert(CGPoint(x:label.bounds.midX,y:label.bounds.midY),to:ui.layer)
+            for action in ["approve","reject"] {
+                let icon=try XCTUnwrap(layers(in:ui.layer).first{$0.name == "notch-action-"+action})
+                let point=icon.convert(CGPoint(x:icon.bounds.midX,y:icon.bounds.midY),to:ui.layer)
                 XCTAssertTrue(ui.handleClick(point));ui.cancelPending()
             }
             XCTAssertEqual(decisions,["approve","reject"])

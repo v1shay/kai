@@ -34,6 +34,11 @@ private func auditCommand(_ bytes:UnsafePointer<UInt8>?,_ count:Int)->Bool{guard
   let bolt=member(ui,"fastBolt") as! CALayer;precondition(!bolt.isHidden,"Advertised Fast Mode is missing");let fastBefore=commands.count;_ = ui.handleClick(CGPoint(x:input.frame.minX+bolt.frame.midX,y:input.frame.minY+bolt.frame.midY));precondition(commands.count==fastBefore+1 && commands.last?["action"] as? String == "fast_mode","Fast Mode did not reach owner")
   let quota=member(ui,"usageLabel") as! CATextLayer;let quotaTrack=member(ui,"usageTrack") as! CALayer;precondition(abs(quota.frame.midY-quotaTrack.frame.midY)<0.01,"Usage bar/text do not share the footer center");let chipShimmer=member(ui,"effortShimmer") as! EffortTileLayer;precondition(chipShimmer.previewing,"Selected thinking button has no tile animation");precondition((quota.string as? String)?.contains("83% left")==true,"Usage footer does not show remaining");_ = ui.handleClick(CGPoint(x:quota.frame.midX,y:quota.frame.midY));let popup=member(ui,"composerPopover") as! ComposerGlassPopover;precondition(popup.visible,"Usage did not open its custom glass panel");popup.dismiss()
   let chip=member(ui,"effortChip") as! CALayer;ui.handleHover(CGPoint(x:input.frame.minX+chip.frame.midX,y:input.frame.minY+chip.frame.midY));precondition(popup.visible,"Thinking hover did not open its custom glass panel")
+  precondition(chip.frame.minX-model.frame.maxX>=2 && chip.frame.minX-model.frame.maxX<=5,"Thinking intensity is detached from the model name")
+  let scalableForFooter=member(app,"scalableUI") as! NSView,footerScale=scalableForFooter.frame.height/scalableForFooter.bounds.height
+  let composerBottom=scalableForFooter.frame.minY+input.frame.minY*footerScale,usageCenter=scalableForFooter.frame.minY+quota.frame.midY*footerScale
+  precondition(abs(usageCenter-composerBottom/2)<0.5,"Usage is not centered between the prompt and physical notch bottom")
+  let edit=member(app,"composerField") as! NSTextField;precondition(edit.frame.height==24,"The editing row clips wrapped input")
   let shownChoices=member(popup,"effortRows") as! [EffortTileRow],selectedChoice=shownChoices.first{$0.selected}!,otherChoice=shownChoices.first{!$0.selected}!
   func previewing(_ row:EffortTileRow)->Bool{(member(row,"tiles") as! EffortTileLayer).previewing}
   precondition(previewing(selectedChoice) && !previewing(otherChoice),"Selected thinking option does not animate by default")
@@ -92,10 +97,14 @@ private func auditCommand(_ bytes:UnsafePointer<UInt8>?,_ count:Int)->Bool{guard
    state["nativeReview"]=["owner":"code:background","token":"epoch:confirm","kind":"questions","title":"Connected tool needs input","detail":"Allow the tool to update a draft?","choices":[],"questions":[["id":"confirm","header":"Confirm","question":"Allow the tool to update a draft?","secret":false,"multiple":false,"required":true,"options":[["id":"true","label":"Yes"],["id":"false","label":"No"]]]]] as [String:Any]
    runtime.receive(try JSONSerialization.data(withJSONObject:state));pump(0.2)
    let approval=member(app,"approvalUI") as! CompactApprovalView
-   approval.subviews.compactMap{$0 as? NSButton}.first{$0.accessibilityLabel()=="No"}!.performClick(nil)
+   func pressApproval(_ action:String){let hits=member(ui,"actionHits") as! [(CGRect,String)],bar=member(ui,"actionBar") as! CALayer;let rect=hits.first{$0.1==action}!.0;precondition(ui.handleClick(bar.convert(CGPoint(x:rect.midX,y:rect.midY),to:ui.layer)),"Extended approval SVG was not clickable")}
+   pressApproval("review");pump(0.35);precondition(approval.reviewExpanded && ui.pendingRequestID==nil,"Opening review consumed the pending request")
+   approval.setReviewExpanded(false);app.expandToRunningChat();pump(0.35)
+   precondition(member(app,"miniOpen") as? Bool == true,"Review could not return to the extended notch")
+   pressApproval("reject")
    precondition(commands.last?["action"] as? String == "native_answer" && commands.last?["answers"] as? [String:[String]] == ["confirm":["false"]],"Native tool confirmation sent an approval instead of a typed answer")
    precondition(commands.last?["threadId"] as? String == "code:background" && commands.last?["approvalRequestId"] as? String == "epoch:confirm","Notch question lost its background owner")
-   state["approval"]=false;state.removeValue(forKey:"nativeReview");runtime.receive(try JSONSerialization.data(withJSONObject:state));pump(0.1)
+   state["completedRequestId"]=commands.last?["requestId"];state["approval"]=false;state.removeValue(forKey:"nativeReview");runtime.receive(try JSONSerialization.data(withJSONObject:state));pump(0.1)
    print("Native notch: mid-sentence command input, exact Unicode caret, synchronized draft acknowledgement, and background tool Yes/No response passed")
   }
   if let requested=ProcessInfo.processInfo.environment["KAI_COMPOSER_SOAK_SECONDS"].flatMap(Double.init),requested>0 {

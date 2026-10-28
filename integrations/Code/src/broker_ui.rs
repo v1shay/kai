@@ -268,10 +268,11 @@ impl Orbit {
                 }
                 this.native_pending.retain(|_, p| p.current(&this.runs));
                 let mut load = None;
+                let owned:HashSet<_>=children.iter().filter(|child|this.child_owner(child,&children).is_some_and(|owner|this.active.as_ref()==Some(&owner.id))).map(crate::unified::child_id).collect();
                 if let Some(panel) = this.broker_panel.as_mut().filter(|p| p.project == project) {
                     panel.children = children
                         .into_iter()
-                        .filter(|c| c.project == project)
+                        .filter(|c| c.project == project || owned.contains(&crate::unified::child_id(c)))
                         .collect();
                     panel.services = services
                         .into_iter()
@@ -341,18 +342,16 @@ impl Orbit {
     ) -> Option<&'a SessionSummary> {
         let mut parent = child.parent_id.as_str();
         for _ in 0..=children.len() {
-            if let Some(owner) = self.sessions.iter().find(|s| {
+            if let Some(owner) = self.sessions.iter().filter(|s| {
                 s.agent == child.provider
                     && s.external_id.as_deref() == Some(parent)
-                    && s.execution_path.as_ref().unwrap_or(&s.project_path) == &child.project
-            }) {
+            }).max_by_key(|s|(self.runs.contains_key(&s.id),self.active.as_ref()==Some(&s.id))) {
                 return Some(owner);
             }
             parent = children
                 .iter()
                 .find(|ancestor| {
                     ancestor.provider == child.provider
-                        && ancestor.project == child.project
                         && ancestor.id == parent
                 })?
                 .parent_id
@@ -416,7 +415,7 @@ impl Orbit {
         let Some((provider, id)) = panel.selected.clone() else {
             return;
         };
-        let project = panel.project.clone();
+        let Some(project)=panel.children.iter().find(|c|c.provider==provider&&c.id==id).map(|c|c.project.clone())else{return};
         let request = uuid::Uuid::new_v4();
         panel.request = request;
         panel.loading = true;
@@ -533,7 +532,8 @@ impl Orbit {
         let Some((provider, id)) = &panel.selected else {
             return false;
         };
-        match broker::control_child(&panel.project, *provider, id, action) {
+        let Some(project)=panel.children.iter().find(|c|c.provider==*provider&&c.id==*id).map(|c|c.project.clone())else{return false};
+        match broker::control_child(&project, *provider, id, action) {
             Ok(()) => true,
             Err(e) => {
                 panel.error = Some(e.to_string());
@@ -682,11 +682,7 @@ impl Orbit {
                                             .flex()
                                             .items_center()
                                             .gap_2()
-                                            .child(icon(
-                                                agent_icon(provider),
-                                                13.,
-                                                agent_color(provider),
-                                            ))
+                                            .child(this.task_pet(&crate::unified::child_id(child),22.,child.connected&&matches!(child.status,chat_interactions::InteractionStatus::Started|chat_interactions::InteractionStatus::Working)).unwrap_or_else(||icon(agent_icon(provider),13.,agent_color(provider)).into_any_element()))
                                             .child(format!(
                                                 "{} · {}",
                                                 agent_name(provider),
@@ -1011,6 +1007,8 @@ mod tests {
             );
             let mut foreign = nested.clone();
             foreign.project = app.project.clone();
+            assert_eq!(app.child_owner(&foreign,&children).unwrap().id,"fixture-session","The native parent remains the owner across child worktrees");
+            foreign.parent_id="unrelated-native-thread".into();
             assert!(app.child_owner(&foreign, &children).is_none());
             let mut cyclic = child.clone();
             cyclic.parent_id = nested.id.clone();

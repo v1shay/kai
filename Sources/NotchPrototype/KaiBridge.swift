@@ -11,7 +11,7 @@ struct KaiLine: Decodable, Equatable {
         self.text = text; self.style = style; self.mathEnabled = mathEnabled
     }
 }
-struct KaiMessage: Decodable, Equatable { let id: String; let kind: String; let lines: [KaiLine]; let speechText: String?; let activityIcon: String?; var agent:String?=nil; var detailId:String?=nil }
+struct KaiMessage: Decodable, Equatable { let id: String; let kind: String; let lines: [KaiLine]; let speechText: String?; let activityIcon: String?; var agent:String?=nil; var detailId:String?=nil;var childId:String?=nil }
 struct KaiFile: Decodable { let path: String; let name: String; let depth: Int; let directory: Bool; let collapsed: Bool }
 struct KaiActivity: Decodable { let scene: String; let text: String }
 struct KaiActiveTask: Decodable, Equatable {

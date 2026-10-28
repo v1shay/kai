@@ -1220,3 +1220,38 @@ top edge after 302 raw rows.
 The signed packaged transition probe passed. Installed **0.9.3 (27)** with
 signature and binary-hash verification and a timestamped 0.9.2 backup; the
 running conversation was retained.
+
+## 0.9.4 — SVG approvals, shared pet identities, and composer alignment
+
+Notch approval choices, review, and inbox cycling use animated SVG controls.
+The extended notch retains approve/reject/stop/review actions; opening review
+does not claim a submission or consume the pending request. Closing and
+reopening the same request restores its selectable command and enabled glyphs.
+Presentation updates preserve pending prompt and decision acknowledgements.
+
+The usage footer is centered in the physical gap between the composer and the
+bottom of the notch, accounting for the scaled content inset. The editor has
+space for wrapped input, and thinking intensity sits immediately after the
+model's measured name. Code and mini Code use the notch's circular arrow and
+the selected pet's radial palette, retaining their existing send/stop actions.
+
+Subagents retain distinct Kai task pets in the native sidebar, inline activity,
+and Code's viewer. Native inline sprites use shared bounded image decoding and
+Core Animation; Code animates visible sprites and respects Reduced Motion.
+Native parent/child IDs establish ownership across worktrees. Viewer reads and
+steering target the selected child's actual workspace. Child IDs reported in
+collaboration state maps are observed even without a receiver ID array.
+The installed protocol schema and [OpenAI Docs](https://learn.chatgpt.com/docs/app-server)
+were checked while reviewing these events.
+
+Verification: 811 Code regressions passed (17 ignored), 202 Swift tests ran
+with one skipped and no failures, and the focused acknowledgement test passed.
+Native composer checks exercise the physical footer center, model/intensity
+spacing, and opening review then returning to the extended notch to answer an
+owned question with its SVG. Native state checks exercise distinct inline child
+pets and the existing window, approval, and draft continuity matrix.
+
+The native visual check confirmed that both children create visible compositor
+layers. The final signed launch/morph probe passed. Installed **0.9.4 (28)** with
+signature and three-binary hash verification and a timestamped 0.9.3 backup,
+leaving the running conversation open.

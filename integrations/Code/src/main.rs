@@ -5,6 +5,7 @@ mod appearance;
 mod attachments;
 mod background;
 mod broker_ui;
+mod task_pets;
 mod chat_interactions;
 mod chat_navigation;
 mod checkpoint_diff;
@@ -550,6 +551,7 @@ struct Orbit {
     fast_transition:Option<Instant>,
     reasoning_efforts:std::collections::BTreeMap<String,String>,
     unified_children:Vec<runtime::broker::ChildSnapshot>,
+    task_pet_visuals:HashMap<String,task_pets::Visual>,
     unified_text_decode:text_decode::TextDecode,
     unified_successes: std::collections::VecDeque<(String, String)>,
     unified_context: Option<String>,
@@ -1087,6 +1089,7 @@ impl Orbit {
             fast_transition:None,
             reasoning_efforts:restored.as_ref().map(|s|s.reasoning_efforts.clone()).unwrap_or_default(),
             unified_children:vec![],
+            task_pet_visuals:HashMap::new(),
             unified_text_decode:Default::default(),
             unified_successes: Default::default(),
             unified_context: None,
@@ -5227,30 +5230,12 @@ impl Orbit {
                             .child(
                                 div()
                                     .id("send")
-                                    .size(px(28.))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .rounded_md()
-                                    .bg(gpui::rgb(self.resolved_theme.accent))
                                     .cursor_pointer()
                                     .hover(|s| s.opacity(0.88))
-                                    .child(
-                                        icon(
-                                            if (running
+                                    .child(self.send_symbol((running
                                                 && self.composer.read(cx).text().trim().is_empty()
                                                 && self.attachments.is_empty())
-                                                || self.handoff_pending.is_some()
-                                            {
-                                                "stop"
-                                            } else {
-                                                "arrow"
-                                            },
-                                            16.,
-                                            self.resolved_theme.on_accent,
-                                        )
-                                        .text_color(theme::on_accent()),
-                                    )
+                                                || self.handoff_pending.is_some()))
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         if !this.cancel_send_handoff(cx) {
                                             this.send(window, cx);

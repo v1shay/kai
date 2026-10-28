@@ -424,33 +424,15 @@ impl Orbit {
                                         div()
                                             .id("quick-send")
                                             .debug_selector(|| "quick-send".into())
-                                            .size(px(28.))
-                                            .flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .rounded_md()
-                                            .bg(gpui::rgb(self.resolved_theme.accent))
                                             .cursor_pointer()
                                             .hover(|s| s.opacity(0.88))
-                                            .child(
-                                                icon(
-                                                    if running
+                                            .child(self.send_symbol((running
                                                         && composer
                                                             .read(cx)
                                                             .text()
                                                             .trim()
                                                             .is_empty()
-                                                        && self.attachments.is_empty()
-                                                    {
-                                                        "stop"
-                                                    } else {
-                                                        "arrow"
-                                                    },
-                                                    16.,
-                                                    self.resolved_theme.on_accent,
-                                                )
-                                                .text_color(theme::on_accent()),
-                                            )
+                                                        && self.attachments.is_empty()) || self.handoff_pending.is_some()))
                                             .on_click(cx.listener(move |this, _, window, cx| {
                                                 if !this.cancel_send_handoff(cx) {
                                                     this.send(window, cx);

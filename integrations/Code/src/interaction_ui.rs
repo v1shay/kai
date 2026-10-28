@@ -323,7 +323,7 @@ impl Orbit {
                     .text_color(rgb(MUTED))
                     .cursor_pointer()
                     .hover(|s| s.bg(rgba(GLASS_HOVER)))
-                    .child(icon(symbol, 14., color))
+                    .child(agent.and_then(|id|self.unified_children.iter().find(|c|c.id==id)).and_then(|child|self.task_pet(&unified::child_id(child),18.,child.connected&&matches!(child.status,InteractionStatus::Started|InteractionStatus::Working))).unwrap_or_else(||icon(symbol,14.,color).into_any_element()))
                     .child(
                         div()
                             .flex_1()

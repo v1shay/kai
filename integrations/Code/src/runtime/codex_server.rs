@@ -1039,10 +1039,12 @@ impl Session {
                         .take(32)
                         .collect();
                     if let Some(id) = item["receiverThreadId"].as_str()
+                        .or_else(||item["newThreadId"].as_str())
                         && !ids.contains(&id)
                     {
                         ids.push(id);
                     }
+                    if let Some(states)=item["agentsStates"].as_object(){for id in states.keys().take(32){if !ids.contains(&id.as_str()){ids.push(id)}}}
                     for id in ids.into_iter().filter(|id| *id != self.thread) {
                         let known = service.child(id);
                         service.observe(

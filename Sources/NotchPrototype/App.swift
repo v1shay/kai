@@ -195,6 +195,8 @@ private final class NotchSurfaceHost:NSView {
 @MainActor final class KaiPetApp: NSObject, NSApplicationDelegate, NSTextFieldDelegate, NSTextViewDelegate {
     private var unifiedMenuItems=[NSMenuItem]()
     private let nativeReview=NativeRequestReview()
+    private let inlinePetImages=SpriteAssetCache(maxPixelSize:960)
+    private var inlinePetLoading=Set<URL>(),inlinePetVisuals=[String:InlineTaskPet](),lastPetVisualPayload:Data?
     private let slashPicker=NativeSlashPicker()
     private var pendingSlashID:String?
     private var pendingSlashDraft:String?
@@ -550,6 +552,8 @@ private final class NotchSurfaceHost:NSView {
         bridge.onVoiceSDP={ [weak self] in self?.chatVoice.receiveSDP($0,$1) }
         miniUI.onApprove={ [weak self] in self?.answerApproval("approve") }
         miniUI.onReject={ [weak self] in self?.answerApproval("reject") }
+        miniUI.onApprovalStop={ [weak self] in self?.answerApproval("approval_stop") }
+        miniUI.onReview={ [weak self] in guard let self,let state=self.latestState,let request=CompactApprovalRequest(state:state) else{return};self.presentCompactApproval(request);self.approvalUI.setReviewExpanded(true,pinned:true) }
         miniUI.onInterrupt={ [weak self] in guard let self else{return};self.chatVoice.stopSpeaking();self.speech.cancelAudio();self.bridge.send("interrupt",["requestId":self.miniUI.pendingRequestID ?? ""]) }
         miniUI.onAgent={ [weak self] in self?.bridge.send("agent",["agent":$0]) }
         miniUI.onClose={ [weak self] in self?.dismissNotchView() }
@@ -882,7 +886,7 @@ private final class NotchSurfaceHost:NSView {
         scalableUI.frame=CGRect(x:px(kaiLeft+8),y:16,width:content.width,height:content.height)
         scalableUI.bounds=CGRect(origin:.zero,size:sizing.logical)
         miniUI.setRenderingScale(scale*sizing.scale)
-        miniUI.layout(in:scalableUI.bounds)
+        miniUI.layout(in:scalableUI.bounds,bottomInset:16/max(0.1,sizing.scale))
         resizeHandles.frame=CGRect(x:kaiLeft+8,y:0,width:expanded-16,height:14);resizeHandles.isHidden = !miniOpen || experimentalWebMode
         resizeHandles.needsDisplay=true;panel.invalidateCursorRects(for:resizeHandles)
         petGallery.layer.frame=miniUI.layer.frame;petGallery.layout(in:petGallery.layer.bounds,selected:petID);NotchSizing.updateTextResolution(petGallery.layer,scale:scale*sizing.scale)
@@ -1186,6 +1190,7 @@ private final class NotchSurfaceHost:NSView {
         reconcileTaskPets(priority:task.id)
         if !miniOpen || latestState?.threadId == task.id{petID=id;focusedTaskID=task.id;currentScene="";play();if let state=latestState{showActivity(displayActivity(state))}}
         floatingTasks.refresh(pets:taskPets)
+        syncInlinePets()
     }
     private func openFloatingTask(_ task:KaiActiveTask,preview:Bool){
         if task.id.hasPrefix("child:"){bridge.send("child_open",["id":task.id]);return}
@@ -1219,6 +1224,9 @@ private final class NotchSurfaceHost:NSView {
         if petGalleryVisible && (!desired || !mini){hidePetGallery(restore:false)}
         panelRevision += 1;let revision=panelRevision
         let wasOpen=open,wasMini=miniOpen; open = desired; miniOpen = desired && mini;presentedCompact=compactWhileWorking;if desired && !wasOpen{play()}else if !desired{playToken += 1;sprite.removeAnimation(forKey:"spriteFrames")}; panel.ignoresMouseEvents = !miniOpen;composerField?.isHidden = !miniOpen;conversationScroll?.isHidden = !miniOpen;resizeHandles.isHidden = !miniOpen || experimentalWebMode;refreshChecks()
+        if desired,!mini,!approvalPopout,let state=latestState,let request=CompactApprovalRequest(state:state){
+            DispatchQueue.main.async{[weak self] in guard let self,self.panelRevision==revision,self.open,!self.miniOpen,!self.approvalPopout,let state=self.latestState,request.matches(state),!self.workspaceIsForeground else{return};self.presentCompactApproval(request)}
+        }
         media.setSuppressed(mediaSuppressed)
         let previousPath=forceReveal ? path(width:notchWidth,height:notchHeight):(mask.presentation()?.path ?? mask.path)
         let oldIndicatorX=indicator.layer.presentation()?.position.x ?? indicator.layer.position.x
@@ -1510,6 +1518,7 @@ private final class NotchSurfaceHost:NSView {
     @objc private func workspaceSettings(){bridge.send("workspace_settings");expandWorkspace()}
 
     private func handleClick(_ point:CGPoint,count:Int) {
+        if !miniOpen,!approvalPopout,let state=latestState,let request=CompactApprovalRequest(state:state){presentCompactApproval(request);return}
         if compactWhileWorking && !miniOpen {expandToRunningChat();return}
         guard miniOpen else{return}
         let topFrames=[sprite,indicator.fileLayer,indicator.layer].enumerated().map{index,item -> CGRect in
@@ -1531,7 +1540,7 @@ private final class NotchSurfaceHost:NSView {
         if topTarget == 1 { miniUI.toggleFiles();if miniUI.isFilesOpen{let requestID=UUID().uuidString;pendingFilesRequestID=requestID;indicator.setFileLoading(true);bridge.send("files",["requestId":requestID])}else{pendingFilesRequestID=nil;indicator.setFileLoading(false)};return }
         if topTarget == 2 {dismissNotchView();return}
         let frame=miniUI.layer.frame,uiPoint=scalableUI.convert(point,from:panel.contentView), local=CGPoint(x:uiPoint.x-frame.minX,y:uiPoint.y-frame.minY)
-        if frame.contains(uiPoint) { _=miniUI.handleClick(local,count:count) }
+        if miniUI.interactiveBounds.contains(local) { _=miniUI.handleClick(local,count:count) }
     }
 
     private func handleHover(_ point:CGPoint?) {
@@ -1561,7 +1570,7 @@ private final class NotchSurfaceHost:NSView {
     private func showPetGallery(){guard miniOpen else{return};petGalleryVisible=true;miniUI.setVisible(false,duration:0.3);composerField?.isHidden=true;conversationScroll?.isHidden=true;petGallery.layout(in:petGallery.layer.bounds,selected:petID);petGallery.show(selected:petID,motion:motionID)}
     private func hidePetGallery(restore:Bool=true){guard petGalleryVisible else{return};petGalleryVisible=false;petGallery.hide();if restore{miniUI.setVisible(miniOpen,duration:0.32);composerField?.isHidden = !miniOpen;conversationScroll?.isHidden = !miniOpen}}
 
-    private func layoutComposer(_ frame:CGRect,animated:Bool){guard let field=composerField else{return};let root=miniUI.layer.frame,h:CGFloat=18,modern=frame.height>40,target=CGRect(x:root.minX+frame.minX+10,y:root.minY+(modern ? frame.maxY-27:frame.midY-h/2-2.25),width:max(20,frame.width-(modern ? 20:73)),height:h);if animated{NSAnimationContext.runAnimationGroup{context in context.duration=0.42;context.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.7,0.25,1);field.animator().frame=target}}else{field.frame=target}}
+    private func layoutComposer(_ frame:CGRect,animated:Bool){guard let field=composerField else{return};let root=miniUI.layer.frame,modern=frame.height>40,h:CGFloat=modern ? 24:18,target=CGRect(x:root.minX+frame.minX+10,y:root.minY+(modern ? frame.maxY-28:frame.midY-h/2-2.25),width:max(20,frame.width-(modern ? 20:73)),height:h);if animated{NSAnimationContext.runAnimationGroup{context in context.duration=0.42;context.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.7,0.25,1);field.animator().frame=target}}else{field.frame=target}}
     private func layoutConversation(_ frame:CGRect){guard let scroll=conversationScroll else{return};let root=miniUI.layer.frame;scroll.frame=CGRect(x:root.minX+frame.minX,y:root.minY+frame.minY,width:frame.width,height:frame.height)}
     private func setPrompt(_ text:String,dictation:Bool=false){
         slashPicker.hide();dictationTextReveal.finish()
@@ -1647,6 +1656,7 @@ private final class NotchSurfaceHost:NSView {
         if approvalPopout,approvalUI.request?.matches(state) == true{
             approvalUI.show(request);approvalUI.receive(state);return
         }
+        if miniOpen{lastApproval=request;return}
         guard request.id != lastApproval?.id || request.thread != lastApproval?.thread else{return}
         lastApproval=request;presentCompactApproval(request)
     }
@@ -1990,6 +2000,7 @@ private final class NotchSurfaceHost:NSView {
         assistantPalette=assistantGradientColors(for:id)
         if let storage=conversationText?.textStorage{ConversationTheme.recolor(storage,palette:assistantPalette)}
         updateGlassBackground()
+        syncInlinePets()
     }
     private func petAssignmentTaskIDs(for id:String)->[String]{
         if id.hasPrefix("floating-preview:"){return floatingTasks.trackedTasks.map(\.id)}
@@ -2012,6 +2023,31 @@ private final class NotchSurfaceHost:NSView {
             focusedTaskID=nil
         }
         syncConversationTheme()
+        syncInlinePets()
+    }
+    private func syncInlinePets(){
+        guard let catalog,let state=latestState else{return}
+        let selected=conversationPetID.isEmpty ? petID:conversationPetID
+        var seen=Set<String>();let owners=(state.activeTasks.filter{$0.id.hasPrefix("child:")}.map(\.id)+taskPets.keys.filter{$0.hasPrefix("child:")}.sorted()).filter{seen.insert($0).inserted}.prefix(127)
+        var assignments=owners.compactMap{owner in taskPets[owner].map{(key:owner,value:$0)}};assignments.insert((key:"selected",value:selected),at:0)
+        var visuals=[String:InlineTaskPet](),payload=[String:[String:Any]]()
+        for (owner,petID) in assignments {
+            guard let pet=catalog.pets.first(where:{$0.id==petID}) else{continue}
+            let scene=state.activeTasks.first{$0.id==owner}?.scene ?? "off",motionID=scene=="off" ? "idle":["thinking","waiting","permission","question"].contains(scene) ? "waiting":"running"
+            guard let motion=pet.animationOverrides?[motionID] ?? catalog.stateAnimations[motionID],let timeline=SpriteTimeline(row:motion.row,rows:pet.grid.rows,columns:motion.columns,durationsMs:motion.durationsMs,loops:motion.loop) else{continue}
+            let url=pet.sourceURL ?? assetRoot.appendingPathComponent(pet.spritesheet),key=url.path+":"+motionID
+            let stops=gradientCatalog.profileByPetID[petID]?.gradients.ambient.stops ?? []
+            var colors=stops.map{stop->NSColor in let n=UInt64(stop.color.dropFirst(),radix:16) ?? 0;return NSColor(srgbRed:CGFloat((n>>16)&255)/255,green:CGFloat((n>>8)&255)/255,blue:CGFloat(n&255)/255,alpha:1)}
+            if colors.isEmpty{colors=[.white]};colors.sort{($0.usingColorSpace(.sRGB)?.brightnessComponent ?? 0)>($1.usingColorSpace(.sRGB)?.brightnessComponent ?? 0)}
+            let radial=[colors.first!.blended(withFraction:0.2,of:.white) ?? colors.first!,colors[colors.count/2].blended(withFraction:0.16,of:.black) ?? colors[colors.count/2],colors.last!.blended(withFraction:0.58,of:.black) ?? colors.last!]
+            let palette=radial.map{color->UInt32 in let c=color.usingColorSpace(.sRGB) ?? .white;return UInt32((c.redComponent*255).rounded())<<16 | UInt32((c.greenComponent*255).rounded())<<8 | UInt32((c.blueComponent*255).rounded())}
+            payload[owner]=["path":url.path,"rows":pet.grid.rows,"row":motion.row,"columns":motion.columns,"durationsMs":motion.durationsMs,"colors":palette]
+            if let image=inlinePetImages.image(at:url){visuals[owner]=inlinePetVisuals[owner].flatMap{$0.key==key ? $0:nil} ?? InlineTaskPet(key:key,image:image,timeline:timeline)}
+            else if inlinePetLoading.insert(url).inserted{inlinePetImages.load(url){[weak self] image in guard let self else{return};self.inlinePetLoading.remove(url);if image != nil{self.syncInlinePets()}}}
+        }
+        inlinePetVisuals=visuals;miniUI.setTaskPets(visuals)
+        if conversationRenderer.setTaskPets(visuals),miniOpen{renderConversation(state.history)}
+        if EmbeddedCodeRuntime.shared.active,let bytes=try? JSONSerialization.data(withJSONObject:payload,options:.sortedKeys),bytes != lastPetVisualPayload{lastPetVisualPayload=bytes;bridge.send("pet_visuals",["pets":payload])}
     }
     private func closeNotch(keepExpanded:Bool=false){
         dictationTextReveal.finish()

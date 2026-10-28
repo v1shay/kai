@@ -88,6 +88,7 @@ enum ConversationInteraction {
 extension NSAttributedString.Key {
     static let kaiInteractionCard=NSAttributedString.Key("KaiInteractionCard")
     static let kaiInteractionTint=NSAttributedString.Key("KaiInteractionTint")
+    static let kaiInlinePet=NSAttributedString.Key("KaiInlinePet")
 }
 
 /// Draw each card once in text layout coordinates, without adding backdrop
@@ -107,10 +108,20 @@ final class InteractionLayoutManager:NSLayoutManager {
     }
     weak var cardHost:NSClipView?
     private var surfaces=[Int:NSView]()
+    private var inlinePets=[Int:CALayer]()
     override func drawBackground(forGlyphRange glyphs:NSRange,at origin:NSPoint){
         guard let storage=textStorage,let container=textContainers.first else{super.drawBackground(forGlyphRange:glyphs,at:origin);return}
         for surface in surfaces.values{surface.isHidden=true}
         let characters=characterRange(forGlyphRange:glyphs,actualGlyphRange:nil)
+        var visiblePets=Set<Int>()
+        storage.enumerateAttribute(.kaiInlinePet,in:characters){value,range,_ in
+            guard let pet=value as? InlineTaskPet,let host=self.cardHost,let textView=container.textView else{return}
+            let glyph=self.glyphRange(forCharacterRange:range,actualCharacterRange:nil);var rect=self.boundingRect(forGlyphRange:glyph,in:container);rect.origin.x+=origin.x;rect.origin.y+=origin.y
+            let layer=self.inlinePets[range.location] ?? CALayer();visiblePets.insert(range.location)
+            if layer.superlayer == nil{host.wantsLayer=true;host.layer?.addSublayer(layer);self.inlinePets[range.location]=layer}
+            CATransaction.begin();CATransaction.setDisableActions(true);layer.frame=textView.convert(rect,to:host);pet.apply(to:layer);CATransaction.commit()
+        }
+        for key in Array(inlinePets.keys) where !visiblePets.contains(key){inlinePets.removeValue(forKey:key)?.removeFromSuperlayer()}
         storage.enumerateAttribute(.kaiInteractionCard,in:characters){value,visibleRange,_ in
             guard value != nil else{return}
             var range=NSRange()

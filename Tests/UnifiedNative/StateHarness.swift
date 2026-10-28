@@ -280,6 +280,20 @@ private func member(_ object:Any,_ name:String)->Any?{Mirror(reflecting:object).
     precondition(commands.filter{$0["action"] as? String == "attachments"}.count == beforeImports,"Owner thumbnail reimported its original")
     guard let mini=member(app,"miniUI") as? MiniAppInterface else{fatalError("Missing mini UI")}
     mini.onSend?();precondition(commands.last?["action"] as? String == "send" && commands.last?["text"] as? String == "","Image-only draft could not send from notch")
-    print("Native state regression: failure/cancellation, late success, exclusive Quick Chat, automatic nonactivating background status, retained background workspace, replayed morph, focus-aware clickable approvals, selected-chat/draft continuity, exact approval decisions, inbox cycling, incremental history, and image-only owner drafts passed")
+    // Child activity and sidebar rows reuse the same distinct task assignments.
+    var childState=try JSONSerialization.jsonObject(with:packet(scene:"thinking",run:"children")) as! [String:Any]
+    let childA="child:codex:/private/tmp/worktree-a:child-a",childB="child:codex:/private/tmp/worktree-b:child-b"
+    childState["activeTasks"]=[["id":"code:fixture","name":"Parent","runId":"children","scene":"thinking","text":"Working","agent":"codex"],["id":childA,"name":"Subagent A","runId":"a","scene":"thinking","text":"First task","agent":"codex","parentId":"code:fixture"],["id":childB,"name":"Subagent B","runId":"b","scene":"thinking","text":"Second task","agent":"codex","parentId":"code:fixture"]]
+    childState["history"]=[["id":"child-a-activity","kind":"activity","childId":childA,"lines":[["text":"Subagent A is working","style":"activity"]]],["id":"child-b-activity","kind":"activity","childId":childB,"lines":[["text":"Subagent B is working","style":"activity"]]]]
+    runtime.receive(try JSONSerialization.data(withJSONObject:childState));app.expandToRunningChat()
+    settled{(member(app,"inlinePetVisuals") as? [String:InlineTaskPet])?[childA] != nil && (member(app,"inlinePetVisuals") as? [String:InlineTaskPet])?[childB] != nil}
+    let assigned=member(app,"taskPets") as! [String:String];precondition(assigned[childA] != assigned[childB],"Subagents share a pet despite free assignments")
+    let visuals=commands.last{$0["action"] as? String == "pet_visuals"}?["pets"] as! [String:[String:Any]]
+    precondition(visuals[childA] != nil && visuals[childB] != nil && visuals["selected"] != nil,"Code did not receive the native child pets and composer palette")
+    var inlineCount=0;nativeText.textStorage!.enumerateAttribute(.kaiInlinePet,in:NSRange(location:0,length:nativeText.textStorage!.length)){value,_,_ in if value is InlineTaskPet{inlineCount+=1}}
+    precondition(inlineCount==2,"The extended notch did not render both inline subagent pets")
+    if let panel=member(app,"panel") as? NSPanel,let view=panel.contentView,let bitmap=view.bitmapImageRepForCachingDisplay(in:view.bounds){view.cacheDisplay(in:view.bounds,to:bitmap);if let png=bitmap.representation(using:.png,properties:[:]){try png.write(to:URL(fileURLWithPath:"/private/tmp/kai-v094-inline-pets.png"))}}
+    precondition((member(nativeText.layoutManager!,"inlinePets") as? [Int:CALayer])?.count==2,"Inline pet attributes did not create visible compositor layers")
+    print("Native state regression: owner continuity, clickable SVG approvals, inline subagent pets, retained background workspace, morphs, incremental history, and image-only drafts passed")
  }
 }

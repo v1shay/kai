@@ -26,6 +26,8 @@ struct KaiNativeReview:Decodable,Equatable {
     private var send:((String,[String:Any])->Void)?
     private var content:NSView?,contentStack:NSStackView?,contentScroll:NSScrollView?
     private var embedded=false,contentWidth:CGFloat=390
+    private var profile:PetGradientProfile?
+    func setProfile(_ profile:PetGradientProfile){self.profile=profile;buttons.compactMap{$0 as? ApprovalButton}.forEach{$0.glyph.setProfile(profile,wave:false)}}
     var onResolution:(()->Void)?
     var preferredHeight:CGFloat{min(480,max(80,contentStack?.fittingSize.height ?? 80))}
     func present(_ review:KaiNativeReview,from anchor:NSView,send:@escaping(String,[String:Any])->Void) {
@@ -63,12 +65,17 @@ struct KaiNativeReview:Decodable,Equatable {
             field.widthAnchor.constraint(equalToConstant:textWidth).isActive=true
             field.font = .systemFont(ofSize:12);fields[question.id]=field;stack.addArrangedSubview(field)
         }
+        let choices=NSStackView();choices.orientation = .horizontal;choices.spacing=12
         for choice in review.choices {
-            let button=NSButton(title:choice.label,target:self,action:#selector(choose(_:)));button.bezelStyle = .rounded
-            choiceIDs[ObjectIdentifier(button)]=choice.id;buttons.append(button);stack.addArrangedSubview(button)
+            let name=(choice.id+" "+choice.label).lowercased()
+            let scene=name.contains("stop") || name.contains("cancel") ? "pause":name.contains("decline") || name.contains("reject") ? "failure":name.contains("matching") || name.contains("always") || name.contains("session") ? "permission":"success"
+            let button=ApprovalButton(action:choice.id,label:choice.label,scene:scene);button.target=self;button.action=#selector(choose(_:));button.widthAnchor.constraint(equalToConstant:32).isActive=true;button.heightAnchor.constraint(equalToConstant:28).isActive=true
+            if let profile{button.glyph.setProfile(profile,wave:false)};button.animate()
+            choiceIDs[ObjectIdentifier(button)]=choice.id;buttons.append(button);choices.addArrangedSubview(button)
         }
+        if !review.choices.isEmpty{stack.addArrangedSubview(choices)}
         if review.isQuestion {
-            let button=NSButton(title:review.questions.isEmpty ? "Continue":"Submit answers",target:self,action:#selector(submit));button.bezelStyle = .rounded;buttons.append(button);stack.addArrangedSubview(button)
+            let button=ApprovalButton(action:"submit",label:review.questions.isEmpty ? "Continue":"Submit answers",scene:"success");button.target=self;button.action=#selector(submit);button.widthAnchor.constraint(equalToConstant:32).isActive=true;button.heightAnchor.constraint(equalToConstant:28).isActive=true;if let profile{button.glyph.setProfile(profile,wave:false)};button.animate();buttons.append(button);stack.addArrangedSubview(button)
         }
         status.constraints.filter{$0.firstAttribute == .width && $0.secondItem == nil}.forEach{$0.isActive=false};status.stringValue="";status.font = .systemFont(ofSize:11);status.textColor = .secondaryLabelColor;status.preferredMaxLayoutWidth=textWidth;status.widthAnchor.constraint(equalToConstant:textWidth).isActive=true;stack.addArrangedSubview(status)
         let scroll=NSScrollView();scroll.drawsBackground=false;scroll.hasVerticalScroller=true;scroll.autohidesScrollers=true;scroll.scrollerStyle = .overlay;scroll.documentView=stack
