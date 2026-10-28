@@ -22,10 +22,14 @@ import AppKit
     nonisolated static func destination(saved:CGRect?,screen:CGRect)->CGRect {screen}
     private let curve=CAMediaTimingFunction(controlPoints:0.16,0.84,0.20,1)
 
+    /// The incoming surface owns glass during an app-to-app handoff. Retiring
+    /// the outgoing backdrop must not cancel its live contour or content fade.
+    func retireBackdrop(){shell?.orderOut(nil);shell?.contentView=nil;shell=nil}
+
     private func clearVisuals(){
         delayed?.cancel();delayed=nil;handoff?.cancel();handoff=nil;presentingNotch=false
         if let incomingNotch,let incomingLevel{incomingNotch.level=incomingLevel};incomingNotch=nil;incomingLevel=nil
-        shell?.orderOut(nil);shell?.contentView=nil;shell=nil
+        retireBackdrop()
         if let host,let originalContentOpacity{
             host.layer?.removeAnimation(forKey:"workspaceContent")
             CATransaction.begin();CATransaction.setDisableActions(true);host.layer?.opacity=originalContentOpacity;CATransaction.commit()
@@ -71,7 +75,7 @@ import AppKit
     nonisolated static func transitionLevel(_ level:NSWindow.Level)->NSWindow.Level{
         NSWindow.Level(rawValue:max(level.rawValue,NSWindow.Level.statusBar.rawValue+1))
     }
-    private func prepare(_ window:NSWindow,from source:CGRect,to target:CGRect,duration:TimeInterval,delay:TimeInterval=0,expanding:Bool,contour:CGPath?=nil,sourceNotch:Bool?=nil,targetNotch:Bool?=nil,sourceRadius:CGFloat=14,targetRadius:CGFloat=14){
+    private func prepare(_ window:NSWindow,from source:CGRect,to target:CGRect,duration:TimeInterval,delay:TimeInterval=0,expanding:Bool,contour:CGPath?=nil,sourceNotch:Bool?=nil,targetNotch:Bool?=nil,sourceRadius:CGFloat=14,targetRadius:CGFloat=14,backdrop:Bool=true){
         self.window=window
         originalLevel=window.level;window.level=Self.transitionLevel(window.level)
         originalBackground=window.backgroundColor;originalOpaque=window.isOpaque;originalShadow=window.hasShadow;originalIgnores=window.ignoresMouseEvents
@@ -80,6 +84,7 @@ import AppKit
         self.host=host;host.wantsLayer=true
         let mask=CAShapeLayer();mask.frame=host.bounds;previousMask=host.layer?.mask;host.layer?.mask=mask;clip=mask
         animate(mask,from:contour.map{local($0,in:host,window:window)} ?? Self.outline(local(source,in:host,window:window),notch:sourceNotch ?? expanding,radius:sourceRadius),to:Self.outline(local(target,in:host,window:window),notch:targetNotch ?? !expanding,radius:targetRadius),duration:duration,delay:delay)
+        if !backdrop{window.makeKeyAndOrderFront(nil);return}
         // A single glass backdrop bridges the menu-bar gap. It sits UNDER the
         // live workspace, so each real UI component is visible as it arrives.
         let union=source.union(target)
@@ -124,7 +129,7 @@ import AppKit
             completion()
         };delayed=finish;DispatchQueue.main.asyncAfter(deadline:.now()+(reduce ? 0.12:Self.expansionDuration),execute:finish)
     }
-    func collapse(_ window:NSWindow,to target:CGRect,into notch:NSPanel?=nil,revealNotch:(()->Void)?=nil,targetNotch:Bool=true,retireContent:Bool=false,targetRadius:CGFloat=10,completion:@escaping()->Void){
+    func collapse(_ window:NSWindow,to target:CGRect,into notch:NSPanel?=nil,revealNotch:(()->Void)?=nil,targetNotch:Bool=true,retireContent:Bool=false,targetRadius:CGFloat=10,backdrop:Bool=true,completion:@escaping()->Void){
         if !expanded && !transitioning && !window.isVisible{completion();return}
         CATransaction.begin();CATransaction.setDisableActions(true);defer{CATransaction.commit()}
         let retiringOpacity=originalContentOpacity.map{_ in host?.layer?.presentation()?.opacity ?? host?.layer?.opacity ?? 0}
@@ -133,7 +138,7 @@ import AppKit
         revision += 1;let token=revision;clearVisuals();self.window=window;expanded=false;transitioning=true
         onPresentation?("collapse")
         let reduce = !motionEnabled || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        if !reduce{prepare(window,from:source,to:target,duration:0.48,delay:0.10,expanding:false,contour:contour,sourceNotch:false,targetNotch:targetNotch,sourceRadius:surfaceRadius,targetRadius:targetNotch ? 14:targetRadius)}else{
+        if !reduce{prepare(window,from:source,to:target,duration:0.48,delay:0.10,expanding:false,contour:contour,sourceNotch:false,targetNotch:targetNotch,sourceRadius:surfaceRadius,targetRadius:targetNotch ? 14:targetRadius,backdrop:backdrop)}else{
             NSAnimationContext.runAnimationGroup{context in context.duration=0.12;window.animator().alphaValue=0}
         }
         if let layer=host?.layer,!reduce,(notch != nil || retiringOpacity != nil || retireContent){

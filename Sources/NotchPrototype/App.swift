@@ -1265,6 +1265,7 @@ private final class NotchSurfaceHost:NSView {
         let replay=workspaceMorph.expanded && (workspaceNotchOverlay || !workspaceIsForeground)
         if workspaceMorph.expanded && !replay && !workspaceMorph.transitioning{window.makeKeyAndOrderFront(nil);return}
         let quickSource=quickChatVisible ? quickWindow?.frame:nil
+        if quickSource != nil || !sourceIsNotch{quickMorph.retireBackdrop()}
         if quickChatVisible{quickReturn = .handoff;EmbeddedCodeRuntime.shared.sendAction("quick_dismiss");quickChatVisible=false}
         let width=open ? expandedWidth:notchWidth,height=open ? popoutHeight:notchHeight
         let settledSource=CGRect(x:panel.frame.midX-width/2,y:panel.frame.maxY-height,width:width,height:height)
@@ -1385,7 +1386,7 @@ private final class NotchSurfaceHost:NSView {
             let source=prepared?.source ?? (fromWorkspace ? EmbeddedCodeRuntime.shared.workspaceWindow!.frame:(panel.isVisible ? (mask.presentation()?.path ?? mask.path).map{panel.convertToScreen($0.boundingBoxOfPath)} ?? notchFrame:notchFrame))
             setQuickChatVisible(true)
             if fromWorkspace,let workspace=EmbeddedCodeRuntime.shared.workspaceWindow{
-                workspaceMorph.collapse(workspace,to:window.frame,targetNotch:false,retireContent:true,targetRadius:20,completion:{})
+                workspaceMorph.collapse(workspace,to:window.frame,targetNotch:false,retireContent:true,targetRadius:20,backdrop:false,completion:{})
             }
             quickMorph.expand(window,from:source,replay:true,destination:window.frame,sourceNotch:!fromWorkspace,crossfade:true,destinationRadius:20){[weak self] in self?.syncWorkspacePet()}
             // Retire the existing notch through its own morph, while the shared
@@ -1402,7 +1403,7 @@ private final class NotchSurfaceHost:NSView {
                 revealWorkspace(from:window.frame,sourceIsNotch:false)
             }
             if destination == .workspace || destination == .handoff,let workspace=EmbeddedCodeRuntime.shared.workspaceWindow{
-                quickMorph.collapse(window,to:workspace.frame,targetNotch:false,retireContent:true,completion:{})
+                quickMorph.collapse(window,to:workspace.frame,targetNotch:false,retireContent:true,backdrop:false,completion:{})
             }else{
                 let expanded=destination == .extended,visible=destination == .compact || expanded || workspaceNeedsStatus
                 let width=expanded ? (expandedSize?.width ?? notchWidth+160):(visible ? notchWidth+160:notchWidth),height=expanded ? canvasHeight:notchHeight

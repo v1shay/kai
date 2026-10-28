@@ -22,7 +22,11 @@ private func member(_ object:Any,_ key:String)->Any?{guard let value=Mirror(refl
     defer{app.applicationWillTerminate(Notification(name:NSApplication.willTerminateNotification));NSApp.windows.forEach{$0.orderOut(nil)}}
     let state:[String:Any]=["project":"/private/tmp","projects":[],"chats":[],"standaloneChats":[],"standalone":true,"threadId":"code:matrix","threadName":"Matrix","history":[],"readOnly":false,"approval":false,"activity":["scene":"off","text":"Ready"],"sessionActivity":["scene":"off","text":"Ready"],"activeTasks":[],"notice":"Ready","attachments":[],"selectedAgent":"codex","models":[],"ownerToken":"matrix","composerDraft":"Shared draft"]
     runtime.receive(try JSONSerialization.data(withJSONObject:state))
-    func pump(_ seconds:Double){let end=Date().addingTimeInterval(seconds);while Date()<end{RunLoop.main.run(until:Date().addingTimeInterval(0.005))}}
+    func pump(_ seconds:Double){let end=Date().addingTimeInterval(seconds);while Date()<end{
+        RunLoop.main.run(until:Date().addingTimeInterval(0.005))
+        let backdrops=[morph,mini].compactMap{member($0,"shell") as? NSPanel}.filter(\.isVisible)
+        precondition(backdrops.count<=1,"Mini Code/workspace handoff stacked two glass backdrops")
+    }}
     func settle(){let end=Date().addingTimeInterval(3);repeat{pump(0.02)}while (morph.transitioning || mini.transitioning) && Date()<end;precondition(!morph.transitioning && !mini.transitioning,"A morph never completed")}
     func show(){app.prepareQuickOpening();precondition(app.transitionQuickSurface(quick,show:true));settle();precondition(quick.isVisible && !quick.ignoresMouseEvents,"Mini Code did not become interactive");precondition(!panel.isVisible,"Mini Code duplicated the notch");precondition(quick.level == .floating,"Transition level was not restored");precondition(app.unifiedVoiceHost() === quick.contentView,"Mini Code voice selected a hidden window");precondition((member(app,"workspacePet") as? NSView)?.superview === quick.contentView,"Mini Code lost the shared local pet")}
     func hide(){precondition(app.transitionQuickSurface(quick,show:false));settle();precondition(!quick.isVisible && !quick.ignoresMouseEvents,"Mini Code did not retire cleanly")}

@@ -1049,3 +1049,18 @@ passed. Strict signature and all three executable/library hashes were verified.
 The previous bundle is `Kai Unified 0.8.6 backup 20261027-172534.app`. The running
 app was retained to preserve the active conversation; relaunch after this reply
 to load the update.
+
+## 0.8.8 — one glass backdrop during mini/full Code handoffs
+
+Mini Code and full Code previously each animated a separate glass shell during
+their handoff. The overlapping blur looked doubled until both animations settled.
+The incoming surface now owns the single backdrop; the outgoing surface retains
+its contour and content fade without creating another blur layer. An interrupted
+mini entrance also retires its old backdrop immediately when full Code starts.
+The same ownership rule applies in reverse. Notch transitions retain their
+existing glass and animation. The native morph matrix checks that at most one
+transition backdrop is visible throughout the handoffs and rapid reversals.
+
+The overlap matrix and signed product animation probe passed. Installed
+**0.8.8 (22)** with strict signature/hash verification and a timestamped 0.8.7
+backup. The running app was retained; relaunch to load the glass fix.
