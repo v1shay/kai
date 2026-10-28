@@ -6,6 +6,21 @@ use theme_controls::{Action, FontSlot};
 use ui_tests::{click_selector, draw_frame, fixture, idle_run};
 
 #[gpui::test]
+fn installed_font_families_are_shared_with_the_notch_without_changing_the_chat(cx:&mut TestAppContext){
+    let(view,cx)=fixture(cx);cx.simulate_input("Keep this draft 🦀");
+    view.update_in(cx,|app,window,cx|{
+        let fonts=cx.text_system().all_font_names();assert!(!fonts.is_empty());
+        let selected=fonts.iter().find(|f|f.as_str()=="Geist").unwrap_or(&fonts[0]).clone();
+        let request=serde_json::json!({"action":"typography","interfaceFont":selected,"codeFont":selected});
+        app.unified_command(&request,window,cx).unwrap();
+        let state=app.unified_snapshot(cx);assert_eq!(state["interfaceFont"],selected);assert_eq!(state["codeFont"],selected);
+        assert_eq!(app.composer.read(cx).text(),"Keep this draft 🦀");assert!(app.runs.is_empty());
+        let mut invalid=request;invalid["codeFont"]=serde_json::json!("not-a-locally-installed-family-742");assert!(app.unified_command(&invalid,window,cx).is_err());assert_eq!(app.theme.mono_font,selected);
+        assert_eq!(app.workspace_snapshot(cx).theme.ui_font,selected);
+    });
+}
+
+#[gpui::test]
 fn search_filters_settings_and_native_color_editor_applies_without_touching_draft(
     cx: &mut TestAppContext,
 ) {

@@ -34,6 +34,8 @@ extension KeyedDecodingContainer {
     func decode(_ type:EmptyHistory.Type,forKey key:Key)throws->EmptyHistory {try decodeIfPresent(type,forKey:key) ?? EmptyHistory()}
 }
 struct KaiState: Decodable {
+    let interfaceFont:String?
+    let codeFont:String?
     let slashCommands:[KaiSlashCommand]?
     let modelsLoading:Bool?
     let historyLoading:Bool?

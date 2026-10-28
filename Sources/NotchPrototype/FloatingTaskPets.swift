@@ -65,7 +65,7 @@ enum FloatingTaskCorner:String,CaseIterable {
         for (item,title,selector) in [(nextItem,"Next tasks",#selector(nextTasks)),(previewItem,"Preview floating pets",#selector(previewPets)),(finishItem,"Finish a preview task",#selector(finishPreview))]{item.title=title;item.target=self;item.action=selector;menu.addItem(item)}
         refreshMenu()
     }
-    func configure(_ specs:[PetGallerySpec],profiles:[String:PetGradientProfile],root:URL){self.specs=specs;self.profiles=profiles;self.root=root}
+    func configure(_ specs:[PetGallerySpec],profiles:[String:PetGradientProfile],root:URL){self.specs=specs;self.profiles=profiles;self.root=root;images.invalidate();for entry in entries.values{entry.pet="";entry.loading=nil};if active{refresh()}}
     func update(_ tasks:[KaiActiveTask],finished:[KaiFinishedTask],pets:[String:String]){
         guard enabled || active || preview else{return}
         guard !preview else{self.pets.merge(pets){_,new in new};refresh();return};self.pets=pets
@@ -106,7 +106,7 @@ enum FloatingTaskCorner:String,CaseIterable {
                 entry.pet=pet;entry.motion=motion
                 if let spec=specs.first(where:{$0.id == pet}),let motion=spec.motions[motion] ?? spec.motions["idle"],let timeline=SpriteTimeline(row:motion.row,rows:spec.rows,columns:motion.columns,durationsMs:motion.durationsMs,loops:motion.loop),let root{
                     let token=UUID();entry.loading=token
-                    images.load(root.appendingPathComponent(spec.spritesheet)){[weak entry] image in
+                    images.load(spec.sourceURL ?? root.appendingPathComponent(spec.spritesheet)){[weak entry] image in
                         guard let entry,entry.loading == token,let image else{return}
                         CATransaction.begin();CATransaction.setDisableActions(true);entry.row.sprite.contents=image;entry.row.sprite.contentsRect=timeline.frames[0];CATransaction.commit()
                         entry.row.sprite.removeAnimation(forKey:"spriteFrames")

@@ -28,7 +28,7 @@ import AppKit
     override init(frame:NSRect){
         super.init(frame:frame)
         wantsLayer=true
-        button.isBordered=false;button.font=NSFont.systemFont(ofSize:9)
+        button.isBordered=false;button.font=AppTypography.ui(ofSize:9)
         button.contentTintColor=NSColor.white.withAlphaComponent(0.55)
         button.target=self;button.action=#selector(load);addSubview(button)
         latest.isBordered=false;latest.font=button.font;latest.contentTintColor=button.contentTintColor;latest.target=self;latest.action=#selector(returnToLatest);latest.isHidden=true;addSubview(latest)

@@ -6236,7 +6236,9 @@ fn bind_app_keys(cx: &mut App) {
     cx.on_action(|_: &Quit, cx| cx.quit());
 }
 
+mod failure_diagnostics;
 fn main() {
+    failure_diagnostics::install();
     if std::env::args().any(|a|a=="--diagnose-native-voice"){if let Err(error)=voice::transport_diagnostic(){eprintln!("Native voice diagnostic: {error}");std::process::exit(1)}return}
     unified::prepare_environment();
     let application = Application::new().with_assets(Assets);

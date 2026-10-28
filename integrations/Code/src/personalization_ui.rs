@@ -165,11 +165,11 @@ impl Orbit {
         };
         let input = cx.new(|cx| {
             let mut input = TextInput::new(window, cx);
-            input.set_text(&value, cx);
+            input.set_text(if matches!(field,Field::Font(_)){""}else{&value}, cx);
             input.set_placeholder(
                 match field {
                     Field::Color(_) => "#459BF7",
-                    Field::Font(_) => "Font family",
+                    Field::Font(_) => "Search installed fonts…",
                 },
                 cx,
             );
@@ -281,24 +281,11 @@ impl Orbit {
             );
         if let Field::Font(_) = editor.field {
             let query = editor.input.read(cx).text().to_lowercase();
-            let mut names = div()
-                .id("appearance-font-options")
-                .max_h(px(140.))
-                .overflow_y_scroll()
-                .flex()
-                .flex_col()
-                .gap_1();
-            for (ix, font) in editor
-                .fonts
-                .iter()
-                .filter(|font| font.to_lowercase().contains(query.trim()))
-                .take(24)
-                .enumerate()
-            {
-                let value = font.clone();
-                names = names.child(
-                    div()
+            let fonts:Vec<_>=editor.fonts.iter().filter(|font|font.to_lowercase().contains(query.trim())).cloned().collect();
+            let names=uniform_list("appearance-font-options",fonts.len(),cx.processor(move |_,range:std::ops::Range<usize>,_,cx|{
+                range.filter_map(|ix|{let font=fonts.get(ix)?.clone();let value=font.clone();Some(div()
                         .id(("appearance-font", ix))
+                        .h(px(28.))
                         .px_2()
                         .py_1()
                         .rounded_md()
@@ -306,7 +293,7 @@ impl Orbit {
                         .overflow_hidden()
                         .text_ellipsis()
                         .hover(|s| s.bg(rgba(GLASS_HOVER)))
-                        .child(font.clone())
+                        .child(font)
                         .on_click(cx.listener(move |this, _, window, cx| {
                             if let Some(editor) = &this.appearance_editor {
                                 editor
@@ -314,9 +301,8 @@ impl Orbit {
                                     .update(cx, |input, cx| input.set_text(&value, cx));
                             }
                             this.save_appearance_editor(window, cx);
-                        })),
-                );
-            }
+                        }))) }).collect()
+            })).h(px(140.)).w_full();
             view = view.child(names);
         }
         if let Some(error) = &editor.error {

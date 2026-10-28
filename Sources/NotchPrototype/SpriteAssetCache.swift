@@ -10,12 +10,15 @@ import ImageIO
     private let maxPixelSize:Int?
     private let queue=DispatchQueue(label:"kai.sprite-decode",qos:.userInitiated)
     private var pending=[URL:[(CGImage?)->Void]]()
+    private var generation=0
     init(maxPixelSize:Int?=nil){self.maxPixelSize=maxPixelSize;cache.countLimit=maxPixelSize == nil ? 6:64;cache.totalCostLimit=maxPixelSize == nil ? 32*1024*1024:24*1024*1024}
     func image(at url:URL)->CGImage? {cache.object(forKey:url as NSURL)?.image}
+    func invalidate(){generation+=1;cache.removeAllObjects();pending.removeAll()}
     func load(_ url:URL,completion:@escaping(CGImage?)->Void) {
         if let image=image(at:url){completion(image);return}
         if pending[url] != nil {pending[url]?.append(completion);return}
         pending[url]=[completion]
+        let generation=self.generation
         queue.async { [self] in
             let source=CGImageSourceCreateWithURL(url as CFURL,nil)
             let image=source.flatMap { source -> CGImage? in
@@ -25,6 +28,7 @@ import ImageIO
                 return CGImageSourceCreateImageAtIndex(source,0,[kCGImageSourceShouldCacheImmediately:true] as CFDictionary)
             }
             DispatchQueue.main.async { [self] in
+                guard self.generation == generation else{return}
                 if let image {self.cache.setObject(Entry(image),forKey:url as NSURL,cost:image.bytesPerRow*image.height)}
                 let callbacks=self.pending.removeValue(forKey:url) ?? []
                 callbacks.forEach{$0(image)}

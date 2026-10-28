@@ -19,6 +19,11 @@ enum UnifiedDraftHandoff {
     var makeApp:()->KaiPetApp={KaiPetApp()}
     weak var workspaceWindow:NSWindow?
     var workspaceFocusProvider:(()->Bool)?
+    var windowFocusProvider:((NSWindow)->Bool)?
+    func isForeground(_ window:NSWindow?)->Bool{
+        guard let window else{return false}
+        return windowFocusProvider?(window) ?? (NSApp.isActive && window.isVisible && window.isKeyWindow)
+    }
     var workspaceIsForeground:Bool{workspaceFocusProvider?() ?? (NSApp.isActive && workspaceWindow?.isVisible == true && workspaceWindow?.isKeyWindow == true)}
     var onLevels:(([CGFloat])->Void)?
     var onState:((KaiState)->Void)?
@@ -53,11 +58,13 @@ enum UnifiedDraftHandoff {
         guard data != lastState else{return}
         guard let packet=try? JSONDecoder().decode(OwnerPacket.self,from:data) else{onError?("Could not read Code’s owner state");fputs("Kai unified state decode failed\n",stderr);return}
         switch packet.type {
+        case "quickPrepare":app?.prepareQuickOpening();return
         case "workspaceReveal":app?.revealWorkspace();return
         case "workspaceDismiss":app?.dismissUnifiedSurface();return
         case "probeDoubleCommand":if CommandLine.arguments.contains("--unified-smoke-test"){app?.probeDoubleCommand()};return
         case "quickVisibility":if let visible=packet.visible{app?.setQuickChatVisible(visible)};return
         case "workspacePetSlot":if let frame=packet.rect,frame.count==4{app?.workspacePetGeometry(CGRect(x:frame[0],y:frame[1],width:frame[2],height:frame[3]))};return
+        case "quickPetSlot":if let frame=packet.rect,frame.count==4{app?.quickPetGeometry(CGRect(x:frame[0],y:frame[1],width:frame[2],height:frame[3]))};return
         default:break
         }
         guard var state=packet.state else{return}
@@ -87,11 +94,12 @@ enum UnifiedDraftHandoff {
         app?.setWorkspaceWallpaper(image,opacity:opacity)
     }
     func presentation(_ phase:String){var now=timespec();clock_gettime(CLOCK_MONOTONIC_RAW,&now);sendAction("workspace_presentation",["phase":phase,"started":Double(now.tv_sec)+Double(now.tv_nsec)/1_000_000_000])}
-    func sendAction(_ action:String,_ fields:[String:Any]=[:]){var value=fields;value["action"]=action;if let data=try? JSONSerialization.data(withJSONObject:value){send(data)}}
+    func sendAction(_ action:String,_ fields:[String:Any]=[:]){var value=fields;value["action"]=action;if action == "quick_dismiss"{var now=timespec();clock_gettime(CLOCK_MONOTONIC_RAW,&now);value["issuedAt"]=Double(now.tv_sec)+Double(now.tv_nsec)/1_000_000_000};if let data=try? JSONSerialization.data(withJSONObject:value){send(data)}}
     var voiceHost:NSView?{app?.unifiedVoiceHost()}
     func diagnostics()->UInt32{app?.unifiedPresentationDiagnostics() ?? 0}
     func toggle(){app?.toggleUnifiedSurface()}
     func collapse(){app?.collapseWorkspace()}
+    func quickSurface(_ window:NSWindow,show:Bool)->Bool{app?.transitionQuickSurface(window,show:show) ?? false}
 }
 
 #if KAI_UNIFIED
@@ -129,5 +137,10 @@ public func kaiUnifiedLevels(_ values:UnsafePointer<Float>?,_ count:Int){
 public func kaiUnifiedVoiceHost()->UnsafeMutableRawPointer?{
     guard Thread.isMainThread else{return nil}
     return MainActor.assumeIsolated{EmbeddedCodeRuntime.shared.voiceHost.map{Unmanaged.passUnretained($0).toOpaque()}}
+}
+@_cdecl("kai_unified_quick_surface")
+public func kaiUnifiedQuickSurface(_ pointer:UnsafeMutableRawPointer?,_ visible:Bool)->Bool{
+    guard Thread.isMainThread,let pointer else{return false}
+    return MainActor.assumeIsolated{EmbeddedCodeRuntime.shared.quickSurface(Unmanaged<NSWindow>.fromOpaque(pointer).takeUnretainedValue(),show:visible)}
 }
 #endif

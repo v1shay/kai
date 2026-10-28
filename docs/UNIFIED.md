@@ -970,3 +970,82 @@ has not been established.
 Installed **0.8.6 (20)** with a timestamped 0.8.5 backup, strict signature
 verification, and matching executable/library hashes. The running app was kept
 open because it hosts the active conversation; the update loads on relaunch.
+
+## 0.8.7 — local libraries and one continuous mini workspace
+
+**Appearance → Fonts** discovers the Mac's installed font families on demand,
+including Font Book additions such as Google Sans and Geist. Interface and code
+fonts are shared with Code's existing personalization settings, persist through
+the same owner, and repaint the notch without replacing its draft or viewport.
+Code's font picker now searches the complete, virtualized installed-family list.
+
+Pets are discovered from `~/.codex/pets` and
+`~/Library/Application Support/Kai Unified/Pets`. **Pet → Add pet folder…** selects
+another local library; **Rescan local pets** reloads edits without rebuilding the
+app. Valid v1/v2 manifests load their actual external sprites, replacing packaged
+copies of installed custom pets while keeping built-in pets. Selection migrates
+from the previous packaged ID when a local manifest has a different ID. Scanning,
+palette extraction, and image decoding are bounded and run off the UI thread.
+
+Code's configured mini-window shortcut, including Command–\`, now participates
+in the same continuous contour transition as the workspace and notch. The real
+mini window paints at its final size, the outgoing UI retires before the native
+notch appears, and the one shared pet moves between headers. Closing mini Code
+returns to the originating surface; Control–Option returns directly to extended
+chat, and double-Command dismisses into compact status only while needed. A
+background workspace remains open. Interrupted transitions preserve the current
+contour and restore window levels, input, masks, and opacity. Reduced Motion
+uses a short fade. Stale queued dismissals cannot close a newly reopened mini
+window, and the consumed Command–\` chord cannot become voice or double-Command.
+Voice input uses the visible mini window as its media host. Foreground mini Code
+uses its own request tray; approvals still route to Kai while it is backgrounded.
+
+Held stop shortcuts also honor their key-event deadline when a busy main queue
+processes key release before the timer. A stop armed for a call that has already
+ended cannot accidentally start a replacement call. Deliberately starting voice
+from mini Code remains separate from consuming its window shortcut.
+
+The historical OS crash report identified eager `AVAudioPlayerNode` construction
+during speech-player initialization. Audio nodes are now created only for actual
+PCM playback and released afterward. This does not establish the cause of the
+reported intermittent freeze. A bounded, sleep-aware main-loop watchdog now
+captures up to three local stack samples per process after a sustained stall;
+Rust panic diagnostics retain a bounded location/backtrace file without the
+panic payload. Evidence is stored under the experimental app's `Diagnostics`
+folder. No ongoing chat content is logged by these diagnostics.
+
+Native state, presentation, and media-host callbacks now release Rust's owner
+borrow before entering AppKit, which can synchronously reenter Code on focus or
+window changes. Shared immutable state bytes remain alive across that reentry;
+native delivery shares the cached allocation. A regression replaces the cache from inside the
+native callback and verifies both reentry and byte lifetime; it passed, alongside
+24 owner-bridge tests with one opt-in test ignored. This removes a concrete
+borrow-panic risk; it does not prove the cause of the reported freeze.
+
+Verification: the full Rust suite passed 778 tests with 17 opt-in tests ignored;
+the final mini-Code regressions passed 13 tests separately. The Swift suite ran
+197 tests with one skip and no failures, including actual Google Sans/Geist
+resolution and six local pet manifests. The native modifier handler passed all
+voice destinations and context variants, silence discard, blocked-timer release,
+double-Command, Command–\` chords, and deliberate voice from mini Code. The native
+morph matrix passed all four surfaces, eight rapid reversal sequences, Reduced
+Motion, shared pet/media host, restored input/window levels, retained background
+Code, and controlled foreground/background approval events. Actual OS focus could
+not be acquired in the automation session; that manual focus check remains open.
+The final wallpaper-enabled native composer audit ran for 120 seconds and 572 owner
+deliveries, including live font repaint and external pet image sources.
+
+Signed product checks passed the real morph and both generated-speech routes:
+an existing Gemini context handed off through the mini-Code voice button and a
+new Gemini draft launched through the voice shortcut. Each received real
+user/assistant transcripts and fresh audio after the surface sequence, preserved
+one call identity, and stopped through explicit Stop. The transferred cobalt-blue
+fact was verified on the existing-chat route. Ambient input was disabled in these
+tests. These checks do not establish that every reported intermittent hang has
+been fixed.
+
+Installed **0.8.7 (21)** after the final signed morph and both live voice routes
+passed. Strict signature and all three executable/library hashes were verified.
+The previous bundle is `Kai Unified 0.8.6 backup 20261027-172534.app`. The running
+app was retained to preserve the active conversation; relaunch after this reply
+to load the update.

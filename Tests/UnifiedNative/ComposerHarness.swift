@@ -97,6 +97,22 @@ private func auditCommand(_ bytes:UnsafePointer<UInt8>?,_ count:Int)->Bool{guard
    }
    print("Native expanded-notch idle audit: \(Int(seconds)) seconds and \(iteration) status deliveries without losing its surface")
   }
+  if ProcessInfo.processInfo.environment["KAI_LOCAL_LIBRARY_VERIFY"] == "1",let field=member(app,"composerField") as? NSTextField{
+   let menu=member(app,"typographyMenu") as! TypographyMenu,fonts=menu.item.submenu!.items[0].submenu!
+   menu.menuNeedsUpdate(fonts)
+   precondition(fonts.items.contains{$0.title=="Google Sans"} && fonts.items.contains{$0.title=="Geist"},"Native settings failed to discover user-installed families")
+   let geist=fonts.items.first{$0.title=="Geist"}!
+   _=NSApp.sendAction(geist.action!,to:geist.target,from:geist)
+   precondition(commands.last?["action"] as? String == "typography" && commands.last?["interfaceFont"] as? String == "Geist","Native font setting did not reach Code's shared owner")
+   var state=try JSONSerialization.jsonObject(with:packet("workspace","gpt-6.1-sol")) as! [String:Any]
+   state["interfaceFont"]="Geist";state["codeFont"]="Menlo"
+   runtime.receive(try JSONSerialization.data(withJSONObject:state));pump(0.1)
+   precondition(field.font?.familyName=="Geist","Owner font did not repaint the actual notch editor")
+   let catalog=member(app,"catalog") as! Catalog
+   precondition(catalog.pets.filter{$0.kind=="local"}.count>=6,"The live native pet picker did not discover the user's library")
+   precondition(catalog.pets.filter{$0.kind=="local"}.allSatisfy{$0.sourceURL != nil},"Local pets still point at packaged copies")
+   print("Native libraries: Google Sans and Geist in settings, shared font dispatch, real editor repaint, and live external pet sources passed")
+  }
   print("Native composer: four vector model glyphs, per-model animated slider, exact effort dispatch, independent gradient permissions, stale-owner rejection, typed-draft controls, and narrow layouts passed")
  }
 }

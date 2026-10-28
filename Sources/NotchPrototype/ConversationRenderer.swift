@@ -72,7 +72,7 @@ import AppKit
             for key in Array(mathBlocks.keys) {mathBlocks[key]?.remove(index);if mathBlocks[key]?.isEmpty == true{mathBlocks.removeValue(forKey:key)}}
             if block.kind=="assistant",let provider=block.agent,index==0 || history[index-1].kind != "assistant" || history[index-1].agent != provider,let image=ProviderIcons.image(provider,color:palette.first ?? .white){
                 let attachment=NSTextAttachment();attachment.image=image;attachment.bounds=CGRect(x:0,y:-2,width:11,height:11)
-                content.append(NSAttributedString(attachment:attachment));content.append(NSAttributedString(string:"\n",attributes:[.font:NSFont.systemFont(ofSize:4)]))
+                content.append(NSAttributedString(attachment:attachment));content.append(NSAttributedString(string:"\n",attributes:[.font:AppTypography.ui(ofSize:4)]))
             }
             let processedLines=ConversationInteraction.lines(block.lines)
             var visualLines=renderMath ? MathExpression.collapsedLines(processedLines) : processedLines
@@ -89,8 +89,8 @@ import AppKit
             let card=line.style.hasPrefix("interaction:")
             let cardParts=line.style.split(separator:":")
             let cardRole=cardParts.last.map(String.init) ?? ""
-            let style=line.style,base=NSFont.systemFont(ofSize:9),font:NSFont
-            switch style {case "activity":font=NSFontManager.shared.convert(NSFont.systemFont(ofSize:8),toHaveTrait:.italicFontMask);case "heading":font=NSFont.systemFont(ofSize:9,weight:.semibold);case "code":font=NSFont.monospacedSystemFont(ofSize:8,weight:.regular);default:font=base}
+            let style=line.style,base=AppTypography.ui(ofSize:9),font:NSFont
+            switch style {case "activity":font=NSFontManager.shared.convert(AppTypography.ui(ofSize:8),toHaveTrait:.italicFontMask);case "heading":font=AppTypography.ui(ofSize:9,weight:.semibold);case "code":font=AppTypography.code(ofSize:8,weight:.regular);default:font=base}
             let paragraph=NSMutableParagraphStyle();paragraph.lineSpacing=2
             paragraph.paragraphSpacing=lineIndex == visualLines.count-1 ? 5:0
             if block.kind == "activity" {paragraph.headIndent=17}
@@ -102,7 +102,7 @@ import AppKit
                 paragraph.paragraphSpacingBefore=(["title","document"].contains(cardRole) || cardRole.hasPrefix("voice")) ? 9:0
                 attributes[.kaiInteractionCard]=cardParts.dropLast().joined(separator:":")
                 attributes[.kaiInteractionTint]=palette.first!
-                attributes[.font]=NSFont.systemFont(ofSize:(cardRole == "title" || cardRole.hasPrefix("voice")) ? 8:9,weight:cardRole == "answer" ? .medium:.regular)
+                attributes[.font]=AppTypography.ui(ofSize:(cardRole == "title" || cardRole.hasPrefix("voice")) ? 8:9,weight:cardRole == "answer" ? .medium:.regular)
                 if cardRole == "answer" {
                     var url=URLComponents();url.scheme="kai-reply";url.host="copy";url.queryItems=[URLQueryItem(name:"answer",value:displayText)]
                     attributes[.link]=url.url

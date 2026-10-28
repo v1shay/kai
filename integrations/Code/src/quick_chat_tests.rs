@@ -27,6 +27,14 @@ fn draw(panel: &Entity<quick_chat::QuickChat>, cx: &mut VisualTestContext) {
         panel.clone().into_any_element()
     });
 }
+#[gpui::test]
+fn queued_dismissal_cannot_close_a_more_recently_opened_mini_surface(cx:&mut TestAppContext){
+    let(_,panel,cx)=fixture(cx);
+    panel.update_in(cx,|panel,window,cx|{
+        panel.hide_if_current(Some(workspace_motion::now()-5.),window,cx);assert!(panel.is_visible());
+        panel.hide_if_current(Some(workspace_motion::now()),window,cx);assert!(!panel.is_visible());
+    });
+}
 fn click(cx: &mut VisualTestContext, selector: &'static str) {
     let bounds = cx
         .debug_bounds(selector)

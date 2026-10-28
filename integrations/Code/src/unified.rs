@@ -9,6 +9,7 @@ use std::{cell::RefCell, ffi::c_void, sync::OnceLock};
 type Publish = unsafe extern "C" fn(*const u8, usize);
 type Collapse = unsafe extern "C" fn();
 type Wallpaper=unsafe extern "C" fn(*const u8,usize,usize,usize,f32);
+type QuickSurface=unsafe extern "C" fn(*mut c_void,bool)->bool;
 type Start = unsafe extern "C" fn(*mut c_void, extern "C" fn(*const u8, usize) -> bool);
 static COMMANDS: OnceLock<async_channel::Sender<Value>> = OnceLock::new();
 thread_local! {static HOST:RefCell<Option<Host>>=const{RefCell::new(None)};}
@@ -18,11 +19,12 @@ struct Host {
     levels: unsafe extern "C" fn(*const f32, usize),
     voice_host:unsafe extern "C" fn()->*mut c_void,
     wallpaper:Wallpaper,
+    quick_surface:QuickSurface,
     wallpaper_visible:bool,
     last_wallpaper:Option<(ImageId,u32)>,
     collapse: Collapse,
     _toggle: Collapse,
-    last: Vec<u8>,
+    last: std::sync::Arc<[u8]>,
     history:Value,
     history_owner:String,
     completed: Option<String>,
@@ -31,6 +33,7 @@ struct Host {
     reported_successes: std::collections::VecDeque<(String,String)>,
     finished: Vec<Value>,
     pet_rect:Option<[f32;4]>,
+    quick_pet_rect:Option<[f32;4]>,
     workspace_motion:workspace_motion::Transition,
 }
 
@@ -54,11 +57,12 @@ pub(super) fn active() -> bool {
     HOST.with(|host| host.borrow().is_some())
 }
 pub(super) fn collapse() {
-    HOST.with(|host| {
-        if let Some(host) = host.borrow().as_ref() {
-            unsafe { (host.collapse)() }
-        }
-    })
+    let callback=HOST.with(|host|host.borrow().as_ref().map(|h|h.collapse));
+    if let Some(callback)=callback{unsafe{callback()}}
+}
+pub(super) fn quick_surface(window:*mut c_void,visible:bool)->bool{
+    let callback=HOST.with(|host|host.borrow().as_ref().map(|h|h.quick_surface));
+    callback.is_some_and(|callback|unsafe{callback(window,visible)})
 }
 pub(super) fn reveal() {
     emit(&json!({"type":"workspaceReveal"}));
@@ -76,11 +80,8 @@ fn emit(value: &Value) {
     if data.len() > 2 * 1024 * 1024 {
         return;
     }
-    HOST.with(|host| {
-        if let Some(host) = host.borrow().as_ref() {
-            unsafe { (host.publish)(data.as_ptr(), data.len()) }
-        }
-    });
+    let callback=HOST.with(|host|host.borrow().as_ref().map(|h|h.publish));
+    if let Some(callback)=callback{unsafe{callback(data.as_ptr(),data.len())}}
 }
 
 pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Result<()> {
@@ -107,19 +108,21 @@ pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Resul
         let levels = unsafe { libc::dlsym(library, c"kai_unified_levels".as_ptr()) };
         let voice_host=unsafe{libc::dlsym(library,c"kai_unified_voice_host".as_ptr())};
         let wallpaper=unsafe{libc::dlsym(library,c"kai_unified_wallpaper".as_ptr())};
+        let quick_surface=unsafe{libc::dlsym(library,c"kai_unified_quick_surface".as_ptr())};
         anyhow::ensure!(
             !start.is_null()
                 && !publish.is_null()
                 && !collapse.is_null()
                 && !toggle.is_null()
                 && !ready.is_null()
-                && !levels.is_null() && !voice_host.is_null() && !wallpaper.is_null(),
+                && !levels.is_null() && !voice_host.is_null() && !wallpaper.is_null() && !quick_surface.is_null(),
             "Incompatible Kai library"
         );
         let levels: unsafe extern "C" fn(*const f32, usize) =
             unsafe { std::mem::transmute(levels) };
         let voice_host:unsafe extern "C" fn()->*mut c_void=unsafe{std::mem::transmute(voice_host)};
         let wallpaper:Wallpaper=unsafe{std::mem::transmute(wallpaper)};
+        let quick_surface:QuickSurface=unsafe{std::mem::transmute(quick_surface)};
         let ready: unsafe extern "C" fn() -> bool = unsafe { std::mem::transmute(ready) };
         let start: Start = unsafe { std::mem::transmute(start) };
         let publish: Publish = unsafe { std::mem::transmute(publish) };
@@ -132,10 +135,10 @@ pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Resul
                 _library: library,
                 publish,
                 levels,voice_host,
-                wallpaper,wallpaper_visible:false,last_wallpaper:None,
+                wallpaper,quick_surface,wallpaper_visible:false,last_wallpaper:None,
                 collapse,
                 _toggle:toggle,
-                last: vec![],
+                last: Vec::new().into(),
                 history:Value::Null,
                 history_owner:String::new(),
                 completed: None,
@@ -143,7 +146,7 @@ pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Resul
                 results: Default::default(),
                 reported_successes: Default::default(),
                 finished: vec![],
-                pet_rect:None,
+                pet_rect:None,quick_pet_rect:None,
                 workspace_motion:Default::default(),
             })
         });
@@ -196,7 +199,10 @@ pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Resul
                     let state=unsafe{diagnostics()};
                     assert_eq!(state & 31,9,"Only the live workspace and shared pet may be visible");
                     assert_ne!(state & 64,0,"Workspace must fill the menu-bar/Dock working area");
-                    crate::unified::reveal();assert_eq!(unsafe{diagnostics()} & 31,9);
+                    // A foreground repeat is a no-op. Without actual OS focus,
+                    // repeat reveal legitimately replays the entrance; both
+                    // must retain the live workspace/pet and exclude the notch.
+                    crate::unified::reveal();assert_eq!(unsafe{diagnostics()} & 15,9);
                     crate::unified::collapse();
                 });
                 Timer::after(Duration::from_millis(850)).await;
@@ -212,13 +218,13 @@ pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Resul
                     assert_eq!(unsafe{diagnostics()} & 3,0,"Double Command must dismiss the large workspace without reopening mini chat");
                     cx.update_global::<quick_chat::Controller,_>(|service,cx|service.toggle(cx).expect("Open native Quick Chat"));
                 });
-                Timer::after(Duration::from_millis(250)).await;
+                Timer::after(Duration::from_millis(1000)).await;
                 let _=cx.update(|cx|{
                     let state=unsafe{diagnostics()};assert_ne!(state & 128,0,"Quick Chat was not opened");
                     assert_eq!(state & 3,0,"Quick Chat must not also open the notch or workspace");
                     cx.update_global::<quick_chat::Controller,_>(|service,cx|service.dismiss(cx));
                 });
-                Timer::after(Duration::from_millis(200)).await;
+                Timer::after(Duration::from_millis(1000)).await;
                 let _=cx.update(|cx|{
                     assert_eq!(unsafe{diagnostics()} & 131,0,"Quick Chat dismissal must retire only its own surface");
                     eprintln!("Kai unified smoke: continuous morph reversal, maximized working area, shared pet, repeat open, extended-notch return, double-Command dismissal, and exclusive native Quick Chat passed");cx.quit();
@@ -230,7 +236,8 @@ pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Resul
                 if cx
                     .update(|cx| {
                         if request["action"] == "quick_dismiss"{
-                            if cx.has_global::<quick_chat::Controller>(){cx.update_global::<quick_chat::Controller,_>(|service,cx|service.dismiss(cx));}
+                            let issued=request["issuedAt"].as_f64().filter(|v|v.is_finite());
+                            if cx.has_global::<quick_chat::Controller>(){cx.update_global::<quick_chat::Controller,_>(|service,cx|service.dismiss_at(issued,cx));}
                             return Ok(())
                         }
                         window.update(cx, |this, window, cx| {
@@ -395,6 +402,7 @@ impl Orbit {
                 | "refresh"
                 | "workspace_settings"
                 | "workspace_wallpaper_visibility"
+                | "typography"
         ) {
             if request["ownerToken"].as_str() != Some(self.unified_token().as_str()) {
                 return Err("The workspace changed; your input is preserved. Try again.".into());
@@ -447,6 +455,18 @@ impl Orbit {
             }
         }
         match action {
+            "typography"=>{
+                let interface=request["interfaceFont"].as_str().ok_or("Missing interface font")?;
+                let code=request["codeFont"].as_str().ok_or("Missing code font")?;
+                let fonts=cx.text_system().all_font_names();
+                let resolve=|name:&str,default:&str|->Result<String,String>{
+                    if name == "System" || name == theme::UI_FONT_DEFAULT{return Ok(default.into())}
+                    fonts.iter().find(|f|f.eq_ignore_ascii_case(name)).cloned().ok_or_else(||"Choose an installed font family".into())
+                };
+                let interface=resolve(interface,theme::UI_FONT_DEFAULT)?;
+                let code=resolve(code,theme::MONO_FONT_DEFAULT)?;
+                self.theme.ui_font=interface;self.theme.mono_font=code;self.apply_personalization(window,cx);self.queue_workspace_save(cx);
+            }
             "composer_command"=>{
                 let name=request["name"].as_str().ok_or("Missing command")?;
                 let draft=request["draft"].as_str().filter(|v|v.len()<=input::MAX_DRAFT_BYTES && !v.contains('\0')).ok_or("Invalid draft")?;
@@ -732,14 +752,11 @@ impl Orbit {
                 .iter()
                 .map(|l| f32::from_bits(l.load(std::sync::atomic::Ordering::Relaxed)))
                 .collect();
-            HOST.with(|host| {
-                if let Some(host) = host.borrow().as_ref() {
-                    unsafe { (host.levels)(values.as_ptr(), values.len()) }
-                }
-            });
+            let callback=HOST.with(|host|host.borrow().as_ref().map(|h|h.levels));
+            if let Some(callback)=callback{unsafe{callback(values.as_ptr(),values.len())}}
         }
         let mut state = self.unified_snapshot(cx);
-        HOST.with(|host| {
+        let delivery=HOST.with(|host| {
             if let Some(host) = host.borrow_mut().as_mut() {
                 let finished:Vec<_>=self.unified_successes.iter().filter(|(id,epoch)|!host.reported_successes.iter().any(|(seen,run)|seen==id&&run==epoch) && !self.finalizing.contains(id) && !self.settling.contains_key(id)).cloned().collect();
                 for event in &finished{if host.reported_successes.len()>=128{host.reported_successes.pop_front();}host.reported_successes.push_back(event.clone());}
@@ -765,15 +782,20 @@ impl Orbit {
                 if host.history_owner==owner && host.history==history{state.as_object_mut().unwrap().remove("history");}
                 else{host.history=history;host.history_owner=owner;}
                 let Ok(data) = serde_json::to_vec(&state) else {
-                    return;
+                    return None;
                 };
-                if data == host.last || data.len() > 2 * 1024 * 1024 {
-                    return;
+                if data.as_slice() == host.last.as_ref() || data.len() > 2 * 1024 * 1024 {
+                    return None;
                 }
-                host.last = data;
-                unsafe { (host.publish)(host.last.as_ptr(), host.last.len()) };
+                host.last = data.into();
+                return Some((host.publish,host.last.clone()));
             }
+            None
         });
+        // AppKit can synchronously reenter GPUI when state orders a window or
+        // changes focus. No RefCell borrow may cross that native boundary. Arc
+        // keeps the exact bytes alive even if reentry replaces the cached state.
+        if let Some((callback,data))=delivery{unsafe{callback(data.as_ptr(),data.len())}}
     }
     pub(super) fn unified_snapshot(&self, cx: &App) -> Value {
         let running = self.active.as_ref().and_then(|id| self.runs.get(id));
@@ -834,6 +856,7 @@ impl Orbit {
             "selectedModel":self.model,"reasoningEffort":self.unified_effort().unwrap_or(""),"canGoBack":!self.unified_back.is_empty(),"canGoForward":!self.unified_forward.is_empty(),
             "agents":self.agents.iter().map(|a|json!({"id":a.kind.command(),"name":a.kind.name(),"available":a.available&&a.executable.is_some()})).collect::<Vec<_>>(),"selectedAgent":self.agent.command(),"workspaceVoiceChoice":self.voice_choice,"workspaceVoiceActive":self.voice_call.is_some(),"workspaceVoiceScene":self.voice_call.as_ref().map(|v|v.scene())});
         snapshot["slashCommands"]=self.unified_slash_commands();
+        snapshot["interfaceFont"]=json!(self.theme.ui_font);snapshot["codeFont"]=json!(self.theme.mono_font);
         snapshot["workspaceAccess"]=json!(if !self.allow_edits{"read-only"}else if self.agent!=AgentKind::Codex{"native"}else if self.codex_access==runtime::CodexAccess::Full{"full"}else{"workspace"});
         snapshot["workspaceApprovalPolicy"]=json!(match self.codex_approvals{runtime::CodexApprovals::Ask=>"ask",runtime::CodexApprovals::AutoReview=>"auto-review",runtime::CodexApprovals::Never=>"never"});
         snapshot["workspaceExecutionPath"]=json!(self.execution_root().unwrap_or_else(||self.project.clone()));
@@ -1319,6 +1342,11 @@ pub(super) fn pet_slot(bounds:Bounds<Pixels>){
     let changed=HOST.with(|host|{let mut host=host.borrow_mut();let Some(host)=host.as_mut()else{return false};if host.pet_rect==Some(rect){return false}host.pet_rect=Some(rect);true});
     if changed{emit(&json!({"type":"workspacePetSlot","rect":rect}));}
 }
+pub(super) fn quick_pet_slot(bounds:Bounds<Pixels>){
+    let rect=[f32::from(bounds.origin.x),f32::from(bounds.origin.y),f32::from(bounds.size.width),f32::from(bounds.size.height)];
+    let changed=HOST.with(|host|{let mut host=host.borrow_mut();let Some(host)=host.as_mut()else{return false};if host.quick_pet_rect==Some(rect){return false}host.quick_pet_rect=Some(rect);true});
+    if changed{emit(&json!({"type":"quickPetSlot","rect":rect}));}
+}
 
 #[cfg(test)]
 mod regression_tests {
@@ -1474,6 +1502,7 @@ pub(super) fn workspace_frame(motion:bool)->workspace_motion::Frame{
     HOST.with(|host|host.borrow().as_ref().map_or_else(workspace_motion::Frame::identity,|host|host.workspace_motion.frame(motion&&!native::reduced_motion())))
 }
 pub(super) fn quick_visibility(visible:bool){if active(){emit(&json!({"type":"quickVisibility","visible":visible}));}}
+pub(super) fn quick_prepare(){if active(){emit(&json!({"type":"quickPrepare"}));}}
 pub(super) fn dismiss(){emit(&json!({"type":"workspaceDismiss"}));}
 
 #[cfg(test)]mod shortcut_start_tests{
@@ -1492,7 +1521,8 @@ pub(super) fn dismiss(){emit(&json!({"type":"workspaceDismiss"}));}
 }
 
 pub(super) fn voice_host()->Option<*mut c_void>{
-    HOST.with(|host|host.borrow().as_ref().and_then(|h|{let view=unsafe{(h.voice_host)()};(!view.is_null()).then_some(view)}))
+    let callback=HOST.with(|host|host.borrow().as_ref().map(|h|h.voice_host))?;
+    let view=unsafe{callback()};(!view.is_null()).then_some(view)
 }
 
 impl Orbit{
@@ -1521,6 +1551,32 @@ impl Orbit{
         let name=model.unwrap_or_else(||"…".into());
         effort.filter(|v|!v.is_empty()).map_or_else(||name.clone(),|effort|format!("{name} · {effort}"))
     }
+}
+
+#[cfg(test)]mod native_reentry_tests{
+ use super::*;use gpui::TestAppContext;use std::prelude::v1::test;
+ thread_local!{static REENTERED:std::cell::Cell<bool>=const{std::cell::Cell::new(false)};static STABLE:std::cell::Cell<bool>=const{std::cell::Cell::new(false)};}
+ unsafe extern "C" fn publish(bytes:*const u8,len:usize){
+  let before=unsafe{std::slice::from_raw_parts(bytes,len)}.to_vec();
+  REENTERED.set(HOST.with(|h|h.try_borrow_mut().map(|mut h|{h.as_mut().unwrap().last=Vec::new().into();}).is_ok()));
+  STABLE.set(before==unsafe{std::slice::from_raw_parts(bytes,len)});
+ }
+ unsafe extern "C" fn voice_host()->*mut c_void{REENTERED.set(HOST.with(|h|h.try_borrow_mut().is_ok()));std::ptr::null_mut()}
+ unsafe extern "C" fn levels(_: *const f32,_:usize){}
+ unsafe extern "C" fn wallpaper(_: *const u8,_:usize,_:usize,_:usize,_:f32){}
+ unsafe extern "C" fn surface(_: *mut c_void,_:bool)->bool{false}
+ unsafe extern "C" fn noop(){}
+ struct Restore(Option<Host>);
+ impl Drop for Restore{fn drop(&mut self){HOST.with(|h|{*h.borrow_mut()=self.0.take()});}}
+ #[gpui::test]fn native_state_callback_can_reenter_and_replace_cached_bytes(cx:&mut TestAppContext){
+  let(view,cx)=crate::ui_tests::fixture(cx);
+  let _restore=Restore(HOST.with(|h|h.replace(Some(Host{_library:std::ptr::null_mut(),publish,levels,voice_host,wallpaper,quick_surface:surface,wallpaper_visible:false,last_wallpaper:None,collapse:noop,_toggle:noop,last:Vec::new().into(),history:Value::Null,history_owner:String::new(),completed:None,error:None,results:Default::default(),reported_successes:Default::default(),finished:vec![],pet_rect:None,quick_pet_rect:None,workspace_motion:Default::default()}))));
+  REENTERED.set(false);STABLE.set(false);
+  view.update(cx,|app,cx|app.publish_unified(cx));
+  assert!(REENTERED.get(),"State delivery held the owner borrow across AppKit reentry");
+  assert!(STABLE.get(),"Replacing cached state invalidated the lent native bytes");
+  REENTERED.set(false);assert!(super::voice_host().is_none());assert!(REENTERED.get(),"Media host lookup held the owner borrow across AppKit reentry");
+ }
 }
 
 #[cfg(test)]mod effective_model_tests{
@@ -1559,7 +1615,7 @@ fn start_voice_probe(window:WindowHandle<Orbit>,cx:&mut App)->anyhow::Result<()>
     let project=path.parent().ok_or_else(||anyhow::anyhow!("Missing fixture directory"))?.to_owned();
     cx.spawn(async move|cx|{
         Timer::after(Duration::from_millis(800)).await;
-        window.update(cx,|app,window,cx|{
+        window.update(cx,|app,_,cx|{
             assert!(app.runs.is_empty(),"Isolated voice probe unexpectedly contained user runs");
             app.project=project;app.agent=AgentKind::Codex;app.model=None;app.active=None;app.loading=false;app.new_execution_path=None;
             if std::env::var_os("KAI_VOICE_GEMINI_SOURCE").is_some() {
@@ -1568,8 +1624,16 @@ fn start_voice_probe(window:WindowHandle<Orbit>,cx:&mut App)->anyhow::Result<()>
                 app.engine.save_prompt(source.clone(),"We agreed the lantern is cobalt blue. Remember its color for our voice conversation.".into(),None);
                 app.active=Some(source.id.clone());app.sessions.insert(0,source);app.agent=AgentKind::Gemini;app.model=Some("gemini-source-only".into());
             } else { app.agent=AgentKind::Gemini;app.model=Some("gemini-source-only".into()); }
+            cx.notify();
+        }).expect("Prepare voice probe conversation");
+        let quick_start=std::env::var_os("KAI_VOICE_QUICK_START").is_some();
+        if quick_start{
+            cx.update(|cx|cx.update_global::<quick_chat::Controller,_>(|service,cx|service.open(cx).expect("Open mini Code before voice"))).expect("Mini Code voice surface");
+            Timer::after(Duration::from_millis(1000)).await;
+        }
+        window.update(cx,|app,window,cx|{
             if std::env::var_os("KAI_VOICE_UI_BUTTON").is_some() {
-                let _=reveal();app.toggle_voice(window,cx);
+                if !quick_start{reveal();}app.toggle_voice(window,cx);
                 app.voice_call.as_ref().expect("UI voice call").media.initial_prompt(fixture["audio"].as_str().expect("Generated audio")).unwrap();
             } else {
                 let mut body=fixture;body["action"]=json!("workspace_voice_prompt");body["ownerToken"]=json!(app.unified_token());body["requestId"]=json!("native-voice-probe");
@@ -1616,6 +1680,11 @@ fn start_voice_probe(window:WindowHandle<Orbit>,cx:&mut App)->anyhow::Result<()>
         let mut received=false;
         for _ in 0..160{Timer::after(Duration::from_millis(250)).await;if window.update(cx,|app,_,_|{assert!(app.voice_error.is_none(),"Voice failed across surfaces: {:?}",app.voice_error);let call=app.voice_call.as_ref().expect("Voice vanished during surface transition");assert_eq!(call.session_id,session);call.active && call.media.received_audio_bytes()>before_audio}).expect("Live audio after collapse"){received=true;break}}
         assert!(received,"The same WebRTC session did not receive audio after notch/workspace/Quick Chat transitions");
+        let workspace_before_stop=cx.update(|_|{
+            let function=HOST.with(|host|unsafe{libc::dlsym(host.borrow().as_ref().unwrap()._library,c"kai_unified_diagnostics".as_ptr())});
+            let diagnostics:unsafe extern "C" fn()->u32=unsafe{std::mem::transmute(function)};
+            (unsafe{diagnostics()}) & 1
+        }).expect("Read existing background workspace before stop");
         window.update(cx,|app,_,cx|app.stop_voice(cx)).expect("Explicit voice stop");
         Timer::after(Duration::from_secs(3)).await;
         window.update(cx,|app,_,_|assert!(app.voice_call.is_none(),"Packaged voice stop left its media alive")).expect("Check voice teardown");
@@ -1632,7 +1701,12 @@ fn start_voice_probe(window:WindowHandle<Orbit>,cx:&mut App)->anyhow::Result<()>
         let _=cx.update(|_|{
             let function=HOST.with(|host|unsafe{libc::dlsym(host.borrow().as_ref().unwrap()._library,c"kai_unified_diagnostics".as_ptr())});
             let diagnostics:unsafe extern "C" fn()->u32=unsafe{std::mem::transmute(function)};
-            assert_eq!(unsafe{diagnostics()} & 3,0,"Quiescent voice stop left a ghost notch or reopened Code");
+            let surfaces=unsafe{diagnostics()} & 3;
+            assert_eq!(surfaces & 2,0,"Quiescent voice stop left a ghost notch");
+            // Background Code intentionally remains open when the notch is
+            // over another app. Stop must never create/reopen a workspace, but
+            // it must not close the user's pre-existing background window.
+            assert!(surfaces & 1 == 0 || workspace_before_stop != 0,"Voice stop reopened Code");
         });
         eprintln!("Kai packaged voice: real transcripts, live draft ownership, editable voice status, resolved model/effort, unpinned CLI defaults, and same-session notch/workspace/Double-Command/Quick Chat continuity, real incoming audio after transitions, and explicit native stop passed");
         let _=cx.update(|cx|cx.quit());

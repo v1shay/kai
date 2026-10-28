@@ -16,6 +16,7 @@ import AppKit
     private var originalLevel:NSWindow.Level?
     private(set) var expanded=false
     private(set) var transitioning=false
+    private var surfaceRadius:CGFloat=10
     static let expansionDuration:TimeInterval=0.84
     static let collapseDuration:TimeInterval=0.60
     nonisolated static func destination(saved:CGRect?,screen:CGRect)->CGRect {screen}
@@ -70,7 +71,7 @@ import AppKit
     nonisolated static func transitionLevel(_ level:NSWindow.Level)->NSWindow.Level{
         NSWindow.Level(rawValue:max(level.rawValue,NSWindow.Level.statusBar.rawValue+1))
     }
-    private func prepare(_ window:NSWindow,from source:CGRect,to target:CGRect,duration:TimeInterval,delay:TimeInterval=0,expanding:Bool,contour:CGPath?=nil){
+    private func prepare(_ window:NSWindow,from source:CGRect,to target:CGRect,duration:TimeInterval,delay:TimeInterval=0,expanding:Bool,contour:CGPath?=nil,sourceNotch:Bool?=nil,targetNotch:Bool?=nil,sourceRadius:CGFloat=14,targetRadius:CGFloat=14){
         self.window=window
         originalLevel=window.level;window.level=Self.transitionLevel(window.level)
         originalBackground=window.backgroundColor;originalOpaque=window.isOpaque;originalShadow=window.hasShadow;originalIgnores=window.ignoresMouseEvents
@@ -78,7 +79,7 @@ import AppKit
         guard let host=window.contentView?.superview ?? window.contentView else{return}
         self.host=host;host.wantsLayer=true
         let mask=CAShapeLayer();mask.frame=host.bounds;previousMask=host.layer?.mask;host.layer?.mask=mask;clip=mask
-        animate(mask,from:contour.map{local($0,in:host,window:window)} ?? Self.outline(local(source,in:host,window:window),notch:expanding,radius:expanding ? 14:10),to:Self.outline(local(target,in:host,window:window),notch:!expanding,radius:expanding ? 10:14),duration:duration,delay:delay)
+        animate(mask,from:contour.map{local($0,in:host,window:window)} ?? Self.outline(local(source,in:host,window:window),notch:sourceNotch ?? expanding,radius:sourceRadius),to:Self.outline(local(target,in:host,window:window),notch:targetNotch ?? !expanding,radius:targetRadius),duration:duration,delay:delay)
         // A single glass backdrop bridges the menu-bar gap. It sits UNDER the
         // live workspace, so each real UI component is visible as it arrives.
         let union=source.union(target)
@@ -88,10 +89,10 @@ import AppKit
         let glass=NSVisualEffectView(frame:CGRect(origin:.zero,size:union.size));glass.wantsLayer=true;glass.material = .underWindowBackground;glass.blendingMode = .behindWindow;glass.state = .active
         panel.contentView=glass;shell=panel
         let glassMask=CAShapeLayer();glass.layer?.mask=glassMask
-        animate(glassMask,from:contour.map{Self.convert($0){CGPoint(x:$0.x-union.minX,y:$0.y-union.minY)}} ?? Self.outline(source.offsetBy(dx:-union.minX,dy:-union.minY),notch:expanding,radius:expanding ? 14:10),to:Self.outline(target.offsetBy(dx:-union.minX,dy:-union.minY),notch:!expanding,radius:expanding ? 10:14),duration:duration,delay:delay)
+        animate(glassMask,from:contour.map{Self.convert($0){CGPoint(x:$0.x-union.minX,y:$0.y-union.minY)}} ?? Self.outline(source.offsetBy(dx:-union.minX,dy:-union.minY),notch:sourceNotch ?? expanding,radius:sourceRadius),to:Self.outline(target.offsetBy(dx:-union.minX,dy:-union.minY),notch:targetNotch ?? !expanding,radius:targetRadius),duration:duration,delay:delay)
         window.makeKeyAndOrderFront(nil);panel.order(.below,relativeTo:window.windowNumber)
     }
-    func expand(_ window:NSWindow,from source:CGRect,replay:Bool=false,completion:@escaping()->Void={}){
+    func expand(_ window:NSWindow,from source:CGRect,replay:Bool=false,destination:CGRect?=nil,sourceNotch:Bool=true,crossfade:Bool=false,sourceRadius:CGFloat=10,destinationRadius:CGFloat=10,completion:@escaping()->Void={}){
         if expanded && !transitioning && !replay{window.makeKeyAndOrderFront(nil);completion();return}
         CATransaction.begin();CATransaction.setDisableActions(true);defer{CATransaction.commit()}
         let contour=transitioning ? liveContour():nil
@@ -99,15 +100,15 @@ import AppKit
         let start=contour?.boundingBoxOfPath ?? source
         revision += 1;let token=revision;clearVisuals();self.window=window;expanded=true;transitioning=true
         let screen=NSScreen.screens.first{$0.frame.contains(CGPoint(x:source.midX,y:source.maxY-1))} ?? window.screen ?? NSScreen.main
-        let target=Self.destination(saved:nil,screen:screen?.visibleFrame ?? window.frame)
-        window.setFrame(target,display:true);onPresentation?(replay ? "reopen":"expand")
+        let target=destination ?? Self.destination(saved:nil,screen:screen?.visibleFrame ?? window.frame)
+        surfaceRadius=destinationRadius;window.setFrame(target,display:true);onPresentation?(replay ? "reopen":"expand")
         let reduce = !motionEnabled || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         window.alphaValue=1
         if !reduce{
-            prepare(window,from:start,to:target,duration:0.68,expanding:true,contour:contour)
-            if let returningOpacity,let layer=host?.layer{
+            prepare(window,from:start,to:target,duration:0.68,expanding:true,contour:contour,sourceNotch:sourceNotch,targetNotch:false,sourceRadius:sourceNotch ? 14:sourceRadius,targetRadius:destinationRadius)
+            if (returningOpacity != nil || crossfade),let layer=host?.layer{
                 originalContentOpacity=layer.opacity
-                let fade=CABasicAnimation(keyPath:"opacity");fade.fromValue=returningOpacity;fade.toValue=layer.opacity;fade.duration=0.14;fade.timingFunction=curve;layer.add(fade,forKey:"workspaceContent")
+                let fade=CABasicAnimation(keyPath:"opacity");fade.fromValue=returningOpacity ?? 0;fade.toValue=layer.opacity;fade.duration=crossfade ? 0.24:0.14;fade.timingFunction=curve;layer.add(fade,forKey:"workspaceContent")
             }
         }else{
             window.alphaValue=0;window.orderFront(nil)
@@ -123,7 +124,7 @@ import AppKit
             completion()
         };delayed=finish;DispatchQueue.main.asyncAfter(deadline:.now()+(reduce ? 0.12:Self.expansionDuration),execute:finish)
     }
-    func collapse(_ window:NSWindow,to target:CGRect,into notch:NSPanel?=nil,revealNotch:(()->Void)?=nil,completion:@escaping()->Void){
+    func collapse(_ window:NSWindow,to target:CGRect,into notch:NSPanel?=nil,revealNotch:(()->Void)?=nil,targetNotch:Bool=true,retireContent:Bool=false,targetRadius:CGFloat=10,completion:@escaping()->Void){
         if !expanded && !transitioning && !window.isVisible{completion();return}
         CATransaction.begin();CATransaction.setDisableActions(true);defer{CATransaction.commit()}
         let retiringOpacity=originalContentOpacity.map{_ in host?.layer?.presentation()?.opacity ?? host?.layer?.opacity ?? 0}
@@ -132,10 +133,10 @@ import AppKit
         revision += 1;let token=revision;clearVisuals();self.window=window;expanded=false;transitioning=true
         onPresentation?("collapse")
         let reduce = !motionEnabled || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        if !reduce{prepare(window,from:source,to:target,duration:0.48,delay:0.10,expanding:false,contour:contour)}else{
+        if !reduce{prepare(window,from:source,to:target,duration:0.48,delay:0.10,expanding:false,contour:contour,sourceNotch:false,targetNotch:targetNotch,sourceRadius:surfaceRadius,targetRadius:targetNotch ? 14:targetRadius)}else{
             NSAnimationContext.runAnimationGroup{context in context.duration=0.12;window.animator().alphaValue=0}
         }
-        if let layer=host?.layer,!reduce,(notch != nil || retiringOpacity != nil){
+        if let layer=host?.layer,!reduce,(notch != nil || retiringOpacity != nil || retireContent){
             originalContentOpacity=layer.opacity
             let fade=CABasicAnimation(keyPath:"opacity");fade.fromValue=retiringOpacity ?? layer.presentation()?.opacity ?? layer.opacity;fade.toValue=0;fade.duration=0.14;fade.timingFunction=curve
             layer.opacity=0;layer.add(fade,forKey:"workspaceContent")

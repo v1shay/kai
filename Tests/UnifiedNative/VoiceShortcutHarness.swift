@@ -84,7 +84,9 @@ private func command(_ bytes:UnsafePointer<UInt8>?,_ count:Int)->Bool{
             while (member(app,"indicator") as? NotchIndicatorEngine)?.mode != .listening,Date()<speakingDeadline{pump(0.01)}
             precondition((member(app,"indicator") as? NotchIndicatorEngine)?.mode == .listening,"Speaking lost the original audio waveform")
             // Holding the assigned voice shortcut again stops the same call.
-            pump(0.4);modifiers(flag);pump(0.15);modifiers([]);pump(0.05)
+            // Intentionally withhold the run loop: key release must still stop
+            // the call even if the configured hold's timer could not execute.
+            pump(0.4);modifiers(flag);Thread.sleep(forTimeInterval:0.15);modifiers([]);pump(0.05)
             precondition(!live,"Original stop shortcut did not stop the native call")
         }
         }
@@ -191,6 +193,21 @@ private func command(_ bytes:UnsafePointer<UInt8>?,_ count:Int)->Bool{
         modifiers(.command);Thread.sleep(forTimeInterval:0.15);modifiers([]);pump(0.03)
         precondition(commands.dropFirst(boundary).contains{$0["action"] as? String == "workspace_voice_prompt"},"A delayed arm timer lost audio released at the deadline")
         app.dismissUnifiedSurface();pump(0.05)
-        print("Production shortcut handler: all voice actions on Command/Option/Fn retain pre-roll, discard silence, preserve audio/chat/context and listening indicators, stop via hold, and preserve tap/double-Command workspace behavior")
+        // Carbon owns the user's Command-` chord, so no keyDown reaches the
+        // ordinary editor monitor. The surface callback must consume its bare
+        // Command pre-roll and exclude it from the double-Command sequence.
+        live=false;scene="off";request=nil;publish();app.expandToRunningChat();pump(0.3)
+        let quick=NSWindow(contentRect:CGRect(x:300,y:200,width:680,height:520),styleMask:[.borderless],backing:.buffered,defer:false);quick.isReleasedWhenClosed=false
+        let chordStart=commands.count
+        modifiers(.command);app.prepareQuickOpening();_ = app.transitionQuickSurface(quick,show:true);modifiers([]);pump(0.08)
+        modifiers(.command);app.prepareQuickOpening();_ = app.transitionQuickSurface(quick,show:false);modifiers([]);pump(0.8)
+        precondition(!commands.dropFirst(chordStart).contains{$0["action"] as? String == "workspace_voice_prompt" || $0["action"] as? String == "voice_stop"},"Command-` started or ended voice")
+        precondition(member(app,"miniOpen") as? Bool == true,"Two Command-` chords were mistaken for bare double-Command dismissal")
+        live=false;scene="off";request=nil;publish();app.prepareQuickOpening();_ = app.transitionQuickSurface(quick,show:true);pump(0.9)
+        let miniVoiceStart=commands.count
+        modifiers(.command);pump(0.16);_ = app.transitionQuickSurface(quick,show:false);pump(0.03);modifiers([]);pump(0.15)
+        precondition(commands.dropFirst(miniVoiceStart).contains{$0["action"] as? String == "workspace_voice_prompt"},"Folding mini Code into the notch cancelled the user's deliberate voice hold")
+        live=false;scene="off";request=nil;publish()
+        print("Production shortcut handler: voice pre-roll, silence discard, context, listening indicators, double-Command, and Carbon-owned Command-` surface chords passed")
     }
 }

@@ -8,7 +8,8 @@ import AVFoundation
     private(set) var models = [String]()
     private var process: Process?, input: Pipe?, output: Pipe?
     private var buffer = Data(), token = UUID().uuidString
-    private let engine = AVAudioEngine(), player = AVAudioPlayerNode()
+    private var engine:AVAudioEngine?,player:AVAudioPlayerNode?
+    var playbackInitialized:Bool{engine != nil || player != nil}
     private var format: AVAudioFormat?
     private var seen = [String: String](), thread: String?, pending = ""
     private var flush: DispatchWorkItem?
@@ -141,6 +142,8 @@ import AVFoundation
     }
     private func play(_ pcm:Data,rate:Double) {
         guard rate.isFinite,rate > 0,rate <= 192000,!pcm.isEmpty,pcm.count <= 16*1024*1024,let next=AVAudioFormat(standardFormatWithSampleRate:rate,channels:1) else{onStatus?("Voice returned invalid audio");return}
+        if engine == nil{engine=AVAudioEngine();player=AVAudioPlayerNode()}
+        guard let engine,let player else{return}
         if format?.sampleRate != rate {
             engine.stop();if player.engine != nil {engine.detach(player)};engine.attach(player);engine.connect(player,to:engine.mainMixerNode,format:next);format=next
         }
@@ -154,6 +157,6 @@ import AVFoundation
             DispatchQueue.main.async{ [weak self] in guard let self,self.token == playbackToken else{return};self.queuedBuffers=max(0,self.queuedBuffers-1);self.pump()}
         }
     }
-    func cancelAudio() {token=UUID().uuidString;player.stop();queuedBuffers=0;pending="";lastQueuedPhrase=nil;phrases.removeAll();inFlight=0;flush?.cancel()}
-    func stop() {cancelAudio();engine.stop();warm=false;output?.fileHandleForReading.readabilityHandler=nil;process?.terminationHandler=nil;if process?.isRunning == true{process?.terminate()};process=nil;input=nil;output=nil;buffer.removeAll();seen.removeAll();thread=nil}
+    func cancelAudio() {token=UUID().uuidString;player?.stop();queuedBuffers=0;pending="";lastQueuedPhrase=nil;phrases.removeAll();inFlight=0;flush?.cancel()}
+    func stop() {cancelAudio();engine?.stop();player=nil;engine=nil;format=nil;warm=false;output?.fileHandleForReading.readabilityHandler=nil;process?.terminationHandler=nil;if process?.isRunning == true{process?.terminate()};process=nil;input=nil;output=nil;buffer.removeAll();seen.removeAll();thread=nil}
 }

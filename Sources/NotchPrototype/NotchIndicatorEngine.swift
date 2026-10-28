@@ -26,7 +26,7 @@ final class FileGlyphLayer: CAShapeLayer {
     }
 }
 
-struct GradientCatalog: Decodable { let profileByPetID: [String: PetGradientProfile] }
+struct GradientCatalog: Decodable { var profileByPetID: [String: PetGradientProfile] }
 struct PetGradientProfile: Decodable { let palette: PetPalette; let gradients: PetGradients }
 struct PetPalette: Decodable { let shadow, primary, secondary, accent, highlight, foreground: String }
 struct PetGradients: Decodable { let ambient, thinking, working, success, warning, error: GradientRecipe }

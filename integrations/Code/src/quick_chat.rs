@@ -68,6 +68,7 @@ impl Controller {
         Ok(())
     }
     pub fn toggle(&mut self, cx: &mut App) -> anyhow::Result<()> {
+        unified::quick_prepare();
         if let Some(window) = self.window {
             if window
                 .update(cx, |panel, window, cx| {
@@ -86,9 +87,18 @@ impl Controller {
         self.open(cx)
     }
     pub(super) fn dismiss(&mut self,cx:&mut App){
-        if let Some(window)=self.window{let _=window.update(cx,|panel,window,cx|panel.hide(window,cx));}
+        self.dismiss_at(None,cx);
+    }
+    pub(super) fn dismiss_at(&mut self,issued_at:Option<f64>,cx:&mut App){
+        if let Some(window)=self.window{let _=window.update(cx,|panel,window,cx|panel.hide_if_current(issued_at,window,cx));}
     }
     pub fn open(&mut self, cx: &mut App) -> anyhow::Result<()> {
+        unified::quick_prepare();
+        let result=self.open_surface(cx);
+        if result.is_err(){unified::quick_visibility(false);}
+        result
+    }
+    fn open_surface(&mut self,cx:&mut App)->anyhow::Result<()>{
         if let Some(window) = self.window
             && window
                 .update(cx, |panel, window, cx| panel.show(window, cx))
@@ -127,6 +137,7 @@ pub struct QuickChat {
     pub(super) composer: Entity<TextInput>,
     visible: bool,
     show_generation: u64,
+    shown_at:f64,
     transcript_scroll: ScrollHandle,
     transcript_revision: Option<(Option<String>, usize, Option<u64>)>,
     _subscriptions: Vec<Subscription>,
@@ -209,6 +220,7 @@ impl QuickChat {
             composer,
             visible: false,
             show_generation: 0,
+            shown_at:0.,
             transcript_scroll: ScrollHandle::new(),
             transcript_revision: None,
             _subscriptions: vec![
@@ -246,7 +258,8 @@ impl QuickChat {
         }
     }
     pub(super) fn show(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        unified::quick_visibility(true);
+        self.shown_at=workspace_motion::now();
+        unified::quick_prepare();
         self.sync_from_main(cx);
         self.visible = true;
         self.show_generation = self.show_generation.wrapping_add(1);
@@ -256,6 +269,7 @@ impl QuickChat {
         native::apply_theme(window, &self.orbit.read(cx).resolved_theme);
         native::apply_appearance(window, &self.orbit.read(cx).effective_appearance());
         native_panel::show(window);
+        unified::quick_visibility(true);
         window.activate_window();
         cx.activate(true);
         self.composer.read(cx).focus_handle.focus(window);
@@ -278,6 +292,9 @@ impl QuickChat {
         window.blur();
         native_panel::hide(window);
         unified::quick_visibility(false);
+    }
+    pub(super) fn hide_if_current(&mut self,issued_at:Option<f64>,window:&mut Window,cx:&mut Context<Self>){
+        if issued_at.is_none_or(|issued|issued>=self.shown_at){self.hide(window,cx)}
     }
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.sync_to_main(cx);
@@ -605,6 +622,7 @@ mod native_panel {
     pub(super) fn show(window: &Window) {
         unsafe {
             if let Some(native) = native(window) {
+                if crate::unified::quick_surface(native.cast(),true){return;}
                 let _: () = msg_send![native, makeKeyAndOrderFront: std::ptr::null::<AnyObject>()];
             }
         }
@@ -612,6 +630,7 @@ mod native_panel {
     pub(super) fn hide(window: &Window) {
         unsafe {
             if let Some(native) = native(window) {
+                if crate::unified::quick_surface(native.cast(),false){return;}
                 let _: () = msg_send![native, orderOut: std::ptr::null::<AnyObject>()];
             }
         }

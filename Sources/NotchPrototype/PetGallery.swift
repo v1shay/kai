@@ -7,6 +7,7 @@ struct PetGalleryMotion {
 
 struct PetGallerySpec {
     let id:String, spritesheet:String, rows:Int, motions:[String:PetGalleryMotion], colors:[CGColor]
+    var sourceURL:URL?=nil
 }
 
 @MainActor final class PetGallery:NSObject {
@@ -27,7 +28,7 @@ struct PetGallerySpec {
     override init(){super.init();layer.opacity=0;layer.isHidden=true}
 
     func configure(_ specs:[PetGallerySpec],at root:URL) {
-        self.root=root;loadGeneration=UUID()
+        self.root=root;loadGeneration=UUID();thumbnails.invalidate()
         entries.forEach{$0.glow.removeFromSuperlayer();$0.sprite.removeFromSuperlayer();$0.ring.removeFromSuperlayer()}
         entries=specs.map{spec in
             let entry=Entry(spec)
@@ -63,7 +64,7 @@ struct PetGallerySpec {
         let generation=UUID();loadGeneration=generation
         if let root {
             for entry in entries where entry.sprite.contents == nil {
-                thumbnails.load(root.appendingPathComponent(entry.spec.spritesheet)) { [weak self,weak entry] image in
+                thumbnails.load(entry.spec.sourceURL ?? root.appendingPathComponent(entry.spec.spritesheet)) { [weak self,weak entry] image in
                     guard let self,let entry,self.visible,self.loadGeneration == generation,let image else{return}
                     CATransaction.begin();CATransaction.setDisableActions(true);entry.sprite.contents=image;CATransaction.commit()
                     let fade=CABasicAnimation(keyPath:"opacity");fade.fromValue=0;fade.toValue=1;fade.duration=0.18;entry.sprite.add(fade,forKey:"loaded")

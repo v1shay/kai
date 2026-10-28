@@ -5,6 +5,7 @@ harness=StateHarness
 [[ "${1:-}" != voice ]] || harness=VoiceShortcutHarness
 [[ "${1:-}" != history ]] || harness=SavedHistoryHarness
 [[ "${1:-}" != composer ]] || harness=ComposerHarness
+[[ "${1:-}" != matrix ]] || harness=MorphMatrixHarness
 staging=$(mktemp -d /private/tmp/kai-native-tests.XXXXXX)
 trap 'rm -rf "$staging"' EXIT
 product="$staging/Kai Native Tests.app"
