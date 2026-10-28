@@ -122,6 +122,17 @@ private func auditCommand(_ bytes:UnsafePointer<UInt8>?,_ count:Int)->Bool{guard
    precondition(commands.last?["choice"] as? String=="acceptForSession" && commands.last?["approvalRequestId"] as? String=="epoch:command","Review footer did not preserve the exact provider choice")
    state["completedRequestId"]=commands.last?["requestId"];state["approval"]=false;state.removeValue(forKey:"nativeReview");runtime.receive(try JSONSerialization.data(withJSONObject:state));pump(0.1);app.expandToRunningChat();pump(0.3)
    print("Native approval review: one SVG action row, bounded footer, exact provider choice and background owner passed")
+   // The snapshot can be one event behind the owner while changing form
+   // factors. It must never refuse a send locally on that stale busy bit.
+   state["composerBusy"]=true;state["readOnly"]=true
+   runtime.receive(try JSONSerialization.data(withJSONObject:state));pump(0.1)
+   field.stringValue="Continue from the same notch chat";let beforeSend=commands.count;ui.onSend?()
+   precondition(commands.count>beforeSend && commands.last?["action"] as? String=="send" && commands.last?["text"] as? String==field.stringValue,"The notch rejected a shared-owner submission using stale presentation state")
+   state["completedRequestId"]=commands.last?["requestId"];state["composerBusy"]=false;state["readOnly"]=false;state["composerDraft"]="";runtime.receive(try JSONSerialization.data(withJSONObject:state));pump(0.1);app.expandToRunningChat();pump(0.3)
+   state["history"]=[["id":"prompt","kind":"user","lines":[["text":"Preserve the previous prompt","style":"text"]]],["id":"final","kind":"assistant","lines":[["text":"The final response arrived without typing","style":"text"]]]]
+   runtime.receive(try JSONSerialization.data(withJSONObject:state));pump(0.4)
+   precondition(transcript.string.contains("Preserve the previous prompt") && transcript.string.contains("The final response arrived without typing"),"A finished response waited for another prompt in the extended notch")
+   print("Native shared chat: stale busy/history flags do not block owner submission; final text paints without another prompt")
    print("Native notch: mid-sentence command input, exact Unicode caret, synchronized draft acknowledgement, and background tool Yes/No response passed")
   }
   if let requested=ProcessInfo.processInfo.environment["KAI_COMPOSER_SOAK_SECONDS"].flatMap(Double.init),requested>0 {

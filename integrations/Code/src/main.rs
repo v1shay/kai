@@ -542,6 +542,7 @@ impl ListReveal {
     }
 }
 struct Orbit {
+    final_history_load:Option<(String,u64)>,
     unified_history_end:Option<(String,usize)>,
     unified_history_wait:bool,
     unified_back:Vec<SessionSummary>,
@@ -1084,6 +1085,7 @@ impl Orbit {
         }));
         Self {
             unified_text_morph:restored.as_ref().is_none_or(|s|s.text_morph),
+            final_history_load:None,
             unified_history_end:None,unified_history_wait:false,
             unified_back:vec![],unified_forward:vec![],unified_navigating:false,
             fast_transition:None,
@@ -2002,6 +2004,8 @@ impl Orbit {
             Event::Loaded(id, generation, messages, has_older, has_newer)
                 if self.active.as_deref() == Some(&id) && generation == self.generation =>
             {
+                let final_refresh=self.final_history_load.as_ref()==Some(&(id.clone(),generation));
+                if final_refresh{self.final_history_load=None;self.finalizing.remove(&id);self.pending_response_start=None;}
                 self.navigation_previous = None;
                 self.rows.clear();
                 self.rows = Self::history_rows(messages);
@@ -2036,7 +2040,7 @@ impl Orbit {
                 }
                 self.update_stream(&id, cx);
                 self.transcript_reveal =
-                    (self.motion && !self.rows.is_empty()).then(|| ListReveal::new(None));
+                    (self.motion && !final_refresh && !self.rows.is_empty()).then(|| ListReveal::new(None));
                 if self.send_after_load.is_some() {
                     self.composer
                         .update(cx, |_, cx| cx.emit(InputEvent::Submit));
@@ -2221,7 +2225,6 @@ impl Orbit {
                     return;
                 }
                 if self.active.as_deref() == Some(&id) {
-                    self.pending_response_start = None;
                     self.history_offset = 0;
                     self.history_anchor = None;
                     if let Some(session) = self
@@ -2230,7 +2233,11 @@ impl Orbit {
                         .find(|session| session.id == id)
                         .cloned()
                     {
-                        self.loading = true;
+                        // Refresh persisted pages behind the already presented
+                        // final, keeping its text visible and queueing any new
+                        // send until this exact load completes.
+                        self.final_history_load=Some((id.clone(),self.generation));
+                        self.finalizing.insert(id.clone());
                         self.engine.load(session, self.generation);
                     }
                 }
@@ -2281,6 +2288,7 @@ impl Orbit {
             Event::LoadError(id, generation, error)
                 if self.active.as_deref() == Some(&id) && generation == self.generation =>
             {
+                if self.final_history_load.as_ref()==Some(&(id.clone(),generation)){self.final_history_load=None;self.finalizing.remove(&id);self.pending_response_start=None;}
                 if self.restore_scroll.take().is_some()
                     && let Some(session) = self
                         .sessions
@@ -2319,6 +2327,7 @@ impl Orbit {
             Event::Error(error) => {
                 self.notice = Some(error);
                 self.finalizing.clear();
+                self.final_history_load=None;
                 self.discovering = false;
                 self.loading = false;
                 self.loading_earlier = false;
@@ -2850,7 +2859,7 @@ impl Orbit {
         if self
             .active
             .as_ref()
-            .is_some_and(|id| self.runs.contains_key(id))
+            .is_some_and(|id| self.runs.contains_key(id) || self.launches.contains_key(id) || self.finalizing.contains(id) || self.settling.contains_key(id))
             && (!self.composer.read(cx).text().trim().is_empty() || !self.attachments.is_empty())
         {
             self.enqueue_followup(cx);
@@ -3709,6 +3718,15 @@ impl Orbit {
                     }
                 }
                 self.finalizing.insert(id.to_string());
+                // The final source is immutable now. Present its bounded tail
+                // on the parse worker immediately; persistence may be queued
+                // behind history/indexing work on the engine's state worker.
+                let source=run.handle.take_response_source().unwrap_or_else(||response_buffer::ResponseSource::Memory(run.text));
+                if self.active.as_deref()==Some(id) && !self.navigation_history{
+                    let start=run.stream_start.or(self.pending_response_start).unwrap_or(self.rows.len());
+                    self.pending_response_start=Some(start);
+                    self.present_finished_source(id,run.agent,start,source.clone(),cx);
+                }
                 if let Some(usage) = self.usage.get(id) {
                     self.engine.save_usage(id.to_owned(), usage.clone());
                 }
@@ -3716,11 +3734,7 @@ impl Orbit {
                     self.remember_usage(id.to_owned(), usage);
                 }
                 if let Some(session) = self.sessions.iter().find(|s| s.id == id) {
-                    if let Some(source) = run.handle.take_response_source() {
-                        self.engine.finish_source(session.clone(), source);
-                    } else {
-                        self.engine.finish(session.clone(), run.text);
-                    }
+                    self.engine.finish_source(session.clone(), source);
                 }
             }
             self.visible_sessions = self
@@ -3799,6 +3813,19 @@ impl Orbit {
             });
         })
         .detach();
+    }
+    fn present_finished_source(&mut self,id:&str,agent:AgentKind,start:usize,source:response_buffer::ResponseSource,cx:&mut Context<Self>){
+        let id=id.to_owned();let generation=self.generation;
+        let job=cx.background_executor().spawn(async move{source.tail(64*1024).map(|text|presentation::live_page_blocks(&text))});
+        cx.spawn(async move|this,cx|{
+            let Ok(blocks)=job.await else{return};
+            let _=this.update(cx,|app,cx|{
+                if app.generation!=generation || app.active.as_deref()!=Some(&id) || app.navigation_history || !app.finalizing.contains(&id) || app.runs.contains_key(&id) || app.pending_response_start!=Some(start){return}
+                let start=start.min(app.rows.len());let old=app.rows.len();app.rows.truncate(start);
+                app.rows.extend(blocks.into_iter().enumerate().map(|(ix,block)|Row{role:Some(format!("{}:{}",if ix==0{"assistant"}else{"continuation"},agent.command())),block}));
+                app.list.splice(start..old,app.rows.len()-start);app.sync_flow_layout();cx.notify();
+            });
+        }).detach();
     }
     fn apply_live_rows(&mut self, id: &str) {
         if self.navigation_history && self.active.as_deref() == Some(id) {
@@ -5274,13 +5301,19 @@ impl Orbit {
 
         self.sync_sidebar_activity(cx);
         self.prepare_native_requests(window, cx);
+        self.advance_shared_chat(window,cx);
+        self.tick_slash(window, cx);
+        self.tick_context_picker(window, cx);
+        self.refresh_slash(window, cx);
+    }
+    fn advance_shared_chat(&mut self,window:&mut Window,cx:&mut Context<Self>){
+        if self.final_history_load.as_ref().is_some_and(|(id,generation)|self.active.as_ref()!=Some(id)||self.generation!=*generation){
+            if let Some((id,_))=self.final_history_load.take(){self.finalizing.remove(&id);}
+        }
         self.advance_voice(cx);
         self.advance_handoff(window, cx);
         self.advance_queue(window, cx);
         self.advance_teams(cx);
-        self.tick_slash(window, cx);
-        self.tick_context_picker(window, cx);
-        self.refresh_slash(window, cx);
         if self.session_conflict_open {
             self.session_conflict_open = false;
             if self

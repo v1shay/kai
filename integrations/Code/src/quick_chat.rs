@@ -282,6 +282,9 @@ impl QuickChat {
         cx.notify();
     }
     pub(super) fn hide(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // A delayed/repeated dismissal must not write this retired editor's
+        // draft over the composer now being used in Code or the notch.
+        if !self.visible{return}
         self.sync_to_main(cx);
         self.visible = false;
         // One-shot dictation belongs to this editor. Conversational voice

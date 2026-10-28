@@ -162,8 +162,11 @@ pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Resul
             cx.entity()
         })?;
         // Entity notifications include background run, approval and transcript events.
-        cx.observe(&entity, move |entity, cx| {
-            entity.update(cx,|app,cx|{app.refresh_unified_models(cx);let empty=app.active.is_none();let visible=wallpaper_visible()&&app.motion;app.background.update(cx,|background,cx|background.set_native_context(empty,visible,cx));app.publish_unified(cx)});
+        cx.observe(&entity, move |_, cx| {
+            // Chat progress belongs to the owner, including while both GPUI
+            // windows are hidden behind the native notch. Never wait for paint
+            // or the next keystroke to advance a queued send or handoff.
+            let _=window.update(cx,|app,window,cx|{app.advance_shared_chat(window,cx);app.sync_flow_layout();app.refresh_unified_models(cx);let empty=app.active.is_none();let visible=wallpaper_visible()&&app.motion;app.background.update(cx,|background,cx|background.set_native_context(empty,visible,cx));app.publish_unified(cx)});
         })
         .detach();
         let background=entity.read(cx).background.clone();
@@ -299,20 +302,9 @@ impl Orbit {
     }
 
     pub(super) fn unified_send_ready(&self) -> bool {
-        !self.loading
-            && !self.loading_earlier
-            && !self.starting_current()
-            && !self.quit_pending
-            && self.active.as_ref().is_none_or(|id| {
-                !self.runs.contains_key(id)
-                    && !self.finalizing.contains(id)
-                    && !self.settling.contains_key(id)
-            })
-            && self.history_offset == 0
-            && self.attachment_pending == 0
-            && self.handoff_pending.is_none()
-            && self.workspace_trust.is_none()
-            && self.session_conflict.is_none()
+        !self.loading && !self.loading_earlier && !self.quit_pending
+            && self.attachment_pending==0 && self.handoff_pending.is_none()
+            && self.workspace_trust.is_none() && self.session_conflict.is_none()
     }
     fn dispatch_unified(&mut self, request: Value, window: &mut Window, cx: &mut Context<Self>) {
         // Presentation updates must never replace the acknowledgement of a
@@ -517,12 +509,9 @@ impl Orbit {
             "new" => self.new_unprojected_conversation(window, cx),
             "new_project" => self.new_conversation(window, cx),
             "send" => {
-                if !self.unified_send_ready() {
-                    return Err(
-                        "The chat is busy or awaiting confirmation; your prompt is preserved."
-                            .into(),
-                    );
-                }
+                // Exactly the same submission path as both Code composers:
+                // queue active work, and restore the live tail before sending
+                // from history. A presentation snapshot is not a send lock.
                 let text = request["text"].as_str().ok_or("Missing prompt")?;
                 if text.len() > input::MAX_DRAFT_BYTES
                     || text.contains('\0')
@@ -541,7 +530,7 @@ impl Orbit {
                 self.composer
                     .update(cx, |input, cx| input.set_text(&supplied, cx));
                 self.send(window, cx);
-                if !self.starting_current() && self.composer.read(cx).text() == supplied {
+                if !self.starting_current() && self.send_after_load.is_none() && self.handoff_pending.is_none() && self.composer.read(cx).text() == supplied {
                     return Err(self.notice.clone().unwrap_or_else(|| {
                         "Prompt staged in the workspace; review its native confirmation".into()
                     }));
@@ -1072,7 +1061,7 @@ mod tests {
         json!({"action":action,"ownerToken":app.unified_token(),"draftBase":app.composer.read(cx).text(),"targetThreadId":app.active.as_ref().map(|id|format!("code:{id}")),"requestId":uuid::Uuid::new_v4().to_string()})
     }
     #[gpui::test]
-    fn unified_send_during_run_never_cancels_or_replaces_draft(cx: &mut TestAppContext) {
+    fn unified_send_during_run_queues_the_captured_draft_without_cancelling(cx: &mut TestAppContext) {
         let (view, cx) = crate::ui_tests::fixture(cx);
         view.update_in(cx, |app, window, cx| {
             app.active = Some("fixture-session".into());
@@ -1085,8 +1074,9 @@ mod tests {
             );
             let mut body = request(app, "send", cx);
             body["text"] = json!("New prompt");
-            assert!(app.unified_command(&body, window, cx).is_err());
-            assert_eq!(app.composer.read(cx).text(), "IDE draft");
+            app.unified_command(&body, window, cx).unwrap();
+            assert_eq!(app.composer.read(cx).text(), "");
+            assert_eq!(app.prompt_queue.last().unwrap().text,"New prompt");
             assert!(!app.runs["fixture-session"].handle.is_cancelled());
         });
     }
@@ -1258,6 +1248,44 @@ fn unified_links(text: &str, highlights: &[(std::ops::Range<usize>, InlineStyle)
 mod final_regressions {
     use super::*;
     use std::prelude::v1::test;
+
+    #[gpui::test]
+    fn notch_and_code_queue_through_the_same_owner_while_running_or_finalizing(cx:&mut TestAppContext){
+        let(view,cx)=crate::ui_tests::fixture(cx);
+        view.update_in(cx,|app,window,cx|{
+            app.loading=false;app.active=Some("fixture-session".into());
+            for phase in ["running","finalizing","settling"]{
+                app.runs.clear();app.finalizing.clear();app.settling.clear();
+                match phase{
+                    "running"=>{app.runs.insert("fixture-session".into(),crate::ui_tests::idle_run(String::new()));},
+                    "finalizing"=>{app.finalizing.insert("fixture-session".into());},
+                    _=>{let(_,receiver)=async_channel::bounded(1);app.settling.insert("fixture-session".into(),receiver);},
+                }
+                let prompt=format!("Notch follow-up during {phase}");
+                let request=json!({"action":"send","ownerToken":app.unified_token(),"draftBase":app.composer.read(cx).text(),"text":prompt});
+                assert_eq!(app.unified_snapshot(cx)["composerBusy"],false);
+                app.unified_command(&request,window,cx).unwrap();
+                assert_eq!(app.prompt_queue.last().unwrap().text,prompt);assert_eq!(app.composer.read(cx).text(),"");
+                app.composer.update(cx,|input,cx|input.set_text(&format!("Code follow-up during {phase}"),cx));app.send(window,cx);
+                assert_eq!(app.prompt_queue.last().unwrap().text,format!("Code follow-up during {phase}"));assert_eq!(app.composer.read(cx).text(),"");
+            }
+            assert_eq!(app.prompt_queue.len(),6);
+        });
+    }
+
+    #[gpui::test]
+    fn notch_history_send_restores_live_history_like_code_instead_of_refusing(cx:&mut TestAppContext){
+        let(view,cx)=crate::ui_tests::fixture(cx);
+        view.update_in(cx,|app,window,cx|{
+            app.active=Some("fixture-session".into());app.loading=false;app.history_offset=2;app.navigation_history=true;
+            app.agents=vec![Agent{kind:AgentKind::Codex,name:"Fixture".into(),available:true,executable:Some(PathBuf::from("/usr/bin/true"))}];
+            let request=json!({"action":"send","ownerToken":app.unified_token(),"draftBase":app.composer.read(cx).text(),"text":"Continue this same chat"});
+            assert_eq!(app.unified_snapshot(cx)["composerBusy"],false);
+            app.unified_command(&request,window,cx).unwrap();
+            assert!(app.loading);assert!(app.send_after_load.is_some());assert!(!app.navigation_history);assert_eq!(app.history_offset,0);
+            assert_eq!(app.send_after_load.as_ref().unwrap().original_prompt,"Continue this same chat");
+        });
+    }
 
     #[gpui::test]
     fn native_notch_inline_command_uses_the_shared_picker_and_keeps_the_draft(cx:&mut TestAppContext){
@@ -1630,7 +1658,7 @@ impl Orbit{
    app.model=Some("explicit-model".into());assert_eq!(app.effective_model_settings(),(Some("explicit-model".into()),Some("high".into())));
    app.controls.get_mut("codex").unwrap().1.defaults.effort=None;assert_eq!(app.effective_model_settings().1.as_deref(),Some("low"));
    app.active=Some("fixture-session".into());app.usage.insert("fixture-session".into(),usage::Usage{model:Some("native-rerouted-model".into()),reasoning_effort:Some("medium".into()),..Default::default()});app.runs.insert("fixture-session".into(),crate::ui_tests::idle_run("Thinking".into()));
-   let snapshot=app.unified_snapshot(cx);assert_eq!(snapshot["effectiveModel"],"native-rerouted-model");assert_eq!(snapshot["effectiveReasoningEffort"],"medium");assert_eq!(snapshot["readOnly"],false);assert_eq!(snapshot["composerBusy"],true);
+   let snapshot=app.unified_snapshot(cx);assert_eq!(snapshot["effectiveModel"],"native-rerouted-model");assert_eq!(snapshot["effectiveReasoningEffort"],"medium");assert_eq!(snapshot["readOnly"],false);assert_eq!(snapshot["composerBusy"],false);
    app.agent=AgentKind::Claude;app.model=None;assert_ne!(app.effective_model_settings().0.as_deref(),Some("native-rerouted-model"));
   });
  }
@@ -1691,7 +1719,7 @@ fn start_voice_probe(window:WindowHandle<Orbit>,cx:&mut App)->anyhow::Result<()>
                 let assistant=app.rows.iter().any(|r|matches!(&r.block,MessageBlock::Voice{speaker:chat_interactions::Speaker::Assistant,text,..}|MessageBlock::Interaction(chat_interactions::ChatInteraction::Speaker{speaker:chat_interactions::Speaker::Assistant,text}) if !text.is_empty()));
                 let active=app.voice_call.as_ref().is_some_and(|call|call.active&&call.owns_current_chat(app.active.as_deref()));
                 if active&&user&&assistant{
-                    assert_eq!(snapshot["readOnly"],false);assert_eq!(snapshot["composerBusy"],true);
+                    assert_eq!(snapshot["readOnly"],false);assert_eq!(snapshot["composerBusy"],false);
                     assert!(!snapshot["sessionActivity"]["text"].as_str().unwrap_or("").contains("Connecting"));
                     assert!(snapshot["effectiveModel"].as_str().is_some_and(|s|!s.is_empty()));assert!(snapshot["effectiveReasoningEffort"].as_str().is_some_and(|s|!s.is_empty()));assert!(app.model.is_none(),"Resolved defaults were incorrectly pinned");
                     if std::env::var_os("KAI_VOICE_GEMINI_SOURCE").is_some() {

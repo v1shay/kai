@@ -1221,6 +1221,37 @@ The signed packaged transition probe passed. Installed **0.9.3 (27)** with
 signature and binary-hash verification and a timestamped 0.9.2 backup; the
 running conversation was retained.
 
+## 0.9.6 — completion and submissions share one owner across all surfaces
+
+Runtime completion immediately schedules a bounded parse of the immutable final
+response source, independent of the persistence/history worker. The retired
+live parse can no longer leave old streaming text on screen until a later input.
+The result checks chat, generation and response-start identity before publishing;
+it never replaces a newer chat or turn. A persisted file-backed history refresh
+keeps the visible final in place, then replaces its pages without replaying the
+entire conversation entrance or showing an empty loading state.
+
+Code, mini Code and the extended notch call the same submission method. The
+notch no longer rejects a valid input using an old busy/read-only snapshot.
+Active/finishing work uses the existing follow-up queue, and historical sends
+restore the live tail using Code's existing captured-submission path. Pending
+loads and provider handoffs are acknowledged as accepted submissions. Exact
+owner/draft-base checks still protect edits made on another surface.
+
+The owner-notification handler advances voice/handoff/queue/team work before
+exporting its state, so hiding both GPUI windows does not suspend chat progress.
+Repeated dismissal of an already hidden mini editor cannot overwrite the shared
+draft being edited in Code or the notch. Rendering and reveal effects remain
+owned by the visible surface.
+
+Verification: 817 applicable Rust regression cases passed across the full run
+and the updated history-commit follow-up check; 17 opt-in cases remain ignored.
+205 Swift tests ran with one skipped and no failures. The native composer
+harness verifies stale-busy submission and final-text arrival without typing.
+The signed isolated app's launch and complete surface-transition probe passed.
+Installed **0.9.6 (30)** with signature/hash verification and a timestamped 0.9.5
+backup; the current running session is left open for the user to relaunch.
+
 ## 0.9.5 — centered typing cursor and a single approval action row
 
 The extended composer's AppKit text cell now centers its drawing and live field

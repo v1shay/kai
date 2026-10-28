@@ -94,7 +94,9 @@ struct KaiState: Decodable {
     let files: [KaiFile]?
     let readOnly: Bool
     let composerBusy:Bool?
-    var inputBlocked:Bool{readOnly || composerBusy == true}
+    // A historical viewport can still submit through the shared owner's
+    // live-tail route. Legacy transports without a readiness bit stay read-only.
+    var inputBlocked:Bool{composerBusy ?? readOnly}
     let activeTurnId: String?
     let approval: Bool
     let approvalThreadId: String?

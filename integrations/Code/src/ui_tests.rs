@@ -205,6 +205,52 @@ fn folded_history_fill_stops_after_io_failure_but_allows_manual_retry(cx:&mut Te
 }
 
 #[gpui::test]
+fn terminal_source_is_presented_without_persistence_paint_or_another_prompt(cx:&mut TestAppContext){
+    let(view,cx)=fixture(cx);
+    let status=|title:&str|chat_interactions::serialize_interaction(&chat_interactions::ChatInteraction::Status{title:title.into(),details:String::new(),status:chat_interactions::InteractionStatus::Completed});
+    let source=format!("Checking the workspace\n\n{}\n\nThe complete final reply\n\n{}",status("Final answer"),status("Completed"));
+    view.update(cx,|app,cx|{
+        app.active=Some("fixture-session".into());app.loading=false;app.rows=vec![Row{role:Some("user".into()),block:MessageBlock::Paragraph("Keep this prompt".into())},Row{role:Some("assistant:codex".into()),block:MessageBlock::Paragraph("Outdated streaming text".into())}];
+        app.pending_response_start=Some(1);app.finalizing.insert("fixture-session".into());
+        app.present_finished_source("fixture-session",AgentKind::Codex,1,response_buffer::ResponseSource::Memory(source),cx);
+    });
+    // Deliberately do not receive the engine's persistence event, draw a new
+    // window frame, reset the list, or type another prompt.
+    cx.run_until_parked();
+    view.update(cx,|app,cx|{
+        assert!(app.finalizing.contains("fixture-session"));
+        let snapshot=app.unified_snapshot(cx);let history=snapshot["history"].to_string();
+        assert!(history.contains("Keep this prompt"));assert!(history.contains("The complete final reply"));assert!(!history.contains("Outdated streaming text"));assert!(!history.contains("Checking the workspace"));
+        assert!(app.flow_index.work.iter().any(Option::is_some),"Final presentation waited for another paint to fold its work");
+        assert_eq!(app.composer.read(cx).text(),"");
+    });
+}
+
+#[gpui::test]
+fn terminal_source_cannot_replace_a_chat_after_navigation(cx:&mut TestAppContext){
+    let(view,cx)=fixture(cx);
+    view.update(cx,|app,cx|{
+        app.active=Some("fixture-session".into());app.pending_response_start=Some(0);app.finalizing.insert("fixture-session".into());
+        app.present_finished_source("fixture-session",AgentKind::Codex,0,response_buffer::ResponseSource::Memory("Old final".into()),cx);
+        app.generation+=1;app.rows=vec![Row{role:Some("user".into()),block:MessageBlock::Paragraph("New chat".into())}];
+    });
+    cx.run_until_parked();view.update(cx,|app,_|{assert_eq!(app.rows.len(),1);assert!(matches!(&app.rows[0].block,MessageBlock::Paragraph(text)if text=="New chat"));});
+}
+
+#[gpui::test]
+fn persisted_final_refresh_keeps_the_visible_reply_and_queues_the_next_prompt(cx:&mut TestAppContext){
+    let(view,cx)=fixture(cx);
+    view.update_in(cx,|app,window,cx|{
+        app.active=Some("fixture-session".into());app.loading=false;app.rows=vec![Row{role:Some("user".into()),block:MessageBlock::Paragraph("Prompt".into())},Row{role:Some("assistant:codex".into()),block:MessageBlock::Paragraph("Final stays visible".into())}];app.pending_response_start=Some(1);app.finalizing.insert("fixture-session".into());
+        app.receive(Event::PagedFinished("fixture-session".into()),cx);
+        assert!(!app.loading,"Saving the finalized transcript turned into a blank navigation/loading state");assert!(app.final_history_load.is_some());assert!(app.finalizing.contains("fixture-session"));
+        assert!(app.unified_snapshot(cx)["history"].to_string().contains("Final stays visible"));
+        app.composer.update(cx,|input,cx|input.set_text("Next prompt",cx));app.send(window,cx);assert_eq!(app.prompt_queue.last().unwrap().text,"Next prompt");
+        app.generation+=1;app.advance_shared_chat(window,cx);assert!(app.final_history_load.is_none());assert!(!app.finalizing.contains("fixture-session"),"Navigating away stranded a finishing lock");
+    });
+}
+
+#[gpui::test]
 fn completion_remeasures_folded_rows_without_a_rail_seek_or_manual_list_reset(cx:&mut TestAppContext){
  let(view,cx)=fixture(cx);let status=|title:&str|MessageBlock::Interaction(chat_interactions::ChatInteraction::Status{title:title.into(),details:String::new(),status:chat_interactions::InteractionStatus::Completed});
  view.update(cx,|app,cx|{app.loading=false;app.active=Some("fixture-session".into());app.finalizing.insert("fixture-session".into());app.rows.clear();for n in 0..2{for(role,block)in [("user",MessageBlock::Paragraph(format!("Prompt {n}\n{}","Details\n".repeat(8)))),("assistant:codex",MessageBlock::Paragraph("I am checking this\n".repeat(12))),("continuation:codex",MessageBlock::Activity{label:"Terminal command".into(),details:"pwd".into()}),("continuation:codex",status("Final answer")),("continuation:codex",MessageBlock::Paragraph(format!("Final answer {n}\n{}","Result\n".repeat(30)))),("continuation:codex",status(if n==0{"Completed"}else{"Working"}))]{app.rows.push(Row{role:Some(role.into()),block});}}app.list.reset(app.rows.len());app.following_bottom=false;app.list.scroll_to(ListOffset{item_ix:8,offset_in_item:px(0.)});cx.notify();});
@@ -658,7 +704,7 @@ fn native_composer_handles_unicode_multiline_clipboard_and_submit(cx: &mut TestA
 }
 
 #[gpui::test]
-fn completed_paged_response_blocks_a_new_send_until_history_commit_is_visible(
+fn completed_paged_response_queues_a_new_send_until_history_commit_is_visible(
     cx: &mut TestAppContext,
 ) {
     let (view, cx) = fixture(cx);
@@ -668,10 +714,12 @@ fn completed_paged_response_blocks_a_new_send_until_history_commit_is_visible(
             app.composer
                 .update(cx, |input, cx| input.set_text("Next task stays intact", cx));
             app.receive(Event::PagedFinished("fixture-session".into()), cx);
-            assert!(app.loading);
+            assert!(!app.loading);
+            assert!(app.finalizing.contains("fixture-session"));
             app.send(window, cx);
             assert!(!app.starting && app.runs.is_empty());
             assert!(app.notice.is_none());
+            assert_eq!(app.prompt_queue.last().unwrap().text,"Next task stays intact");
             app.receive(
                 Event::Loaded(
                     "fixture-session".into(),
@@ -683,9 +731,10 @@ fn completed_paged_response_blocks_a_new_send_until_history_commit_is_visible(
                 cx,
             );
             assert!(!app.loading);
+            assert!(!app.finalizing.contains("fixture-session"));
         })
     });
-    assert_eq!(composer_text(&view, cx), "Next task stays intact");
+    view.update(cx,|app,_|assert_eq!(app.prompt_queue.last().unwrap().text,"Next task stays intact"));
 }
 
 #[gpui::test]
@@ -4958,7 +5007,7 @@ fn pending_launch_belongs_to_its_chat_and_keeps_its_prompt_on_reload(cx:&mut Tes
     view.update_in(cx,|app,window,cx|{
         app.active=Some("fixture-session".into());app.loading=false;app.runs.clear();
         app.launches.insert("fixture-session".into(),chat_timing::Launch{caption:"Preparing workspace…",preview:vec![Row{role:Some("user".into()),block:MessageBlock::Paragraph("Keep submitted prompt".into())}],cancel:cancel.clone(),started:Instant::now(),key:"launch-one".into()});app.starting=true;
-        assert!(app.starting_current());assert!(!app.unified_send_ready());
+        assert!(app.starting_current());assert!(app.unified_send_ready(),"Preparing a run still accepts queued follow-ups");
         app.new_conversation(window,cx);
         assert!(!app.starting_current());assert!(app.unified_send_ready());
         assert_eq!(app.unified_snapshot(cx)["sessionActivity"]["scene"],"off");

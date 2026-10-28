@@ -63,6 +63,7 @@ impl Orbit {
             attachment.mark_submitted();
         }
         self.prompt_queue.push(prompt);
+        self.notice=None;
         self.attachments.clear();
         self.chat_context.remove(&self.context_scope());
         self.composer.update(cx, |input, cx| input.set_text("", cx));

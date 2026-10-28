@@ -28,6 +28,15 @@ fn draw(panel: &Entity<quick_chat::QuickChat>, cx: &mut VisualTestContext) {
     });
 }
 #[gpui::test]
+fn repeated_mini_dismissal_cannot_overwrite_the_shared_code_or_notch_draft(cx:&mut TestAppContext){
+    let(orbit,panel,cx)=fixture(cx);
+    panel.update_in(cx,|panel,window,cx|panel.hide(window,cx));
+    orbit.update(cx,|app,cx|app.composer.update(cx,|input,cx|input.set_text("Continue editing in the notch",cx)));
+    panel.update_in(cx,|panel,window,cx|panel.hide_if_current(Some(workspace_motion::now()),window,cx));
+    cx.update(|_,cx|assert_eq!(orbit.read(cx).composer.read(cx).text(),"Continue editing in the notch"));
+}
+
+#[gpui::test]
 fn queued_dismissal_cannot_close_a_more_recently_opened_mini_surface(cx:&mut TestAppContext){
     let(_,panel,cx)=fixture(cx);
     panel.update_in(cx,|panel,window,cx|{
