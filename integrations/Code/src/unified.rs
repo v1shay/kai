@@ -635,8 +635,8 @@ impl Orbit {
             "interaction_details"=>{
                 let id=request["id"].as_str().ok_or("Missing interaction")?;
                 if let Some(index)=id.strip_prefix("work-").and_then(|s|s.parse::<usize>().ok()){
-                    if !chat_flow::Index::new(&self.rows).work.get(index).is_some_and(|r|r.as_ref().is_some_and(|r|r.start==index)){return Err("This turn changed".into())}
-                    if !self.expanded_work.remove(&index){self.expanded_work.insert(index);}cx.notify();return Ok(())
+                    if !self.transcript_flow().work.get(index).is_some_and(|r|r.as_ref().is_some_and(|r|r.start==index)){return Err("This turn changed".into())}
+                    if !self.expanded_work.remove(&index){self.expanded_work.insert(index);}self.flow_revision=self.flow_revision.wrapping_add(1);cx.notify();return Ok(())
                 }
                 let index=id.split_once('-').and_then(|(n,_)|n.parse::<usize>().ok()).ok_or("Invalid interaction")?;
                 if self.unified_detail_id(index).as_deref()!=Some(id){return Err("This interaction changed; select its current card".into())}
@@ -887,20 +887,29 @@ impl Orbit {
     }
     fn unified_history(&self) -> Vec<Value> {
         let mut history = Vec::new();
-        let flow=chat_flow::Index::new(&self.rows);
+        let flow=self.transcript_flow();
         let mut role = "assistant".to_owned();
         let end = self.unified_history_end.as_ref().filter(|(owner,_)|owner==&self.unified_token() && !self.unified_history_wait).map_or(self.rows.len(),|(_,end)|(*end).min(self.rows.len()));
-        let start = end.saturating_sub(100);
+        let start = flow.tail_start(end,100,&self.expanded_work);
         for row in self.rows.iter().take(start) {
             if let Some(r) = &row.role {
                 role = r.clone()
             }
         }
         for (index, row) in self.rows.iter().enumerate().take(end).skip(start) {
+            // Roles belong to source messages, including folded-away rows.
+            // A final paragraph with no explicit role still inherits assistant.
+            if let Some(r)=&row.role{role=r.clone()}
+            if flow.hidden.get(index)==Some(&true){continue}
             if let Some(span)=flow.work.get(index).and_then(|r|r.as_ref()){
                 let expanded=self.expanded_work.contains(&span.start);
                 if index==span.start.max(start){history.push(json!({"id":format!("work-summary-{}",span.start),"kind":"activity","lines":[{"text":if expanded{"Hide work"}else{"Show work"},"style":"activity"}],"detailId":format!("work-{}",span.start),"speechText":""}));}
                 if !expanded{continue}
+            }
+            if let Some(span)=flow.commands.get(index).and_then(|r|r.as_ref()){
+                if span.start!=index{continue}
+                let working=self.rows[span.clone()].iter().any(|r|chat_flow::command(&r.block).is_some_and(|(_,_,s)|matches!(s,chat_interactions::InteractionStatus::Started|chat_interactions::InteractionStatus::Working)));
+                history.push(json!({"id":format!("row-{index}"),"kind":"activity","lines":[{"text":format!("{} · {}",if working{"Running commands"}else{"Ran commands"},span.len()),"style":"activity"}],"detailId":self.unified_detail_id(index),"agent":self.agent.command(),"speechText":""}));continue
             }
             if let Some(r) = &row.role {
                 role = r.clone()

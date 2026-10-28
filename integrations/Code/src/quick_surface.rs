@@ -57,7 +57,8 @@ impl Orbit {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        self.flow_index=chat_flow::Index::new(&self.rows);
+        let changed=self.sync_flow_layout();
+        if changed{let anchor=scroll.logical_scroll_top();scroll.reset(self.rows.len());let ix=self.flow_index.anchor(anchor.item_ix,&self.expanded_work);scroll.scroll_to(ListOffset{item_ix:ix,offset_in_item:if ix==anchor.item_ix{anchor.offset_in_item}else{px(0.)}});}
         self.advance_chat_surface(window, cx);
         // The main window may be hidden or inactive while this surface owns
         // the chat. Advance its transcript reveal here too; otherwise loaded
@@ -378,7 +379,7 @@ impl Orbit {
                                                 },
                                             )),
                                     )
-                            .child(self.thinking_chip(cx))
+                            .child(self.thinking_chip(window,cx))
                             .when(self.fast_supported(),|s|s.child(self.fast_button(cx)))
                                     .child(
                                         div()

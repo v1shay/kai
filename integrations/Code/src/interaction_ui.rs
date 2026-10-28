@@ -22,6 +22,22 @@ fn disclosure_fraction(progress: f32, open: bool, from: f32) -> f32 {
 }
 
 impl Orbit {
+    pub(super) fn transcript_flow(&self)->chat_flow::Index{
+        let id=self.active.as_deref();
+        let running=id.and_then(|id|self.runs.get(id));
+        let busy=running.is_some()||self.starting_current()||id.is_some_and(|id|self.finalizing.contains(id)||self.settling.contains_key(id));
+        let settled=id.is_some()&&!busy&&!self.loading&&!self.loading_earlier&&!self.has_newer;
+        let mut flow=chat_flow::Index::for_transcript(&self.rows,settled,running.and_then(|r|r.stream_start));
+        for(ix,row)in self.rows.iter().enumerate(){if let MessageBlock::Interaction(ChatInteraction::NativeRequest(request))=&row.block{if self.native_pending.values().any(|p|p.current(&self.runs)&&p.request_id()==request.id){if let Some(span)=flow.work[ix].clone(){for i in span{flow.work[i]=None;}}flow.hidden[ix]=false;}}}flow
+    }
+    pub(super) fn sync_flow_layout(&mut self)->bool{
+        let next=self.transcript_flow();if next==self.flow_index{return false}
+        let anchor=self.list.logical_scroll_top();self.flow_index=next;self.flow_revision=self.flow_revision.wrapping_add(1);
+        self.list.reset(self.rows.len());
+        if self.following_bottom{self.list.scroll_to(ListOffset{item_ix:self.rows.len(),offset_in_item:px(0.)});}
+        else{let ix=self.flow_index.anchor(anchor.item_ix,&self.expanded_work);self.list.scroll_to(ListOffset{item_ix:ix,offset_in_item:if ix==anchor.item_ix{anchor.offset_in_item}else{px(0.)}});}
+        true
+    }
     pub(super) fn work_reveal(&self,ix:usize)->f32{
         self.work_animations.get(&ix).map(|(at,open,from)|disclosure_fraction(if self.motion{at.elapsed().as_secs_f32()/0.32}else{1.},*open,*from)).unwrap_or(if self.expanded_work.contains(&ix){1.}else{0.})
     }
@@ -29,7 +45,7 @@ impl Orbit {
         let label=self.row_timing(ix).and_then(|t|t.elapsed_ms).map(|ms|format!("Worked for {}",chat_timing::duration(ms))).unwrap_or_else(||"Worked".into());
         div().id(("work-summary",ix)).debug_selector(move||format!("work-summary-{ix}")).flex().items_center().gap_2().py_2().text_size(theme::ui_px(11.)).text_color(rgb(MUTED)).cursor_pointer()
             .child(icon(if self.expanded_work.contains(&ix){"chevron-down"}else{"chevron-right"},12.,MUTED)).child(label)
-            .on_click(cx.listener(move|this,_,_,cx|{let from=this.work_reveal(ix);let open=if this.expanded_work.remove(&ix){false}else{this.expanded_work.insert(ix);true};this.work_animations.insert(ix,(Instant::now(),open,from));let anchor=this.list.logical_scroll_top();this.list.reset(this.rows.len());this.list.scroll_to(anchor);cx.notify();})).into_any_element()
+            .on_click(cx.listener(move|this,_,_,cx|{let from=this.work_reveal(ix);let open=if this.expanded_work.remove(&ix){false}else{this.expanded_work.insert(ix);true};this.work_animations.insert(ix,(Instant::now(),open,from));this.flow_revision=this.flow_revision.wrapping_add(1);let anchor=this.list.logical_scroll_top();this.list.reset(this.rows.len());let target=this.flow_index.anchor(anchor.item_ix,&this.expanded_work);this.list.scroll_to(ListOffset{item_ix:target,offset_in_item:if target==anchor.item_ix{anchor.offset_in_item}else{px(0.)}});cx.notify();})).into_any_element()
     }
     fn interaction_reveal(&self, ix: usize) -> f32 {
         let expanded = self.expanded_tools.contains(&ix);

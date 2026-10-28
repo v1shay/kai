@@ -399,12 +399,14 @@ impl Orbit {
         let enabled=unified::decode_enabled(self.motion&&self.unified_text_morph);
         self.composer.update(cx,|input,_|input.set_reveal_enabled(enabled));
         let mut animate = false;
+        let remeasure=!self.work_animations.is_empty()||!self.interaction_animations.is_empty();
         self.interaction_animations.retain(|_, (t, _, _)| {
             let live = self.motion && t.elapsed() < Duration::from_millis(320);
             animate |= live;
             live
         });
         self.work_animations.retain(|_,(t,_,_)|{let live=self.motion&&t.elapsed()<Duration::from_millis(320);animate|=live;live});
+        if remeasure{let anchor=self.list.logical_scroll_top();self.list.reset(self.rows.len());let ix=self.flow_index.anchor(anchor.item_ix,&self.expanded_work);self.list.scroll_to(ListOffset{item_ix:ix,offset_in_item:if ix==anchor.item_ix{anchor.offset_in_item}else{px(0.)}});}
         if self.motion
             && self
                 .question_choices

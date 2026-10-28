@@ -29,7 +29,7 @@ impl Picker {
         }
     }
     pub fn animating(&self) -> bool {
-        self.effort_hover.as_ref().is_some_and(|(_,at)|at.elapsed()<Duration::from_secs(5)) || self.effort_motion.is_some_and(|(at,_,_)|at.elapsed()<Duration::from_millis(340)) || self.started.elapsed() < Duration::from_millis(if self.closing { 120 } else { 320 })
+        (!self.closing && !native::reduced_motion() && self.effort_hover.as_ref().is_some_and(|(_,at)|at.elapsed()<Duration::from_secs(5))) || self.effort_motion.is_some_and(|(at,_,_)|at.elapsed()<Duration::from_millis(340)) || self.started.elapsed() < Duration::from_millis(if self.closing { 120 } else { 320 })
             || self
                 .auth_pulse
                 .is_some_and(|(_, t)| t.elapsed() < Duration::from_millis(360))
@@ -104,6 +104,7 @@ impl Orbit {
         let height = window.viewport_size().height;
         let search=cx.new(|cx|{let mut input=TextInput::new(window,cx);input.set_placeholder("Search models…",cx);input});
         let subscription=cx.subscribe(&search,|_,_,event,cx|{if matches!(event,InputEvent::Changed){cx.notify();}});
+        let effort_preview=self.unified_effort().map(str::to_owned).or_else(||self.effective_model_settings().1).map(|value|(value,Instant::now()));
         self.agent_picker = Some(Picker {
             search,_search_subscription:subscription,
             anchor: point(
@@ -113,7 +114,7 @@ impl Orbit {
             started: Instant::now(),
             closing: false,
             closing_from: 1.,
-            auth_pulse: None,effort_only:false,effort_hover:None,effort_motion:None,max_height:f32::from(height)-16.,
+            auth_pulse: None,effort_only:false,effort_hover:effort_preview,effort_motion:None,max_height:f32::from(height)-16.,
         });
         self.refresh_controls(false, cx);
         cx.notify();

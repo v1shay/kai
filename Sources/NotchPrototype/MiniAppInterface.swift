@@ -3,6 +3,21 @@ import CoreText
 import ImageIO
 import QuickLookThumbnailing
 
+/// Core Text centers the actual typographic line, rather than CATextLayer's
+/// top-aligned default, inside the footer strip.
+private final class CenteredComposerTextLayer:CATextLayer {
+    override func draw(in context:CGContext){
+        guard let text=string as? String,!text.isEmpty else{return}
+        let face=(font as? NSFont) ?? AppTypography.ui(ofSize:fontSize)
+        let attributes:[NSAttributedString.Key:Any]=[.font:face,.foregroundColor:NSColor(cgColor:foregroundColor ?? NSColor.white.cgColor) ?? .white]
+        var line=CTLineCreateWithAttributedString(NSAttributedString(string:text,attributes:attributes))
+        if CTLineGetTypographicBounds(line,nil,nil,nil)>Double(bounds.width){let token=CTLineCreateWithAttributedString(NSAttributedString(string:"…",attributes:attributes));line=CTLineCreateTruncatedLine(line,Double(bounds.width),.end,token) ?? line}
+        var ascent:CGFloat=0,descent:CGFloat=0,leading:CGFloat=0;_ = CTLineGetTypographicBounds(line,&ascent,&descent,&leading)
+        let ink=CTLineGetBoundsWithOptions(line,.useGlyphPathBounds);let baseline=ink.isEmpty ? (bounds.height-ascent-descent)/2+descent:(bounds.height-ink.height)/2-ink.minY
+        context.saveGState();context.textMatrix = .identity;context.textPosition=CGPoint(x:0,y:baseline);CTLineDraw(line,context);context.restoreGState()
+    }
+}
+
 private final class FileTypeGlyphLayer:CALayer {
     private enum Kind { case folder, python, html, css, swift, code(String), document, data, image, video, audio, archive, table, slides, font, database, config, git, package, lock }
     private let gradient=CAGradientLayer(),maskGroup=CALayer(),outline=CAShapeLayer(),mark=CAShapeLayer()
@@ -232,8 +247,10 @@ private final class AttachmentLayer:CALayer {
     var onFast:(()->Void)?
     var onUsageRefresh:(()->Void)?
     private let composerPopover=ComposerGlassPopover()
-    private let effortLabel=CATextLayer(),fastBolt=CALayer(),usageLabel=CATextLayer(),usageTrack=CALayer(),usageFill=CALayer()
+    private let effortLabel=CATextLayer(),fastBolt=CALayer(),usageLabel=CenteredComposerTextLayer(),usageTrack=CALayer(),usageFill=CALayer()
     private var fastWasOn:Bool?
+    private let effortShimmer=EffortTileLayer()
+    private var effortShimmerKey="",hoveringEffort=false
     var onSettings: ((String,String)->Void)?
     var onModel:((String)->Void)?
     var onPermissions:((String?,String?)->Void)?
@@ -304,7 +321,7 @@ private final class AttachmentLayer:CALayer {
         configure(voiceButton,"◉",14,.white.withAlphaComponent(0.7));voiceButton.alignmentMode = .center;input.addSublayer(voiceButton);voiceWaveform.contentsGravity = .resizeAspect;voiceWaveform.frame=CGRect(x:4,y:4,width:14,height:14);voiceButton.addSublayer(voiceWaveform)
         permissionGlyph.startPoint=CGPoint(x:0,y:0);permissionGlyph.endPoint=CGPoint(x:1,y:1);permissionGlyph.mask=permissionMask;permissionMask.contentsGravity = .resizeAspect;input.addSublayer(permissionGlyph)
         modelIcon.contentsGravity = .resizeAspect;modelChip.addSublayer(modelIcon);configure(modelName,"",7.8,.white.withAlphaComponent(0.84),.medium);modelName.truncationMode = .middle;modelChip.addSublayer(modelName);input.addSublayer(modelChip)
-        effortChip.backgroundColor=NSColor.white.withAlphaComponent(0.11).cgColor;effortChip.cornerRadius=2;effortFill.anchorPoint=CGPoint(x:0,y:0.5);effortFill.startPoint=CGPoint(x:0,y:0.5);effortFill.endPoint=CGPoint(x:1,y:0.5);effortFill.cornerRadius=2;effortChip.addSublayer(effortFill);effortThumb.isHidden=true;effortThumb.cornerRadius=3;effortThumb.backgroundColor=NSColor.white.cgColor;effortChip.addSublayer(effortThumb);input.addSublayer(effortChip)
+        effortChip.backgroundColor=NSColor.white.withAlphaComponent(0.11).cgColor;effortChip.cornerRadius=2;effortFill.anchorPoint=CGPoint(x:0,y:0.5);effortFill.startPoint=CGPoint(x:0,y:0.5);effortFill.endPoint=CGPoint(x:1,y:0.5);effortFill.cornerRadius=2;effortChip.addSublayer(effortShimmer);effortChip.addSublayer(effortFill);effortThumb.isHidden=true;effortThumb.cornerRadius=3;effortThumb.backgroundColor=NSColor.white.cgColor;effortChip.addSublayer(effortThumb);input.addSublayer(effortChip)
         configure(effortLabel,"",8,.white,.medium);effortFill.mask=effortLabel;fastBolt.contentsGravity = .resizeAspect;input.addSublayer(fastBolt);configure(usageLabel,"",7,.white.withAlphaComponent(0.6));layer.addSublayer(usageLabel);usageTrack.cornerRadius=1;usageTrack.backgroundColor=NSColor.white.withAlphaComponent(0.12).cgColor;layer.addSublayer(usageTrack);usageFill.cornerRadius=1;usageFill.backgroundColor=NSColor.systemMint.cgColor;usageTrack.addSublayer(usageFill)
         pendingHighlight.opacity=0;pendingHighlight.cornerRadius=4;pendingHighlight.masksToBounds=true;pendingHighlight.backgroundColor=NSColor.white.withAlphaComponent(0.12).cgColor;pendingHighlight.borderColor=NSColor.white.withAlphaComponent(0.28).cgColor;pendingHighlight.borderWidth=0.6;pendingRibbon.colors=[NSColor.clear.cgColor,NSColor.white.withAlphaComponent(0.5).cgColor,NSColor.clear.cgColor];pendingRibbon.startPoint=CGPoint(x:0,y:0.5);pendingRibbon.endPoint=CGPoint(x:1,y:0.5);pendingHighlight.addSublayer(pendingRibbon);layer.addSublayer(pendingHighlight)
         installFlow()
@@ -543,7 +560,8 @@ private final class AttachmentLayer:CALayer {
         return (result.0,result.1)
     }
     func handleHover(_ point:CGPoint?) {
-        if let point,usesUnifiedComposer,effortChip.frame.offsetBy(dx:input.frame.minX,dy:input.frame.minY).contains(point),!composerPopover.visible{showThinkingPopover()}
+        let overEffort=point.map{usesUnifiedComposer && !effortChip.isHidden && effortChip.frame.offsetBy(dx:input.frame.minX,dy:input.frame.minY).contains($0)} ?? false
+        if overEffort && !hoveringEffort{effortShimmer.play(restart:true);if !composerPopover.visible{showThinkingPopover()}};hoveringEffort=overEffort
         let fileHover=point.flatMap{fileAction(at:$0)}
         preview.setActionHover(preview.representedURL == fileHover?.url ? fileHover?.action:nil)
         for row in fileRows{row.setActionHover(row.url == fileHover?.url ? fileHover?.action:nil)}
@@ -680,10 +698,12 @@ private final class AttachmentLayer:CALayer {
         let textX:CGFloat=image==nil ? 0:18;modelName.frame=CGRect(x:textX,y:2,width:max(0,modelWidth-textX),height:12);modelName.string=ModelIdentity.title(name);modelName.contentsScale=renderingScale
         effortChip.isHidden = !hasEffort;effortChip.backgroundColor=nil;effortChip.frame=CGRect(x:width-108-(fast ? 22:0),y:6,width:50,height:18)
         let fraction=CGFloat(levels.firstIndex(of:effort) ?? 0)/CGFloat(max(1,levels.count-1)),color=EffortAppearance.color(effort,fraction:fraction)
+        effortShimmer.frame=effortChip.bounds;effortShimmer.configure(size:effortChip.bounds.size,tint:color);let shimmerKey=name+"|"+effort
+        if shimmerKey != effortShimmerKey{effortShimmerKey=shimmerKey;if layer.opacity>0 && hasEffort{effortShimmer.play(restart:true)}else{effortShimmer.stop()}}
         effortFill.frame=effortChip.bounds;effortFill.colors=[color.cgColor,EffortAppearance.color(min(1,fraction+0.25)).cgColor];effortLabel.frame=CGRect(x:0,y:3,width:50,height:12);effortLabel.string=effort=="xhigh" ? "Extra high":effort.capitalized;effortLabel.contentsScale=renderingScale
         fastBolt.isHidden = !fast;fastBolt.frame=CGRect(x:width-78,y:7,width:17,height:17);fastBolt.contents=NSImage(systemSymbolName:state.fastMode == true ? "bolt.fill":"bolt",accessibilityDescription:"Fast mode")?.withSymbolConfiguration(.init(paletteColors:[state.fastMode == true ? .systemYellow:.secondaryLabelColor]))
         if fastWasOn != state.fastMode {fastWasOn=state.fastMode;if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion{let pulse=CAKeyframeAnimation(keyPath:"transform.scale");pulse.values=[1,0.68,1.32,0.94,1];pulse.keyTimes=[0,0.15,0.45,0.7,1];pulse.duration=0.5;fastBolt.add(pulse,forKey:"charge");fastBolt.shadowColor=NSColor.systemYellow.cgColor;fastBolt.shadowRadius=8;fastBolt.shadowOpacity=state.fastMode == true ? 0.8:0;let glow=CABasicAnimation(keyPath:"shadowRadius");glow.fromValue=1;glow.toValue=8;glow.duration=0.4;fastBolt.add(glow,forKey:"chargeGlow")}}
-        usageLabel.string=state.usageSummary ?? "";usageLabel.frame=CGRect(x:input.frame.minX+42,y:1,width:max(0,width-42),height:11);usageTrack.frame=CGRect(x:input.frame.minX+5,y:5,width:30,height:2);usageFill.frame=CGRect(x:0,y:0,width:30*CGFloat(state.usageWindows?.first?.fraction ?? 0),height:2);usageTrack.isHidden=state.usageWindows?.isEmpty != false
+        usageLabel.string=state.usageSummary ?? "";usageLabel.frame=CGRect(x:input.frame.minX+42,y:0,width:max(0,width-42),height:14);usageLabel.setNeedsDisplay();usageTrack.frame=CGRect(x:input.frame.minX+5,y:6,width:30,height:2);usageFill.frame=CGRect(x:0,y:0,width:30*CGFloat(state.usageWindows?.first?.fraction ?? 0),height:2);usageTrack.isHidden=state.usageWindows?.isEmpty != false
         composerHits=[(permissionGlyph.frame.insetBy(dx:-4,dy:-4),"permissions"),(modelChip.frame,"model")]
         if fast{composerHits.append((fastBolt.frame.insetBy(dx:-3,dy:-4),"fast"))}
         if hasEffort{composerHits.append((effortChip.frame.insetBy(dx:-4,dy:-9),"effort"))}
@@ -786,7 +806,7 @@ private final class AttachmentLayer:CALayer {
 
     private func collapse(_ group:CALayer,_ expanded:Bool) { let fade=CABasicAnimation(keyPath:"opacity");fade.fromValue=group.presentation()?.opacity ?? group.opacity;fade.toValue=expanded ? 1:0;fade.duration=0.26;fade.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.7,0.25,1);CATransaction.begin();CATransaction.setDisableActions(true);group.opacity=expanded ? 1:0;group.setAffineTransform(.identity);CATransaction.commit();group.add(fade,forKey:"collapse") }
 
-    func setVisible(_ visible:Bool,duration:Double) { if !visible{composerPopover.dismiss();handleHover(nil)};let fade=CABasicAnimation(keyPath:"opacity");fade.fromValue=layer.presentation()?.opacity ?? layer.opacity;fade.toValue=visible ? 1:0;fade.duration=duration*0.72;fade.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.65,0.25,1);CATransaction.begin();CATransaction.setDisableActions(true);layer.opacity=visible ? 1:0;CATransaction.commit();layer.add(fade,forKey:"visibility");notifyPreviewContent() }
+    func setVisible(_ visible:Bool,duration:Double) { if !visible{effortShimmer.stop();composerPopover.dismiss();handleHover(nil)}else if !effortChip.isHidden{effortShimmer.play(restart:true)};let fade=CABasicAnimation(keyPath:"opacity");fade.fromValue=layer.presentation()?.opacity ?? layer.opacity;fade.toValue=visible ? 1:0;fade.duration=duration*0.72;fade.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.65,0.25,1);CATransaction.begin();CATransaction.setDisableActions(true);layer.opacity=visible ? 1:0;CATransaction.commit();layer.add(fade,forKey:"visibility");notifyPreviewContent() }
 
     func setProfile(_ profile:PetGradientProfile,animated:Bool) {
         defer{if usesUnifiedComposer{input.colors=[NSColor.white.withAlphaComponent(0.085).cgColor,NSColor.white.withAlphaComponent(0.035).cgColor];input.borderColor=NSColor.white.withAlphaComponent(0.16).cgColor}}

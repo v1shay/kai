@@ -35,6 +35,50 @@ pub(crate) struct HistoryCheckpoint {
     #[serde(default)]
     seek_offset: Option<u64>,
 }
+
+#[cfg(test)]
+mod completion_boundary_tests {
+    use super::*;
+    use crate::chat_interactions::{ChatInteraction,InteractionStatus};
+    struct Transcript(PathBuf);
+    impl Transcript{
+        fn write(records:&[serde_json::Value])->Self{let path=std::env::temp_dir().join(format!("kai-native-boundaries-{}.jsonl",uuid::Uuid::new_v4()));let mut file=File::create(&path).unwrap();for record in records{writeln!(file,"{record}").unwrap();}Self(path)}
+    }
+    impl Drop for Transcript{fn drop(&mut self){let _=std::fs::remove_file(&self.0);}}
+    fn message(role:&str,phase:&str,text:&str)->serde_json::Value{serde_json::json!({"type":"response_item","payload":{"type":"message","role":role,"phase":phase,"content":[{"type":"output_text","text":text}]}})}
+    fn status(message:&TranscriptMessage)->Option<(String,InteractionStatus)>{match crate::chat_interactions::decode(&message.text){Some(ChatInteraction::Status{title,status,..})=>Some((title,status)),_=>None}}
+    #[test]fn existing_native_turns_keep_final_boundaries_and_cancelled_completion(){
+        let source=Transcript::write(&[message("user","","First prompt"),message("assistant","commentary","Working"),message("assistant","final_answer","First final"),serde_json::json!({"type":"event_msg","payload":{"type":"task_complete"}}),message("user","","Second prompt"),message("assistant","final_answer","Second final"),serde_json::json!({"type":"event_msg","payload":{"type":"turn_complete","status":"interrupted"}})]);
+        let mut cursor=HistoryCursor::open(&source.0,AgentKind::Codex).unwrap();let messages=cursor.page(50).unwrap();
+        assert_eq!(messages.iter().filter(|m|super::super::is_final_answer_boundary(m)).count(),2);
+        let text:Vec<_>=messages.iter().filter(|m|m.role!="tool").map(|m|m.text.as_str()).collect();assert_eq!(text,["First prompt","Working","First final","Second prompt","Second final"]);
+        assert_eq!(messages.iter().filter(|m|status(m)==Some(("Completed".into(),InteractionStatus::Completed))).count(),1);
+        assert!(messages.iter().any(|m|status(m)==Some(("Stopped".into(),InteractionStatus::Cancelled))));
+        let at=messages.iter().position(|m|m.text=="First final").unwrap();assert!(super::super::is_final_answer_boundary(&messages[at-1]));
+    }
+    #[test]fn giant_final_and_completion_metadata_survive_paging_checkpoint_and_head_seek(){
+        let body="A complete final answer 中😀\n".repeat(14_000);
+        let source=Transcript::write(&[message("user","","Prompt"),message("assistant","final_answer",&body),serde_json::json!({"type":"event_msg","payload":{"type":"task_complete","last_agent_message":body}})]);
+        let mut cursor=HistoryCursor::open(&source.0,AgentKind::Codex).unwrap();let first=cursor.page(2).unwrap();
+        let checkpoint:HistoryCheckpoint=serde_json::from_slice(&serde_json::to_vec(&cursor.checkpoint()).unwrap()).unwrap();
+        let held:std::collections::HashMap<_,_>=cursor.artifacts().into_iter().map(|a|(a.path.clone(),a)).collect();
+        let mut resolve=|name:&Path|held.get(name).cloned().ok_or_else(||anyhow::anyhow!("missing index"));
+        let mut cursor=HistoryCursor::restore(checkpoint,None,&mut resolve).unwrap();let mut all=first;
+        while cursor.has_older(){let mut page=cursor.page(2).unwrap();page.append(&mut all);all=page;}
+        assert_eq!(all.iter().filter(|m|super::super::is_final_answer_boundary(m)).count(),1);
+        assert_eq!(all.iter().filter(|m|status(m)==Some(("Completed".into(),InteractionStatus::Completed))).count(),1);
+        assert_eq!(all.iter().filter(|m|m.role=="assistant").map(|m|m.text.as_str()).collect::<String>(),body);
+        let mut head=HistoryCursor::open(&source.0,AgentKind::Codex).unwrap();head.seek_fraction(0.,&||false).unwrap();let page=head.page(4).unwrap();assert!(page.iter().any(super::super::is_final_answer_boundary));
+    }
+    #[test]fn giant_failed_terminal_record_never_becomes_success(){
+        let source=Transcript::write(&[serde_json::json!({"type":"event_msg","payload":{"type":"turn_complete","error":{"message":"Failed"},"last_agent_message":"x".repeat(200_000)}})]);
+        let messages=HistoryCursor::open(&source.0,AgentKind::Codex).unwrap().page(5).unwrap();assert_eq!(messages.len(),1);assert_eq!(status(&messages[0]),Some(("Agent failed".into(),InteractionStatus::Failed)));
+    }
+    #[test]fn head_limit_one_keeps_final_text_with_its_boundary(){
+        let source=Transcript::write(&[message("assistant","final_answer",&"Final text\n".repeat(30_000))]);let mut cursor=HistoryCursor::open(&source.0,AgentKind::Codex).unwrap();cursor.seek_fraction(0.,&||false).unwrap();let page=cursor.page(1).unwrap();assert!(page.iter().any(super::super::is_final_answer_boundary));assert!(page.iter().any(|m|m.role=="assistant"&&m.text.contains("Final text")));assert!(cursor.head_end.is_some_and(|end|end>0.));
+        let mut small=HistoryCursor::open(&source.0,AgentKind::Codex).unwrap();small.seek_fraction(0.,&||false).unwrap();let page=small.page_budget(1,512).unwrap();assert!(page.is_empty(),"A metadata-only head must not replace the real final text");assert!(small.large.as_ref().is_some_and(|record|record.final_answer));
+    }
+}
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct LargeCheckpoint {
     artifact: PathBuf,
@@ -44,6 +88,10 @@ struct LargeCheckpoint {
     label: Option<String>,
     decoded_bytes: u64,
     voice: Option<crate::chat_interactions::Speaker>,
+    #[serde(default)]
+    final_answer:bool,
+    #[serde(default)]
+    terminal:Option<(String,crate::chat_interactions::InteractionStatus)>,
 }
 impl HistoryCheckpoint {
     pub(crate) fn rewrite_artifacts(&mut self, map: &std::collections::HashMap<PathBuf, PathBuf>) {
@@ -310,6 +358,15 @@ impl HistoryCursor {
                     )?
                 };
                 let count = large.index.metadata()?.len() / INDEX_BYTES;
+                if large.final_answer{
+                    let boundary=super::final_answer_boundary();
+                    let first_bytes=large.first_text_bytes(&mut self.file)?;
+                    if used+boundary.text.len()+first_bytes>budget{if position==0{self.large=Some(large)}break 'records}
+                    used+=boundary.text.len();output.push(boundary);large.final_answer=false;
+                    // Metadata does not consume the single visible-message
+                    // slot. A limit-one head seek must include actual text.
+                    head_end=large.source_bounds()?.map_or(after,|(first,_)|first);
+                }
                 for entry in 0..count {
                     anyhow::ensure!(!cancelled(), "History seek was superseded");
                     large.index.seek(SeekFrom::Start(entry * INDEX_BYTES))?;
@@ -336,6 +393,12 @@ impl HistoryCursor {
                             break 'records;
                         }
                     }
+                }
+                if let Some((title,status))=large.terminal.clone(){
+                    let message=TranscriptMessage{role:"tool".into(),code_language:None,text:crate::chat_interactions::encode(&crate::chat_interactions::ChatInteraction::Status{title,details:String::new(),status})};
+                    if used+message.text.len()>budget{if position==0{self.large=Some(large)}break 'records}
+                    large.terminal=None;used+=message.text.len();head_end=after;output.push(message);
+                    if output.len()>=limit.clamp(1,400){break 'records}
                 }
                 if position == 0 {
                     self.large = Some(large);
@@ -398,9 +461,12 @@ impl HistoryCursor {
             label: r.label.clone(),
             decoded_bytes: r.decoded_bytes,
             voice: r.voice,
+            final_answer:r.final_answer,
+            terminal:r.terminal.clone(),
         });
         let pending = if self.pending.len() == 1
             && let Some(large) = large.as_mut()
+            && self.pending[0].role==large.role
         {
             // A budget-delayed giant span is already present in the immutable
             // index. Rewind its one entry instead of duplicating 64KB of text
@@ -499,6 +565,8 @@ impl HistoryCursor {
                 label: r.label,
                 decoded_bytes: r.decoded_bytes,
                 voice: r.voice,
+                final_answer:r.final_answer,
+                terminal:r.terminal,
             })
         } else {
             None
@@ -529,7 +597,7 @@ impl HistoryCursor {
         self.seek_head
             || !self.pending.is_empty()
             || !self.exhausted
-                && (self.before > 0 || self.large.as_ref().is_some_and(|r| r.remaining > 0))
+                && (self.before > 0 || self.large.as_ref().is_some_and(|r| r.remaining > 0 || r.final_answer || r.terminal.is_some()))
     }
     #[cfg(test)]
     pub fn page(&mut self, limit: usize) -> Result<Vec<TranscriptMessage>> {
@@ -627,11 +695,12 @@ impl HistoryCursor {
                     }
                     matches = comparison.complete();
                 }
-            } else if self.pending.iter().all(|message| message.role == last.role) {
+            } else if self.pending.iter().all(|message| message.role == last.role || super::is_final_answer_boundary(message)) {
                 let mut comparison = BodyComparison::new(expected, fingerprint, false);
                 for text in self
                     .pending
                     .iter()
+                    .filter(|message|!super::is_final_answer_boundary(message))
                     .map(|m| m.text.as_str())
                     .chain(std::iter::once(last.text.as_str()))
                 {
@@ -643,6 +712,9 @@ impl HistoryCursor {
             }
         }
         if matches {
+            // A native boundary belongs to the body being skipped. Leaving it
+            // at the seam would move it before the complete local prompt/answer
+            // pair and would prevent the next prompt overlap from matching.
             self.pending.clear();
             self.large = None;
         } else {
@@ -968,8 +1040,15 @@ struct LargeRecord {
     label: Option<String>,
     decoded_bytes: u64,
     voice: Option<crate::chat_interactions::Speaker>,
+    final_answer:bool,
+    terminal:Option<(String,crate::chat_interactions::InteractionStatus)>,
 }
 impl LargeRecord {
+    fn first_text_bytes(&mut self,source:&mut File)->Result<usize>{
+        let count=self.index.metadata()?.len()/INDEX_BYTES;
+        for entry in 0..count{self.index.seek(SeekFrom::Start(entry*INDEX_BYTES))?;let mut raw=[0;INDEX_BYTES as usize];self.index.read_exact(&mut raw)?;if self.accepted!=0&&raw[16]==self.accepted{return Ok(decode_span(source,u64::from_le_bytes(raw[..8].try_into().unwrap()),u64::from_le_bytes(raw[8..16].try_into().unwrap()))?.len())}}
+        Ok(0)
+    }
     fn source_bounds(&mut self) -> Result<Option<(u64, u64)>> {
         let total = self.index.metadata()?.len() / INDEX_BYTES;
         if total == 0 {
@@ -1026,6 +1105,8 @@ impl LargeRecord {
             label: None,
             decoded_bytes: 0,
             voice: None,
+            final_answer:false,
+            terminal:None,
         };
         source.seek(SeekFrom::Start(start))?;
         let mut scan = SpanScanner {
@@ -1042,6 +1123,9 @@ impl LargeRecord {
             role: String::new(),
             root_type: String::new(),
             payload_type: String::new(),
+            phase:String::new(),
+            terminal_status:String::new(),
+            terminal_error:false,
             sidechain: false,
             tool_name: String::new(),
             tool_status: String::new(),
@@ -1114,6 +1198,12 @@ impl LargeRecord {
             result.label = Some(format!("{} · {}", scan.tool_name, scan.tool_status));
         }
         result.decoded_bytes = scan.decoded[result.accepted as usize];
+        let final_phase=scan.phase=="final_answer";
+        let terminal=if agent==AgentKind::Codex && scan.root_type=="event_msg" && matches!(scan.payload_type.as_str(),"task_complete"|"turn_complete"|"turn_aborted"){
+            use crate::chat_interactions::InteractionStatus as Status;
+            let (title,status)=if scan.payload_type=="turn_aborted" || matches!(scan.terminal_status.as_str(),"interrupted"|"cancelled"|"canceled"|"aborted"){("Stopped",Status::Cancelled)}else if scan.terminal_error || matches!(scan.terminal_status.as_str(),"failed"|"error"){("Agent failed",Status::Failed)}else{("Completed",Status::Completed)};
+            Some((title.into(),status))
+        }else{None};
         // Large helper/control prompts are filtered by their first decoded chunk
         // before any continuation is made visible.
         if result.accepted != 0 && result.role != "tool" {
@@ -1146,6 +1236,8 @@ impl LargeRecord {
                 }
             }
         }
+        result.final_answer=agent==AgentKind::Codex && result.accepted!=0 && result.decoded_bytes>0 && result.role=="assistant" && final_phase;
+        result.terminal=terminal;
         Ok(result)
     }
     fn next(&mut self, source: &mut File) -> Result<Option<TranscriptMessage>> {
@@ -1226,6 +1318,8 @@ impl LargeRecord {
                 }));
             }
         }
+        if std::mem::take(&mut self.final_answer){return Ok(Some(super::final_answer_boundary()))}
+        if let Some((title,status))=self.terminal.take(){return Ok(Some(TranscriptMessage{role:"tool".into(),code_language:None,text:crate::chat_interactions::encode(&crate::chat_interactions::ChatInteraction::Status{title,details:String::new(),status})}))}
         Ok(None)
     }
 }
@@ -1257,6 +1351,9 @@ struct SpanScanner<'a, R: Read> {
     role: String,
     root_type: String,
     payload_type: String,
+    phase:String,
+    terminal_status:String,
+    terminal_error:bool,
     sidechain: bool,
     tool_name: String,
     tool_status: String,
@@ -1592,6 +1689,9 @@ impl<R: Read> SpanScanner<'_, R> {
             bail!("Native JSON nesting exceeds 128 levels");
         }
         self.whitespace()?;
+        if matches!(path.as_slice(),[parent,key] if parent=="payload" && key=="error") && self.peek()?.is_some_and(|byte|byte!=b'n'){
+            self.terminal_error=true;
+        }
         match self.peek()? {
             Some(b'{') => {
                 let content_block = path.len() == 3
@@ -1730,6 +1830,8 @@ impl<R: Read> SpanScanner<'_, R> {
                     [parent, key] if parent == "payload" && key == "type" => {
                         self.payload_type = value
                     }
+                    [parent,key] if parent=="payload" && key=="phase"=>{self.phase=value}
+                    [parent,key] if parent=="payload" && key=="status"=>{self.terminal_status=value}
                     [parent, key]
                         if matches!(parent.as_str(), "payload" | "message") && key == "role" =>
                     {

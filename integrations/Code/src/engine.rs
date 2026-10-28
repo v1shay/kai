@@ -67,6 +67,8 @@ pub enum Event {
     Error(String),
 }
 enum Command {
+    PauseLiveHistory(String,u64,uuid::Uuid),
+    ResumeLiveHistory(String,u64,u64,uuid::Uuid),
     LoadModel(String, u64),
     SetModel(SessionSummary, Option<String>),
     SaveUsage(String, crate::usage::Usage),
@@ -119,6 +121,7 @@ impl LatestReads {
     fn stale(&self, command: &Command) -> bool {
         match command {
             Command::LoadModel(_, generation)
+            | Command::ResumeLiveHistory(_,_,generation,_)
             | Command::Load(_, generation, _, _)
             | Command::SeekHistory(_, generation, _)
             | Command::Older(_, generation, _)
@@ -191,6 +194,7 @@ impl Engine {
                 }
                 let viewport_root = database.parent().unwrap_or(&root).join("viewport");
                 let mut histories: VecDeque<(String, HistoryState)> = VecDeque::new();
+                let mut paused_live_history:Option<(String,uuid::Uuid,HistoryState)>=None;
                 while let Ok(command) = rx.recv() {
                     // A newer interaction supersedes queued reads before any
                     // filesystem scan, SQLite query, parsing, or cache work.
@@ -200,6 +204,7 @@ impl Engine {
                     }
                     let read_generation = match &command {
                         Command::LoadModel(_, generation)
+                        | Command::ResumeLiveHistory(_,_,generation,_)
                         | Command::Load(_, generation, _, _)
                         | Command::SeekHistory(_, generation, _)
                         | Command::Older(_, generation, _)
@@ -242,6 +247,13 @@ impl Engine {
                         _ => RequestScope::General,
                     };
                     let result: anyhow::Result<Option<Event>> = (|| match command {
+                        Command::PauseLiveHistory(id,generation,epoch)=>{
+                            if let Some(position)=histories.iter().position(|(owner,state)|owner==&id&&state.generation==generation){if let Some((_,state))=histories.remove(position){paused_live_history=Some((id,epoch,state));}}Ok(None)
+                        }
+                        Command::ResumeLiveHistory(id,from,generation,epoch)=>{
+                            let state=if paused_live_history.as_ref().is_some_and(|(owner,run,state)|owner==&id&&*run==epoch&&state.generation==from){paused_live_history.take().map(|(_,_,state)|state)}else{histories.iter().position(|(owner,state)|owner==&id&&state.generation==from).and_then(|position|histories.remove(position)).map(|(_,state)|state)};
+                            if let Some(mut state)=state{state.generation=generation;histories.retain(|(owner,_)|owner!=&id);if histories.len()>=8{histories.pop_front();}histories.push_back((id,state));}Ok(None)
+                        }
                         Command::Flush(done) => {
                             let _ = done.send(());
                             Ok(None)
@@ -827,6 +839,8 @@ impl Engine {
         self.latest.archived.store(generation, Ordering::Release);
         let _ = self.tx.send(Command::LoadArchived(ids, generation));
     }
+    pub(super) fn pause_live_history(&self,id:String,generation:u64,epoch:uuid::Uuid){let _=self.tx.send(Command::PauseLiveHistory(id,generation,epoch));}
+    pub(super) fn resume_live_history(&self,id:String,from:u64,generation:u64,epoch:uuid::Uuid){self.latest.history.store(generation,Ordering::Release);let _=self.tx.send(Command::ResumeLiveHistory(id,from,generation,epoch));}
 }
 
 fn refresh_codex_transcript(home: &std::path::Path, session: &mut SessionSummary) {
@@ -3053,6 +3067,25 @@ mod tests {
         assert_eq!(loaded(&engine).len(), 4);
         drop(engine);
         fs::remove_dir_all(root).unwrap();
+    }
+    #[test]fn returning_from_rail_seek_resumes_the_original_older_history_cursor(){
+        let root=temp_root();let session=imported(&root);let mut source=String::new();for n in 0..1200{source.push_str(&record("user",&format!("Prompt {n}")));source.push_str(&record("assistant",&format!("Final {n}")));}fs::write(session.transcript_path.as_ref().unwrap(),source).unwrap();
+        let store=Store::open(&root.join("history.sqlite3")).unwrap();store.upsert_session(&session).unwrap();drop(store);let engine=Engine::new(root.clone(),root.clone(),root.join("history.sqlite3"));receive_event(&engine);engine.load(session.clone(),1);let tail=loaded(&engine);assert!(tail.iter().any(|m|m.blocks.iter().any(|b|matches!(b,presentation::MessageBlock::Paragraph(text) if text=="Final 1199"))));
+        let epoch=uuid::Uuid::new_v4();engine.pause_live_history(session.id.clone(),1,epoch);engine.seek_history(session.clone(),2,0.);assert!(matches!(receive_event(&engine),Event::HistorySeeked(_,2,_,_,_,_,_)));
+        fs::OpenOptions::new().append(true).open(session.transcript_path.as_ref().unwrap()).unwrap().write_all(record("user","The current live prompt").as_bytes()).unwrap();
+        engine.resume_live_history(session.id.clone(),1,3,epoch);engine.load_older(session,3,100);let Event::OlderLoaded(_,3,older,_) = receive_event(&engine)else{panic!("The restored cursor expired")};assert!(older.iter().any(|m|m.blocks.iter().any(|b|matches!(b,presentation::MessageBlock::Paragraph(text) if text=="Final 1099"))));assert!(!older.iter().any(|m|m.blocks.iter().any(|b|matches!(b,presentation::MessageBlock::Paragraph(text) if text=="Final 1199"))));
+        drop(engine);fs::remove_dir_all(root).unwrap();
+    }
+    #[test]fn final_phase_metadata_does_not_duplicate_a_cached_prompt_answer_pair(){
+        for repeated in [1,2]{
+            let root=temp_root();let session=imported(&root);
+            let pair=format!("{}{}\n",record("user","Repeat the request"),serde_json::json!({"type":"response_item","payload":{"type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"Same answer"}]}}));
+            fs::write(session.transcript_path.as_ref().unwrap(),pair.repeat(repeated)).unwrap();
+            let store=Store::open(&root.join("history.sqlite3")).unwrap();store.upsert_session(&session).unwrap();store.save_message(&session.id,"user","Repeat the request").unwrap();store.save_message(&session.id,"assistant","Same answer").unwrap();
+            let mut state=HistoryState::new(&session,1,&store).unwrap();let mut all=Vec::new();while state.has_older(){let mut earlier=state.next(&store,&session,100).unwrap();earlier.append(&mut all);all=earlier;}
+            assert_eq!(all.iter().filter(|m|m.text=="Repeat the request").count(),repeated);assert_eq!(all.iter().filter(|m|m.text=="Same answer").count(),repeated);
+            drop(state);drop(store);fs::remove_dir_all(root).unwrap();
+        }
     }
     #[test]
     fn checkpoint_marked_prompts_merge_after_restart_without_losing_repeat_associations() {

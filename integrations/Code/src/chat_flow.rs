@@ -1,50 +1,63 @@
-//! Transcript presentation policy. Source messages and native requests are kept.
+//! Canonical transcript presentation. Folding keeps prompts and final answers.
 use super::{Row,MessageBlock,chat_interactions::{ChatInteraction,Speaker,InteractionStatus}};
-#[derive(Default)]pub(super) struct Index{pub work:Vec<Option<std::ops::Range<usize>>>,pub commands:Vec<Option<std::ops::Range<usize>>>}
-impl Index{
- pub fn new(rows:&[Row])->Self{
-  let mut index=Self{work:vec![None;rows.len()],commands:vec![None;rows.len()]};let mut at=0;
-  while at<rows.len(){if let Some(span)=command_span(rows,at){for i in span.clone(){index.commands[i]=Some(span.clone())}at=span.end}else{at+=1}}
-  let mut at=0;while at<rows.len(){if user(&rows[at]){at+=1;continue}let end=(at..rows.len()).find(|i|user(&rows[*i])).unwrap_or(rows.len());let candidate=(at..end).find(|i|!matches!(&rows[*i].block,MessageBlock::Activity{label,..} if label=="Prompt changes"));if let Some(span)=candidate.and_then(|i|completed_work(rows,i)){for i in span.clone(){index.work[i]=Some(span.clone())}}at=end;}
-  index
+use std::ops::Range;
+#[derive(Default,Clone,Debug,PartialEq,Eq)]
+pub(super) struct Index {pub work:Vec<Option<Range<usize>>>,pub commands:Vec<Option<Range<usize>>>,pub hidden:Vec<bool>}
+impl Index {
+ pub fn new(rows:&[Row])->Self{Self::for_transcript(rows,false,None)}
+ pub fn for_transcript(rows:&[Row],settled:bool,live_start:Option<usize>)->Self{
+  let mut out=Self{work:vec![None;rows.len()],commands:vec![None;rows.len()],hidden:vec![false;rows.len()]};
+  let mut at=0;while at<rows.len(){if let Some(span)=command_span(rows,at){for i in span.clone(){out.commands[i]=Some(span.clone())}at=span.end}else{at+=1}}
+  let mut starts=vec![0];for i in 0..rows.len(){if starts_turn(&rows[i])&&i>0{starts.push(i)}}starts.push(rows.len());
+  for bounds in starts.windows(2){
+   let begin=bounds[0];let end=bounds[1];if begin==end{continue}
+   let body=(begin..end).find(|i|!user(&rows[*i])&&!matches!(rows[*i].block,MessageBlock::Attachment{..})).unwrap_or(end);if body==end{continue}
+   let terminal=(body..end).rev().find(|i|is_terminal(&rows[*i].block));
+   let succeeded=terminal.is_some_and(|i|is_success(&rows[i].block));let failed=terminal.is_some_and(|i|!is_success(&rows[i].block));
+   let boundary=(body..end).rev().find(|i|is_boundary(&rows[*i].block));
+   let anchored=starts_turn(&rows[begin])||boundary.is_some();
+   let complete=!failed&&(succeeded||end<rows.len()||live_start.is_some_and(|start|end<=start)||settled&&end==rows.len()&&anchored);
+   for i in body..end{if is_boundary(&rows[i].block)||is_checkpoint(&rows[i].block){out.hidden[i]=true}}
+   if !complete{continue}
+   let final_start=boundary.map(|i|i+1).or_else(||(body..end).rev().find(|i|body_content(&rows[*i].block)).map(|last|{
+    let message=(body..=last).rev().find(|i|assistant_start(&rows[*i])).unwrap_or(body);
+    (message..last).rev().find(|i|work_item(&rows[*i].block)).map_or(message,|i|i+1)
+   }));
+   let Some(final_start)=final_start.filter(|start|(*start..end).any(|i|body_content(&rows[i].block)))else{continue};
+   for i in body..end{if is_success(&rows[i].block){out.hidden[i]=true}}
+   if let Some(first)=(body..final_start).find(|i|!out.hidden[*i]&&!user(&rows[*i])&&!attention(&rows[*i].block)){for i in first..final_start{if !user(&rows[i])&&!attention(&rows[i].block){out.work[i]=Some(first..final_start)}}}
+   for i in final_start..end{if work_item(&rows[i].block)&&!attention(&rows[i].block){out.hidden[i]=true}}
+  }out
  }
+ pub fn visible(&self,ix:usize,expanded:&std::collections::HashSet<usize>)->bool{if self.hidden.get(ix)==Some(&true){return false}if self.commands.get(ix).and_then(|s|s.as_ref()).is_some_and(|r|r.start!=ix){return false}self.work.get(ix).and_then(|r|r.as_ref()).is_none_or(|r|r.start==ix||expanded.contains(&r.start))}
+ pub fn anchor(&self,ix:usize,expanded:&std::collections::HashSet<usize>)->usize{if self.visible(ix,expanded){return ix}if let Some(span)=self.work.get(ix).and_then(|s|s.as_ref()){if !expanded.contains(&span.start){return span.start}}if let Some(span)=self.commands.get(ix).and_then(|s|s.as_ref()){if self.visible(span.start,expanded){return span.start}}(ix..self.work.len()).find(|i|self.visible(*i,expanded)).or_else(||(0..ix.min(self.work.len())).rev().find(|i|self.visible(*i,expanded))).unwrap_or(self.work.len())}
+ pub fn tail_start(&self,end:usize,budget:usize,expanded:&std::collections::HashSet<usize>)->usize{let mut left=budget;for i in (0..end.min(self.work.len())).rev(){if self.visible(i,expanded){left=left.saturating_sub(1);if left==0{return i}}}0}
 }
-pub(super) fn user(row:&Row)->bool{
-    row.role.as_deref().is_some_and(|r|r=="user"||r.starts_with("user:")) || matches!(&row.block,MessageBlock::Voice{speaker:Speaker::User,..}|MessageBlock::Interaction(ChatInteraction::Speaker{speaker:Speaker::User,..}))
-}
-pub(super) fn command(block:&MessageBlock)->Option<(&str,&str,InteractionStatus)>{
-    match block{
-        MessageBlock::Activity{label,details} if matches!(label.as_str(),"Terminal command"|"Terminal output"|"Ran a command"|"Ran commands")=>Some((label,details,InteractionStatus::Completed)),
-        MessageBlock::Interaction(ChatInteraction::Status{title,details,status}) if matches!(title.as_str(),"Terminal command"|"Terminal output"|"Ran a command"|"Ran commands")=>Some((title,details,*status)),_=>None
-    }
-}
-pub(super) fn command_span(rows:&[Row],ix:usize)->Option<std::ops::Range<usize>>{
-    command(&rows.get(ix)?.block)?;let mut start=ix;while start>0&&command(&rows[start-1].block).is_some(){start-=1}
-    let mut end=ix+1;while end<rows.len()&&command(&rows[end].block).is_some(){end+=1}Some(start..end)
-}
-pub(super) fn grouped_command(rows:&[Row],span:std::ops::Range<usize>)->(String,InteractionStatus){
-    let mut text=String::new();let mut status=InteractionStatus::Completed;
-    for row in &rows[span]{if let Some((title,details,next))=command(&row.block){
-        if !text.is_empty(){text.push_str("\n\n")};text.push_str(title);text.push('\n');text.push_str(details);
-        if title!="Terminal output"||next==InteractionStatus::Failed{status=next}
-    }}(text,status)
-}
-pub(super) fn completed_work(rows:&[Row],ix:usize)->Option<std::ops::Range<usize>>{
-    if user(rows.get(ix)?){return None}
-    let turn=(0..=ix).rev().find(|i|user(&rows[*i])).map_or(0,|i|i+1);
-    let end=(ix+1..rows.len()).find(|i|user(&rows[*i])).unwrap_or(rows.len());
-    let completion=(turn..end).rev().find(|i|matches!(&rows[*i].block,MessageBlock::Interaction(ChatInteraction::Status{title,status:InteractionStatus::Completed,..}) if title=="Completed"))?;
-    if let Some(final_start)=(turn..completion).rev().find(|i|matches!(&rows[*i].block,MessageBlock::Interaction(ChatInteraction::Status{title,..}) if title=="Final answer")){
-        let first=(turn..=final_start).find(|i|!matches!(&rows[*i].block,MessageBlock::Activity{label,..} if label=="Prompt changes"))?;
-        if rows[first..final_start].iter().any(|r|matches!(&r.block,MessageBlock::Interaction(ChatInteraction::NativeRequest(_)|ChatInteraction::Question(_)|ChatInteraction::Status{status:InteractionStatus::Failed,..}))){return None}
-        return (ix>=first&&ix<=final_start).then_some(first..final_start+1)
-    }
-    let last_action=(turn..completion).rev().find(|i|matches!(&rows[*i].block,MessageBlock::Activity{label,..} if label!="Prompt changes")||matches!(&rows[*i].block,MessageBlock::Interaction(ChatInteraction::Status{title,..}) if title!="Completed"))?;
-    if !(last_action+1..completion).any(|i|matches!(&rows[i].block,MessageBlock::Paragraph(_)|MessageBlock::RichParagraph{..}|MessageBlock::Heading(_)|MessageBlock::ListItem{..}|MessageBlock::Code{..})){return None}
-    let first=(turn..=last_action).find(|i|!matches!(&rows[*i].block,MessageBlock::Activity{label,..} if label=="Prompt changes"))?;
-    // Requests and failures remain visible and actionable, never folded away.
-    if rows[first..=last_action].iter().any(|r|matches!(&r.block,MessageBlock::Interaction(ChatInteraction::NativeRequest(_)|ChatInteraction::Question(_)|ChatInteraction::Status{status:InteractionStatus::Failed,..}))){return None}
-    (ix>=first&&ix<=last_action).then_some(first..last_action+1)
+pub(super) fn user(row:&Row)->bool{row.role.as_deref().is_some_and(|r|r=="user"||r.starts_with("user:"))||matches!(&row.block,MessageBlock::Voice{speaker:Speaker::User,..}|MessageBlock::Interaction(ChatInteraction::Speaker{speaker:Speaker::User,..}))}
+fn starts_turn(row:&Row)->bool{row.role.as_deref().is_some_and(|r|r.split(':').next()==Some("user")&&!r.starts_with("user:continuation"))||matches!(&row.block,MessageBlock::Voice{speaker:Speaker::User,..}|MessageBlock::Interaction(ChatInteraction::Speaker{speaker:Speaker::User,..}))}
+fn assistant_start(row:&Row)->bool{row.role.as_deref().is_some_and(|r|r=="assistant"||r.starts_with("assistant:"))}
+fn is_checkpoint(block:&MessageBlock)->bool{matches!(block,MessageBlock::Activity{label,..}if label=="Prompt changes")}
+fn is_boundary(block:&MessageBlock)->bool{matches!(block,MessageBlock::Interaction(ChatInteraction::Status{title,..})if title=="Final answer")}
+fn is_success(block:&MessageBlock)->bool{matches!(block,MessageBlock::Interaction(ChatInteraction::Status{title,status:InteractionStatus::Completed,..})if title=="Completed")}
+fn is_terminal(block:&MessageBlock)->bool{matches!(block,MessageBlock::Interaction(ChatInteraction::Status{title,..})if matches!(title.as_str(),"Completed"|"Stopped"|"Agent failed"))}
+fn body_content(block:&MessageBlock)->bool{matches!(block,MessageBlock::Paragraph(_)|MessageBlock::RichParagraph{..}|MessageBlock::Heading(_)|MessageBlock::Quote(_)|MessageBlock::ListItem{..}|MessageBlock::Code{..}|MessageBlock::TableRow{..}|MessageBlock::Voice{speaker:Speaker::Assistant,..}|MessageBlock::Attachment{..}|MessageBlock::Interaction(ChatInteraction::Speaker{speaker:Speaker::Assistant,..}))}
+fn work_item(block:&MessageBlock)->bool{matches!(block,MessageBlock::Activity{..}|MessageBlock::Interaction(ChatInteraction::Status{..}|ChatInteraction::Delegation{..}|ChatInteraction::Answer{..}|ChatInteraction::Question(_)|ChatInteraction::NativeRequest(_)))}
+fn attention(block:&MessageBlock)->bool{matches!(block,MessageBlock::Interaction(ChatInteraction::Status{status:InteractionStatus::Failed|InteractionStatus::Cancelled,..}|ChatInteraction::Delegation{status:InteractionStatus::Failed|InteractionStatus::Cancelled,..}))}
+pub(super) fn command(block:&MessageBlock)->Option<(&str,&str,InteractionStatus)>{match block{MessageBlock::Activity{label,details}if matches!(label.as_str(),"Terminal command"|"Terminal output"|"Ran a command"|"Ran commands")=>Some((label,details,InteractionStatus::Completed)),MessageBlock::Interaction(ChatInteraction::Status{title,details,status})if matches!(title.as_str(),"Terminal command"|"Terminal output"|"Ran a command"|"Ran commands")=>Some((title,details,*status)),_=>None}}
+pub(super) fn command_span(rows:&[Row],ix:usize)->Option<Range<usize>>{command(&rows.get(ix)?.block)?;let mut start=ix;while start>0&&command(&rows[start-1].block).is_some(){start-=1}let mut end=ix+1;while end<rows.len()&&command(&rows[end].block).is_some(){end+=1}Some(start..end)}
+pub(super) fn grouped_command(rows:&[Row],span:Range<usize>)->(String,InteractionStatus){let mut text=String::new();let mut status=InteractionStatus::Completed;for row in &rows[span]{if let Some((title,details,next))=command(&row.block){if !text.is_empty(){text.push_str("\n\n")};text.push_str(title);text.push('\n');text.push_str(details);if title!="Terminal output"||next==InteractionStatus::Failed{status=next}}}(text,status)}
+#[cfg(test)]pub(super) fn completed_work(rows:&[Row],ix:usize)->Option<Range<usize>>{Index::new(rows).work.get(ix).cloned().flatten()}
+/// Keep turn/phase identity when a decoded page leaves memory. Its text remains
+/// on disk; losing this metadata would merge unrelated turns on the next paint.
+pub(super) fn placeholder(row:&Row)->Row{
+ let block=match &row.block{
+  MessageBlock::Interaction(ChatInteraction::Status{title,status,..})=>MessageBlock::Interaction(ChatInteraction::Status{title:title.clone(),details:String::new(),status:*status}),
+  MessageBlock::Activity{label,..}=>MessageBlock::Activity{label:label.clone(),details:String::new()},
+  MessageBlock::Voice{speaker,..}|MessageBlock::Interaction(ChatInteraction::Speaker{speaker,..})=>MessageBlock::Voice{speaker:*speaker,text:String::new(),highlights:vec![]},
+  MessageBlock::Interaction(_)=>MessageBlock::Activity{label:"Work".into(),details:String::new()},
+  MessageBlock::Attachment{..}=>MessageBlock::Attachment{name:String::new(),target:String::new()},
+  _=>MessageBlock::Paragraph(String::new()),
+ };Row{role:row.role.clone(),block}
 }
 #[cfg(test)]mod tests{
  use super::*;
@@ -64,5 +77,16 @@ pub(super) fn completed_work(rows:&[Row],ix:usize)->Option<std::ops::Range<usize
   let status=|title:&str|row(MessageBlock::Interaction(ChatInteraction::Status{title:title.into(),details:String::new(),status:InteractionStatus::Completed}));
   let mut rows=vec![row(MessageBlock::Paragraph("Here is my plan".into())),status("Final answer"),row(MessageBlock::Paragraph("The actual final result".into()))];
   assert_eq!(completed_work(&rows,0),None);rows.push(status("Completed"));assert_eq!(completed_work(&rows,0),Some(0..2));assert_eq!(completed_work(&rows,2),None);
+ }
+ #[test]fn completed_turns_keep_every_prompt_and_final_and_eviction_keeps_the_same_projection(){
+  let mut rows=vec![];
+  for n in 0..3{rows.push(Row{role:Some("user".into()),block:MessageBlock::Paragraph(format!("Prompt {n}"))});rows.push(Row{role:Some("user:continuation".into()),block:MessageBlock::Attachment{name:"image".into(),target:"/image".into()}});rows.push(row(MessageBlock::Paragraph("Commentary".into())));rows.push(row(MessageBlock::Interaction(ChatInteraction::Status{title:"Final answer".into(),details:String::new(),status:InteractionStatus::Completed})));rows.push(Row{role:Some("continuation:codex".into()),block:MessageBlock::Paragraph(format!("Final {n}"))});rows.push(row(MessageBlock::Interaction(ChatInteraction::Status{title:"Completed".into(),details:String::new(),status:InteractionStatus::Completed})));}
+  let flow=Index::new(&rows);let open=std::collections::HashSet::new();
+  for n in 0..3{assert!(flow.visible(n*6,&open));assert!(flow.visible(n*6+1,&open));assert!(flow.visible(n*6+4,&open));assert!(!flow.visible(n*6+3,&open));assert!(!flow.visible(n*6+5,&open));assert_eq!(flow.work[n*6+2],Some(n*6+2..n*6+4));}
+  let evicted:Vec<_>=rows.iter().map(placeholder).collect();assert_eq!(flow,Index::new(&evicted));assert_eq!(flow.tail_start(rows.len(),100,&open),0);
+ }
+ #[test]fn final_history_message_is_complete_including_all_its_paragraphs_without_a_provider_phase(){
+  let rows=vec![Row{role:Some("user".into()),block:MessageBlock::Paragraph("Prompt".into())},row(MessageBlock::Paragraph("Checking".into())),row(MessageBlock::Paragraph("Final first paragraph".into())),Row{role:Some("continuation:codex".into()),block:MessageBlock::Paragraph("Final second paragraph".into())}];
+  let flow=Index::for_transcript(&rows,true,None);assert_eq!(flow.work[1],Some(1..2));let open=std::collections::HashSet::new();assert!(flow.visible(0,&open)&&flow.visible(2,&open)&&flow.visible(3,&open));assert!(Index::for_transcript(&rows,false,Some(1)).work.iter().all(Option::is_none));
  }
 }

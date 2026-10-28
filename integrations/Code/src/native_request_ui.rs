@@ -15,6 +15,7 @@ pub(super) struct LiveRequest {
     started: Instant,
 }
 impl LiveRequest {
+    pub(super) fn request_id(&self)->&str{&self.request.id}
     pub(super) fn indicator_scene(&self) -> &'static str {
         if matches!(self.request.kind, NativeRequestKind::Questions { .. }) {
             "question"

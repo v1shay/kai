@@ -1174,3 +1174,25 @@ dispatch, thinking selection, stale-owner rejection, and narrow layouts. The
 final native morph matrix, signed animation probe, and both generated-speech
 voice routes passed. Installed **0.9.1 (25)** with signature/hash verification
 and a timestamped 0.9.0 backup; the running conversation was retained.
+
+## 0.9.2 — reliable completed conversations and inline review
+
+Completed turns preserve each prompt and the full final answer while folding
+intermediate work into an expandable summary. Imported Codex final-answer
+boundaries survive paging and restored history. Both Code surfaces and the
+notch share the projection; list measurements and the visible-history budget
+follow the folded rows so earlier answers do not disappear or leave empty gaps.
+Pending requests and failed actions remain accessible.
+
+The usage footer is vertically aligned. The selected thinking level animates
+on the control and in the glass panel; hovering another choice previews that
+choice and leaving returns to the selection. The approval's fourth animated
+review glyph expands its actual request inline, with the notch and action row
+moving together. Long reviews scroll within the available screen height.
+
+Verification: 807 Rust tests passed (17 ignored), 201 Swift tests completed
+with one skipped, and the native composer and approval/state checks passed.
+The signed packaged morph probe passed, including reversal, extended-notch
+return, double-Command dismissal, and exclusive Quick Chat. Both signed
+generated-speech voice handoff and new-chat shortcut checks passed. Installed
+**0.9.2 (26)** with a verified 0.9.1 backup, leaving the running app open.

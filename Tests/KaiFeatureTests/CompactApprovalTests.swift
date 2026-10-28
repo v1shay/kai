@@ -18,15 +18,15 @@ final class CompactApprovalTests:XCTestCase {
         let permissions=#"{"permissions":{"network":true},"reason":"Connect to service"}"#
         XCTAssertEqual(try CompactApprovalRequest(state:state(summary:permissions))?.command,permissions)
     }
-    @MainActor func testThreeNativeControlsBindTheRequestAndBlockDuplicateDecisions()throws{
+    @MainActor func testFourNativeGlyphsBindTheRequestAndBlockDuplicateDecisions()throws{
         _=NSApplication.shared
         let view=CompactApprovalView(frame:CGRect(x:0,y:0,width:338,height:88)),request=try XCTUnwrap(CompactApprovalRequest(state:state()))
         view.show(request);view.isHidden=false;view.layoutSubtreeIfNeeded()
         let buttons=view.subviews.compactMap{$0 as? NSButton}
         XCTAssertTrue(buttons.allSatisfy{!$0.isFlipped},"SVG scene coordinates use an upward Y axis")
-        XCTAssertEqual(buttons.map{$0.accessibilityLabel()},["Approve","Don't approve","Stop chat"])
+        XCTAssertEqual(buttons.map{$0.accessibilityLabel()},["Approve","Don't approve","Stop chat","Review request"])
         var decisions=[String]();view.onDecision={action,selected in XCTAssertEqual(selected,request);decisions.append(action);view.begin("pending")}
-        for button in buttons{
+        for button in buttons where button.accessibilityLabel() != "Review request"{
             button.performClick(nil);let count=decisions.count
             button.performClick(nil);XCTAssertEqual(decisions.count,count)
             view.finish("stale",error:nil);XCTAssertFalse(button.isEnabled)

@@ -314,8 +314,9 @@ private final class NotchSurfaceHost:NSView {
     private var compactWhileWorking=false,presentedCompact=false,compactThreadID:String?,compactStartHistoryCount=0
     private let approvalUI=CompactApprovalView()
     private var approvalPopout=false,presentedApproval=false,lastApproval:CompactApprovalRequest?
+    private var presentedApprovalHeight:CGFloat=0
     private var beforeApproval=(open:false,mini:false,pinned:false,automatic:false)
-    private var popoutHeight:CGFloat {approvalPopout ? CompactApprovalRequest.height(notch:notchHeight):(miniOpen || experimentalWebMode ? canvasHeight:notchHeight)}
+    private var popoutHeight:CGFloat {approvalPopout ? notchHeight+24+approvalUI.preferredHeight:(miniOpen || experimentalWebMode ? canvasHeight:notchHeight)}
     private var pendingFilesRequestID:String?
     private var miniListening = false,dictating=false,finalizingDictation=false,dictationPrefix=""
     private var approachImages=[NSImage](),approachActive=false,lastImageDrop=0.0
@@ -559,7 +560,11 @@ private final class NotchSurfaceHost:NSView {
             self.indicator.setExternalLevels(levels)
         }
         approvalUI.onCycle={[weak self] in self?.bridge.send("approval_next",[:])}
-        approvalUI.onReview={ [weak self] review in guard let self else{return};self.nativeReview.present(review,from:self.approvalUI){[weak self] action,fields in self?.bridge.send(action,fields)}}
+        approvalUI.onPreferredHeightChange={ [weak self] in guard let self,self.approvalPopout else{return};self.setOpen(true) }
+        approvalUI.onReviewAction={ [weak self] action,fields,request in
+            guard let self,let state=self.latestState,request.matches(state),fields["threadId"] as? String==request.review?.owner,fields["approvalRequestId"] as? String==request.review?.token else{return}
+            self.bridge.send(action,fields)
+        }
         bridge.draftBaseProvider={ [weak self] in self?.unifiedDraftBase ?? "" }
         bridge.draftProvider={ [weak self] in self?.composerField?.stringValue ?? "" }
         bridge.onState={ [weak self] state in self?.receive(state) }
@@ -776,7 +781,7 @@ private final class NotchSurfaceHost:NSView {
     }
 
     @objc private func placePanel(){layoutPanel(present:true)}
-    private func layoutPanel(present:Bool) {
+    private func layoutPanel(present:Bool,approvalDuration:TimeInterval=0) {
         defer{floatingTasks.refresh()}
         let previousMaskSize=mask.bounds.size,previousDestination=mask.path
         guard let screen = NSScreen.screens.first(where: { $0.auxiliaryTopLeftArea != nil && $0.auxiliaryTopRightArea != nil }),
@@ -838,11 +843,18 @@ private final class NotchSurfaceHost:NSView {
         if panel.frame != rect{panel.setFrame(rect,display:true)}; mask.frame = CGRect(origin: .zero, size: rect.size); notchContent.frame = mask.frame
         // The full canvas must never intercept the desktop while compact.
         panel.ignoresMouseEvents = !NotchInputRegion.mainAcceptsInput(expanded:miniOpen,web:experimentalWebMode)
+        approvalUI.maximumReviewHeight=max(80,min(480,screen.frame.maxY-screen.visibleFrame.minY-notchHeight-80))
         let dropRect=NotchInputRegion.compactFrame(screen:screen.frame,center:center,width:notchWidth+160,height:approvalPopout ? popoutHeight:notchHeight)
         if dropPanel == nil { dropPanel=NotchPanel(contentRect:dropRect,styleMask:[.borderless,.nonactivatingPanel],backing:.buffered,defer:false);dropPanel.backgroundColor = .clear;dropPanel.isOpaque=false;dropPanel.level = .popUpMenu;dropPanel.collectionBehavior=[.canJoinAllSpaces,.fullScreenAuxiliary,.stationary];let drop=NotchView(frame:NSRect(origin:.zero,size:dropRect.size));drop.autoresizingMask=[.width,.height];drop.click={ [weak self] _,_ in guard let self else{return};if self.compactVoiceMode{self.handleCompactVoiceClick();return};guard self.compactWhileWorking else{return};self.expandToRunningChat() };drop.dragEntered={ [weak self] in self?.handleImageEntered() };drop.imageDropped={ [weak self] images in self?.handleImageDrop(images) };dropPanel.contentView=drop }
-        dropPanel.setFrame(dropRect,display:true)
         if approvalUI.superview == nil {dropPanel.contentView?.addSubview(approvalUI);approvalUI.onDecision={ [weak self] action,request in self?.decidePopout(action,request:request) }}
-        approvalUI.frame=CGRect(x:16,y:12,width:dropRect.width-32,height:CompactApprovalRequest.height(notch:0)-24);approvalUI.isHidden = !approvalPopout
+        let approvalFrame=CGRect(x:16,y:12,width:dropRect.width-32,height:approvalUI.preferredHeight)
+        if approvalDuration>0,approvalPopout,dropPanel.isVisible{
+            NSAnimationContext.runAnimationGroup{context in
+                context.duration=approvalDuration;context.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.85,0.25,1);context.allowsImplicitAnimation=true
+                self.dropPanel.animator().setFrame(dropRect,display:true);self.approvalUI.animator().frame=approvalFrame;self.approvalUI.layoutSubtreeIfNeeded()
+            }
+        }else{dropPanel.setFrame(dropRect,display:true);approvalUI.frame=approvalFrame}
+        approvalUI.isHidden = !approvalPopout
         let compactInput=approvalPopout || NotchInputRegion.compactAcceptsInput(open:open,expanded:miniOpen,web:experimentalWebMode,working:compactWhileWorking,voice:compactVoiceMode)
         dropPanel.ignoresMouseEvents = !compactInput
         if present{compactInput && showsNotchSurface ? dropPanel.orderFrontRegardless():dropPanel.orderOut(nil)}
@@ -1200,9 +1212,10 @@ private final class NotchSurfaceHost:NSView {
         if desired && mini {autoCompact=false}
         if !desired || mini{passiveCompact=false;passiveVoice=false;passiveRetire?.cancel();passiveRetire=nil}
         if mediaVisible && (mini || compactWhileWorking || dictating || experimentalWebMode){dismissMedia()}
-        guard panel != nil, forceReveal || desired != open || (desired && mini != miniOpen) || presentedCompact != compactWhileWorking || presentedApproval != approvalPopout else { refreshChecks();return }
+        guard panel != nil, forceReveal || desired != open || (desired && mini != miniOpen) || presentedCompact != compactWhileWorking || presentedApproval != approvalPopout || (approvalPopout && abs(presentedApprovalHeight-popoutHeight)>0.5) else { refreshChecks();return }
         CATransaction.begin();CATransaction.setDisableActions(true);defer{CATransaction.commit()}
-        presentedApproval=approvalPopout
+        let wasApproval=presentedApproval
+        presentedApproval=approvalPopout;presentedApprovalHeight=approvalPopout ? popoutHeight:0
         if petGalleryVisible && (!desired || !mini){hidePetGallery(restore:false)}
         panelRevision += 1;let revision=panelRevision
         let wasOpen=open,wasMini=miniOpen; open = desired; miniOpen = desired && mini;presentedCompact=compactWhileWorking;if desired && !wasOpen{play()}else if !desired{playToken += 1;sprite.removeAnimation(forKey:"spriteFrames")}; panel.ignoresMouseEvents = !miniOpen;composerField?.isHidden = !miniOpen;conversationScroll?.isHidden = !miniOpen;resizeHandles.isHidden = !miniOpen || experimentalWebMode;refreshChecks()
@@ -1214,7 +1227,8 @@ private final class NotchSurfaceHost:NSView {
         let oldFileTransform=indicator.fileLayer.presentation()?.transform ?? indicator.fileLayer.transform
         let traveling=[sprite,indicator.fileLayer,indicator.leftAccentLayer,indicator.accentLayer]
         let oldPositions=traveling.map{$0.presentation()?.position ?? $0.position}
-        layoutPanel(present:false)
+        let approvalResizeDuration:TimeInterval=NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0.1:0.28
+        layoutPanel(present:false,approvalDuration:approvalPopout && wasApproval ? approvalResizeDuration:0)
         CATransaction.begin();CATransaction.setDisableActions(true)
         indicator.layer.position.x=oldIndicatorX;indicator.fileLayer.opacity=oldFileOpacity;indicator.fileLayer.transform=oldFileTransform
         for (index,accent) in [indicator.leftAccentLayer,indicator.accentLayer].enumerated(){accent.position.y=oldAccentY[index]}
@@ -1227,7 +1241,7 @@ private final class NotchSurfaceHost:NSView {
         }
         animateTopAccessories(forMini:miniOpen,duration:animation.duration)
         animateCornerAccents(toBottom:miniOpen || approvalPopout,duration:animation.duration)
-        if approvalPopout,let layer=approvalUI.layer{visualTransition.reveal(layer,visible:true,fromOpacity:0)}
+        if approvalPopout,(!wasApproval || !wasOpen),let layer=approvalUI.layer{visualTransition.reveal(layer,visible:true,fromOpacity:0)}
         miniUI.setVisible(miniOpen,duration:animation.duration)
         syncConversationTheme()
         if miniOpen && !wasMini { if let state=latestState {renderConversation(state.history,forceBottom:true,deferReveal:true)};miniListening=false;miniUI.resetFiles(); indicator.setFileOpen(false); currentScene="";if let state=latestState{showActivity(displayActivity(state))};setMotion("waving",replay:true) }
@@ -1631,7 +1645,7 @@ private final class NotchSurfaceHost:NSView {
             return
         }
         if approvalPopout,approvalUI.request?.matches(state) == true{
-            approvalUI.show(request);approvalUI.finish(state.completedRequestId,error:state.completedRequestError);return
+            approvalUI.show(request);approvalUI.receive(state);return
         }
         guard request.id != lastApproval?.id || request.thread != lastApproval?.thread else{return}
         lastApproval=request;presentCompactApproval(request)

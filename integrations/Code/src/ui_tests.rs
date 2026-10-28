@@ -117,10 +117,23 @@ pub(super) fn draw_frame(view: &Entity<Orbit>, cx: &mut VisualTestContext) {
 }
 
 #[gpui::test]
+fn completion_remeasures_folded_rows_without_a_rail_seek_or_manual_list_reset(cx:&mut TestAppContext){
+ let(view,cx)=fixture(cx);let status=|title:&str|MessageBlock::Interaction(chat_interactions::ChatInteraction::Status{title:title.into(),details:String::new(),status:chat_interactions::InteractionStatus::Completed});
+ view.update(cx,|app,cx|{app.loading=false;app.active=Some("fixture-session".into());app.finalizing.insert("fixture-session".into());app.rows.clear();for n in 0..2{for(role,block)in [("user",MessageBlock::Paragraph(format!("Prompt {n}\n{}","Details\n".repeat(8)))),("assistant:codex",MessageBlock::Paragraph("I am checking this\n".repeat(12))),("continuation:codex",MessageBlock::Activity{label:"Terminal command".into(),details:"pwd".into()}),("continuation:codex",status("Final answer")),("continuation:codex",MessageBlock::Paragraph(format!("Final answer {n}\n{}","Result\n".repeat(30)))),("continuation:codex",status(if n==0{"Completed"}else{"Working"}))]{app.rows.push(Row{role:Some(role.into()),block});}}app.list.reset(app.rows.len());app.following_bottom=false;app.list.scroll_to(ListOffset{item_ix:8,offset_in_item:px(0.)});cx.notify();});
+ draw_frame(&view,cx);view.update(cx,|app,cx|{app.following_bottom=false;app.list.scroll_to(ListOffset{item_ix:8,offset_in_item:px(0.)});cx.notify();});draw_frame(&view,cx);view.update(cx,|app,cx|{assert!(app.list.bounds_for_item(8).is_some_and(|b|b.size.height>px(0.)),"initial tool geometry: {:?}; offset {:?}; viewport {:?}; work {:?}; hidden {}; rows painted {}; all bounds {:?}",app.list.bounds_for_item(8),app.list.logical_scroll_top(),app.list.viewport_bounds(),app.flow_index.work[8],app.flow_index.hidden[8],app.rendered_rows.get(),(0..12).map(|i|app.list.bounds_for_item(i)).collect::<Vec<_>>());app.rows[11].block=status("Completed");app.finalizing.clear();cx.notify();});
+ draw_frame(&view,cx);view.update(cx,|app,_|{for ix in [0,4,6,10]{assert!(app.flow_index.visible(ix,&app.expanded_work),"Prompt/final disappeared from the ordinary transcript");}assert!(app.list.bounds_for_item(8).is_none_or(|b|b.size.height==px(0.)),"Fold retained stale measured work height");assert!(!app.navigation_history);});
+}
+
+#[gpui::test]
+fn native_history_budget_counts_visible_prompt_final_pairs_instead_of_hidden_work(cx:&mut TestAppContext){
+ let(view,cx)=fixture(cx);view.update(cx,|app,cx|{app.loading=false;app.active=Some("fixture-session".into());app.rows.clear();for n in 0..2{app.rows.push(Row{role:Some("user".into()),block:MessageBlock::Paragraph(format!("Prompt {n}"))});for _ in 0..160{app.rows.push(Row{role:Some("assistant:codex".into()),block:MessageBlock::Paragraph("Intermediate work".into())});}app.rows.push(Row{role:Some("continuation:codex".into()),block:MessageBlock::Interaction(chat_interactions::ChatInteraction::Status{title:"Final answer".into(),details:String::new(),status:chat_interactions::InteractionStatus::Completed})});app.rows.push(Row{role:None,block:MessageBlock::Paragraph(format!("Final {n}"))});app.rows.push(Row{role:None,block:MessageBlock::Interaction(chat_interactions::ChatInteraction::Status{title:"Completed".into(),details:String::new(),status:chat_interactions::InteractionStatus::Completed})});}let value=app.unified_snapshot(cx);let history=value["history"].as_array().unwrap();for text in ["Prompt 0","Final 0","Prompt 1","Final 1"]{assert!(history.iter().any(|m|m["lines"][0]["text"]==text),"Native history lost {text}");}assert!(history.iter().filter(|m|m["kind"]=="user").count()==2);assert!(!history.iter().any(|m|m["lines"][0]["text"]=="Intermediate work"));});
+}
+
+#[gpui::test]
 fn chat_flow_aligns_user_bubbles_and_groups_commands_with_reopenable_finished_work(cx:&mut TestAppContext){
     let(view,cx)=fixture(cx);
     view.update(cx,|app,cx|{
-        app.loading=false;app.active=Some("fixture-session".into());app.rows=vec![
+        app.loading=false;app.active=Some("fixture-session".into());app.finalizing.insert("fixture-session".into());app.rows=vec![
             Row{role:Some("user".into()),block:MessageBlock::Paragraph("Hello".into())},
             Row{role:Some("assistant:codex".into()),block:MessageBlock::Paragraph("I will check the files".into())},
             Row{role:Some("continuation:codex".into()),block:MessageBlock::Activity{label:"Terminal command".into(),details:"pwd".into()}},
@@ -1670,6 +1683,7 @@ fn prepending_history_preserves_the_visible_message_and_pixel_offset(cx: &mut Te
             ),
             cx,
         );
+        app.following_bottom = false;
         app.list.scroll_to(ListOffset {
             item_ix: 20,
             offset_in_item: px(7.),
@@ -1731,6 +1745,7 @@ fn scrolling_to_the_top_requests_one_older_page(cx: &mut TestAppContext) {
             ),
             cx,
         );
+        app.following_bottom = false;
         app.list.scroll_to(ListOffset {
             item_ix: 5,
             offset_in_item: px(0.),

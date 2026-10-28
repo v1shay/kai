@@ -16,10 +16,43 @@ final class UnifiedReviewTests:XCTestCase {
         var request=CompactApprovalRequest(preview:true);request.review=review
         let view=CompactApprovalView(frame:CGRect(x:0,y:0,width:370,height:112))
         view.show(request);view.isHidden=false;view.layoutSubtreeIfNeeded()
-        let button=try XCTUnwrap(view.subviews.compactMap{$0 as? NSButton}.first{$0.title=="Review…"})
+        let button=try XCTUnwrap(view.subviews.compactMap{$0 as? NSButton}.first{$0.accessibilityLabel()=="Review request"})
         var captured:KaiNativeReview?;view.onReview={captured=$0};button.performClick(nil)
-        XCTAssertEqual(captured,review)
+        XCTAssertEqual(captured,review);XCTAssertTrue(button.title.isEmpty);XCTAssertFalse(button.isBordered);XCTAssertTrue(view.reviewExpanded);XCTAssertTrue(view.reviewPinned)
         XCTAssertTrue(view.bounds.contains(button.frame))
         XCTAssertTrue(view.subviews.compactMap{$0 as? NSScrollView}.contains{($0.documentView as? NSTextView)?.isSelectable == true})
     }
+    @MainActor func testInlineProviderChoiceKeepsItsExactContextAndCannotBeSentTwiceOrAfterReplacement()throws {
+        _=NSApplication.shared
+        func request(_ token:String)throws->CompactApprovalRequest{var request=CompactApprovalRequest(preview:true);request.review=try JSONDecoder().decode(KaiNativeReview.self,from:Data("{\"owner\":\"code:background\",\"token\":\"\(token)\",\"title\":\"Permission\",\"detail\":\"exact command\",\"choices\":[{\"id\":\"once\",\"label\":\"Allow once\"}],\"questions\":[]}".utf8));return request}
+        func descendants(_ view:NSView)->[NSView]{[view]+view.subviews.flatMap(descendants)}
+        let view=CompactApprovalView(frame:CGRect(x:0,y:0,width:338,height:88));view.show(try request("opaque-1"));view.setReviewExpanded(true,pinned:true);view.frame.size.height=view.preferredHeight;view.layoutSubtreeIfNeeded()
+        var sent=[[String:Any]]();view.onReviewAction={action,fields,_ in XCTAssertEqual(action,"native_answer");sent.append(fields)}
+        let choice=try XCTUnwrap(descendants(view).compactMap{$0 as? NSButton}.first{$0.title=="Allow once"})
+        choice.performClick(nil);choice.performClick(nil);XCTAssertEqual(sent.count,1);XCTAssertEqual(sent[0]["choice"] as? String,"once");XCTAssertEqual(sent[0]["threadId"] as? String,"code:background");XCTAssertEqual(sent[0]["approvalRequestId"] as? String,"opaque-1");XCTAssertNotNil(view.pendingID);XCTAssertFalse(view.reviewExpanded)
+        view.reset();view.show(try request("opaque-2"));view.setReviewExpanded(true,pinned:true);choice.performClick(nil);XCTAssertEqual(sent.count,1,"Retired form controls must not target the replacement request")
+        view.reset()
+    }
+    @MainActor func testHoverReviewExpandsInPlaceAndClickPinsUntilExplicitCollapse()throws {
+        _=NSApplication.shared
+        let view=CompactApprovalView(frame:CGRect(x:0,y:0,width:338,height:88));view.show(CompactApprovalRequest(preview:true));view.isHidden=false;view.layoutSubtreeIfNeeded()
+        let icon=try XCTUnwrap(view.subviews.compactMap{$0 as? NSButton}.first{$0.accessibilityLabel()=="Review request"})
+        let event=try XCTUnwrap(NSEvent.mouseEvent(with:.mouseMoved,location:.zero,modifierFlags:[],timestamp:0,windowNumber:0,context:nil,eventNumber:0,clickCount:0,pressure:0))
+        icon.mouseEntered(with:event);XCTAssertTrue(view.reviewExpanded);XCTAssertFalse(view.reviewPinned)
+        icon.performClick(nil);XCTAssertTrue(view.reviewPinned);icon.mouseExited(with:event);RunLoop.main.run(until:Date().addingTimeInterval(0.3));XCTAssertTrue(view.reviewExpanded)
+        icon.performClick(nil);XCTAssertFalse(view.reviewExpanded);XCTAssertEqual(view.preferredHeight,88)
+        view.reset()
+    }
+    @MainActor func testLargeReviewIsBoundedAndRetainsAllTextInItsScrollView()throws {
+        _=NSApplication.shared
+        var request=CompactApprovalRequest(preview:true);let text=Array(repeating:"Detailed provider context stays available.",count:90).joined(separator:"\n")
+        request.review=KaiNativeReview(owner:"code:background",token:"bounded",title:"Review request",detail:text,choices:[],questions:[],kind:nil)
+        let view=CompactApprovalView(frame:CGRect(x:0,y:0,width:338,height:88));view.maximumReviewHeight=160;view.show(request);view.setReviewExpanded(true,pinned:true);view.frame.size.height=view.preferredHeight;view.layoutSubtreeIfNeeded()
+        XCTAssertEqual(view.preferredHeight,204)
+        func descendants(_ view:NSView)->[NSView]{[view]+view.subviews.flatMap(descendants)}
+        XCTAssertTrue(descendants(view).compactMap{$0 as? NSTextField}.contains{$0.stringValue==text && $0.isSelectable})
+        XCTAssertTrue(descendants(view).compactMap{$0 as? NSScrollView}.contains{($0.documentView?.frame.height ?? 0)>$0.contentSize.height})
+        view.reset()
+    }
+
 }

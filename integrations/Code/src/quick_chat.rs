@@ -140,7 +140,7 @@ pub struct QuickChat {
     shown_at:f64,
     transcript_scroll: ListState,
     transcript_follow:bool,
-    transcript_revision: Option<(Option<String>, usize, Option<u64>)>,
+    transcript_revision: Option<(Option<String>, usize, Option<u64>,u64)>,
     _subscriptions: Vec<Subscription>,
 }
 impl QuickChat {
@@ -339,6 +339,7 @@ impl Render for QuickChat {
                     .as_ref()
                     .and_then(|id| app.runs.get(id))
                     .map(|run| run.revision),
+                app.flow_revision,
             )
         };
         if self.transcript_revision.as_ref() != Some(&revision) {

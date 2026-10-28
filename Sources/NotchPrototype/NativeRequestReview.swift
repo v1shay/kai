@@ -24,30 +24,43 @@ struct KaiNativeReview:Decodable,Equatable {
     private var pending:String?
     private let status=NSTextField(wrappingLabelWithString:"")
     private var send:((String,[String:Any])->Void)?
+    private var content:NSView?,contentStack:NSStackView?,contentScroll:NSScrollView?
+    private var embedded=false,contentWidth:CGFloat=390
+    var onResolution:(()->Void)?
+    var preferredHeight:CGFloat{min(480,max(80,contentStack?.fittingSize.height ?? 80))}
     func present(_ review:KaiNativeReview,from anchor:NSView,send:@escaping(String,[String:Any])->Void) {
-        if self.review?.token == review.token,self.review?.owner == review.owner,popover.contentViewController != nil{
+        if !embedded,self.review?.token == review.token,self.review?.owner == review.owner,popover.contentViewController != nil{
             self.send=send;popover.show(relativeTo:anchor.bounds,of:anchor,preferredEdge:.minY);return
         }
-        popover.close();self.review=review;self.send=send;pending=nil
+        let view=build(review,width:390,embedded:false,send:send),controller=NSViewController();controller.view=view
+        popover.contentViewController=controller;popover.contentSize=view.frame.size;popover.behavior = .transient
+        popover.show(relativeTo:anchor.bounds,of:anchor,preferredEdge:.minY)
+    }
+    func inlineContent(_ review:KaiNativeReview,width:CGFloat,send:@escaping(String,[String:Any])->Void)->NSView {
+        if embedded,self.review?.token==review.token,self.review?.owner==review.owner,abs(contentWidth-width)<0.5,let content{self.send=send;return content}
+        return build(review,width:width,embedded:true,send:send)
+    }
+    private func build(_ review:KaiNativeReview,width:CGFloat,embedded:Bool,send:@escaping(String,[String:Any])->Void)->NSView {
+        popover.close();popover.contentViewController=nil;self.review=review;self.send=send;pending=nil;self.embedded=embedded;contentWidth=width
         fields.removeAll();options.removeAll();buttons=[];choiceIDs=[:]
-        let controller=NSViewController(),effect=NSVisualEffectView()
-        effect.material = .popover;effect.blendingMode = .behindWindow;effect.state = .active
-        controller.view=effect
-        let stack=NSStackView();stack.orientation = .vertical;stack.alignment = .leading;stack.spacing=12;stack.edgeInsets=NSEdgeInsets(top:16,left:16,bottom:16,right:16)
-        let heading=NSTextField(wrappingLabelWithString:review.title);heading.font = .systemFont(ofSize:14,weight:.semibold);stack.addArrangedSubview(heading)
+        let root:NSView
+        if embedded{root=NSView();root.appearance=NSAppearance(named:.darkAqua)}else{let effect=NSVisualEffectView();effect.material = .popover;effect.blendingMode = .behindWindow;effect.state = .active;root=effect}
+        root.frame=CGRect(x:0,y:0,width:width,height:480)
+        let textWidth=max(100,width-24),stack=NSStackView();stack.orientation = .vertical;stack.alignment = .leading;stack.spacing=10;stack.edgeInsets=NSEdgeInsets(top:10,left:12,bottom:10,right:12)
+        let heading=NSTextField(wrappingLabelWithString:review.title);heading.font = .systemFont(ofSize:12,weight:.semibold);stack.addArrangedSubview(heading)
         let detail=NSTextField(wrappingLabelWithString:review.detail);detail.font = .monospacedSystemFont(ofSize:11,weight:.regular);detail.isSelectable=true;stack.addArrangedSubview(detail)
-        for label in [heading,detail]{label.preferredMaxLayoutWidth=358;label.widthAnchor.constraint(equalToConstant:358).isActive=true}
+        for label in [heading,detail]{label.preferredMaxLayoutWidth=textWidth;label.widthAnchor.constraint(equalToConstant:textWidth).isActive=true;label.textColor = .labelColor}
         for question in review.questions {
-            let label=NSTextField(wrappingLabelWithString:question.question);label.font = .systemFont(ofSize:12,weight:.medium);label.preferredMaxLayoutWidth=358;label.widthAnchor.constraint(equalToConstant:358).isActive=true;stack.addArrangedSubview(label)
+            let label=NSTextField(wrappingLabelWithString:question.question);label.font = .systemFont(ofSize:12,weight:.medium);label.preferredMaxLayoutWidth=textWidth;label.widthAnchor.constraint(equalToConstant:textWidth).isActive=true;stack.addArrangedSubview(label)
             for option in question.options {
                 let button=NSButton(checkboxWithTitle:option.label,target:self,action:#selector(toggleOption(_:)))
-                button.toolTip=option.label;button.widthAnchor.constraint(lessThanOrEqualToConstant:358).isActive=true
+                button.toolTip=option.label;button.widthAnchor.constraint(lessThanOrEqualToConstant:textWidth).isActive=true
                 button.identifier=NSUserInterfaceItemIdentifier(question.id);options[question.id,default:[]].append((option.id,button));stack.addArrangedSubview(button)
             }
             let field:NSTextField=question.secret ? NSSecureTextField():NSTextField()
             field.placeholderString=question.options.isEmpty ? "Your answer":"Or type an answer"
             field.setAccessibilityLabel(question.header.isEmpty ? question.question:question.header)
-            field.widthAnchor.constraint(equalToConstant:358).isActive=true
+            field.widthAnchor.constraint(equalToConstant:textWidth).isActive=true
             field.font = .systemFont(ofSize:12);fields[question.id]=field;stack.addArrangedSubview(field)
         }
         for choice in review.choices {
@@ -57,16 +70,19 @@ struct KaiNativeReview:Decodable,Equatable {
         if review.isQuestion {
             let button=NSButton(title:review.questions.isEmpty ? "Continue":"Submit answers",target:self,action:#selector(submit));button.bezelStyle = .rounded;buttons.append(button);stack.addArrangedSubview(button)
         }
-        status.stringValue="";status.font = .systemFont(ofSize:11);status.textColor = .secondaryLabelColor;stack.addArrangedSubview(status)
-        let scroll=NSScrollView();scroll.drawsBackground=false;scroll.hasVerticalScroller=true;scroll.autohidesScrollers=true;scroll.documentView=stack
-        scroll.translatesAutoresizingMaskIntoConstraints=false;effect.addSubview(scroll)
+        status.constraints.filter{$0.firstAttribute == .width && $0.secondItem == nil}.forEach{$0.isActive=false};status.stringValue="";status.font = .systemFont(ofSize:11);status.textColor = .secondaryLabelColor;status.preferredMaxLayoutWidth=textWidth;status.widthAnchor.constraint(equalToConstant:textWidth).isActive=true;stack.addArrangedSubview(status)
+        let scroll=NSScrollView();scroll.drawsBackground=false;scroll.hasVerticalScroller=true;scroll.autohidesScrollers=true;scroll.scrollerStyle = .overlay;scroll.documentView=stack
+        scroll.translatesAutoresizingMaskIntoConstraints=false;root.addSubview(scroll)
         stack.translatesAutoresizingMaskIntoConstraints=false
-        NSLayoutConstraint.activate([scroll.leadingAnchor.constraint(equalTo:effect.leadingAnchor),scroll.trailingAnchor.constraint(equalTo:effect.trailingAnchor),scroll.topAnchor.constraint(equalTo:effect.topAnchor),scroll.bottomAnchor.constraint(equalTo:effect.bottomAnchor),stack.widthAnchor.constraint(equalToConstant:390)])
-        stack.layoutSubtreeIfNeeded();let height=min(480,max(160,stack.fittingSize.height))
-        stack.frame=CGRect(x:0,y:0,width:390,height:max(height,stack.fittingSize.height));effect.frame=CGRect(x:0,y:0,width:390,height:height)
-        popover.contentViewController=controller;popover.contentSize=effect.frame.size;popover.behavior = .transient
-        scroll.contentView.scroll(to:CGPoint(x:0,y:stack.isFlipped ? 0:max(0,stack.frame.height-height)));scroll.reflectScrolledClipView(scroll.contentView)
-        popover.show(relativeTo:anchor.bounds,of:anchor,preferredEdge:.minY)
+        NSLayoutConstraint.activate([scroll.leadingAnchor.constraint(equalTo:root.leadingAnchor),scroll.trailingAnchor.constraint(equalTo:root.trailingAnchor),scroll.topAnchor.constraint(equalTo:root.topAnchor),scroll.bottomAnchor.constraint(equalTo:root.bottomAnchor),stack.widthAnchor.constraint(equalToConstant:width)])
+        content=root;contentStack=stack;contentScroll=scroll
+        refreshLayout(resetScroll:true);return root
+    }
+    private func refreshLayout(resetScroll:Bool=false){
+        guard let content,let stack=contentStack,let scroll=contentScroll else{return}
+        stack.layoutSubtreeIfNeeded();let actual=max(80,stack.fittingSize.height),height=min(480,actual)
+        stack.frame=CGRect(x:0,y:0,width:contentWidth,height:actual);content.frame.size=CGSize(width:contentWidth,height:height);content.layoutSubtreeIfNeeded()
+        if resetScroll{scroll.contentView.scroll(to:CGPoint(x:0,y:stack.isFlipped ? 0:max(0,actual-height)));scroll.reflectScrolledClipView(scroll.contentView)}
     }
     @objc private func toggleOption(_ sender:NSButton){
         guard let question=review?.questions.first(where:{$0.id == sender.identifier?.rawValue}),!question.multiple else{return}
@@ -79,7 +95,7 @@ struct KaiNativeReview:Decodable,Equatable {
             var values=(options[question.id] ?? []).filter{$0.1.state == .on}.map{$0.0}
             let text=fields[question.id]?.stringValue.trimmingCharacters(in:.whitespacesAndNewlines) ?? ""
             if !text.isEmpty{if !question.multiple{values=[]};values.append(text)}
-            if question.required && values.isEmpty{status.stringValue="Answer \(question.header.isEmpty ? question.question:question.header)";return}
+            if question.required && values.isEmpty{status.stringValue="Answer \(question.header.isEmpty ? question.question:question.header)";refreshLayout();return}
             answers[question.id]=values
         }
         issue(["answers":answers])
@@ -90,13 +106,13 @@ struct KaiNativeReview:Decodable,Equatable {
         var fields=answer;fields["requestId"]=id;fields["threadId"]=review.owner;fields["approvalRequestId"]=review.token
         send?("native_answer",fields)
     }
-    func dismiss(){popover.close()}
+    func dismiss(){popover.close();popover.contentViewController=nil;review=nil;pending=nil;send=nil;content?.removeFromSuperview();content=nil;contentStack=nil;contentScroll=nil}
     func update(_ state:KaiState){
         guard let review else{return}
-        if state.nativeReview?.token != review.token || state.nativeReview?.owner != review.owner{popover.close();self.review=nil;return}
+        if state.nativeReview?.token != review.token || state.nativeReview?.owner != review.owner{dismiss();onResolution?();return}
         if let pending,state.completedRequestId == pending {
-            if let error=state.completedRequestError{self.pending=nil;buttons.forEach{$0.isEnabled=true};fields.values.forEach{$0.isEnabled=true};options.values.flatMap{$0}.forEach{$0.1.isEnabled=true};status.stringValue=error}
-            else{popover.close();self.review=nil}
+            if let error=state.completedRequestError{self.pending=nil;buttons.forEach{$0.isEnabled=true};fields.values.forEach{$0.isEnabled=true};options.values.flatMap{$0}.forEach{$0.1.isEnabled=true};status.stringValue=error;refreshLayout()}
+            else{dismiss();onResolution?()}
         }
     }
 }

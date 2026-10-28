@@ -280,7 +280,19 @@ impl Render for ScrollRail {
     }
 }
 
+pub(super) struct LiveContext{
+    owner:String,epoch:uuid::Uuid,generation:u64,rows:Vec<Row>,pages:Vec<HistoryPage>,deferred:HashMap<usize,DeferredRow>,offset:usize,has_older:bool,
+}
+
 impl Orbit {
+    fn capture_live_context(&mut self,id:&str){
+        let Some(run)=self.runs.get(id)else{return};
+        if self.navigation_context.as_ref().is_some_and(|c|c.owner==id&&c.epoch==run.parse_epoch){return}
+        let end=run.stream_start.or_else(||self.live_history.as_ref().filter(|v|v.owner==id).map(|v|v.base)).or(self.pending_response_start);
+        let Some(end)=end.filter(|end|*end<=self.rows.len())else{return};
+        self.navigation_context=Some(LiveContext{owner:id.into(),epoch:run.parse_epoch,generation:self.generation,rows:self.rows[..end].to_vec(),pages:self.history_pages.iter().filter(|p|p.start<end).map(|p|{let mut p=p.clone();p.len=p.len.min(end-p.start);p}).collect(),deferred:self.deferred_rows.iter().filter(|(ix,_)|**ix<end).map(|(ix,row)|(*ix,row.clone())).collect(),offset:self.history_offset,has_older:self.has_older});
+        self.engine.pause_live_history(id.into(),self.generation,run.parse_epoch);
+    }
     pub(super) fn seek_chat(&mut self, fraction: f64, cx: &mut Context<Self>) {
         let Some(session) = self
             .active
@@ -294,6 +306,7 @@ impl Orbit {
             self.restore_live_tail(&session.id, cx);
             return;
         }
+        if !self.navigation_history || self.live_history.is_some(){self.capture_live_context(&session.id);}
         self.transcript_reveal = None;
         // Pause transcript insertion, not the agent transport. Buffered live
         // output is presented again when the user seeks back to the tail.
@@ -310,12 +323,14 @@ impl Orbit {
     }
 
     pub(super) fn restore_live_tail(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.live_history.is_some(){self.capture_live_context(id);}
         self.live_history=None;
         let Some(run) = self.runs.get_mut(id) else {
             return;
         };
-        // Rebuild only the bounded current turn. Reading the native tail here
-        // could include this same unfinished turn and duplicate its output.
+        let context=self.navigation_context.take().filter(|c|c.owner==id&&c.epoch==run.parse_epoch);
+        let from_generation=context.as_ref().map_or(self.generation,|c|c.generation);
+        let captured=context.is_some();
         let mut start = run
             .submitted_prompt
             .len()
@@ -323,11 +338,13 @@ impl Orbit {
         while !run.submitted_prompt.is_char_boundary(start) {
             start += 1;
         }
-        self.rows = vec![Row {
+        self.rows = if let Some(context)=context{
+            self.history_pages=context.pages;self.deferred_rows=context.deferred;self.history_offset=context.offset;self.has_older=context.has_older;context.rows
+        }else{vec![Row {
             role: Some("user".into()),
             block: MessageBlock::Paragraph(run.submitted_prompt[start..].to_owned()),
-        }];
-        if let Some(checkpoint) = self.checkpoint_runs.get(id) {
+        }]};
+        if !captured{if let Some(checkpoint) = self.checkpoint_runs.get(id) {
             self.rows.push(Row {
                 role: None,
                 block: MessageBlock::Activity {
@@ -344,7 +361,7 @@ impl Orbit {
                     target: attachment.path.to_string_lossy().into_owned(),
                 },
             });
-        }
+        }}
         run.stream_start = None;
         self.navigation_history = false;
         self.navigation_previous = None;
@@ -353,19 +370,21 @@ impl Orbit {
         self.following_bottom = true;
         self.loading = false;
         self.loading_earlier = false;
-        self.has_older = true;
+        if !captured{self.has_older=false;}
         self.has_newer = false;
-        self.history_offset = 0;
+        if !captured{self.history_offset = 0;}
         self.history_anchor = None;
-        self.history_pages.clear();
-        self.deferred_rows.clear();
+        if !captured{self.history_pages.clear();self.deferred_rows.clear();}
         self.history_pending.clear();
         self.history_failed.clear();
         self.expanded_tools.clear();
+        self.expanded_work.clear();self.work_animations.clear();
         self.interaction_animations.clear();
         self.question_choices.clear();
         self.history_visible = 0..self.rows.len();
         self.generation += 1;
+        self.unified_history_end=None;self.unified_history_wait=false;
+        self.engine.resume_live_history(id.into(),from_generation,self.generation,run.parse_epoch);
         self.engine.load_model(id.to_owned(), self.generation);
         self.list.reset(self.rows.len());
         self.update_stream(id, cx);
@@ -623,6 +642,14 @@ mod ui_tests {
             );
             assert!(!app.loading);
             assert!(app.has_newer);
+        });
+    }
+    #[gpui::test]fn returning_to_live_tail_keeps_prior_prompt_and_final_pairs(cx:&mut TestAppContext){
+        let(view,cx)=fixture(cx);open(&view,cx);view.update(cx,|app,cx|{
+            let mut run=idle_run("Current live response".into());run.submitted_prompt="Current prompt".into();run.parsed_revision=run.revision;run.live_blocks=vec![MessageBlock::Paragraph("Current live response".into())];run.stream_start=Some(3);app.runs.insert("fixture-session".into(),run);
+            app.rows=vec![Row{role:Some("user".into()),block:MessageBlock::Paragraph("Prior prompt".into())},Row{role:Some("assistant:codex".into()),block:MessageBlock::Paragraph("Prior final".into())},Row{role:Some("user".into()),block:MessageBlock::Paragraph("Current prompt".into())},Row{role:Some("assistant:codex".into()),block:MessageBlock::Paragraph("Current live response".into())}];app.list.reset(4);
+            app.seek_chat(0.,cx);app.receive(Event::HistorySeeked("fixture-session".into(),app.generation,vec![engine::ParsedMessage{role:"user".into(),blocks:vec![MessageBlock::Paragraph("Old source head".into())]}],false,true,0.,(0.,0.01)),cx);
+            app.seek_chat(1.,cx);let text:Vec<_>=app.rows.iter().filter_map(|r|if let MessageBlock::Paragraph(text)=&r.block{Some(text.as_str())}else{None}).collect();assert_eq!(text,["Prior prompt","Prior final","Current prompt","Current live response"]);assert!(app.navigation_context.is_none());assert!(!app.navigation_history);
         });
     }
 

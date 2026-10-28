@@ -89,9 +89,8 @@ private func member(_ object:Any,_ name:String)->Any?{Mirror(reflecting:object).
     let status=(member(ui,"message") as? CATextLayer)?.string as? NSAttributedString
     precondition(status?.string.contains("Speaking") == true && status?.string.contains("read only") == false,"An active editable voice call retained its stale connecting/read-only header")
     precondition((member(ui,"modelName") as? CATextLayer)?.string as? String == "GPT-6 Luna","Resolved CLI model was not rendered in the composer")
-    let effortMenu=ui.settingsMenu("effort")
-    let slider=effortMenu?.items.compactMap{$0.view as? ReasoningSliderControl}.first
-    precondition(slider?.levels == ["medium"] && slider?.selected == 0,"Resolved CLI effort did not reach the native slider")
+    let thinking=ui.thinkingRows()
+    precondition(thinking.map(\.value) == ["medium"] && thinking.first?.selected == true,"Resolved CLI effort did not reach the native thinking choices")
 
     // Ordinary compact -> mini -> workspace expansion keeps the owner’s selected
     // idle chat even while the activity indicator follows a different agent.
@@ -224,6 +223,16 @@ private func member(_ object:Any,_ name:String)->Any?{Mirror(reflecting:object).
     foreground=false;app.workspaceFocusChanged()
     precondition(controls.window?.isVisible == true,"Same pending approval did not follow Code back into the background")
     precondition(controls.request?.thread == "code:fixture" && controls.request?.id == "5:opaque")
+    let approvalFrame=controls.window!.frame,approvalButtons=controls.subviews.compactMap{$0 as? NSButton}
+    precondition(approvalButtons.contains{$0.accessibilityLabel()=="Review request" && $0.title.isEmpty && !$0.isBordered},"Review did not use the fourth animated SVG")
+    controls.setReviewExpanded(true,pinned:true)
+    precondition(controls.reviewExpanded && controls.preferredHeight>88,"Review did not expand its actual provider content inline")
+    precondition((member(app,"mask") as! CAShapeLayer).animation(forKey:"width") != nil,"Review expansion skipped the native notch morph")
+    RunLoop.current.run(until:Date().addingTimeInterval(0.4))
+    precondition(controls.window!.frame.height>approvalFrame.height && abs(controls.window!.frame.maxY-approvalFrame.maxY)<1,"Review expansion lost the physical notch anchor")
+    precondition(approvalButtons.allSatisfy{controls.bounds.contains($0.frame)},"Approval glyphs did not travel with the enlarged notch")
+    controls.setReviewExpanded(false);RunLoop.current.run(until:Date().addingTimeInterval(0.4))
+    precondition(abs(controls.window!.frame.height-approvalFrame.height)<1,"Review did not contract back to its compact geometry")
     controls.onDecision?("approve",controls.request!)
     precondition(commands.last?["action"] as? String == "approve" && commands.last?["approvalRequestId"] as? String == "5:opaque","Native UI lost exact approval token")
     approval["approvalRequestId"]="6:opaque";var review=approval["nativeReview"] as! [String:Any];review["token"]="6:opaque";approval["nativeReview"]=review

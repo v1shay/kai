@@ -26,6 +26,14 @@ fn index_at(bounds:Bounds<Pixels>,position:Point<Pixels>,count:usize)->Option<us
     let fraction=((f32::from(position.x-bounds.origin.x)-9.)/(f32::from(bounds.size.width)-18.)).clamp(0.,1.);
     Some((fraction*(count.saturating_sub(1))as f32).round()as usize)
 }
+// The same finite Monocode burst paints the selected chip and preview option.
+fn shimmer_tiles(elapsed:Option<f32>,color:u32,motion:bool)->AnyElement{
+    canvas(|bounds,_,_|bounds,move|bounds,_,window,_|{
+        if let Some(t)=elapsed.filter(|t|*t<5.){let fade=if motion{((5.-t)/0.4).clamp(0.,1.)}else{0.7};
+            for n in 0..160{let col=n%32;let row=n/32;let distance=(((col as f32-15.5)/15.5).powi(2)+((row as f32-2.)/2.).powi(2)).sqrt();let phase=((t-distance*0.42).max(0.)%1.4)/1.4;let filled=(n*73+n*n*19+23)%101<65;let pulse=if !motion{0.5}else if phase<0.26{phase/0.26}else if phase<0.52{1.-(phase-0.26)/0.26*0.82}else{0.18*(1.-(phase-0.52)/0.48)};let feather=((col as f32+0.5)/4.).min((31.5-col as f32)/4.).min(1.)*if row==0||row==4{0.2}else if row==1||row==3{0.65}else{1.};let alpha=(((if filled{pulse}else{0.09})*fade*feather)*210.)as u32;let w=bounds.size.width/32.;let h=bounds.size.height/5.;window.paint_quad(fill(Bounds::new(bounds.origin+point(w*col as f32,h*row as f32),size((w-px(0.7)).max(px(0.)),(h-px(0.7)).max(px(0.)))),rgba((color<<8)|alpha)));}
+        }
+    }).absolute().size_full().into_any_element()
+}
 impl Orbit{
     pub(super) fn fast_supported(&self)->bool{
         self.agent==AgentKind::Codex && self.controls.get("codex").is_some_and(|(_,c)|self.model.clone().or_else(||self.effective_model_settings().0).is_some_and(|m|c.defaults.fast_models.contains_key(&m)))
@@ -37,12 +45,15 @@ impl Orbit{
         let on=self.fast_enabled();let phase=self.fast_transition.filter(|_|self.motion).map(|at|(at.elapsed().as_secs_f32()/0.6).min(1.)).unwrap_or(1.);let pulse=(phase*std::f32::consts::PI).sin();
         div().id("fast-mode").debug_selector(||"fast-mode".into()).h(px(26.)).w(px(28.)).rounded_md().flex().items_center().justify_center().cursor_pointer().bg(linear_gradient(45.,linear_color_stop(rgba(if on{0xffd26b38}else{0xffffff08}),0.),linear_color_stop(rgba(if on{0xff883314}else{0xffffff08}),1.))).border_1().border_color(rgba(if on{0xffda6b60}else{0xffffff08})).child(icon("bolt",15.+4.*pulse,if on{0xffdf85}else{MUTED}).with_transformation(Transformation::rotate(radians(pulse*0.18)))).on_click(cx.listener(|this,_,_,cx|this.toggle_fast(cx))).into_any_element()
     }
-    pub(super) fn thinking_chip(&self,cx:&Context<Self>)->AnyElement{
+    pub(super) fn thinking_chip(&self,window:&Window,cx:&Context<Self>)->AnyElement{
         let Some(model)=self.effort_model_choice().filter(|m|!m.reasoning_efforts.is_empty())else{return div().into_any_element()};
-        let value=self.unified_effort().map(str::to_owned).or_else(||self.effective_model_settings().1).unwrap_or_default();let i=model.reasoning_efforts.iter().position(|e|e==&value).unwrap_or(0);let t=i as f32/model.reasoning_efforts.len().saturating_sub(1).max(1)as f32;
-        div().id("thinking-chip").debug_selector(||"thinking-chip".into()).px_2().h(px(26.)).rounded_md().flex().items_center().text_size(theme::ui_px(11.)).text_color(rgb(effort_color(&value,t))).bg(linear_gradient(90.,linear_color_stop(rgba((effort_color(&value,t)<<8)|0x24),0.),linear_color_stop(rgba((intensity((t+0.25).min(1.))<<8)|0x10),1.))).cursor_pointer().child(title(&value))
+        let value=self.unified_effort().map(str::to_owned).or_else(||self.effective_model_settings().1).unwrap_or_default();let i=model.reasoning_efforts.iter().position(|e|e==&value).unwrap_or(0);let t=i as f32/model.reasoning_efforts.len().saturating_sub(1).max(1)as f32;let color=effort_color(&value,t);let label=title(&value);
+        let chip=div().id("thinking-chip").debug_selector(||"thinking-chip".into()).px_2().h(px(26.)).relative().overflow_hidden().rounded_md().flex().items_center().text_size(theme::ui_px(11.)).text_color(rgb(color)).bg(linear_gradient(90.,linear_color_stop(rgba((color<<8)|0x24),0.),linear_color_stop(rgba((intensity((t+0.25).min(1.))<<8)|0x10),1.))).cursor_pointer()
         .on_mouse_move(cx.listener(|this,event:&MouseMoveEvent,window,cx|{if this.agent_picker.is_none(){this.toggle_agent_picker(event.position,window,cx);if let Some(p)=this.agent_picker.as_mut(){p.effort_only=true;p.anchor=event.position-point(px(20.),px(230.));}}}))
-        .on_click(cx.listener(|this,event:&ClickEvent,window,cx|{if this.agent_picker.as_ref().is_none_or(|p|p.closing){this.toggle_agent_picker(event.position(),window,cx);}if let Some(p)=this.agent_picker.as_mut(){p.effort_only=true;}})).into_any_element()
+        .on_click(cx.listener(|this,event:&ClickEvent,window,cx|{if this.agent_picker.as_ref().is_none_or(|p|p.closing){this.toggle_agent_picker(event.position(),window,cx);}if let Some(p)=this.agent_picker.as_mut(){p.effort_only=true;}}));
+        if self.motion && !native::reduced_motion() && window.is_window_active(){
+            chip.with_animation(SharedString::from(format!("thinking-chip-{}-{value}",self.agent.command())),Animation::new(Duration::from_secs(5)),move|chip,t|chip.child(shimmer_tiles(Some(t*5.),color,true)).child(div().relative().child(label.clone()))).into_any_element()
+        }else{chip.child(shimmer_tiles(Some(0.),color,false)).child(div().relative().child(label)).into_any_element()}
     }
     fn effort_fraction(&self,count:usize,current:usize)->f32{
         let target=current as f32/count.saturating_sub(1).max(1)as f32;
@@ -65,12 +76,12 @@ impl Orbit{
         div().flex().flex_col().gap_1().child(div().px_2().py_1().text_size(theme::ui_px(10.)).text_color(rgb(MUTED)).child("Thinking intensity"))
         .children(levels.into_iter().enumerate().map(|(i,level)|{
             let color=effort_color(&level,i as f32/count.saturating_sub(1).max(1)as f32);let active=selected.as_ref()==Some(&level);
-            let elapsed=self.agent_picker.as_ref().and_then(|p|p.effort_hover.as_ref()).filter(|(v,_)|v==&level).map(|(_,at)|at.elapsed().as_secs_f32());let motion=self.motion;
-            let hover_level=level.clone();let select=level.clone();let text=title(&level);
+            let elapsed=self.agent_picker.as_ref().and_then(|p|p.effort_hover.as_ref()).filter(|(v,_)|v==&level).map(|(_,at)|at.elapsed().as_secs_f32());let motion=self.motion && !native::reduced_motion();
+            let hover_level=level.clone();let return_to=selected.clone();let select=level.clone();let text=title(&level);
             div().id(SharedString::from(format!("reasoning-{level}"))).debug_selector(move||format!("reasoning-{level}")).h(px(34.)).w_full().relative().overflow_hidden().rounded_md().cursor_pointer().bg(rgba(if active{0xffffff14}else{0x00000000}))
-            .child(canvas(|bounds,_,_|bounds,move|bounds,_,window,_|{if let Some(t)=elapsed.filter(|t|*t<5.){let fade=if motion{((5.-t)/0.4).clamp(0.,1.)}else{0.7};for n in 0..160{let col=n%32;let row=n/32;let distance=(((col as f32-15.5)/15.5).powi(2)+((row as f32-2.)/2.).powi(2)).sqrt();let phase=((t-distance*0.42).max(0.)%1.4)/1.4;let filled=(n*73+n*n*19+23)%101<65;let pulse=if !motion{0.5}else if phase<0.26{phase/0.26}else if phase<0.52{1.-(phase-0.26)/0.26*0.82}else{0.18*(1.-(phase-0.52)/0.48)};let feather=((col as f32+0.5)/4.).min((31.5-col as f32)/4.).min(1.)*if row==0||row==4{0.2}else if row==1||row==3{0.65}else{1.};let alpha=(((if filled{pulse}else{0.09})*fade*feather)*210.)as u32;let w=bounds.size.width/32.;let h=bounds.size.height/5.;window.paint_quad(fill(Bounds::new(bounds.origin+point(w*col as f32,h*row as f32),size(w-px(0.7),h-px(0.7))),rgba((color<<8)|alpha)));}}}).absolute().size_full())
+            .child(shimmer_tiles(elapsed,color,motion))
             .child(div().relative().px_3().h_full().flex().items_center().justify_between().text_size(theme::ui_px(12.)).text_color(rgb(color)).child(text).when(active,|s|s.child("✓")))
-            .on_hover(cx.listener(move|this,hover:&bool,_,cx|{if let Some(p)=this.agent_picker.as_mut(){if *hover{p.effort_hover=Some((hover_level.clone(),Instant::now()));}else if p.effort_hover.as_ref().is_some_and(|(v,_)|v==&hover_level){p.effort_hover=None;}cx.notify();}}))
+            .on_hover(cx.listener(move|this,hover:&bool,_,cx|{if let Some(p)=this.agent_picker.as_mut(){if *hover{p.effort_hover=Some((hover_level.clone(),Instant::now()));}else if p.effort_hover.as_ref().is_some_and(|(v,_)|v==&hover_level){p.effort_hover=return_to.clone().map(|value|(value,Instant::now()));}cx.notify();}}))
             .on_click(cx.listener(move|this,_,_,cx|{this.select_reasoning_effort(&select,cx);this.dismiss_agent_picker();cx.notify();}))
         })).into_any_element()
     }
@@ -110,5 +121,18 @@ impl Orbit{
    app.toggle_fast(cx);assert_eq!(app.request_service_tier().as_deref(),Some("priority"));let saved=app.workspace_snapshot(cx).normalized();assert_eq!(saved.reasoning_efforts.get("codex:service-tier").map(String::as_str),Some("fast"));
    app.agent=AgentKind::Gemini;assert!(app.request_service_tier().is_none());app.agent=AgentKind::Codex;app.toggle_fast(cx);assert_eq!(app.request_service_tier().as_deref(),Some("default"));
   });
+ }
+ #[gpui::test]fn thinking_preview_defaults_to_selected_and_returns_after_hover(cx:&mut TestAppContext){
+  let(view,cx)=crate::ui_tests::fixture(cx);
+  cx.update(|window,cx|view.update(cx,|app,cx|{
+   app.agent=AgentKind::Codex;app.model=Some("thinking-preview-fixture".into());app.native_models.insert(AgentKind::Codex,vec![agent_controls::ModelChoice{id:"thinking-preview-fixture".into(),label:"Preview".into(),reasoning_efforts:vec!["low".into(),"medium".into(),"high".into()]}]);let key=app.effort_key();app.reasoning_efforts.insert(key,"medium".into());app.toggle_agent_picker(point(px(650.),px(620.)),window,cx);
+   assert_eq!(app.agent_picker.as_ref().unwrap().effort_hover.as_ref().map(|(v,_)|v.as_str()),Some("medium"));
+  }));
+  // The first event causes the manual test frame to be replaced by the window's
+  // own frame; a second move tests hover against the settled window hitboxes.
+  crate::ui_tests::draw_frame(&view,cx);let low=cx.debug_bounds("reasoning-low").unwrap();cx.simulate_mouse_move(low.center(),None,Modifiers::none());cx.simulate_mouse_move(low.center()+point(px(1.),px(0.)),None,Modifiers::none());crate::ui_tests::draw_frame(&view,cx);
+  view.update(cx,|app,_|{assert_eq!(app.agent_picker.as_ref().unwrap().effort_hover.as_ref().map(|(v,_)|v.as_str()),Some("low"));assert_eq!(app.unified_effort(),Some("medium"));});
+  let picker=cx.debug_bounds("agent-picker").unwrap();cx.simulate_mouse_move(picker.origin+point(px(2.),px(2.)),None,Modifiers::none());crate::ui_tests::draw_frame(&view,cx);
+  view.update(cx,|app,_|{assert_eq!(app.agent_picker.as_ref().unwrap().effort_hover.as_ref().map(|(v,_)|v.as_str()),Some("medium"));assert_eq!(app.unified_effort(),Some("medium"));});
  }
 }

@@ -2085,7 +2085,14 @@ fn transcript_record(value: &Value, agent: AgentKind) -> Vec<TranscriptMessage> 
             payload,
             true,
         );
-        if let Some(card) = crate::chat_interactions::native_event(payload) {
+        let terminal = if matches!(payload["type"].as_str(),Some("task_complete"|"turn_complete")) {
+            match payload["status"].as_str() {
+                Some("interrupted"|"cancelled"|"canceled"|"aborted")=>Some(crate::chat_interactions::ChatInteraction::Status{title:"Stopped".into(),details:String::new(),status:crate::chat_interactions::InteractionStatus::Cancelled}),
+                Some("failed"|"error")=>Some(crate::chat_interactions::ChatInteraction::Status{title:"Agent failed".into(),details:payload["error"]["message"].as_str().unwrap_or("").chars().take(8192).collect(),status:crate::chat_interactions::InteractionStatus::Failed}),
+                _=>crate::chat_interactions::native_event(payload),
+            }
+        }else{crate::chat_interactions::native_event(payload)};
+        if let Some(card) = terminal {
             cards.push(card);
         }
         return cards
@@ -2203,6 +2210,9 @@ fn transcript_record(value: &Value, agent: AgentKind) -> Vec<TranscriptMessage> 
     if let Some(text) =
         presentation::sanitize_transcript_text(role, &content_text(&message["content"]))
     {
+        if agent==AgentKind::Codex && role=="assistant" && message["phase"]=="final_answer"{
+            messages.push(final_answer_boundary());
+        }
         messages.push(TranscriptMessage {
             code_language: None,
             role: role.into(),
@@ -2222,6 +2232,13 @@ fn transcript_record(value: &Value, agent: AgentKind) -> Vec<TranscriptMessage> 
         }
     }
     messages
+}
+
+fn final_answer_boundary()->TranscriptMessage{
+    TranscriptMessage{role:"tool".into(),code_language:None,text:crate::chat_interactions::encode(&crate::chat_interactions::ChatInteraction::Status{title:"Final answer".into(),details:String::new(),status:crate::chat_interactions::InteractionStatus::Completed})}
+}
+fn is_final_answer_boundary(message:&TranscriptMessage)->bool{
+    message.role=="tool" && matches!(crate::chat_interactions::decode_with_context(&message.text),Some((crate::chat_interactions::ChatInteraction::Status{title,..},_)) if title=="Final answer")
 }
 
 #[cfg(test)]

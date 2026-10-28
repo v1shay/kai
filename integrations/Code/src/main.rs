@@ -434,6 +434,7 @@ fn append_live_text(run: &mut Running, text: &str) {
         run.text.push_str(text);
     }
 }
+#[derive(Clone)]
 struct HistoryPage {
     number: usize,
     start: usize,
@@ -441,6 +442,7 @@ struct HistoryPage {
     resident: bool,
     used: u64,
 }
+#[derive(Clone)]
 struct DeferredRow {
     page: usize,
     height: Pixels,
@@ -702,6 +704,7 @@ struct Orbit {
     interaction_animations: HashMap<usize, (Instant, bool, f32)>,
     expanded_work: HashSet<usize>,
     flow_index:chat_flow::Index,
+    flow_revision:u64,
     work_animations: HashMap<usize,(Instant,bool,f32)>,
     question_choices: HashMap<String, (String, Instant)>,
     project_generation: u64,
@@ -756,6 +759,7 @@ struct Orbit {
     navigation_history: bool,
     live_history:Option<live_history::View>,
     navigation_previous: Option<bool>,
+    navigation_context:Option<chat_navigation::LiveContext>,
     history_clock: u64,
     history_animation: Option<Instant>,
     discovering: bool,
@@ -1246,7 +1250,7 @@ impl Orbit {
             expanded_tools: HashSet::new(),
             interaction_animations: HashMap::new(),
             expanded_work:HashSet::new(),work_animations:HashMap::new(),
-            flow_index:Default::default(),
+            flow_index:Default::default(),flow_revision:0,
             question_choices: HashMap::new(),
             project_generation: 0,
             project: root,
@@ -1301,6 +1305,7 @@ impl Orbit {
             navigation_history: false,
             live_history:None,
             navigation_previous: None,
+            navigation_context:None,
             history_clock: 0,
             history_animation: None,
             discovering: true,
@@ -2616,6 +2621,7 @@ impl Orbit {
         let pages: HashSet<_> = self
             .history_visible
             .clone()
+            .filter(|ix|self.flow_index.visible(*ix,&self.expanded_work))
             .filter_map(|ix| self.deferred_rows.get(&ix).map(|row| row.page))
             .collect();
         for number in pages {
@@ -2682,7 +2688,7 @@ impl Orbit {
                 .filter(|(_, p)| {
                     p.resident
                         && !self.history_pending.contains(&p.number)
-                        && (p.start + p.len <= visible.start || p.start >= visible.end)
+                        && !(p.start..p.start+p.len).any(|ix|visible.contains(&ix)&&self.flow_index.visible(ix,&self.expanded_work))
                 })
                 .min_by_key(|(_, p)| p.used)
                 .map(|(ix, _)| ix);
@@ -2710,10 +2716,7 @@ impl Orbit {
                         user_boundary: self.rows[ix].role.as_deref() == Some("user"),
                     },
                 );
-                self.rows[ix] = Row {
-                    role: None,
-                    block: MessageBlock::Paragraph(String::new()),
-                };
+                self.rows[ix] = chat_flow::placeholder(&self.rows[ix]);
             }
         }
     }
@@ -3103,7 +3106,7 @@ impl Orbit {
         });
         for attachment in &submitted_attachments {
             self.rows.push(Row {
-                role: None,
+                role: Some("user:continuation".into()),
                 block: MessageBlock::Attachment {
                     name: attachment.name.clone(),
                     target: attachment.path.to_string_lossy().into_owned(),
@@ -4667,6 +4670,16 @@ impl Orbit {
     fn row(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         #[cfg(test)]
         self.rendered_rows.set(self.rendered_rows.get() + 1);
+        if matches!(self.rows.get(ix).map(|row|&row.block),Some(MessageBlock::Interaction(chat_interactions::ChatInteraction::Status {title,status:chat_interactions::InteractionStatus::Completed,..})) if title=="Completed")
+        {
+            self.prefetch_completion_action(ix, cx);
+        }
+        let work=self.flow_index.work.get(ix).cloned().flatten();
+        let work_reveal=work.as_ref().map(|span|self.work_reveal(span.start)).unwrap_or(1.);
+        if self.flow_index.hidden.get(ix)==Some(&true){return div().h(px(0.)).into_any_element()}
+        if let Some(span)=&work{if work_reveal<=0.001{return if ix==span.start{div().w_full().max_w(px(800.)).mx_auto().child(self.work_summary(span.start,cx)).into_any_element()}else{div().h(px(0.)).into_any_element()}}}
+        let command=self.flow_index.commands.get(ix).cloned().flatten();
+        if command.as_ref().is_some_and(|span|span.start!=ix){return div().h(px(0.)).into_any_element()}
         if let Some(deferred) = self.deferred_rows.get(&ix) {
             let page = deferred.page;
             let height = deferred.height;
@@ -4694,10 +4707,6 @@ impl Orbit {
             self.history_clock += 1;
             page.used = self.history_clock;
         }
-        if matches!(self.rows.get(ix).map(|row|&row.block),Some(MessageBlock::Interaction(chat_interactions::ChatInteraction::Status {title,status:chat_interactions::InteractionStatus::Completed,..})) if title=="Completed")
-        {
-            self.prefetch_completion_action(ix, cx);
-        }
         let decode_source=self.rows.get(ix).and_then(|row|{
             if chat_flow::user(row)&&!matches!(&row.block,MessageBlock::Voice{..}){return None}
             match &row.block{MessageBlock::Paragraph(text)|MessageBlock::Heading(text)|MessageBlock::Quote(text)|MessageBlock::RichParagraph{text,..}|MessageBlock::ListItem{text,..}|MessageBlock::Voice{text,..}=>Some(text.clone()),_=>None}
@@ -4709,13 +4718,6 @@ impl Orbit {
         let Some(row) = self.rows.get(ix) else {
             return div().into_any_element();
         };
-        let work=self.flow_index.work.get(ix).cloned().flatten();
-        let work_reveal=work.as_ref().map(|span|self.work_reveal(span.start)).unwrap_or(1.);
-        if let Some(span)=&work{if work_reveal<=0.001{
-            return if ix==span.start{div().w_full().max_w(px(800.)).mx_auto().child(self.work_summary(span.start,cx)).into_any_element()}else{div().h(px(0.)).into_any_element()}
-        }}
-        let command=self.flow_index.commands.get(ix).cloned().flatten();
-        if command.as_ref().is_some_and(|span|span.start!=ix){return div().h(px(0.)).into_any_element()}
         // Retain the app-owned boundary for exact prompt attribution, without
         // rendering a second Undo control above the completion card.
         if checkpoint_ui::row_checkpoint(row).is_some() {
@@ -5151,7 +5153,7 @@ impl Orbit {
                                         },
                                     )),
                             )
-                            .child(self.thinking_chip(cx))
+                            .child(self.thinking_chip(window,cx))
                             .when(self.fast_supported(),|s|s.child(self.fast_button(cx)))
                             .child(
                                 div()
@@ -5368,7 +5370,7 @@ impl Orbit {
 }
 impl Render for Orbit {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.flow_index=chat_flow::Index::new(&self.rows);
+        self.sync_flow_layout();
         if let Some(at)=self.timestamp_released{if at.elapsed()<Duration::from_millis(180){request_motion_frame(window,cx);}else{self.timestamp_peek=0.;self.timestamp_released=None;}}
         use workspace_motion::Part as WorkspacePart;
         let entrance=unified::workspace_frame(self.motion);
