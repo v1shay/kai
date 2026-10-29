@@ -78,6 +78,8 @@ fn fit_rect(state: &WindowState, displays: &[Bounds<Pixels>]) -> Bounds<Pixels> 
 
 impl Orbit {
     pub(super) fn toggle_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.reopen_closing_pane(pane_layout::Pane::Terminal,cx){return}
+        if self.terminal_visible {self.close_pane(pane_layout::Pane::Terminal,cx);return}
         if self.quit_pending {
             return;
         }
@@ -411,6 +413,7 @@ impl Orbit {
             startup_surface:self.startup_surface,
             automatic_titles:self.automatic_titles,
             terminal_dock:self.terminal_dock.normalized(),
+            inspector_widths:self.inspector_widths.normalized(),
             activity: self.activity.saved.clone(),
             prompt_queue: self.prompt_queue.clone(),
             teams: self.teams.clone(),orchestrator_chats:self.orchestrator_chats.iter().cloned().collect(),
@@ -517,6 +520,7 @@ impl Orbit {
         self.theme = saved.theme.normalized();
         self.apply_personalization(window, cx);
         self.allow_edits = saved.allow_edits;
+        self.inspector_widths=saved.inspector_widths.normalized();
         self.codex_approvals = saved.codex_approvals;
         self.codex_access = saved.codex_access;
         self.prompt_queue = saved.prompt_queue;

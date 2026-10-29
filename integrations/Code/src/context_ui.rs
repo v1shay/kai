@@ -29,7 +29,7 @@ impl Orbit {
                     .hover(|s| s.bg(rgba(GLASS_HOVER)))
                     .child(icon("paperclip", 14., MUTED))
                     .on_click(
-                        cx.listener(|this, _, window, cx| this.toggle_context_picker(window, cx)),
+                        cx.listener(|this, event:&ClickEvent, window, cx| this.toggle_top_control(control_clicks::Control::Context,event.position(),window,cx)),
                     ),
             )
             .child(
@@ -42,7 +42,7 @@ impl Orbit {
                     .hover(|s| s.bg(rgba(GLASS_HOVER)))
                     .child(icon("file-code", 14., MUTED))
                     .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
-                        this.toggle_file_context(event.position(), window, cx)
+                        this.toggle_top_control(control_clicks::Control::FileContext,event.position(),window,cx)
                     })),
             )
             .child(
@@ -66,7 +66,7 @@ impl Orbit {
                     .hover(|s| s.bg(rgba(GLASS_HOVER)))
                     .child(icon("file-document", 14., MUTED))
                     .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
-                        this.toggle_prompt_library(event.position(), window, cx)
+                        this.toggle_top_control(control_clicks::Control::Prompts,event.position(),window,cx)
                     })),
             )
             .child(
@@ -79,7 +79,7 @@ impl Orbit {
                     .hover(|s| s.bg(rgba(GLASS_HOVER)))
                     .child(icon("branch", 14., MUTED))
                     .on_click(
-                        cx.listener(|this, _, window, cx| this.toggle_team_panel(window, cx)),
+                        cx.listener(|this, event:&ClickEvent, window, cx| this.toggle_top_control(control_clicks::Control::Teams,event.position(),window,cx)),
                     ),
             )
             .child(
@@ -102,8 +102,8 @@ impl Orbit {
                     .cursor_pointer()
                     .hover(|s| s.bg(rgba(GLASS_HOVER)))
                     .child(icon("clock", 14., MUTED))
-                    .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
-                        this.toggle_checkpoint_timeline(event.position(), cx)
+                    .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
+                        this.toggle_top_control(control_clicks::Control::Timeline,event.position(),window,cx)
                     })),
             )
             .into_any_element()
@@ -370,7 +370,7 @@ impl Orbit {
         } else {
             1.
         };
-        anchored().anchor(Corner::BottomLeft).position(picker.anchor + point(px(0.), px((1. - reveal) * 6.))).snap_to_window_with_margin(px(8.)).child(div().id("context-picker").debug_selector(|| "context-picker".into()).w(px(370.)).max_h(px(420.)).p_2().rounded_lg().bg(rgba(appearance::MENU_SURFACE)).border_1().border_color(rgba(0xebebeb1c)).opacity(reveal).occlude().on_mouse_down_out(cx.listener(|this, _, _, cx| { this.context_picker = None; cx.notify(); }))
+        anchored().anchor(Corner::BottomLeft).position(picker.anchor + point(px(0.), px((1. - reveal) * 6.))).snap_to_window_with_margin(px(8.)).child(div().id("context-picker").debug_selector(|| "context-picker".into()).w(px(370.)).max_h(px(420.)).p_2().rounded_lg().bg(rgba(appearance::MENU_SURFACE)).border_1().border_color(rgba(0xebebeb1c)).opacity(reveal).occlude().on_mouse_down_out(cx.listener(|this,event:&MouseDownEvent,_,cx| { this.dismissed_on_press(control_clicks::Control::Context,event.position);this.context_picker = None; cx.notify(); }))
             .child(div().px_2().py_1().text_size(crate::theme::ui_px(12.)).child("Attach chat context · all projects"))
             .child(div().p_2().child(picker.input.clone()))
             .child(div().id("context-results").max_h(px(310.)).overflow_y_scroll().children(rows.map(|session| {

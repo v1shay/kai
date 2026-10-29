@@ -43,7 +43,8 @@ impl Orbit {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.panel_at_pointer_down.take() == Some(kind) {
+        self.panel_at_pointer_down=None;
+        if self.consumed_control_click(control_clicks::Control::Panel(kind),window) || self.modal==Some(kind) {
             self.dismiss_panel(window, cx);
         } else {
             self.show_panel_at(kind, anchor, upward, window, cx);
@@ -700,7 +701,7 @@ impl Orbit {
                     .opacity(reveal.clamp(0., 1.))
                     .occlude()
                     .on_mouse_down_out(
-                        cx.listener(|this, _, window, cx| this.dismiss_panel(window, cx)),
+                        cx.listener(|this, event:&MouseDownEvent, window, cx| { if let Some(kind)=this.modal {this.dismissed_on_press(control_clicks::Control::Panel(kind),event.position);} this.dismiss_panel(window, cx); }),
                     )
                     .child(
                         div()

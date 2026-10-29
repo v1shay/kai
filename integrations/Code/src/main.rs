@@ -17,6 +17,8 @@ mod commands;
 mod composer_controls;
 mod composer_design;
 mod composer_toolbar;
+mod control_clicks;
+mod pane_layout;
 mod context_refs;
 mod context_ui;
 mod diff_view;
@@ -600,6 +602,9 @@ struct Orbit {
     terminal_panel: Option<Entity<terminal_ui::TerminalPanel>>,
     terminal_visible: bool,
     terminal_dock:terminal_dock::Dock,
+    inspector_widths:pane_layout::Widths,
+    pane_layout:pane_layout::Layout,
+    closed_control_press:Option<control_clicks::ClosedPress>,
     terminal_dock_hover:Option<terminal_dock::Side>,
     terminal_subscription: Option<Subscription>,
     teams: Vec<teams::Team>,
@@ -922,6 +927,7 @@ impl Orbit {
                 this.overlay_window = Some(id);
             }
             if !window.is_window_active() {
+                native::panel_drag_guard(window,false);
                 this.dictation_hotkey_down = false;
                 this.dismiss_controls_for_window(window.window_handle().window_id());
             }
@@ -1148,6 +1154,7 @@ impl Orbit {
             terminal_panel: None,
             terminal_visible: false,
             terminal_dock:restored.as_ref().map_or_else(Default::default,|s|s.terminal_dock.normalized()),
+            inspector_widths:restored.as_ref().map_or_else(Default::default,|s|s.inspector_widths.normalized()),pane_layout:Default::default(),closed_control_press:None,
             terminal_dock_hover:None,
             terminal_subscription: None,
             teams: Vec::new(),
@@ -1754,6 +1761,9 @@ impl Orbit {
             )
     }
     fn toggle_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.reopen_closing_pane(pane_layout::Pane::Files,cx){return}
+        if self.files_visible {self.close_pane(pane_layout::Pane::Files,cx);return}
+        self.prepare_inspector_switch(pane_layout::Pane::Files);
         self.broker_panel = None;
         self.diff_view = None;
         self.diff_observer = None;
@@ -1768,6 +1778,8 @@ impl Orbit {
         cx.notify();
     }
     fn open_changes(&mut self, cx: &mut Context<Self>) {
+        self.reopen_closing_pane(pane_layout::Pane::Changes,cx);
+        self.prepare_inspector_switch(pane_layout::Pane::Changes);
         self.broker_panel = None;
         let root = self
             .execution_root()
@@ -1784,6 +1796,7 @@ impl Orbit {
         cx.notify();
     }
     fn sync_file_root(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.files_visible{self.reopen_closing_pane(pane_layout::Pane::Files,cx);}
         if self.files_visible {
             self.broker_panel = None;
         }
@@ -4709,6 +4722,7 @@ impl Orbit {
                     tab.into_any_element()
                 }
             }))
+            .child(div().debug_selector(||"workspace-window-drag-space".into()).flex_1().h_full().min_w(px(12.)).on_mouse_down(MouseButton::Left,|_,window,_|native::drag(window)))
     }
     fn home(&self, _cx: &Context<Self>) -> impl IntoElement {
         let greeting = div()
@@ -5332,6 +5346,7 @@ impl Render for Orbit {
             self.advance_chat_surface(window, cx);
         }
         self.track_workspace(cx);
+        self.tick_panes(window, cx);
         self.tick_list_reveals(window, cx);
         let project = self.project.clone();
         let empty = self.active.is_none();
@@ -5570,6 +5585,8 @@ impl Render for Orbit {
                     }
                 }),
             )
+            .on_mouse_up(MouseButton::Left, |_,window,_|native::panel_drag_guard(window,false))
+            .on_mouse_up_out(MouseButton::Left,|_,window,_|native::panel_drag_guard(window,false))
             .capture_any_mouse_down(cx.listener(|this, _, _, _| {
                 // Outside-dismiss handlers run later in capture. Preserve the
                 // panel for this click so its own trigger can still toggle it.
@@ -5743,6 +5760,7 @@ impl Render for Orbit {
                                     .flex_1()
                                     .overflow_hidden()
                                     .text_ellipsis()
+                                    .on_mouse_down(MouseButton::Left,|_,window,_|native::drag(window))
                                     .child(title),
                             )
                             .when(unified::active(), |s| {
@@ -5977,10 +5995,9 @@ impl Render for Orbit {
             )
             .when(self.files_visible, |s| {
                 s.when_some(self.file_browser.clone(), |s, browser| {
-                    s.child(
-                        entrance.container(WorkspacePart::Inspector)
+                    s.child(self.inspector_shell(pane_layout::Pane::Files, entrance.container(WorkspacePart::Inspector)
                             .debug_selector(|| "files-inspector".into())
-                            .w(px(360.))
+                            .w_full()
                             .h_full()
                             .flex_none()
                             .min_w(px(0.))
@@ -6010,18 +6027,16 @@ impl Render for Orbit {
                                             })),
                                     ),
                             )
-                            .child(div().flex_1().min_h(px(0.)).w_full().child(browser)),
-                    )
+                            .child(div().flex_1().min_h(px(0.)).w_full().child(browser)).into_any_element(),window,cx))
                 })
             })
             .when(self.broker_panel.is_some(), |s| {
-                s.child(self.children_panel(cx))
+                s.child(self.inspector_shell(pane_layout::Pane::Children,self.children_panel(cx),window,cx))
             })
             .when_some(self.diff_view.clone(), |s, review| {
-                s.child(
-                    entrance.container(WorkspacePart::Inspector)
+                s.child(self.inspector_shell(pane_layout::Pane::Changes, entrance.container(WorkspacePart::Inspector)
                         .debug_selector(|| "changes-inspector".into())
-                        .w(px(440. * diff_progress))
+                        .w_full()
                         .h_full()
                         .flex_none()
                         .overflow_hidden()
@@ -6030,7 +6045,7 @@ impl Render for Orbit {
                         .bg(rgba(self.appearance.tint(GLASS_SURFACE)))
                         .child(
                             div()
-                                .w(px(440.))
+                                .w_full()
                                 .h_full()
                                 .flex()
                                 .flex_col()
@@ -6057,16 +6072,12 @@ impl Render for Orbit {
                                                 .hover(|s| s.bg(rgba(GLASS_HOVER)))
                                                 .child(icon("close", 14., MUTED))
                                                 .on_click(cx.listener(|this, _, _, cx| {
-                                                    this.diff_view = None;
-                                                    this.diff_observer = None;
-                                                    this.diff_started = None;
-                                                    cx.notify();
+                                                    this.close_pane(pane_layout::Pane::Changes,cx);
                                                 })),
                                         ),
                                 )
                                 .child(div().flex_1().min_h(px(0.)).child(review)),
-                        ),
-                )
+                        ).into_any_element(),window,cx))
             })
             .when(self.attachment_preview.is_some(), |s| {
                 s.child(self.attachment_preview_view(window, cx))

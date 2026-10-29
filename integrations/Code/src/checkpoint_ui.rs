@@ -1211,6 +1211,7 @@ impl Orbit {
                 div()
                     .id("checkpoint-timeline")
                     .debug_selector(|| "checkpoint-timeline".into())
+                    .on_mouse_down_out(cx.listener(|this,event:&MouseDownEvent,_,cx|{this.dismissed_on_press(control_clicks::Control::Timeline,event.position);this.checkpoint_timeline=None;cx.notify();}))
                     .w(px(430.))
                     .p_3()
                     .rounded_xl()

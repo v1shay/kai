@@ -109,6 +109,7 @@ pub struct WorkspaceState {
     pub startup_surface:crate::startup::Surface,
     pub automatic_titles:bool,
     pub terminal_dock:crate::terminal_dock::Dock,
+    pub inspector_widths:crate::pane_layout::Widths,
     pub activity: crate::sidebar_activity::Saved,
     pub prompt_queue: Vec<crate::prompt_queue::Prompt>,
     pub teams: Vec<crate::teams::Team>,
@@ -155,6 +156,7 @@ impl Default for WorkspaceState {
             startup_surface:Default::default(),
             automatic_titles:true,
             terminal_dock:Default::default(),
+            inspector_widths:Default::default(),
             activity: Default::default(),
             prompt_queue: Vec::new(),
             teams: Vec::new(),orchestrator_chats:Vec::new(),
@@ -200,6 +202,7 @@ impl WorkspaceState {
     /// Does no filesystem work. Discovery/display code validates existence and
     /// clips window coordinates against actual displays after restoration.
     pub fn normalized(mut self) -> Self {
+        self.inspector_widths=self.inspector_widths.normalized();
         self.activity.normalize();
         self.orchestrator_chats.retain(|id|uuid::Uuid::parse_str(id).is_ok());self.orchestrator_chats.truncate(256);
         if self.file_edit.as_ref().is_some_and(|draft| !draft.valid()) {

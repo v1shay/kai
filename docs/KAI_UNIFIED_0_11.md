@@ -21,6 +21,24 @@ a bounded separate read-only ephemeral Codex request generates a semantic title;
 it is not inserted into the conversation. This requires an available Codex CLI.
 Manual renames and deleted chats always win over a late generated name.
 
+## Pane sizing and control toggles (0.11.3)
+
+Build, model/thinking and top-row popovers open on a click, close when clicked
+again, and dismiss on outside clicks. Selecting another top-row popover replaces
+the previous one. Outside dismissal preserves the originating press so a closing
+menu cannot reopen itself on mouse-up.
+
+Files, Subagents and Changes have draggable resize handles on their inner edges;
+widths persist between launches. The terminal remains dockable on all four edges.
+Drag a divider down to its minimum, then about 40 pixels further to collapse the
+pane. Collapse clips its full-size contents instead of shrinking the UI itself,
+and can reverse from its current pose. Minimizing a terminal retains its shell.
+
+Pane dragging is separate from window dragging. Empty tab-strip/title chrome
+moves the window; terminal headers and resize handles operate on their pane.
+Native background window dragging is disabled and pane gestures temporarily lock
+window movement, restoring it on release or explicit chrome dragging.
+
 ## Adaptive composer toolbar (0.11.2)
 
 Code and Quick Chat keep their composer controls on one row. As the actual

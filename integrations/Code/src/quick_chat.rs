@@ -619,7 +619,7 @@ mod native_panel {
             };
             let _: () = msg_send![native, setLevel: 3isize]; // NSFloatingWindowLevel
             let _: () = msg_send![native, setCollectionBehavior: (1usize << 0) | (1usize << 8)]; // all Spaces + fullscreen auxiliary
-            let _: () = msg_send![native, setMovableByWindowBackground: Bool::YES];
+            let _: () = msg_send![native, setMovableByWindowBackground: Bool::NO];
             let _: () = msg_send![native, setReleasedWhenClosed: Bool::NO];
             let content: *mut AnyObject = msg_send![native, contentView];
             if !content.is_null() {

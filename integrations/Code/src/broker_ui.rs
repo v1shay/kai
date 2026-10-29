@@ -101,10 +101,13 @@ fn transcript_width(rows: &[(String, bool)]) -> f32 {
 }
 impl Orbit {
     pub(super) fn toggle_children(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.reopen_closing_pane(pane_layout::Pane::Children,cx){return}
+        if self.broker_panel.is_some() {self.close_pane(pane_layout::Pane::Children,cx);return}
         if self.broker_panel.take().is_some() {
             cx.notify();
             return;
         }
+        self.prepare_inspector_switch(pane_layout::Pane::Children);
         self.files_visible = false;
         if let Some(browser) = &self.file_browser {
             browser.update(cx, |browser, cx| browser.set_visible(false, cx));
@@ -386,6 +389,7 @@ impl Orbit {
         cx.notify();
     }
     pub(super) fn select_child(&mut self, provider: AgentKind, id: String, cx: &mut Context<Self>) {
+        self.reopen_closing_pane(pane_layout::Pane::Children,cx);
         let mut offset = 0;
         if let Some(panel) = &mut self.broker_panel {
             offset = panel
@@ -558,7 +562,7 @@ impl Orbit {
             return div().into_any_element();
         };
         div()
-            .w(px(380.))
+            .w_full()
             .h_full()
             .min_h(px(0.))
             .flex_none()
@@ -607,8 +611,7 @@ impl Orbit {
                             .cursor_pointer()
                             .child(icon("close", 14., MUTED))
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.broker_panel = None;
-                                cx.notify();
+                                this.close_pane(pane_layout::Pane::Children,cx);
                             })),
                     ),
             )

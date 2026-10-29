@@ -526,7 +526,8 @@ impl Orbit {
                     .border_color(rgba(0xebebeb1c))
                     .opacity(reveal)
                     .occlude()
-                    .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                    .on_mouse_down_out(cx.listener(|this, event:&MouseDownEvent, _, cx| {
+                        this.dismissed_on_press(control_clicks::Control::FileContext,event.position);
                         this.file_context_picker = None;
                         cx.notify();
                     }))

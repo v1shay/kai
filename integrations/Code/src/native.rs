@@ -16,6 +16,7 @@ mod mac {
     thread_local! {
         // GPUI calls native chrome on the UI thread. WindowId is checked before
         // any Objective-C messages, so opacity-only updates do no native work.
+        static PANEL_DRAG_GUARDS: RefCell<std::collections::HashSet<gpui::WindowId>> = RefCell::new(Default::default());
         static APPLIED_BLUR: RefCell<HashMap<gpui::WindowId, u8>> = RefCell::new(HashMap::new());
         static APPLIED_THEME: RefCell<HashMap<gpui::WindowId, (bool,u32,u32,crate::theme::GlassMaterial,bool)>> = RefCell::new(HashMap::new());
     }
@@ -51,6 +52,7 @@ mod mac {
             let Some(native) = ns_window(window) else {
                 return;
             };
+            let _:()=msg_send![native,setMovableByWindowBackground:Bool::NO];
             for kind in [0usize, 1, 2] {
                 let button: *mut AnyObject = msg_send![native, standardWindowButton: kind];
                 if !button.is_null() {
@@ -155,6 +157,17 @@ mod mac {
     }
     #[cfg(not(test))]
     pub fn verify_glass(window:&mut Window,theme:&crate::theme::Theme)->Result<(),String>{
+        unsafe{
+            let native=ns_window(window).ok_or("No AppKit window")?;
+            let background:Bool=msg_send![native,isMovableByWindowBackground];
+            panel_drag_guard(window,true);
+            let locked:Bool=msg_send![native,isMovable];
+            panel_drag_guard(window,false);
+            let restored:Bool=msg_send![native,isMovable];
+            if background.as_bool()||locked.as_bool()||!restored.as_bool(){return Err("Pane/window drag isolation did not restore its native policy".into())}
+        }
+        eprintln!("Kai native pane drag: background movement disabled, pane gesture locked, chrome movement restored");
+
         let appearance=Appearance::default();let original=theme.resolve(true,appearance);apply_appearance(window,&appearance);apply_theme(window,&original);
         unsafe{let native=ns_window(window).ok_or("No AppKit window")?;let content:*mut AnyObject=msg_send![native,contentView];crate::native_backdrop::inspect(content)?;}
         // Opaque and independent glass combinations must survive round trips.
@@ -224,8 +237,16 @@ mod mac {
             }
         })
     }
+    pub fn panel_drag_guard(window:&Window,active:bool){
+        let id=window.window_handle().window_id();
+        let changed=PANEL_DRAG_GUARDS.with(|guards|{let mut guards=guards.borrow_mut();if active{guards.insert(id)}else{guards.remove(&id)}});
+        if !changed{return}
+        unsafe{if let Some(native)=ns_window(window){let _:()=msg_send![native,setMovable:Bool::new(!active)];}}
+    }
     #[cfg(not(test))]
     pub fn drag(window: &Window) {
+        // Explicit empty-chrome dragging always ends any cancelled pane gesture.
+        panel_drag_guard(window,false);
         // SAFETY: invoked synchronously from a native mouse-down on chrome.
         unsafe {
             let Some(native) = ns_window(window) else {
@@ -335,3 +356,8 @@ pub use mac::verify_glass;
 pub use crate::native_backdrop::liquid_available;
 #[cfg(not(target_os="macos"))]
 pub fn liquid_available()->bool{false}
+
+#[cfg(all(target_os="macos",not(test)))]
+pub use mac::panel_drag_guard;
+#[cfg(any(not(target_os="macos"),test))]
+pub fn panel_drag_guard(_:&gpui::Window,_:bool){}

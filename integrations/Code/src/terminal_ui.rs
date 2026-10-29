@@ -390,6 +390,8 @@ impl Render for TerminalPanel {
             .on_key_down(cx.listener(Self::key))
             .child(
                 div().id("terminal-drag-handle").debug_selector(||"terminal-drag-handle".into()).cursor_move()
+                    .on_mouse_down(MouseButton::Left,|_,window,cx|{crate::native::panel_drag_guard(window,true);cx.stop_propagation();})
+                    .on_mouse_up(MouseButton::Left,|_,window,_|crate::native::panel_drag_guard(window,false))
                     .on_drag(crate::terminal_dock::MoveTerminal,{let weak=cx.weak_entity();move|_,_,_,cx|{let _=weak.update(cx,|_,cx|cx.emit(TerminalEvent::DockStarted));cx.new(|_|crate::terminal_dock::MoveTerminal)}})
                     .h(px(32.))
                     .px_3()

@@ -117,6 +117,7 @@ impl Render for ResizeTerminal {
 impl Orbit {
     pub(super) fn dock_terminal(&mut self, side: Side, cx: &mut Context<Self>) {
         self.terminal_dock.side = side;
+        self.pane_layout.terminal_reposition=Some(Instant::now());
         self.terminal_dock_hover = None;
         self.queue_workspace_save(cx);
         cx.notify();
@@ -132,7 +133,8 @@ impl Orbit {
         }
         let dock = self.terminal_dock.normalized();
         let horizontal = dock.side.horizontal();
-        let extent = dock.extent(window.viewport_size());
+        let extent = self.pane_extent(pane_layout::Pane::Terminal).min(dock.extent(window.viewport_size()));
+        let body_extent = self.pane_body_extent(pane_layout::Pane::Terminal).min(dock.extent(window.viewport_size()));
         let terminal = |this: &Self| {
             div()
                 .debug_selector(|| "terminal-dock".into())
@@ -146,7 +148,12 @@ impl Orbit {
                 .when(!horizontal, |s| {
                     s.h(px(extent)).max_h(relative(0.65)).w_full()
                 })
-                .when_some(this.terminal_panel.clone(), |s, panel| s.child(panel))
+                .on_mouse_down(MouseButton::Left,|_,_,cx|cx.stop_propagation())
+                .when_some(this.terminal_panel.clone(), |s, panel| {
+                    let body=div().when(horizontal,|s|s.w(px(body_extent)).h_full()).when(!horizontal,|s|s.h(px(body_extent)).w_full()).child(panel);
+                    if this.motion&&!native::reduced_motion(){if let Some(at)=this.pane_layout.terminal_reposition.filter(|at|at.elapsed()<Duration::from_millis(280)){return s.child(body.with_animation(SharedString::from(format!("terminal-position-{at:?}")),Animation::new(Duration::from_millis(280)),|s,t|s.opacity(t).relative().top(px(8.*(1.-presentation::spring(t))))))}}
+                    s.child(body)
+                })
                 .child(
                     div()
                         .id("terminal-resize")
@@ -169,6 +176,7 @@ impl Orbit {
                                 .when(dock.side == Side::Bottom, |s| s.top_0())
                         })
                         .hover(|s| s.bg(rgba(0x88bfff88)))
+                        .on_mouse_down(MouseButton::Left,|_,window,cx|{native::panel_drag_guard(window,true);cx.stop_propagation();})
                         .on_drag(ResizeTerminal, |_, _, _, cx| cx.new(|_| ResizeTerminal)),
                 )
         };
@@ -199,7 +207,8 @@ impl Orbit {
                     }
                 }),
             )
-            .on_drop(cx.listener(|this, _: &MoveTerminal, _, cx| {
+            .on_drop(cx.listener(|this, _: &MoveTerminal, window, cx| {
+                native::panel_drag_guard(window,false);
                 if let Some(side) = this.terminal_dock_hover {
                     this.dock_terminal(side, cx);
                 }
@@ -215,16 +224,10 @@ impl Orbit {
                         Side::Top => p.y - b.top(),
                         Side::Bottom => b.bottom() - p.y,
                     });
-                    if side.horizontal() {
-                        this.terminal_dock.width = value
-                    } else {
-                        this.terminal_dock.height = value
-                    };
-                    this.terminal_dock = this.terminal_dock.normalized();
-                    cx.notify();
+                    this.resize_pane(pane_layout::Pane::Terminal,value,cx);
                 }),
             )
-            .on_drop(cx.listener(|this, _: &ResizeTerminal, _, cx| this.queue_workspace_save(cx)))
+            .on_drop(cx.listener(|this, _: &ResizeTerminal, window, cx| {native::panel_drag_guard(window,false);this.queue_workspace_save(cx)}))
             .when_some(highlighted, |s, side| {
                 s.child(
                     canvas(

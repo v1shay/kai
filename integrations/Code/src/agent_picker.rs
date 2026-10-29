@@ -98,7 +98,8 @@ impl Orbit {
     pub(super) fn toggle_picker_from_click(&mut self, effort:bool, position:Point<Pixels>,window:&mut Window,cx:&mut Context<Self>) {
         // Outside-dismiss runs on pointer down, before the trigger's click.
         // Use the surface that owned this press, not its closing animation.
-        if self.picker_at_pointer_down.take()==Some(effort) {
+        self.picker_at_pointer_down=None;
+        if self.consumed_control_click(control_clicks::Control::Model(effort),window) || self.agent_picker.as_ref().is_some_and(|p|!p.closing && p.effort_only==effort) {
             self.dismiss_agent_picker();cx.notify();return;
         }
         self.agent_picker=None;
@@ -328,7 +329,7 @@ impl Orbit {
             return div().into_any_element();
         };
         let reveal = picker.reveal(self.motion);
-        if picker.effort_only{return anchored().position(picker.anchor).snap_to_window_with_margin(px(8.)).child(div().id("thinking-popover").w(px(264.)).p_2().rounded_lg().bg(rgba(appearance::MENU_SURFACE)).border_1().border_color(rgba(0xffffff24)).shadow_lg().opacity(reveal.clamp(0.,1.)).occlude().on_mouse_down_out(cx.listener(|this,_,_,cx|{this.dismiss_agent_picker();cx.notify();})).when_some(self.effort_model_choice(),|s,m|s.child(self.reasoning_slider(m,cx)))).into_any_element()}
+        if picker.effort_only{return anchored().position(picker.anchor).snap_to_window_with_margin(px(8.)).child(div().id("thinking-popover").w(px(264.)).p_2().rounded_lg().bg(rgba(appearance::MENU_SURFACE)).border_1().border_color(rgba(0xffffff24)).shadow_lg().opacity(reveal.clamp(0.,1.)).occlude().on_mouse_down_out(cx.listener(|this,event:&MouseDownEvent,_,cx|{if this.agent_picker.as_ref().is_some_and(|p|!p.closing&&p.effort_only){this.dismissed_on_press(control_clicks::Control::Model(true),event.position);this.dismiss_agent_picker();cx.notify();}})).when_some(self.effort_model_choice(),|s,m|s.child(self.reasoning_slider(m,cx)))).into_any_element()}
 
         let controls = self
             .controls
@@ -369,9 +370,9 @@ impl Orbit {
                     .border_color(rgba(0xebebeb1c))
                     .opacity(reveal.clamp(0., 1.))
                     .occlude()
-                    .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                        this.dismiss_agent_picker();
-                        cx.notify();
+                    .on_mouse_down_out(cx.listener(|this, event:&MouseDownEvent, _, cx| {
+                        if this.agent_picker.as_ref().is_some_and(|p|!p.closing&&!p.effort_only){this.dismissed_on_press(control_clicks::Control::Model(false),event.position);
+                        this.dismiss_agent_picker();cx.notify();}
                     }))
                     .children(self.agents.iter().filter(|a| a.available).map(|agent| {
                         let kind = agent.kind;

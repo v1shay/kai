@@ -554,10 +554,9 @@ impl Orbit {
         cx.notify();
     }
     pub(super) fn toggle_diffs(&mut self, cx: &mut Context<Self>) {
+        if self.reopen_closing_pane(pane_layout::Pane::Changes,cx){return}
         if self.diff_view.is_some() {
-            self.diff_view = None;
-            self.diff_observer = None;
-            self.diff_started = None;
+            self.close_pane(pane_layout::Pane::Changes,cx);
         } else {
             self.open_changes(cx);
         }

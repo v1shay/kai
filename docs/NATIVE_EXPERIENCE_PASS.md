@@ -211,3 +211,32 @@ Signed 0.11.2 startup and native glass/morph probes passed. The fresh-process
 workspace frame measured 288–340 ms; the idle probe measured 1.02% of one core,
 219.1 MiB resident memory and about 12 threads with motion enabled. Installed
 build 35 with the 0.11.1 (34) bundle backed up; the running user session was kept.
+
+## 0.11.3 — control toggles and resizable viewers (October 29)
+
+Shared outside-dismiss press tracking fixes the close/reopen race for Build,
+model/thinking and top-row popovers. Popovers switch exclusively and close on
+outside clicks. Real mouse-event regressions cover repeated toggling, reopening
+through exit animations, switching controls and clicking away, with motion on/off.
+
+Files, Subagents and Changes now have persistent resize handles. Every auxiliary
+pane supports deliberate drag-past-minimum dismissal (40 px overshoot), finite
+220 ms collapse and reversal. Closing clips its full-size content; it does not
+compress the viewer into a thumbnail. Terminal minimization retains its owned
+panel/shell. A token-bound one-shot completion also finishes hidden-window closes
+and rejects late completion after a reopen. Inspector switches interpolate sizes.
+
+Native background window movement is disabled. Pane headers/resize handles
+consume their gesture, pane drags lock native window movement, and empty chrome
+provides explicit window dragging. A cancelled gesture cannot block subsequent
+explicit chrome dragging. Terminal repositioning keeps the same entity and uses
+a finite entrance animation.
+
+Validation: 43 focused interaction/viewer tests passed, including actual resize
+and minimum-overshoot gestures for Files/Subagents/Changes, persisted dimensions,
+terminal retention on four edges, and the existing composer and child-viewer
+regressions. The signed native probe verified background dragging disabled,
+`isMovable` false during a pane gesture, and restored chrome movement. Signed
+startup and continuous morph checks passed. Idle: 1.60% CPU, 223.0 MiB resident
+memory, 11 threads; first workspace frame 257–292 ms in isolated warm-filesystem
+probes. No active user task was stopped to install build 36; 0.11.2 was backed up.

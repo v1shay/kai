@@ -145,6 +145,7 @@ impl Orbit {
                     .border_b_1()
                     .border_color(rgba(0xebebeb12))
                     .when(unified::active(),|s|s.child(canvas(|bounds,_,_|unified::quick_pet_slot(bounds),|_,_,_,_|{}).w(px(30.)).h(px(30.)).flex_none()))
+                    .child(div().w(px(12.)).h(px(36.)).flex_none().on_mouse_down(MouseButton::Left,|_,window,_|native::drag(window)))
                     .child(
                         div()
                             .id("quick-project")
