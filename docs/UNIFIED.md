@@ -1302,3 +1302,75 @@ The native visual check confirmed that both children create visible compositor
 layers. The final signed launch/morph probe passed. Installed **0.9.4 (28)** with
 signature and three-binary hash verification and a timestamped 0.9.3 backup,
 leaving the running conversation open.
+
+## 0.10.0 — shared Fast shimmer, native glass, and Code orchestration
+
+Fast Mode now uses the same finite, distance-staggered tile shimmer as thinking
+intensity, in a yellow palette. The native notch uses the same EffortTileLayer;
+Code uses the same shimmer painter. Hover and selection restart the burst,
+Reduce Motion is respected, and no idle animation timer is introduced.
+
+The workspace backdrop is now an AppKit-owned NSVisualEffectView at full
+opacity, with its own tint sibling beneath GPUI. MonoCode's MIT filter handling
+preserves native Gaussian blur, replaces copies when the radius changes,
+removes native saturation/coloration, and reapplies after AppKit material
+updates. The rectangular WindowServer blur and 1% material alpha are removed.
+GPUI keeps its Metal renderer and input host. Theme composition accounts for
+native tint rather than painting it twice; sidebar and reading surfaces have
+different opacity curves. Opaque, sidebar-only and main-only options remain.
+
+Explicit work folding shares the same reversible disclosure state in Code and
+native commands. The chevron rotates continuously. The extended notch fades
+between its actual visible conversation contents, preserving scroll position;
+the temporary, bounded snapshot never receives mouse input and is retired on
+completion, cancellation, or a chat switch.
+
+Choose Orchestrate in a new composer or run /orchestrate. This creates a new
+Codex orchestrator with a packaged code-orchestrator skill and an opt-in,
+client-handled code_workspace dynamic tool. It can page projects and chat
+metadata, read bounded saved/native chat context, open projects/chats, create
+projects and chats, assign prompts to existing or new worker chats, and wait
+for real outcomes. Worker chats run through the existing durable scheduler,
+checkpoints, native approvals, history and status paths. Existing providers and
+models are preserved. New Codex workers inherit the parent's selected model.
+
+Task permissions are captured from the parent invocation, independently of
+later composer settings. Shared-directory edits serialize; the orchestration
+parent does not occupy a worker's edit slot. Task receipts are explicitly queued
+until actual completion. Returned context is treated as conversation data, and
+the skill requires reading worker results and reporting a brief as each task
+finishes. Restart holds unfinished tasks rather than replaying prompts. No
+external control server, additional renderer or global Codex configuration is
+installed. Creating project folders outside the current workspace requires the
+existing Full access setting.
+
+Validation for this build:
+
+- Rust: 829 application tests passed (17 opt-in integration tests ignored), plus
+  103 benchmark checks passed (2 ignored). Native clipboard/local fixture tests
+  ran with macOS services available; large-history checks used four test threads.
+- Swift: 206 tests executed, one skipped, zero failures. Native mouse/composer
+  harness also verified the shared shimmer and worker completion ownership.
+- Signed-app glass/surface probe: one full-opacity backdrop, independent tint,
+  radius/opacity toggles, pass-through input, continuous morph reversals,
+  extended-notch return, double-Command dismissal and exclusive Quick Chat.
+- Authenticated Codex workflow: discovery of two disposable projects, two worker
+  chats, independently verified file edits, an existing-chat follow-up using the
+  same native thread, saved worker results and the parent completion brief.
+  Navigation traces confirmed the parent remained selected before the explicit
+  open-chat check. Disposable native test chats were archived afterwards.
+
+Startup restoration now runs in the shared chat owner while Code is hidden, so
+opening the workspace cannot replace work begun from the notch. Orchestrated
+worker status/completions carry their parent ID; worker completion updates pets
+and status without adding an independent automatic chat review.
+
+Live microphone orchestration was not exercised in this pass. Realtime launch
+uses the same opt-in tool registry and captured permissions; existing voice
+routing/protocol regressions passed. Dictated text uses the ordinary shared
+composer submission path.
+
+Installed 0.10.0 (31) at the existing `.build/Kai Unified.app` location. The prior
+0.9.6 bundle is preserved as `Kai Unified 0.9.6 backup-20261028-172243.app`.
+Code and both native libraries match the signed staging bundle byte-for-byte.
+The running user session was left open; relaunch loads the new build.

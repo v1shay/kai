@@ -300,6 +300,7 @@ private final class NotchSurfaceHost:NSView {
     private var floatingFocus:String?,floatingReviews=[KaiActiveTask]()
     private var loadedSpritePetID:String?,loadedSprite:CGImage?
     private var assistantPalette=[NSColor]()
+    private let conversationFold=ConversationFoldTransition()
     private var conversationPetID=""
     private var sendingPromptRequestID:String?
     private var expandedChatRequest:(id:String,target:String,name:String)?
@@ -468,6 +469,7 @@ private final class NotchSurfaceHost:NSView {
         miniUI.onModel={ [weak self] model in self?.bridge.send("settings",["model":model]) }
         miniUI.onPermissions={ [weak self] access,approvals in var fields:[String:Any]=[:];if let access{fields["access"]=access};if let approvals{fields["approvals"]=approvals};self?.bridge.send("workspace_permissions",fields) }
         miniUI.onUsageReset={ [weak self] id in self?.bridge.send("usage_reset",["creditId":id]) }
+        miniUI.onOrchestrator={ [weak self] in self?.bridge.send("orchestrator") }
         miniUI.onFast={ [weak self] in self?.bridge.send("fast_mode") }
         miniUI.onUsageRefresh={ [weak self] in self?.bridge.send("usage_refresh") }
         miniUI.onSettings={ [weak self] model, effort in self?.bridge.send("settings",["model":model,"effort":effort]) }
@@ -1798,8 +1800,8 @@ private final class NotchSurfaceHost:NSView {
                 let key=done.id+":"+(done.runId ?? "")
                 guard !reviewedFinished.contains(key) else{continue}
                 confirmedCompletion=true;reviewedFinished.append(key);if reviewedFinished.count>128{reviewedFinished.removeFirst()}
-                let task=previous?.activeTasks.first{$0.id==done.id} ?? KaiActiveTask(id:done.id,name:done.id==state.threadId ? state.threadName:"Completed chat",scene:"success",text:"Completed",runId:done.runId)
-                if !task.id.hasPrefix("child:"),!floatingReviews.contains(where:{$0.id==task.id&&$0.runId==task.runId}){floatingReviews.append(task)}
+                let task=previous?.activeTasks.first{$0.id==done.id} ?? KaiActiveTask(id:done.id,name:done.id==state.threadId ? state.threadName:"Completed chat",scene:"success",text:"Completed",runId:done.runId,parentId:done.parentId)
+                if done.shouldAutoReview,task.parentId == nil,!floatingReviews.contains(where:{$0.id==task.id&&$0.runId==task.runId}){floatingReviews.append(task)}
             }
         }
         let floatingTransition=wasFloating || floatingTasks.tracking
@@ -2165,14 +2167,16 @@ private final class NotchSurfaceHost:NSView {
         }
         let anchor=ConversationViewport.anchor(view,in:scroll)
         historyControl.update(hasMore:latestState?.historyHasMore == true,loading:earlierHistoryRequest != nil || latestState?.historyLoading == true,earlier:latestState?.historyEarlier == true)
-        let followBottom=forceBottom || ConversationViewport.isAtBottom(view,in:scroll)
+        let folding=conversationFold.pending
+        let followBottom = !folding && (forceBottom || ConversationViewport.isAtBottom(view,in:scroll))
         let changed=conversationRenderer.render(history,threadID:latestState?.threadId,in:view,scroll:scroll,renderMath:renderMath,palette:assistantPalette,anchorCharacter:anchor?.character,collectRevealRanges:morphingText && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
         guard conversationRenderer.didChange || forceBottom else{return}
         ConversationViewport.layout(view,in:scroll)
         if preserveViewport {ConversationViewport.revealOlderText(view,characters:conversationRenderer.prependedCharacterCount)}
-        if !forceBottom,let anchor,(preserveViewport || !followBottom) {
+        if !forceBottom,let anchor,(preserveViewport || !followBottom || folding) {
             ConversationViewport.restore(anchor,adding:(conversationRenderer.mappedAnchorCharacter ?? anchor.character)-anchor.character,text:view,scroll:scroll)
         } else if changed && followBottom || forceBottom {scrollConversationToBottom(threadID:latestState?.threadId)}
+        if folding{conversationFold.finish(in:scroll,threadID:latestState?.threadId)}
         if morphingText,!preserveViewport,!deferReveal{
             textReveal.reveal(conversationRenderer.revealRanges,in:view,loading:conversationRenderer.didChangeThread)
         }
@@ -2213,7 +2217,7 @@ private final class NotchSurfaceHost:NSView {
         guard latestState?.threadId == threadID,let view=conversationText,let scroll=conversationScroll else{return}
         ConversationViewport.bottom(view,in:scroll)
     }
-    func textView(_ textView:NSTextView,clickedOnLink link:Any,at charIndex:Int)->Bool{guard let url=(link as? URL) ?? (link as? String).flatMap(URL.init(string:)) else{return false};if url.scheme == "kai-interaction",url.host == "details",let id=URLComponents(url:url,resolvingAgainstBaseURL:false)?.queryItems?.first(where:{$0.name == "id"})?.value,latestState?.history.contains(where:{$0.detailId == id}) == true{bridge.send("interaction_details",["id":id]);if !id.hasPrefix("work-"){expandWorkspace()};return true};if url.scheme == "kai-file-action",let action=url.host,let path=URLComponents(url:url,resolvingAgainstBaseURL:false)?.queryItems?.first(where:{$0.name == "path"})?.value,path.hasPrefix("/"){fileActions.perform(action,url:URL(fileURLWithPath:path));return true};if url.scheme == "kai-reply",let answer=URLComponents(url:url,resolvingAgainstBaseURL:false)?.queryItems?.first(where:{$0.name == "answer"})?.value{NSPasteboard.general.clearContents();NSPasteboard.general.setString(answer,forType:.string);return true};if url.isFileURL{miniUI.previewFile(url);return true};guard ["http","https"].contains(url.scheme?.lowercased() ?? "") else{return false};NSWorkspace.shared.open(url);return true}
+    func textView(_ textView:NSTextView,clickedOnLink link:Any,at charIndex:Int)->Bool{guard let url=(link as? URL) ?? (link as? String).flatMap(URL.init(string:)) else{return false};if url.scheme == "kai-interaction",url.host == "details",let id=URLComponents(url:url,resolvingAgainstBaseURL:false)?.queryItems?.first(where:{$0.name == "id"})?.value,latestState?.history.contains(where:{$0.detailId == id}) == true{if id.hasPrefix("work-"),let scroll=conversationScroll{conversationFold.begin(in:scroll,threadID:latestState?.threadId)};bridge.send("interaction_details",["id":id]);if !id.hasPrefix("work-"){expandWorkspace()};return true};if url.scheme == "kai-file-action",let action=url.host,let path=URLComponents(url:url,resolvingAgainstBaseURL:false)?.queryItems?.first(where:{$0.name == "path"})?.value,path.hasPrefix("/"){fileActions.perform(action,url:URL(fileURLWithPath:path));return true};if url.scheme == "kai-reply",let answer=URLComponents(url:url,resolvingAgainstBaseURL:false)?.queryItems?.first(where:{$0.name == "answer"})?.value{NSPasteboard.general.clearContents();NSPasteboard.general.setString(answer,forType:.string);return true};if url.isFileURL{miniUI.previewFile(url);return true};guard ["http","https"].contains(url.scheme?.lowercased() ?? "") else{return false};NSWorkspace.shared.open(url);return true}
 
     private func beginDictation(trigger:DictationTrigger){
         revealNotchForInput()

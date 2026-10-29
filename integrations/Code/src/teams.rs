@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, atomic::AtomicBool};
 
 pub const MAX_TEAMS: usize = 8;
+pub const MAX_ORCHESTRATED_TEAMS:usize=64;
 pub const MAX_MEMBERS: usize = 4;
 pub const MAX_TASK_BYTES: usize = 4096;
 
@@ -49,6 +50,10 @@ pub struct Member {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Team {
+    #[serde(default)]
+    pub owner:Option<String>,
+    #[serde(default)]
+    pub permissions:Option<(crate::runtime::CodexAccess,crate::runtime::CodexApprovals)>,
     pub id: String,
     pub title: String,
     pub project: PathBuf,
@@ -64,14 +69,15 @@ impl Team {
             && self.title.len() <= 256
             && self.project.is_absolute()
             && self.project.as_os_str().len() <= 4096
-            && (2..=MAX_MEMBERS).contains(&self.members.len())
+            && (if self.owner.is_some(){1}else{2}..=MAX_MEMBERS).contains(&self.members.len())
+            && self.owner.as_ref().is_none_or(|id|uuid::Uuid::parse_str(id).is_ok())
             && self.context.len() <= crate::context_refs::MAX_REFERENCES
             && self
                 .context
                 .iter()
                 .all(crate::context_refs::Reference::valid)
             && self.members.iter().all(|m| {
-                uuid::Uuid::parse_str(&m.session).is_ok()
+                (uuid::Uuid::parse_str(&m.session).is_ok()||self.owner.is_some()&&!m.session.is_empty()&&m.session.len()<=512&&!m.session.chars().any(char::is_control))
                     && !m.task.trim().is_empty()
                     && m.task.len() <= MAX_TASK_BYTES
                     && m.model.as_ref().is_none_or(|s| s.len() <= 256)
@@ -100,7 +106,7 @@ mod tests {
     #[test]
     fn restart_never_replays_work_and_terminal_states_stay_terminal() {
         let mut team = Team {
-            id: uuid::Uuid::new_v4().to_string(),
+            owner:None, permissions:None, id: uuid::Uuid::new_v4().to_string(),
             title: "Team".into(),
             project: "/tmp/project".into(),
             allow_edits: false,

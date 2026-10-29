@@ -27,7 +27,7 @@ fn index_at(bounds:Bounds<Pixels>,position:Point<Pixels>,count:usize)->Option<us
     Some((fraction*(count.saturating_sub(1))as f32).round()as usize)
 }
 // The same finite Monocode burst paints the selected chip and preview option.
-fn shimmer_tiles(elapsed:Option<f32>,color:u32,motion:bool)->AnyElement{
+pub(super) fn shimmer_tiles(elapsed:Option<f32>,color:u32,motion:bool)->AnyElement{
     canvas(|bounds,_,_|bounds,move|bounds,_,window,_|{
         if let Some(t)=elapsed.filter(|t|*t<5.){let fade=if motion{((5.-t)/0.4).clamp(0.,1.)}else{0.7};
             for n in 0..160{let col=n%32;let row=n/32;let distance=(((col as f32-15.5)/15.5).powi(2)+((row as f32-2.)/2.).powi(2)).sqrt();let phase=((t-distance*0.42).max(0.)%1.4)/1.4;let filled=(n*73+n*n*19+23)%101<65;let pulse=if !motion{0.5}else if phase<0.26{phase/0.26}else if phase<0.52{1.-(phase-0.26)/0.26*0.82}else{0.18*(1.-(phase-0.52)/0.48)};let feather=((col as f32+0.5)/4.).min((31.5-col as f32)/4.).min(1.)*if row==0||row==4{0.2}else if row==1||row==3{0.65}else{1.};let alpha=(((if filled{pulse}else{0.09})*fade*feather)*210.)as u32;let w=bounds.size.width/32.;let h=bounds.size.height/5.;window.paint_quad(fill(Bounds::new(bounds.origin+point(w*col as f32,h*row as f32),size((w-px(0.7)).max(px(0.)),(h-px(0.7)).max(px(0.)))),rgba((color<<8)|alpha)));}
@@ -41,9 +41,19 @@ impl Orbit{
     pub(super) fn fast_enabled(&self)->bool{self.reasoning_efforts.get("codex:service-tier").is_some_and(|v|v=="fast")}
     pub(super) fn request_service_tier(&self)->Option<String>{if self.agent!=AgentKind::Codex{return None}Some(if self.fast_enabled(){self.controls.get("codex").and_then(|(_,c)|self.request_model().or_else(||self.effective_model_settings().0).and_then(|m|c.defaults.fast_models.get(&m).cloned())).unwrap_or_else(||"default".into())}else{"default".into()})}
     pub(super) fn toggle_fast(&mut self,cx:&mut Context<Self>){if self.fast_supported(){let next=if self.fast_enabled(){"default"}else{"fast"};self.reasoning_efforts.insert("codex:service-tier".into(),next.into());self.fast_transition=Some(Instant::now());self.queue_workspace_save(cx);cx.notify();}}
-    pub(super) fn fast_button(&self,cx:&Context<Self>)->AnyElement{
-        let on=self.fast_enabled();let phase=self.fast_transition.filter(|_|self.motion).map(|at|(at.elapsed().as_secs_f32()/0.6).min(1.)).unwrap_or(1.);let pulse=(phase*std::f32::consts::PI).sin();
-        div().id("fast-mode").debug_selector(||"fast-mode".into()).h(px(26.)).w(px(28.)).rounded_md().flex().items_center().justify_center().cursor_pointer().bg(linear_gradient(45.,linear_color_stop(rgba(if on{0xffd26b38}else{0xffffff08}),0.),linear_color_stop(rgba(if on{0xff883314}else{0xffffff08}),1.))).border_1().border_color(rgba(if on{0xffda6b60}else{0xffffff08})).child(icon("bolt",15.+4.*pulse,if on{0xffdf85}else{MUTED}).with_transformation(Transformation::rotate(radians(pulse*0.18)))).on_click(cx.listener(|this,_,_,cx|this.toggle_fast(cx))).into_any_element()
+    pub(super) fn fast_button(&self,window:&Window,cx:&Context<Self>)->AnyElement{
+        let on=self.fast_enabled();let color=if on{0xffd968}else{MUTED};
+        let chip=div().id("fast-mode").debug_selector(||"fast-mode".into()).h(px(26.)).w(px(28.)).relative().overflow_hidden().rounded_md().flex().items_center().justify_center().cursor_pointer()
+            .bg(linear_gradient(90.,linear_color_stop(rgba(if on{0xffee9824}else{0xffffff08}),0.),linear_color_stop(rgba(if on{0xffbd3510}else{0xffffff08}),1.)))
+            .on_hover(cx.listener(|this,hover:&bool,_,cx|{if *hover{this.fast_transition=Some(Instant::now());cx.notify();}}))
+            .on_click(cx.listener(|this,_,_,cx|this.toggle_fast(cx)));
+        let bolt=move ||div().relative().child(icon("bolt",15.,color));
+        if self.motion && !native::reduced_motion() && window.is_window_active(){
+            // Same five-second, distance-staggered tile burst as intensity.
+            // Hover/toggle changes the animation identity; ordinary redraws do not.
+            let key=format!("fast-chip-{on}-{}",self.fast_transition.map(|at|format!("{at:?}")).unwrap_or_default());
+            chip.with_animation(SharedString::from(key),Animation::new(Duration::from_secs(5)),move|chip,t|chip.child(shimmer_tiles(Some(t*5.),0xffd968,true)).child(bolt())).into_any_element()
+        }else{chip.child(shimmer_tiles(Some(0.),0xffd968,false)).child(bolt()).into_any_element()}
     }
     pub(super) fn thinking_chip(&self,window:&Window,cx:&Context<Self>)->AnyElement{
         let Some(model)=self.effort_model_choice().filter(|m|!m.reasoning_efforts.is_empty())else{return div().into_any_element()};

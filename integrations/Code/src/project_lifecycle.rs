@@ -28,7 +28,7 @@ fn folder_name(value: &str) -> Result<&str, String> {
     }
     Ok(value)
 }
-fn create_folder(parent: &std::path::Path, name: &str) -> Result<Project, String> {
+pub(super) fn create_folder(parent: &std::path::Path, name: &str) -> Result<Project, String> {
     let name = folder_name(name)?;
     // create_dir deliberately refuses existing files, folders and symlinks.
     let path = parent.join(name);

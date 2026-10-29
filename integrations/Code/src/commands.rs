@@ -34,6 +34,7 @@ pub enum Action {
     Help,
     Handoff,
     Delegate,
+    Orchestrate,
     Compact,
     Steer,
     Terminal,
@@ -115,6 +116,7 @@ const BASE: &[(&str, &str, Action)] = &[
         "Preview redoing this chat's latest undone prompt",
         Action::Redo,
     ),
+    ("orchestrate", "Start a Codex workspace orchestrator", Action::Orchestrate),
     ("new", "Start a new conversation", Action::New),
     (
         "clear",
@@ -485,8 +487,9 @@ mod tests {
             let commands = catalog(agent);
             let names: std::collections::HashSet<_> = commands.iter().map(|c| c.name).collect();
             assert_eq!(names.len(), commands.len());
-            // Includes the three demand-driven native workspace controls.
-            assert!(commands.len() <= 46);
+            // Includes the explicit workspace orchestrator command.
+            assert!(commands.len() <= 47);
+            assert_eq!(lookup(agent,"orchestrate").unwrap().action,Action::Orchestrate);
             assert_eq!(
                 lookup(agent, "attach-chat").unwrap().action,
                 Action::ChatContext

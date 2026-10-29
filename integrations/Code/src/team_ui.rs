@@ -46,7 +46,7 @@ impl Orbit {
         cx.notify();
     }
     fn create_team(&mut self, cx: &mut Context<Self>) {
-        if self.quit_pending || self.teams.len() >= teams::MAX_TEAMS || self.starting_current() {
+        if self.quit_pending || self.teams.iter().filter(|t|t.owner.is_none()).count() >= teams::MAX_TEAMS || self.starting_current() {
             return;
         }
         if self
@@ -78,7 +78,7 @@ impl Orbit {
             })
             .collect();
         let team = teams::Team {
-            id: uuid::Uuid::new_v4().to_string(),
+            owner:None, permissions:Some((self.codex_access,self.codex_approvals)), id: uuid::Uuid::new_v4().to_string(),
             title: "Agent team".into(),
             project: self
                 .execution_root()
@@ -151,7 +151,7 @@ impl Orbit {
             });
             let running_overlap = self.runs.values().any(|r| {
                 r.retry.as_ref().is_some_and(|request| {
-                    teams::overlapping(&request.project, &team.project)
+                    !request.orchestrator && teams::overlapping(&request.project, &team.project)
                         && (team.allow_edits || request.allow_edits)
                 })
             });
@@ -228,18 +228,18 @@ impl Orbit {
         } else {
             prompt
         };
-        let request = RunRequest { service_tier:None, reasoning_effort:None,
+        let request = RunRequest { orchestrator:false, service_tier:None, reasoning_effort:None,
             agent: member.agent,
             executable,
             project: team.project.clone(),
             prompt,
             resume_id: session.external_id.clone(),
-            fork_session: false,
+            fork_session: imported_codex_needs_fork(&session),
             model: member.model.clone(),
             images: Vec::new(),
             allow_edits: team.allow_edits,
-            codex_approvals: self.codex_approvals,
-            codex_access: self.codex_access,
+            codex_approvals: team.permissions.map(|p|p.1).unwrap_or(self.codex_approvals),
+            codex_access: team.permissions.map(|p|p.0).unwrap_or(self.codex_access),
             trust_workspace: self
                 .trusted_workspaces
                 .contains(&(member.agent, team.project.clone())),
@@ -737,7 +737,7 @@ mod tests {
     }
     fn team(project: PathBuf) -> teams::Team {
         teams::Team {
-            id: uuid::Uuid::new_v4().to_string(),
+            owner:None, permissions:None, id: uuid::Uuid::new_v4().to_string(),
             title: "Fixture team".into(),
             project,
             allow_edits: false,

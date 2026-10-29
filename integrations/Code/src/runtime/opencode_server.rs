@@ -2444,7 +2444,7 @@ server.serve_forever()
    event('session.status',{'sessionID':'ses_child','status':{'type':'idle'}});return
   if path=='/permission/per_fixture/reply':"#);
         let (root, executable) = fixture(&source);
-        let mut request = RunRequest { service_tier:None, reasoning_effort:None,
+        let mut request = RunRequest { orchestrator:false, service_tier:None, reasoning_effort:None,
             agent: crate::discovery::AgentKind::OpenCode,
             executable,
             project: root.clone(),
@@ -2603,7 +2603,7 @@ server.serve_forever()
     #[test]
     fn native_server_routes_live_permissions_questions_and_child_progress() {
         let (root, executable) = fixture(NATIVE_FIXTURE);
-        let request = RunRequest { service_tier:None, reasoning_effort:None,
+        let request = RunRequest { orchestrator:false, service_tier:None, reasoning_effort:None,
             agent: crate::discovery::AgentKind::OpenCode,
             executable,
             project: root.clone(),
@@ -2684,7 +2684,7 @@ server.serve_forever()
     #[test]
     fn native_commands_use_the_command_endpoint_and_keep_approvals_live() {
         let (root, executable) = fixture(NATIVE_FIXTURE);
-        let request = RunRequest { service_tier:None, reasoning_effort:None,
+        let request = RunRequest { orchestrator:false, service_tier:None, reasoning_effort:None,
             agent: crate::discovery::AgentKind::OpenCode,
             executable,
             project: root.clone(),
@@ -2732,7 +2732,7 @@ server.serve_forever()
     #[test]
     fn dropping_the_run_sends_native_abort_before_reaping_the_server() {
         let (root, executable) = fixture(NATIVE_FIXTURE);
-        let request = RunRequest { service_tier:None, reasoning_effort:None,
+        let request = RunRequest { orchestrator:false, service_tier:None, reasoning_effort:None,
             agent: crate::discovery::AgentKind::OpenCode,
             executable,
             project: root.clone(),
@@ -2772,7 +2772,7 @@ server.serve_forever()
     #[test]
     fn oversized_command_rest_response_waits_for_every_late_sse_delta() {
         let (root, executable) = fixture(NATIVE_FIXTURE);
-        let request = RunRequest { service_tier:None, reasoning_effort:None,
+        let request = RunRequest { orchestrator:false, service_tier:None, reasoning_effort:None,
             agent: crate::discovery::AgentKind::OpenCode,
             executable,
             project: root.clone(),
@@ -2811,7 +2811,7 @@ server.serve_forever()
     #[test]
     fn external_resume_forks_before_any_permission_changes() {
         let (root, executable) = fixture(NATIVE_FIXTURE);
-        let request = RunRequest { service_tier:None, reasoning_effort:None,
+        let request = RunRequest { orchestrator:false, service_tier:None, reasoning_effort:None,
             agent: crate::discovery::AgentKind::OpenCode,
             executable,
             project: root.clone(),
@@ -3048,7 +3048,7 @@ server.serve_forever()
             .replace("  if path=='/command':", "  if path=='/provider':return self.sendjson({'all':[{'id':'openai','models':{'gpt-6.1-sol':{'name':'Sol','variants':{'fast':{'reasoningEffort':'low'},'deep':{'reasoningEffort':'high'}}}}}]})\n  if path=='/command':")
             .replace("   assert body['parts'][0]['text']=='test native interactions';", "   assert body['variant']=='deep' and body['model']=={'providerID':'openai','modelID':'gpt-6.1-sol'}\n   assert body['parts'][0]['text']=='test native interactions';");
         let (root,executable)=fixture(&script);
-        let handle=launch(RunRequest{service_tier:None,agent:AgentKind::OpenCode,executable,project:root.clone(),prompt:"test native interactions".into(),resume_id:None,fork_session:false,model:Some("openai/gpt-6.1-sol".into()),reasoning_effort:Some("deep".into()),images:vec![],allow_edits:true,trust_workspace:false,codex_access:Default::default(),codex_approvals:Default::default()}).unwrap();
+        let handle=launch(RunRequest{orchestrator:false, service_tier:None,agent:AgentKind::OpenCode,executable,project:root.clone(),prompt:"test native interactions".into(),resume_id:None,fork_session:false,model:Some("openai/gpt-6.1-sol".into()),reasoning_effort:Some("deep".into()),images:vec![],allow_edits:true,trust_workspace:false,codex_access:Default::default(),codex_approvals:Default::default()}).unwrap();
         let mut catalog=false;let mut approval=false;let mut question=false;
         while let Ok(event)=handle.events.recv_timeout(Duration::from_secs(5)){
             match event{

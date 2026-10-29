@@ -379,8 +379,9 @@ impl Orbit {
                                                 },
                                             )),
                                     )
+                            .child(self.orchestrator_chip(window,cx))
                             .child(self.thinking_chip(window,cx))
-                            .when(self.fast_supported(),|s|s.child(self.fast_button(cx)))
+                            .when(self.fast_supported(),|s|s.child(self.fast_button(window,cx)))
                                     .child(
                                         div()
                                             .id("quick-permissions")

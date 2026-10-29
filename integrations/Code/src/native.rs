@@ -11,46 +11,14 @@ mod mac {
     };
     use objc2_foundation::NSString;
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-    use std::{cell::RefCell, collections::HashMap, sync::OnceLock};
+    use std::{cell::RefCell, collections::HashMap};
 
     thread_local! {
         // GPUI calls native chrome on the UI thread. WindowId is checked before
         // any Objective-C messages, so opacity-only updates do no native work.
         static APPLIED_BLUR: RefCell<HashMap<gpui::WindowId, u8>> = RefCell::new(HashMap::new());
-        static APPLIED_THEME: RefCell<HashMap<gpui::WindowId, (bool,u32)>> = RefCell::new(HashMap::new());
+        static APPLIED_THEME: RefCell<HashMap<gpui::WindowId, (bool,u32,u32)>> = RefCell::new(HashMap::new());
     }
-    struct BlurFunctions {
-        set: unsafe extern "C" fn(usize, i32, i32) -> i32,
-        connection: unsafe extern "C" fn() -> usize,
-    }
-    fn blur_functions() -> Option<&'static BlurFunctions> {
-        static FUNCTIONS: OnceLock<Option<BlurFunctions>> = OnceLock::new();
-        FUNCTIONS
-            .get_or_init(|| unsafe {
-                let blur = libc::dlsym(
-                    libc::RTLD_DEFAULT,
-                    c"CGSSetWindowBackgroundBlurRadius".as_ptr(),
-                );
-                let connection = libc::dlsym(libc::RTLD_DEFAULT, c"CGSMainConnectionID".as_ptr());
-                if blur.is_null() || connection.is_null() {
-                    return None;
-                }
-                // Optional symbols use the same signatures as Monocode's macOS
-                // adaptation. AppKit's semantic material remains the fallback.
-                Some(BlurFunctions {
-                    set: std::mem::transmute::<
-                        *mut libc::c_void,
-                        unsafe extern "C" fn(usize, i32, i32) -> i32,
-                    >(blur),
-                    connection: std::mem::transmute::<
-                        *mut libc::c_void,
-                        unsafe extern "C" fn() -> usize,
-                    >(connection),
-                })
-            })
-            .as_ref()
-    }
-
     unsafe fn ns_window(window: &Window) -> Option<*mut AnyObject> {
         let RawWindowHandle::AppKit(handle) = HasWindowHandle::window_handle(window).ok()?.as_raw()
         else {
@@ -122,45 +90,16 @@ mod mac {
             let Some(native) = ns_window(window) else {
                 return;
             };
-            let number: isize = msg_send![native, windowNumber];
-            if number <= 0 {
-                return; // A not-yet-attached native window remains retryable.
-            }
-            APPLIED_BLUR.with(|cache| {
-                let mut cache = cache.borrow_mut();
-                if cache.len() >= 32 {
-                    cache.clear();
-                }
-                cache.insert(id, radius);
-            });
-            let custom_blur = blur_functions().is_some_and(|functions| {
-                (functions.set)((functions.connection)(), number as i32, radius as i32) == 0
-            });
-            let content: *mut AnyObject = msg_send![native, contentView];
-            let Some(effect_class) = AnyClass::get(c"NSVisualEffectView") else {
-                return;
-            };
-            if content.is_null() {
-                return;
-            }
-            let views: *mut AnyObject = msg_send![content, subviews];
-            let count: usize = msg_send![views, count];
-            for ix in 0..count {
-                let view: *mut AnyObject = msg_send![views, objectAtIndex: ix];
-                let is_effect: Bool = msg_send![view, isKindOfClass: effect_class];
-                if is_effect.as_bool() {
-                    // Keep semantic material fully intact if custom blur is
-                    // unavailable. Restore it if a later native call fails.
-                    let _: () =
-                        msg_send![view, setAlphaValue: if custom_blur { 0.01f64 } else { 1.0f64 }];
-                }
-            }
+            let content: *mut AnyObject=msg_send![native,contentView];
+            if content.is_null(){return}
+            crate::native_backdrop::set_radius(content,radius);
+            APPLIED_BLUR.with(|cache|{let mut cache=cache.borrow_mut();if cache.len()>=32{cache.clear()}cache.insert(id,radius);});
         }
     }
     #[cfg(not(test))]
     pub fn apply_theme(window: &mut Window, theme: &crate::theme::ResolvedTheme) {
         let id = gpui::Window::window_handle(window).window_id();
-        let signature = (theme.native_transparency, theme.background);
+        let signature = (theme.native_transparency, theme.background,theme.backdrop_rgba());
         if APPLIED_THEME.with(|cache| cache.borrow().get(&id) == Some(&signature)) {
             return;
         }
@@ -172,7 +111,7 @@ mod mac {
             cache.insert(id, signature);
         });
         window.set_background_appearance(if theme.native_transparency {
-            gpui::WindowBackgroundAppearance::Blurred
+            gpui::WindowBackgroundAppearance::Transparent
         } else {
             gpui::WindowBackgroundAppearance::Opaque
         });
@@ -196,18 +135,7 @@ mod mac {
             if content.is_null() {
                 return;
             }
-            let views: *mut AnyObject = msg_send![content, subviews];
-            let count: usize = msg_send![views, count];
-            if let Some(effect_class) = AnyClass::get(c"NSVisualEffectView") {
-                for ix in 0..count {
-                    let view: *mut AnyObject = msg_send![views, objectAtIndex: ix];
-                    let effect: Bool = msg_send![view, isKindOfClass: effect_class];
-                    if effect.as_bool() {
-                        let _: () =
-                            msg_send![view, setHidden: Bool::new(!theme.native_transparency)];
-                    }
-                }
-            }
+            crate::native_backdrop::install(content,theme.native_transparency,theme.backdrop_rgba());
         }
     }
     pub fn show_window(window: &gpui::Window) {
@@ -223,6 +151,18 @@ mod mac {
                 let _: () = msg_send![native,orderOut:std::ptr::null::<AnyObject>()];
             }
         }
+    }
+    #[cfg(not(test))]
+    pub fn verify_glass(window:&mut Window,theme:&crate::theme::Theme)->Result<(),String>{
+        let appearance=Appearance::default();let original=theme.resolve(true,appearance);apply_appearance(window,&appearance);apply_theme(window,&original);
+        unsafe{let native=ns_window(window).ok_or("No AppKit window")?;let content:*mut AnyObject=msg_send![native,contentView];crate::native_backdrop::inspect(content)?;}
+        // Opaque and independent glass combinations must survive round trips.
+        for (transparency,sidebar,main) in [(false,false,false),(true,true,false),(true,false,true),(true,true,true)]{
+            let next=crate::theme::Theme{transparency,sidebar_glass:sidebar,main_glass:main,..theme.clone()}.resolve(true,appearance);apply_theme(window,&next);
+            if transparency{unsafe{let native=ns_window(window).ok_or("No AppKit window")?;let content:*mut AnyObject=msg_send![native,contentView];crate::native_backdrop::inspect(content)?;}}
+        }
+        for radius in [0,12,48,24]{apply_appearance(window,&Appearance{blur_radius:radius,..appearance});}
+        apply_theme(window,&original);eprintln!("Kai native glass: one full-opacity material, independent tint, opaque/sidebar/main round trips, and radius changes passed");Ok(())
     }
     fn set_application_icon() {
         // Set the running app's Dock icon explicitly: replacing the ICNS on
@@ -386,3 +326,6 @@ mod citation_tests {
         );
     }
 }
+
+#[cfg(all(target_os="macos",not(test)))]
+pub use mac::verify_glass;

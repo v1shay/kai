@@ -67,6 +67,7 @@ pub enum Event {
     Error(String),
 }
 enum Command {
+    WorkspaceQuery(serde_json::Value,async_channel::Sender<serde_json::Value>),
     PauseLiveHistory(String,u64,uuid::Uuid),
     ResumeLiveHistory(String,u64,u64,uuid::Uuid),
     LoadModel(String, u64),
@@ -247,6 +248,7 @@ impl Engine {
                         _ => RequestScope::General,
                     };
                     let result: anyhow::Result<Option<Event>> = (|| match command {
+                        Command::WorkspaceQuery(args,reply)=>{let result=workspace_query(&store,&home,&args).unwrap_or_else(|e|serde_json::json!({"error":e.to_string()}));let _=reply.try_send(result);Ok(None)},
                         Command::PauseLiveHistory(id,generation,epoch)=>{
                             if let Some(position)=histories.iter().position(|(owner,state)|owner==&id&&state.generation==generation){if let Some((_,state))=histories.remove(position){paused_live_history=Some((id,epoch,state));}}Ok(None)
                         }
@@ -688,6 +690,7 @@ impl Engine {
             .expect("start state worker");
         Self { tx, events, latest }
     }
+    pub fn workspace_query(&self,args:serde_json::Value)->async_channel::Receiver<serde_json::Value>{let(tx,rx)=async_channel::bounded(1);let _=self.tx.send(Command::WorkspaceQuery(args,tx));rx}
     pub fn load(&self, session: SessionSummary, generation: u64) {
         self.load_history(session, generation, 200);
     }
@@ -3949,4 +3952,27 @@ mod tests {
         drop(store);
         fs::remove_dir_all(root).unwrap();
     }
+}
+
+fn workspace_query(store:&Store,home:&Path,args:&serde_json::Value)->anyhow::Result<serde_json::Value>{
+ use serde_json::json;use anyhow::Context;
+ match args["action"].as_str().unwrap_or(""){
+  "list_chats"=>{
+   let project=args["project"].as_str().map(PathBuf::from);if let Some(p)=&project{store.upsert_discovered_sessions(&discovery::discover_project(home,p))?;}
+   let offset=args["offset"].as_u64().unwrap_or(0).min(1_000_000)as usize;
+   let rows=store.workspace_sessions(project.as_deref(),args["query"].as_str().unwrap_or(""),offset)?;
+   let next=(rows.len()==100).then_some(offset+100);Ok(json!({"chats":rows,"next_offset":next}))
+  }
+  "read_chat"|"resolve_chat"=>{
+   let id=args["chat_id"].as_str().context("Missing chat_id")?;
+   let session=store.session(id)?.context("No Code chat has this exact ID; list chats first")?;
+   if args["action"]=="resolve_chat"{return Ok(json!({"session":session,"model":store.session_model(id)?}))}
+   let session=resolve_history_session(home,store,session)?;
+   let mut history=HistoryState::new(&session,0,store)?;let messages=history.next(store,&session,100)?;
+   let parent=store.session_handoff(id)?;let objective=store.first_saved_request(id)?;
+   let packet=crate::handoff::Packet::build(&session,parent.as_ref(),objective.as_deref(),messages.into_iter().map(|m|crate::handoff::ContextMessage{role:m.role,text:m.text}).collect(),history.has_older(),false);
+   Ok(json!({"session":session,"model":store.session_model(id)?,"context":packet,"content_is_conversation_data":true}))
+  }
+  _=>anyhow::bail!("Unknown workspace history query")
+ }
 }

@@ -22,6 +22,13 @@ final class ConversationViewportTests:XCTestCase {
             XCTAssertEqual(scroll.contentView.bounds.maxY,text.frame.height,accuracy:1)
         }
     }
+    @MainActor func testExplicitFoldSnapshotNeverCapturesInputAndCancelsOnChatSwitch(){
+        _=NSApplication.shared
+        let host=NSView(frame:CGRect(x:0,y:0,width:360,height:300)),scroll=ConversationScrollView(frame:CGRect(x:0,y:0,width:360,height:300)),text=ConversationTextView();host.wantsLayer=true;host.addSubview(scroll);scroll.documentView=text;text.string="A message and work details";ConversationViewport.layout(text,in:scroll)
+        let transition=ConversationFoldTransition();transition.begin(in:scroll,threadID:"one")
+        if transition.pending{XCTAssertEqual(transition.threadID,"one");XCTAssertNil(host.subviews.last?.hitTest(.zero));transition.begin(in:scroll,threadID:"two");transition.finish(in:scroll,threadID:"another");XCTAssertFalse(transition.pending);XCTAssertEqual(host.subviews.count,1)}
+        transition.cancel();XCTAssertFalse(transition.pending)
+    }
     @MainActor func testPagedHistoryCanReturnToLatestAtTheOldestBoundary(){
         _=NSApplication.shared
         let view=ConversationHistoryControl(frame:CGRect(x:0,y:0,width:280,height:24));view.update(hasMore:false,loading:false,earlier:true);view.layoutSubtreeIfNeeded()

@@ -65,11 +65,17 @@ impl Orbit {
     pub(super) fn work_reveal(&self,ix:usize)->f32{
         self.work_animations.get(&ix).map(|(at,open,from)|disclosure_fraction(if self.motion{at.elapsed().as_secs_f32()/0.32}else{1.},*open,*from)).unwrap_or(if self.expanded_work.contains(&ix){1.}else{0.})
     }
+    pub(super) fn toggle_work(&mut self,ix:usize,cx:&mut Context<Self>){
+        let from=self.work_reveal(ix);let open=if self.expanded_work.remove(&ix){false}else{self.expanded_work.insert(ix);true};
+        self.work_animations.insert(ix,(Instant::now(),open,from));self.flow_revision=self.flow_revision.wrapping_add(1);
+        let anchor=self.list.logical_scroll_top();self.list.reset(self.rows.len());let target=self.flow_index.anchor(anchor.item_ix,&self.expanded_work);
+        self.list.scroll_to(ListOffset{item_ix:target,offset_in_item:if target==anchor.item_ix{anchor.offset_in_item}else{px(0.)}});cx.notify();
+    }
     pub(super) fn work_summary(&self,ix:usize,cx:&Context<Self>)->AnyElement{
         let label=self.row_timing(ix).and_then(|t|t.elapsed_ms).map(|ms|format!("Worked for {}",chat_timing::duration(ms))).unwrap_or_else(||"Worked".into());
         div().id(("work-summary",ix)).debug_selector(move||format!("work-summary-{ix}")).flex().items_center().gap_2().py_2().text_size(theme::ui_px(11.)).text_color(rgb(MUTED)).cursor_pointer()
-            .child(icon(if self.expanded_work.contains(&ix){"chevron-down"}else{"chevron-right"},12.,MUTED)).child(label)
-            .on_click(cx.listener(move|this,_,_,cx|{let from=this.work_reveal(ix);let open=if this.expanded_work.remove(&ix){false}else{this.expanded_work.insert(ix);true};this.work_animations.insert(ix,(Instant::now(),open,from));this.flow_revision=this.flow_revision.wrapping_add(1);let anchor=this.list.logical_scroll_top();this.list.reset(this.rows.len());let target=this.flow_index.anchor(anchor.item_ix,&this.expanded_work);this.list.scroll_to(ListOffset{item_ix:target,offset_in_item:if target==anchor.item_ix{anchor.offset_in_item}else{px(0.)}});cx.notify();})).into_any_element()
+            .child(icon("chevron-right",12.,MUTED).with_transformation(Transformation::rotate(radians(self.work_reveal(ix)*std::f32::consts::FRAC_PI_2)))).child(label)
+            .on_click(cx.listener(move|this,_,_,cx|this.toggle_work(ix,cx))).into_any_element()
     }
     fn interaction_reveal(&self, ix: usize) -> f32 {
         let expanded = self.expanded_tools.contains(&ix);

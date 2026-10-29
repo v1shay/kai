@@ -274,10 +274,12 @@ impl Theme {
         } else {
             opacity
         };
+        let native_alpha=if native_transparency{panel_alpha*0.30}else{0.};
+        let residual=|target:f32|((target-native_alpha)/(1.-native_alpha)).clamp(0.,1.);
         let sidebar_rgba = with_alpha(
             sidebar,
             if native_transparency && next.sidebar_glass {
-                panel_alpha
+                residual(panel_alpha+0.08*(1.-panel_alpha))
             } else {
                 1.
             },
@@ -285,7 +287,7 @@ impl Theme {
         let main_rgba = with_alpha(
             background,
             if native_transparency && next.main_glass {
-                panel_alpha
+                residual(panel_alpha+0.25*(1.-panel_alpha))
             } else {
                 1.
             },
@@ -293,7 +295,7 @@ impl Theme {
         let surface_rgba = with_alpha(
             surface,
             if native_transparency && next.main_glass {
-                0.22 + panel_alpha * 0.56
+                0.40 + panel_alpha * 0.60
             } else {
                 1.
             },
@@ -350,6 +352,7 @@ impl Theme {
             native_transparency,
             sidebar_glass: native_transparency && next.sidebar_glass,
             main_glass: native_transparency && next.main_glass,
+            backdrop_rgba:with_alpha(background,native_alpha),
             sidebar_rgba,
             main_rgba,
             surface_rgba,
@@ -533,6 +536,7 @@ pub struct ResolvedTheme {
     pub native_transparency: bool,
     pub sidebar_glass: bool,
     pub main_glass: bool,
+    backdrop_rgba:u32,
     sidebar_rgba: u32,
     main_rgba: u32,
     surface_rgba: u32,
@@ -540,6 +544,7 @@ pub struct ResolvedTheme {
     hover_rgba: u32,
 }
 impl ResolvedTheme {
+    pub fn backdrop_rgba(&self)->u32{self.backdrop_rgba}
     pub fn sidebar_rgba(&self) -> u32 {
         self.sidebar_rgba
     }
@@ -763,6 +768,11 @@ mod tests {
         ] {
             assert_eq!(color & 255, 255);
         }
+    }
+    #[test]
+    fn native_tint_and_reading_surfaces_compose_independently(){
+        for opacity in [0.,0.3,0.6,1.]{let theme=Theme::default().resolve(true,Appearance{opacity,blur_radius:24});let base=(theme.backdrop_rgba()&255)as f32/255.;let composed=|rgba:u32|base+(1.-base)*(rgba&255)as f32/255.;assert!((composed(theme.main_rgba())-(opacity+0.25*(1.-opacity))).abs()<0.008);assert!((composed(theme.sidebar_rgba())-(opacity+0.08*(1.-opacity))).abs()<0.008);assert!((theme.surface_rgba()&255)>=(theme.sidebar_rgba()&255));}
+        let theme=Theme{transparency:false,..Theme::default()}.resolve(true,Appearance::default());assert_eq!(theme.backdrop_rgba()&255,0);assert_eq!(theme.main_rgba()&255,255);
     }
     #[test]
     fn identity_colors_do_not_change_and_alpha_is_preserved() {

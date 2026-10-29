@@ -36,6 +36,9 @@ mod kai_icons;
 mod kai_indicator;
 mod loading_logo;
 mod native;
+mod orchestrator;
+#[cfg(target_os="macos")]
+mod native_backdrop;
 mod native_request_ui;
 #[cfg(test)]
 mod personalization_tests;
@@ -550,6 +553,9 @@ struct Orbit {
     unified_navigating:bool,
     unified_text_morph:bool,
     fast_transition:Option<Instant>,
+    orchestrator_chats:HashSet<String>,
+    orchestrator_new:bool,
+    orchestrator_window:WindowHandle<Orbit>,
     reasoning_efforts:std::collections::BTreeMap<String,String>,
     unified_children:Vec<runtime::broker::ChildSnapshot>,
     task_pet_visuals:HashMap<String,task_pets::Visual>,
@@ -1088,7 +1094,9 @@ impl Orbit {
             final_history_load:None,
             unified_history_end:None,unified_history_wait:false,
             unified_back:vec![],unified_forward:vec![],unified_navigating:false,
-            fast_transition:None,
+            fast_transition:None,orchestrator_new:false,
+            orchestrator_chats:restored.as_ref().map(|s|s.orchestrator_chats.iter().cloned().collect()).unwrap_or_default(),
+            orchestrator_window:window.window_handle().downcast::<Orbit>().expect("Orbit window"),
             reasoning_efforts:restored.as_ref().map(|s|s.reasoning_efforts.clone()).unwrap_or_default(),
             unified_children:vec![],
             task_pet_visuals:HashMap::new(),
@@ -2411,6 +2419,7 @@ impl Orbit {
         self.composer.update(cx, |input, cx| input.set_text("", cx));
     }
     fn new_conversation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.orchestrator_new=false;
         if !self.unified_navigating{if let Some(old)=self.active.as_ref().and_then(|id|self.sessions.iter().find(|s|&s.id==id)).cloned(){self.unified_back.push(old);if self.unified_back.len()>100{self.unified_back.remove(0);}self.unified_forward.clear();}}
         self.stop_voice(cx);
         self.new_execution_path = if self.project == self.unprojected_root() {
@@ -2430,12 +2439,16 @@ impl Orbit {
         self.sync_file_root(window, cx);
         cx.notify();
     }
+    #[track_caller]
     fn open_session(
         &mut self,
         session: SessionSummary,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if std::env::args().any(|arg|arg=="--unified-orchestrator-probe") {
+            eprintln!("KAI_ORCHESTRATOR_SELECTION from={:?} to={} caller={}",self.active,session.id,std::panic::Location::caller());
+        }
         if !self.unified_navigating && self.active.as_ref()!=Some(&session.id){
             if let Some(old)=self.active.as_ref().and_then(|id|self.sessions.iter().find(|s|&s.id==id)).cloned(){
                 self.unified_back.push(old);if self.unified_back.len()>100{self.unified_back.remove(0);}
@@ -2988,7 +3001,7 @@ impl Orbit {
             }
         };
         let context_scope = self.context_scope();
-        let request = RunRequest { service_tier:self.request_service_tier(), reasoning_effort:self.request_effort(),
+        let request = RunRequest { orchestrator:self.orchestrator_active(), service_tier:self.request_service_tier(), reasoning_effort:self.request_effort(),
             agent: self.agent,
             executable,
             project: execution_path.clone(),
@@ -3079,6 +3092,7 @@ impl Orbit {
             queued_prompt_id,
         } = submission;
         let id = session.id.clone();
+        if request.orchestrator{self.orchestrator_chats.insert(id.clone());self.orchestrator_new=false;}
         self.fork_next = None;
         self.indicator_terminal = None;
         self.active = Some(id.clone());
@@ -3409,8 +3423,10 @@ impl Orbit {
         let mut failed = None;
         let mut external = None;
         let mut voice_signals = Vec::new();
+        let mut workspace_tools=Vec::new();
         for _ in 0..128 {
             match run.handle.events.try_recv() {
+                Ok(RuntimeEvent::WorkspaceTool{id,tool,arguments})=>{workspace_tools.push((id,tool,arguments));status_changed=true;}
                 Ok(RuntimeEvent::Voice(signal)) => {
                     voice_signals.push(signal);
                     status_changed = true;
@@ -3604,6 +3620,7 @@ impl Orbit {
             run.text.drain(..start);
             run.live_prefix_omitted = true;
         }
+        if !workspace_tools.is_empty(){let owner=id.to_owned();let window=self.orchestrator_window;cx.defer(move|cx|{let _=window.update(cx,|this,window,cx|{for(token,tool,args)in workspace_tools{this.workspace_tool(&owner,&token,&tool,args,window,cx);}});});}
         for signal in voice_signals {
             self.handle_voice_signal(signal, cx);
         }
@@ -5186,8 +5203,9 @@ impl Orbit {
                                         },
                                     )),
                             )
+                            .child(self.orchestrator_chip(window,cx))
                             .child(self.thinking_chip(window,cx))
-                            .when(self.fast_supported(),|s|s.child(self.fast_button(cx)))
+                            .when(self.fast_supported(),|s|s.child(self.fast_button(window,cx)))
                             .child(
                                 div()
                                     .id("mode")
@@ -5297,7 +5315,6 @@ fn is_dark(appearance: WindowAppearance) -> bool {
 }
 impl Orbit {
     fn advance_chat_surface(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.motion && self.fast_transition.is_some_and(|at|at.elapsed()<Duration::from_millis(600)){request_motion_frame(window,cx);}
 
         self.sync_sidebar_activity(cx);
         self.prepare_native_requests(window, cx);
@@ -5307,6 +5324,7 @@ impl Orbit {
         self.refresh_slash(window, cx);
     }
     fn advance_shared_chat(&mut self,window:&mut Window,cx:&mut Context<Self>){
+        self.restore_workspace(window,cx);
         if self.final_history_load.as_ref().is_some_and(|(id,generation)|self.active.as_ref()!=Some(id)||self.generation!=*generation){
             if let Some((id,_))=self.final_history_load.take(){self.finalizing.remove(&id);}
         }

@@ -774,7 +774,7 @@ mod regressions {
             };
             app.teams = (0..4)
                 .map(|i| teams::Team {
-                    id: uuid::Uuid::new_v4().to_string(),
+                    owner:None, permissions:None, id: uuid::Uuid::new_v4().to_string(),
                     title: "Saved team".into(),
                     project: app.project.clone(),
                     allow_edits: false,

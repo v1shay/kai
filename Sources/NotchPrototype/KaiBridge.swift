@@ -20,7 +20,7 @@ struct KaiActiveTask: Decodable, Equatable {
     var agent:String?=nil
     var parentId:String?=nil
 }
-struct KaiFinishedTask:Decodable,Equatable {let id:String;var runId:String?=nil}
+struct KaiFinishedTask:Decodable,Equatable {let id:String;var runId:String?=nil;var parentId:String?=nil;var shouldAutoReview:Bool{parentId == nil && !id.hasPrefix("child:")}}
 struct KaiReasoningOption: Decodable { let reasoningEffort: String }
 struct KaiModel: Decodable { var resolvedModel:String?=nil; let model: String; let displayName: String; let supportedReasoningEfforts: [KaiReasoningOption] }
 struct KaiAgent:Decodable {let id:String;let name:String;let available:Bool}
@@ -38,6 +38,8 @@ struct KaiReset:Decodable {let id:String;let title:String?;let description:Strin
 struct KaiResets:Decodable {let availableCount:Int;let credits:[KaiReset]}
 struct KaiState: Decodable {
     let usageResets:KaiResets?
+    let orchestratorMode:Bool?
+    let orchestratorAvailable:Bool?
     let fastMode:Bool?
     let fastSupported:Bool?
     let usageWindows:[KaiQuota]?

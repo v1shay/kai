@@ -183,6 +183,10 @@ pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Resul
         if std::env::args().any(|arg|arg=="--unified-voice-probe"){
             anyhow::ensure!(std::env::args().any(|arg|arg=="--unified-smoke-test") && std::env::var("KAI_CODE_VOICE_DIAGNOSTIC").as_deref()==Ok("1"),"Live voice probe requires isolated, generated-audio diagnostic mode");
             start_voice_probe(window,cx)?;
+        }else if std::env::args().any(|arg|arg=="--unified-orchestrator-probe"){
+            anyhow::ensure!(std::env::args().any(|arg|arg=="--unified-smoke-test"),"Orchestrator probe requires isolated app data");
+            #[cfg(not(test))]
+            crate::orchestrator::start_probe(window,cx)?;
         }else if std::env::args().any(|arg|arg=="--unified-agent-probe"){
             anyhow::ensure!(std::env::args().any(|arg|arg=="--unified-smoke-test"),"Agent probe requires isolated app data");
             start_agent_probe(window,cx)?;
@@ -191,6 +195,10 @@ pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Resul
             anyhow::ensure!(!diagnostics.is_null(),"Missing presentation diagnostics");
             let diagnostics:unsafe extern "C" fn()->u32=unsafe{std::mem::transmute(diagnostics)};
             anyhow::ensure!(unsafe{diagnostics()} & 3 == 2,"App did not launch as notch only");
+            #[cfg(not(test))]
+            if std::env::args().any(|arg|arg=="--unified-glass-probe"){
+                window.update(cx,|app,window,_|crate::native::verify_glass(window,&app.theme))?.map_err(anyhow::Error::msg)?;
+            }
             reveal();
             cx.spawn(async move |cx| {
                 Timer::after(Duration::from_millis(120)).await;
@@ -386,7 +394,7 @@ impl Orbit {
         };
         let navigates = matches!(
             action,
-            "chat" | "project" | "new" | "new_project" | "workspace_expand" | "navigate"
+            "chat" | "project" | "new" | "new_project" | "orchestrator" | "workspace_expand" | "navigate"
         );
         // An approval carries its own owner/generation; it may belong to another chat.
         if !matches!(
@@ -636,7 +644,7 @@ impl Orbit {
                 let id=request["id"].as_str().ok_or("Missing interaction")?;
                 if let Some(index)=id.strip_prefix("work-").and_then(|s|s.parse::<usize>().ok()){
                     if !self.transcript_flow().work.get(index).is_some_and(|r|r.as_ref().is_some_and(|r|r.start==index)){return Err("This turn changed".into())}
-                    if !self.expanded_work.remove(&index){self.expanded_work.insert(index);}self.flow_revision=self.flow_revision.wrapping_add(1);cx.notify();return Ok(())
+                    self.toggle_work(index,cx);return Ok(())
                 }
                 let index=id.split_once('-').and_then(|(n,_)|n.parse::<usize>().ok()).ok_or("Invalid interaction")?;
                 if self.unified_detail_id(index).as_deref()!=Some(id){return Err("This interaction changed; select its current card".into())}
@@ -738,6 +746,7 @@ impl Orbit {
                 if self.history_offset>0 || self.navigation_history{if let Some(id)=self.active.clone(){if self.runs.contains_key(&id){self.restore_live_tail(&id,cx)}else{self.load_history_page(false,cx)}}}
             }
             "usage_reset"=>{self.consume_usage_reset(request["creditId"].as_str().ok_or("Missing reset credit")?,cx)?;}
+            "orchestrator"=>{if self.active.is_none(){if self.orchestrator_new{self.orchestrator_new=false;cx.notify()}else{self.start_orchestrator(window,cx);}}}
             "fast_mode"=>{self.toggle_fast(cx);}
             "usage_refresh"=>{self.controls.remove(self.agent.command());self.refresh_unified_models(cx);}
             "refresh" | "models" => {self.refresh_unified_models(cx);}
@@ -768,8 +777,9 @@ impl Orbit {
             if let Some(host) = host.borrow_mut().as_mut() {
                 let finished:Vec<_>=self.unified_successes.iter().filter(|(id,epoch)|!host.reported_successes.iter().any(|(seen,run)|seen==id&&run==epoch) && !self.finalizing.contains(id) && !self.settling.contains_key(id)).cloned().collect();
                 for event in &finished{if host.reported_successes.len()>=128{host.reported_successes.pop_front();}host.reported_successes.push_back(event.clone());}
-                let finished:Vec<_>=finished.iter().map(|(id,run)|json!({"id":if id.starts_with("child:"){id.clone()}else{format!("code:{id}")},"runId":run})).collect();
+                let finished:Vec<_>=finished.iter().map(|(id,run)|json!({"id":if id.starts_with("child:"){id.clone()}else{format!("code:{id}")},"runId":run,"parentId":self.orchestrator_parent(id)})).collect();
                 if !finished.is_empty() {
+                    if std::env::args().any(|arg|arg=="--unified-orchestrator-probe"){eprintln!("KAI_ORCHESTRATOR_FINISHED {finished:?}");}
                     host.finished = finished;
                 }
                 state["finishedTasks"] = json!(host.finished);
@@ -809,7 +819,7 @@ impl Orbit {
         let running = self.active.as_ref().and_then(|id| self.runs.get(id));
         let mut tasks:Vec<_>=self.runs.iter().map(|(id,run)|{
             let name=self.sessions.iter().find(|s|s.id==*id).map(|s|s.title.as_str()).unwrap_or("Agent");
-            json!({"id":format!("code:{id}"),"name":name,"runId":run.parse_epoch.to_string(),"scene":self.native_pending.values().find(|p|p.owner==*id&&p.current(&self.runs)).map(|p|p.indicator_scene()).unwrap_or(scene(&run.status)),"text":format!("{} · {}",run.agent.name(),run.status),"agent":run.agent.command()})
+            json!({"id":format!("code:{id}"),"name":name,"runId":run.parse_epoch.to_string(),"scene":self.native_pending.values().find(|p|p.owner==*id&&p.current(&self.runs)).map(|p|p.indicator_scene()).unwrap_or(scene(&run.status)),"text":format!("{} · {}",run.agent.name(),run.status),"agent":run.agent.command(),"parentId":self.orchestrator_parent(id)})
         }).collect();
         for (id,launch) in &self.launches{
             if let Some(chat)=self.sessions.iter().find(|s|s.id==*id){tasks.push(json!({"id":format!("code:{id}"),"name":chat.title,"runId":launch.key,"scene":"thinking","text":format!("{} · {}",launch.caption,chat_timing::duration(launch.started.elapsed().as_millis() as u64)),"agent":chat.agent.command()}));}
@@ -871,6 +881,7 @@ impl Orbit {
         snapshot["providerDefaultModel"]=json!(self.provider_default_model());snapshot["effectiveModel"]=json!(effective_model);snapshot["effectiveReasoningEffort"]=json!(effective_effort);snapshot["voiceModel"]=json!(self.voice_call.as_ref().map(|_|voice::REALTIME_MODEL));
         if let Some(elapsed)=self.elapsed_label(){if let Some(text)=snapshot["sessionActivity"]["text"].as_str().map(str::to_owned){snapshot["sessionActivity"]["text"]=json!(format!("{text} · {elapsed}"));}}
         snapshot["usageResets"]=json!(self.controls.get(self.agent.command()).and_then(|(_,c)|c.defaults.reset_credits.as_ref()));
+        snapshot["orchestratorMode"]=json!(self.orchestrator_active());snapshot["orchestratorAvailable"]=json!(self.active.is_none()||self.orchestrator_active());
         snapshot["fastMode"]=json!(self.fast_enabled());snapshot["fastSupported"]=json!(self.fast_supported());snapshot["usageSummary"]=json!(self.usage_summary());snapshot["usageWindows"]=json!(self.usage_windows().iter().map(|w|json!({"label":w.window_title().unwrap_or_else(||w.label.clone()),"remaining":w.remaining_text(),"fraction":((100.-w.used_percent)/100.).clamp(0.,1.),"reset":w.resets_at.and_then(|t|chrono::DateTime::from_timestamp(t,0)).map(|t|format!("Resets {}",t.with_timezone(&chrono::Local).format("%b %-d at %-I:%M %p")))})).collect::<Vec<_>>());snapshot["usageAccount"]=json!(self.controls.get(self.agent.command()).and_then(|(_,c)|c.account.clone()));snapshot["usageUpdated"]=json!(self.controls.get(self.agent.command()).map(|(at,_)|format!("Updated {}s ago",at.elapsed().as_secs())));
         snapshot["workspaceVoiceError"]=json!(self.voice_error);snapshot["historyEarlier"]=json!(self.unified_history_end.as_ref().is_some_and(|(owner,_)|owner==&self.unified_token()) || self.history_offset>0 || self.navigation_history);snapshot["approvalCount"]=json!(self.unified_pending_ids().len());snapshot["workspaceMotion"]=json!(self.motion);snapshot["workspaceTextMorph"]=json!(self.unified_text_morph);snapshot
 

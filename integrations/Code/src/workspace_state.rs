@@ -109,6 +109,7 @@ pub struct WorkspaceState {
     pub activity: crate::sidebar_activity::Saved,
     pub prompt_queue: Vec<crate::prompt_queue::Prompt>,
     pub teams: Vec<crate::teams::Team>,
+    pub orchestrator_chats:Vec<String>,
     pub chat_context: BTreeMap<String, Vec<crate::context_refs::Reference>>,
     pub version: u32,
     pub window: Option<WindowState>,
@@ -150,7 +151,7 @@ impl Default for WorkspaceState {
         Self {
             activity: Default::default(),
             prompt_queue: Vec::new(),
-            teams: Vec::new(),
+            teams: Vec::new(),orchestrator_chats:Vec::new(),
             chat_context: BTreeMap::new(),
             version: VERSION,
             window: None,
@@ -194,6 +195,7 @@ impl WorkspaceState {
     /// clips window coordinates against actual displays after restoration.
     pub fn normalized(mut self) -> Self {
         self.activity.normalize();
+        self.orchestrator_chats.retain(|id|uuid::Uuid::parse_str(id).is_ok());self.orchestrator_chats.truncate(256);
         if self.file_edit.as_ref().is_some_and(|draft| !draft.valid()) {
             self.file_edit = None;
         }
@@ -212,7 +214,7 @@ impl WorkspaceState {
             queue_context <= 256 * 1024
         });
         self.teams.retain(crate::teams::Team::valid);
-        self.teams.truncate(crate::teams::MAX_TEAMS);
+        let(mut manual,mut orchestrated)=(0,0);self.teams.retain(|team|{if team.owner.is_some(){orchestrated+=1;orchestrated<=crate::teams::MAX_ORCHESTRATED_TEAMS}else{manual+=1;manual<=crate::teams::MAX_TEAMS}});
         let mut member_ids = HashSet::new();
         self.teams.retain(|team| {
             if team
@@ -857,7 +859,7 @@ mod integration_regressions {
     }
     fn team() -> Team {
         Team {
-            id: uuid::Uuid::new_v4().to_string(),
+            owner:None, permissions:None, id: uuid::Uuid::new_v4().to_string(),
             title: "Review".into(),
             project: "/tmp/workspace".into(),
             allow_edits: false,

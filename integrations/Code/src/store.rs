@@ -985,6 +985,11 @@ impl Store {
     }
 
     /// Load lightweight summaries, never transcript bodies. This also bounds sidebar memory.
+    pub fn workspace_sessions(&self,project:Option<&Path>,query:&str,offset:usize)->Result<Vec<SessionSummary>>{
+        let pattern=format!("%{}%",query.replace('\\',"\\\\").replace('%',"\\%").replace('_',"\\_"));
+        let mut statement=self.connection.prepare("SELECT id,title,agent,project_path,updated_at,external_id,transcript_path,execution_path FROM sessions WHERE (?1 IS NULL OR project_path=?1) AND title LIKE ?2 ESCAPE '\\' ORDER BY updated_at DESC,id LIMIT 100 OFFSET ?3")?;
+        Ok(statement.query_map(params![project.map(|p|p.to_string_lossy().into_owned()),pattern,offset as i64],session_from_row)?.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
     pub fn sessions(&self) -> Result<Vec<SessionSummary>> {
         let mut statement = self.connection.prepare(
             "SELECT id,title,agent,project_path,updated_at,external_id,transcript_path,execution_path

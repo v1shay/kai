@@ -13,6 +13,8 @@ struct Pending {
     ui: NativeRequest,
 }
 struct Session {
+    orchestrator:bool,
+    workspace_tools:HashMap<String,Value>,
     thread: String,
     turn: String,
     next_id: u64,
@@ -48,6 +50,7 @@ struct VoiceState {
 impl Default for Session {
     fn default() -> Self {
         Self {
+            orchestrator:false,workspace_tools:HashMap::new(),
             thread: String::new(),
             turn: String::new(),
             next_id: 10,
@@ -246,6 +249,7 @@ fn rpc(
 }
 fn input(request: &RunRequest) -> Value {
     let mut values = vec![json!({"type":"text","text":request.prompt,"text_elements":[]})];
+    if request.orchestrator{if let Some(path)=crate::orchestrator::skill_path(){values.push(json!({"type":"skill","name":"code-orchestrator","path":path}));}}
     values.extend(
         request
             .images
@@ -262,6 +266,7 @@ fn thread_params(request: &RunRequest) -> Value {
         "sandbox":request.codex_access.sandbox(request.allow_edits),
         "config":{"features.default_mode_request_user_input":true}});
 
+    if request.orchestrator{if request.resume_id.is_none(){params["dynamicTools"]=crate::orchestrator::tools();}params["developerInstructions"]=json!(crate::orchestrator::INSTRUCTIONS);}
     if let Some(tier)=&request.service_tier{params["serviceTier"]=json!(tier);params["config"]["features.fast_mode"]=json!(true);}
     if let Some(effort)=&request.reasoning_effort{params["config"]["model_reasoning_effort"]=json!(effort);}
     if let Some(model) = &request.model {
@@ -553,6 +558,7 @@ fn run_turn(
     record: &mut wire::Record,
 ) -> (bool, Session) {
     let mut state = Session {
+        orchestrator:request.orchestrator,
         maintenance,
         service: Some(service.clone()),
         pending,
@@ -2101,6 +2107,10 @@ impl Session {
                 }
                 events
             }
+            "dynamicToolCall" if item["tool"]=="code_workspace"=>{
+                let(title,details)=crate::orchestrator::tool_summary(item);
+                self.parser.upsert_interaction(crate::chat_interactions::ChatInteraction::Status{title,details,status:if !completed{crate::chat_interactions::InteractionStatus::Working}else if item["success"]==false{crate::chat_interactions::InteractionStatus::Failed}else{crate::chat_interactions::InteractionStatus::Completed}},id)
+            }
             "reasoning" => {
                 let summary=item["summary"].as_array().into_iter().flatten().filter_map(|v|v.as_str().or_else(||v["text"].as_str())).collect::<Vec<_>>().join("\n\n");
                 let streamed=self.reasoning.remove(id).map(|parts|parts.into_values().collect::<Vec<_>>().join("\n\n")).unwrap_or_default();
@@ -2267,6 +2277,14 @@ impl Session {
         stdin: &mut std::process::ChildStdin,
         ctx: &NativeContext,
     ) -> Result<()> {
+        if method=="item/tool/call"{
+            if !self.orchestrator || p["threadId"].as_str()!=Some(self.thread.as_str()) || p["tool"]!="code_workspace" || self.workspace_tools.len()>=16{
+                return write_message(stdin,&ctx.cancelled,&json!({"id":wire_id,"result":{"success":false,"contentItems":[{"type":"inputText","text":"This Code workspace tool is not enabled for this invocation."}]}}));
+            }
+            if serde_json::to_vec(&p["arguments"])?.len()>16*1024{bail!("Workspace tool arguments exceed 16 KB")}
+            let token=uuid::Uuid::new_v4().to_string();self.workspace_tools.insert(token.clone(),wire_id.clone());
+            return send(&ctx.tx,RuntimeEvent::WorkspaceTool{id:token,tool:"code_workspace".into(),arguments:p["arguments"].clone()},&ctx.cancelled);
+        }
         let oversized = p["questions"].as_array().is_some_and(|v| {
             v.len() > 16
                 || v.iter().any(|q| {
@@ -2764,6 +2782,14 @@ impl Session {
                 )?;
             }
             NativeControl::Rpc { method, mut params } => {
+                if method=="code/workspace/result"{
+                    let token=params["id"].as_str().context("Missing workspace request identity")?;
+                    let wire=self.workspace_tools.remove(token).context("This workspace tool is no longer pending")?;
+                    let text=serde_json::to_string(&params["value"])?;
+                    anyhow::ensure!(text.len()<=512*1024,"Workspace result exceeds 512 KB display budget");
+                    return write_message(stdin,&ctx.cancelled,&json!({"id":wire,"result":{"success":params["value"].get("error").is_none(),"contentItems":[{"type":"inputText","text":text}]}}));
+                }
+
                 // Deliberate exposed native controls only; arbitrary dynamic
                 // tools, unrestricted terminals, and permission bypasses cannot
                 // be injected through the UI's generic control channel.
@@ -3140,7 +3166,7 @@ mod tests {
         path
     }
     fn request(path: &std::path::Path) -> RunRequest {
-        RunRequest { service_tier:None, reasoning_effort:None,
+        RunRequest { orchestrator:false, service_tier:None, reasoning_effort:None,
             agent: AgentKind::Codex,
             executable: path.into(),
             project: std::env::temp_dir(),
@@ -3154,6 +3180,33 @@ mod tests {
             codex_access: Default::default(),
             trust_workspace: false,
         }
+    }
+    #[test]
+    fn workspace_tool_round_trip_is_opt_in_and_keeps_exact_request_identity(){
+        let path=fixture(r#"v=recv();send({'id':v['id'],'result':{}})
+assert recv()['method']=='initialized'
+v=recv();assert v['method']=='thread/start'
+assert v['params']['dynamicTools'][0]['name']=='code_workspace'
+assert 'Code workspace orchestrator' in v['params']['developerInstructions']
+t='12345678-1234-4234-8234-123456789012'
+send({'id':v['id'],'result':{'thread':{'id':t}}})
+v=recv();assert v['method']=='turn/start'
+assert any(i['type']=='skill' and i['name']=='code-orchestrator' for i in v['params']['input'])
+send({'id':v['id'],'result':{'turn':{'id':'turn1'}}})
+send({'id':'workspace-wire-id','method':'item/tool/call','params':{'threadId':t,'turnId':'turn1','callId':'call1','tool':'code_workspace','arguments':{'action':'list_projects'}}})
+v=recv();assert v['id']=='workspace-wire-id' and v['result']['success'] is True
+assert json.loads(v['result']['contentItems'][0]['text'])['projects'][0]['name']=='Real workspace'
+send({'method':'item/agentMessage/delta','params':{'threadId':t,'turnId':'turn1','itemId':'answer','delta':'WORKSPACE_TOOL_OK'}})
+send({'method':'turn/completed','params':{'threadId':t,'turn':{'id':'turn1','status':'completed'}}})
+time.sleep(0.1)
+"#);
+        let mut r=request(&path);assert!(thread_params(&r).get("dynamicTools").is_none());r.orchestrator=true;
+        let mut resumed=r.clone();resumed.resume_id=Some(uuid::Uuid::new_v4().to_string());assert!(thread_params(&resumed).get("dynamicTools").is_none(),"Resume uses the persisted registry");
+        let handle=launch(r).unwrap();let deadline=Instant::now()+Duration::from_secs(15);let mut calls=0;let mut text=String::new();let mut completed=false;
+        while Instant::now()<deadline{match handle.events.recv_timeout(Duration::from_millis(100)){
+            Ok(RuntimeEvent::WorkspaceTool{id,tool,arguments})=>{calls+=1;assert_eq!(tool,"code_workspace");assert_eq!(arguments["action"],"list_projects");handle.native_command("code/workspace/result",json!({"id":id,"value":{"projects":[{"name":"Real workspace"}]}})).unwrap();},
+            Ok(RuntimeEvent::Text(delta))=>text.push_str(&delta),Ok(RuntimeEvent::Finished)=>{completed=true;break},Ok(RuntimeEvent::Failed(error))=>panic!("{error}"),_=>{}
+        }}handle.cancel();let _=std::fs::remove_file(path);assert!(completed&&text.contains("WORKSPACE_TOOL_OK"));assert_eq!(calls,1);
     }
     #[test]
     fn voice_appshot_uses_real_image_input_before_realtime_on_same_native_thread(){
@@ -4523,7 +4576,7 @@ time.sleep(30)
    for edits in [false,true] {
     for approvals in [CodexApprovals::Ask,CodexApprovals::AutoReview,CodexApprovals::Never] {
      for resume in [false,true] {
-      let req=RunRequest{service_tier:None,agent:AgentKind::Codex,executable:"/fixture/codex".into(),project:"/fixture/workspace".into(),prompt:"Continue".into(),resume_id:resume.then(||"native".into()),fork_session:false,model:None,reasoning_effort:None,images:vec![],allow_edits:edits,trust_workspace:false,codex_access:access,codex_approvals:approvals};
+      let req=RunRequest{orchestrator:false, service_tier:None,agent:AgentKind::Codex,executable:"/fixture/codex".into(),project:"/fixture/workspace".into(),prompt:"Continue".into(),resume_id:resume.then(||"native".into()),fork_session:false,model:None,reasoning_effort:None,images:vec![],allow_edits:edits,trust_workspace:false,codex_access:access,codex_approvals:approvals};
       let thread=thread_params(&req);let turn=turn_params("native",&req);
       assert_eq!(thread["sandbox"],access.sandbox(edits));assert_eq!(turn["sandboxPolicy"],access.policy(edits,&req.project));
       assert_eq!(turn["approvalPolicy"],approvals.policy());assert_eq!(thread["approvalPolicy"],approvals.policy());
@@ -4545,7 +4598,7 @@ time.sleep(30)
   for (edits,access,inside_ok,outside_ok) in [(false,CodexAccess::Workspace,false,false),(true,CodexAccess::Workspace,true,false),(true,CodexAccess::Full,true,true)] {
    let inside=project.join("inside.txt");let outside=root.join("outside.txt");let _=std::fs::remove_file(&inside);let _=std::fs::remove_file(&outside);
    let prompt=format!("/usr/bin/printf inside > '{}'; /usr/bin/printf outside > '{}'; /usr/bin/printf ACCESS_PROBE_DONE",inside.display(),outside.display());
-   let request=RunRequest{service_tier:None,agent:AgentKind::Codex,executable:std::env::var("KAI_NATIVE_TEST_EXECUTABLE").unwrap_or_else(|_|"/opt/homebrew/bin/codex".into()).into(),project:project.clone(),prompt,resume_id:None,fork_session:false,model:None,reasoning_effort:None,images:vec![],allow_edits:edits,trust_workspace:false,codex_access:access,codex_approvals:CodexApprovals::Never};
+   let request=RunRequest{orchestrator:false, service_tier:None,agent:AgentKind::Codex,executable:std::env::var("KAI_NATIVE_TEST_EXECUTABLE").unwrap_or_else(|_|"/opt/homebrew/bin/codex".into()).into(),project:project.clone(),prompt,resume_id:None,fork_session:false,model:None,reasoning_effort:None,images:vec![],allow_edits:edits,trust_workspace:false,codex_access:access,codex_approvals:CodexApprovals::Never};
    let handle=maintenance(request,"command/exec",json!({})).unwrap();let mut finished=false;
    while let Ok(event)=handle.events.recv_timeout(Duration::from_secs(20)) {
     match event {RuntimeEvent::Failed(e)=>panic!("{e}"),RuntimeEvent::Request(_)=>panic!("Never ask unexpectedly raised an approval"),RuntimeEvent::Finished=>{finished=true;break},_=>{}}

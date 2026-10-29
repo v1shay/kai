@@ -249,11 +249,15 @@ private final class AttachmentLayer:CALayer {
     func setRenderingScale(_ scale:CGFloat){renderingScale=scale;NotchSizing.updateTextResolution(layer,scale:scale)}
     var onUsageReset:((String)->Void)?
     var onFast:(()->Void)?
+    var onOrchestrator:(()->Void)?
     var onUsageRefresh:(()->Void)?
     private let composerPopover=ComposerGlassPopover()
     private let effortLabel=CATextLayer(),fastBolt=CALayer(),usageLabel=CenteredComposerTextLayer(),usageTrack=CALayer(),usageFill=CALayer()
     private var fastWasOn:Bool?
-    private let effortShimmer=EffortTileLayer()
+    private let effortShimmer=EffortTileLayer(),fastShimmer=EffortTileLayer()
+    private let fastTint=CAGradientLayer(),orchestratorChip=CALayer(),orchestratorShimmer=EffortTileLayer(),orchestratorGlyph=CALayer()
+    private var orchestratorWasOn:Bool?
+    private var hoveringFast=false
     private var effortShimmerKey="",hoveringEffort=false
     var onSettings: ((String,String)->Void)?
     var onModel:((String)->Void)?
@@ -331,7 +335,7 @@ private final class AttachmentLayer:CALayer {
         permissionGlyph.startPoint=CGPoint(x:0,y:0);permissionGlyph.endPoint=CGPoint(x:1,y:1);permissionGlyph.mask=permissionMask;permissionMask.contentsGravity = .resizeAspect;input.addSublayer(permissionGlyph)
         modelIcon.contentsGravity = .resizeAspect;modelChip.addSublayer(modelIcon);configure(modelName,"",7.8,.white.withAlphaComponent(0.84),.medium);modelName.truncationMode = .middle;modelChip.addSublayer(modelName);input.addSublayer(modelChip)
         effortChip.backgroundColor=NSColor.white.withAlphaComponent(0.11).cgColor;effortChip.cornerRadius=2;effortFill.anchorPoint=CGPoint(x:0,y:0.5);effortFill.startPoint=CGPoint(x:0,y:0.5);effortFill.endPoint=CGPoint(x:1,y:0.5);effortFill.cornerRadius=2;effortChip.addSublayer(effortShimmer);effortChip.addSublayer(effortFill);effortThumb.isHidden=true;effortThumb.cornerRadius=3;effortThumb.backgroundColor=NSColor.white.cgColor;effortChip.addSublayer(effortThumb);input.addSublayer(effortChip)
-        configure(effortLabel,"",8,.white,.medium);effortFill.mask=effortLabel;fastBolt.contentsGravity = .resizeAspect;input.addSublayer(fastBolt);configure(usageLabel,"",7,.white.withAlphaComponent(0.6));layer.addSublayer(usageLabel);usageTrack.cornerRadius=1;usageTrack.backgroundColor=NSColor.white.withAlphaComponent(0.12).cgColor;layer.addSublayer(usageTrack);usageFill.cornerRadius=1;usageFill.backgroundColor=NSColor.systemMint.cgColor;usageTrack.addSublayer(usageFill)
+        configure(effortLabel,"",8,.white,.medium);effortFill.mask=effortLabel;fastBolt.contentsGravity = .resizeAspect;input.addSublayer(fastShimmer);fastTint.startPoint=CGPoint(x:0,y:0.5);fastTint.endPoint=CGPoint(x:1,y:0.5);fastTint.mask=fastBolt;input.addSublayer(fastTint);orchestratorChip.addSublayer(orchestratorShimmer);orchestratorGlyph.contentsGravity = .resizeAspect;orchestratorChip.addSublayer(orchestratorGlyph);input.addSublayer(orchestratorChip);configure(usageLabel,"",7,.white.withAlphaComponent(0.6));layer.addSublayer(usageLabel);usageTrack.cornerRadius=1;usageTrack.backgroundColor=NSColor.white.withAlphaComponent(0.12).cgColor;layer.addSublayer(usageTrack);usageFill.cornerRadius=1;usageFill.backgroundColor=NSColor.systemMint.cgColor;usageTrack.addSublayer(usageFill)
         pendingHighlight.opacity=0;pendingHighlight.cornerRadius=4;pendingHighlight.masksToBounds=true;pendingHighlight.backgroundColor=NSColor.white.withAlphaComponent(0.12).cgColor;pendingHighlight.borderColor=NSColor.white.withAlphaComponent(0.28).cgColor;pendingHighlight.borderWidth=0.6;pendingRibbon.colors=[NSColor.clear.cgColor,NSColor.white.withAlphaComponent(0.5).cgColor,NSColor.clear.cgColor];pendingRibbon.startPoint=CGPoint(x:0,y:0.5);pendingRibbon.endPoint=CGPoint(x:1,y:0.5);pendingHighlight.addSublayer(pendingRibbon);layer.addSublayer(pendingHighlight)
         installFlow()
     }
@@ -493,7 +497,7 @@ private final class AttachmentLayer:CALayer {
         }
         add(inMain(closeButton.frame),limit:main.frame){[self] in onClose?()}
         if !previewOpen{add(projectToggle.frame){[self] in toggleProjects()}}
-        for (rect,id) in composerHits {add(rect.offsetBy(dx:input.frame.minX,dy:input.frame.minY),limit:input.frame){[self] in if id=="permissions"{showPermissionsMenu()}else if id=="fast"{onFast?()}else{showSettingsMenu(id)}}}
+        for (rect,id) in composerHits {add(rect.offsetBy(dx:input.frame.minX,dy:input.frame.minY),limit:input.frame){[self] in if id=="permissions"{showPermissionsMenu()}else if id=="fast"{onFast?()}else if id=="orchestrator"{onOrchestrator?()}else{showSettingsMenu(id)}}}
         let composerActions:[(CGRect,()->Void)]=[(send.frame,{[self] in onSend?()}),(voiceButton.frame,{[self] in onVoice?()})]
         for (frame,action) in composerActions {
             add(frame.offsetBy(dx:input.frame.minX,dy:input.frame.minY),limit:input.frame.insetBy(dx:0,dy:-4),action)
@@ -576,6 +580,8 @@ private final class AttachmentLayer:CALayer {
         if action != hoveredAction,let action,let engine=actionSymbols[action]{engine.showScene(action=="approve" ? "success":action=="reject" ? "failure":action=="review" ? "review":"pause",looping:false)};hoveredAction=action
         let overEffort=point.map{usesUnifiedComposer && !effortChip.isHidden && effortChip.frame.offsetBy(dx:input.frame.minX,dy:input.frame.minY).contains($0)} ?? false
         if overEffort && !hoveringEffort{effortShimmer.play(restart:true);if !composerPopover.visible{showThinkingPopover()}};hoveringEffort=overEffort
+        let overFast=point.map{usesUnifiedComposer && !fastTint.isHidden && fastTint.frame.insetBy(dx:-4,dy:-4).offsetBy(dx:input.frame.minX,dy:input.frame.minY).contains($0)} ?? false
+        if overFast && !hoveringFast{fastShimmer.play(restart:true)};hoveringFast=overFast
         let fileHover=point.flatMap{fileAction(at:$0)}
         preview.setActionHover(preview.representedURL == fileHover?.url ? fileHover?.action:nil)
         for row in fileRows{row.setActionHover(row.url == fileHover?.url ? fileHover?.action:nil)}
@@ -696,7 +702,7 @@ private final class AttachmentLayer:CALayer {
         let name=state.effectiveModel ?? state.selectedModel ?? state.providerDefaultModel ?? "Model"
         let levels=selectedEffortModel(state)?.supportedReasoningEfforts.map(\.reasoningEffort) ?? []
         let effort=state.reasoningEffort.flatMap{$0.isEmpty ? nil:$0} ?? state.effectiveReasoningEffort ?? ""
-        let key=[name,effort,levels.joined(separator:","),state.workspaceAccess ?? "",state.workspaceApprovalPolicy ?? "",String(Double(input.bounds.width)),String(state.fastMode == true),String(state.fastSupported == true),state.usageSummary ?? "",String(Double(renderingScale)),String(Double(bottomInset)),String(Double(input.frame.minY))]
+        let key=[name,effort,levels.joined(separator:","),state.workspaceAccess ?? "",state.workspaceApprovalPolicy ?? "",String(Double(input.bounds.width)),String(state.fastMode == true),String(state.fastSupported == true),String(state.orchestratorMode == true),String(state.orchestratorAvailable == true),state.usageSummary ?? "",String(Double(renderingScale)),String(Double(bottomInset)),String(Double(input.frame.minY))]
         guard key != composerControlKey else{return};composerControlKey=key
         input.colors=[NSColor.white.withAlphaComponent(0.085).cgColor,NSColor.white.withAlphaComponent(0.035).cgColor];input.borderColor=NSColor.white.withAlphaComponent(0.16).cgColor
         let width=input.bounds.width,hasEffort = !levels.isEmpty && width>=215
@@ -707,9 +713,9 @@ private final class AttachmentLayer:CALayer {
         let oldColors=permissionGlyph.presentation()?.colors ?? permissionGlyph.colors
         permissionGlyph.colors=colors.map(\.cgColor)
         let transition=CABasicAnimation(keyPath:"colors");transition.fromValue=oldColors;transition.toValue=permissionGlyph.colors;transition.duration=NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0:0.25;permissionGlyph.add(transition,forKey:"sandboxLevel")
-        let fast=state.fastSupported == true;let title=ModelIdentity.title(name),identityWidth:CGFloat=ModelIdentity.image(name)==nil ? 0:18
+        let fast=state.fastSupported == true,orchestrator=state.orchestratorAvailable == true;let title=ModelIdentity.title(name),identityWidth:CGFloat=ModelIdentity.image(name)==nil ? 0:18
         let titleWidth=(title as NSString).size(withAttributes:[.font:AppTypography.ui(ofSize:7.8,weight:.medium)]).width
-        let modelWidth=min(identityWidth+ceil(titleWidth)+2,max(16,width-91-(hasEffort ? 52:0)-(fast ? 22:0)));modelChip.frame=CGRect(x:30,y:6,width:modelWidth,height:17)
+        let modelWidth=min(identityWidth+ceil(titleWidth)+2,max(16,width-91-(hasEffort ? 52:0)-(fast ? 22:0)-(orchestrator ? 22:0)));modelChip.frame=CGRect(x:30,y:6,width:modelWidth,height:17)
         let image=ModelIdentity.image(name);modelIcon.contentsScale=renderingScale;permissionMask.contentsScale=renderingScale;modelIcon.contents=image;modelIcon.frame=CGRect(x:0,y:2,width:13,height:13);modelIcon.isHidden=image==nil
         let textX:CGFloat=image==nil ? 0:18;modelName.frame=CGRect(x:textX,y:2,width:max(0,modelWidth-textX),height:12);modelName.string=ModelIdentity.title(name);modelName.contentsScale=renderingScale
         effortChip.isHidden = !hasEffort;effortChip.backgroundColor=nil;effortChip.frame=CGRect(x:modelChip.frame.maxX+3,y:6,width:50,height:18)
@@ -717,12 +723,16 @@ private final class AttachmentLayer:CALayer {
         effortShimmer.frame=effortChip.bounds;effortShimmer.configure(size:effortChip.bounds.size,tint:color);let shimmerKey=name+"|"+effort
         if shimmerKey != effortShimmerKey{effortShimmerKey=shimmerKey;if layer.opacity>0 && hasEffort{effortShimmer.play(restart:true)}else{effortShimmer.stop()}}
         effortFill.frame=effortChip.bounds;effortFill.colors=[color.cgColor,EffortAppearance.color(min(1,fraction+0.25)).cgColor];effortLabel.frame=CGRect(x:0,y:3,width:50,height:12);effortLabel.string=effort=="xhigh" ? "Extra high":effort.capitalized;effortLabel.contentsScale=renderingScale
-        fastBolt.isHidden = !fast;fastBolt.frame=CGRect(x:width-78,y:7,width:17,height:17);fastBolt.contents=NSImage(systemSymbolName:state.fastMode == true ? "bolt.fill":"bolt",accessibilityDescription:"Fast mode")?.withSymbolConfiguration(.init(paletteColors:[state.fastMode == true ? .systemYellow:.secondaryLabelColor]))
-        if fastWasOn != state.fastMode {fastWasOn=state.fastMode;if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion{let pulse=CAKeyframeAnimation(keyPath:"transform.scale");pulse.values=[1,0.68,1.32,0.94,1];pulse.keyTimes=[0,0.15,0.45,0.7,1];pulse.duration=0.5;fastBolt.add(pulse,forKey:"charge");fastBolt.shadowColor=NSColor.systemYellow.cgColor;fastBolt.shadowRadius=8;fastBolt.shadowOpacity=state.fastMode == true ? 0.8:0;let glow=CABasicAnimation(keyPath:"shadowRadius");glow.fromValue=1;glow.toValue=8;glow.duration=0.4;fastBolt.add(glow,forKey:"chargeGlow")}}
+        fastTint.isHidden = !fast;fastTint.frame=CGRect(x:width-78,y:7,width:17,height:17);fastBolt.frame=fastTint.bounds;fastBolt.contents=NSImage(systemSymbolName:state.fastMode == true ? "bolt.fill":"bolt",accessibilityDescription:"Fast mode")?.withSymbolConfiguration(.init(paletteColors:[.white]));fastTint.colors=(state.fastMode == true ? [NSColor(calibratedRed:1,green:0.94,blue:0.60,alpha:1),NSColor(calibratedRed:1,green:0.74,blue:0.21,alpha:1)]:[NSColor.secondaryLabelColor,NSColor.secondaryLabelColor]).map(\.cgColor)
+        fastShimmer.isHidden = !fast;fastShimmer.frame=fastTint.frame.insetBy(dx:-4,dy:-1);fastShimmer.configure(size:fastShimmer.bounds.size,tint:NSColor(calibratedRed:1,green:0.85,blue:0.41,alpha:1));fastBolt.shadowOpacity=0
+        if fastWasOn != state.fastMode{fastWasOn=state.fastMode;if layer.opacity>0 && fast{fastShimmer.play(restart:true)}else{fastShimmer.stop()}}
+        orchestratorChip.isHidden = !orchestrator;orchestratorChip.frame=CGRect(x:width-(fast ? 100:78),y:6,width:20,height:18);orchestratorChip.cornerRadius=4;orchestratorChip.backgroundColor=state.orchestratorMode == true ? NSColor.systemPurple.withAlphaComponent(0.12).cgColor:nil;orchestratorGlyph.frame=CGRect(x:3,y:2,width:14,height:14);orchestratorGlyph.contents=NSImage(systemSymbolName:"point.3.connected.trianglepath.dotted",accessibilityDescription:"Orchestrator")?.withSymbolConfiguration(.init(paletteColors:[state.orchestratorMode == true ? .systemPurple:.secondaryLabelColor]));orchestratorShimmer.frame=orchestratorChip.bounds;orchestratorShimmer.configure(size:orchestratorShimmer.bounds.size,tint:.systemPurple)
+        if orchestratorWasOn != state.orchestratorMode{orchestratorWasOn=state.orchestratorMode;if state.orchestratorMode == true && layer.opacity>0{orchestratorShimmer.play(restart:true)}else{orchestratorShimmer.stop()}}
         let footerCenter=(input.frame.minY-bottomInset)/2
         usageLabel.string=state.usageSummary ?? "";usageLabel.frame=CGRect(x:input.frame.minX+42,y:footerCenter-7,width:max(0,width-42),height:14);usageLabel.setNeedsDisplay();usageTrack.frame=CGRect(x:input.frame.minX+5,y:footerCenter-1,width:30,height:2);usageFill.frame=CGRect(x:0,y:0,width:30*CGFloat(state.usageWindows?.first?.fraction ?? 0),height:2);usageTrack.isHidden=state.usageWindows?.isEmpty != false
         composerHits=[(permissionGlyph.frame.insetBy(dx:-4,dy:-4),"permissions"),(modelChip.frame,"model")]
-        if fast{composerHits.append((fastBolt.frame.insetBy(dx:-3,dy:-4),"fast"))}
+        if orchestrator{composerHits.append((orchestratorChip.frame,"orchestrator"))}
+        if fast{composerHits.append((fastTint.frame.insetBy(dx:-3,dy:-4),"fast"))}
         if hasEffort{composerHits.append((effortChip.frame.insetBy(dx:-4,dy:-9),"effort"))}
     }
     func thinkingRows()->[EffortTileRow]{
@@ -829,7 +839,7 @@ private final class AttachmentLayer:CALayer {
 
     private func collapse(_ group:CALayer,_ expanded:Bool) { let fade=CABasicAnimation(keyPath:"opacity");fade.fromValue=group.presentation()?.opacity ?? group.opacity;fade.toValue=expanded ? 1:0;fade.duration=0.26;fade.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.7,0.25,1);CATransaction.begin();CATransaction.setDisableActions(true);group.opacity=expanded ? 1:0;group.setAffineTransform(.identity);CATransaction.commit();group.add(fade,forKey:"collapse") }
 
-    func setVisible(_ visible:Bool,duration:Double) { if !visible{effortShimmer.stop();composerPopover.dismiss();handleHover(nil)}else if !effortChip.isHidden{effortShimmer.play(restart:true)};let fade=CABasicAnimation(keyPath:"opacity");fade.fromValue=layer.presentation()?.opacity ?? layer.opacity;fade.toValue=visible ? 1:0;fade.duration=duration*0.72;fade.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.65,0.25,1);CATransaction.begin();CATransaction.setDisableActions(true);layer.opacity=visible ? 1:0;CATransaction.commit();layer.add(fade,forKey:"visibility");notifyPreviewContent() }
+    func setVisible(_ visible:Bool,duration:Double) { if !visible{orchestratorShimmer.stop();fastShimmer.stop();effortShimmer.stop();composerPopover.dismiss();handleHover(nil)}else {if !effortChip.isHidden{effortShimmer.play(restart:true)};if !fastTint.isHidden{fastShimmer.play(restart:true)};if orchestratorWasOn == true{orchestratorShimmer.play(restart:true)}};let fade=CABasicAnimation(keyPath:"opacity");fade.fromValue=layer.presentation()?.opacity ?? layer.opacity;fade.toValue=visible ? 1:0;fade.duration=duration*0.72;fade.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.65,0.25,1);CATransaction.begin();CATransaction.setDisableActions(true);layer.opacity=visible ? 1:0;CATransaction.commit();layer.add(fade,forKey:"visibility");notifyPreviewContent() }
 
     func setProfile(_ profile:PetGradientProfile,animated:Bool) {
         defer{if usesUnifiedComposer{input.colors=[NSColor.white.withAlphaComponent(0.085).cgColor,NSColor.white.withAlphaComponent(0.035).cgColor];input.borderColor=NSColor.white.withAlphaComponent(0.16).cgColor}}

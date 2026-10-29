@@ -407,7 +407,7 @@ impl Orbit {
         WorkspaceState {
             activity: self.activity.saved.clone(),
             prompt_queue: self.prompt_queue.clone(),
-            teams: self.teams.clone(),
+            teams: self.teams.clone(),orchestrator_chats:self.orchestrator_chats.iter().cloned().collect(),
             chat_context: self
                 .chat_context
                 .iter()
@@ -517,6 +517,7 @@ impl Orbit {
         for prompt in &mut self.prompt_queue {
             prompt.held = true;
         }
+        self.orchestrator_chats=saved.orchestrator_chats.into_iter().collect();
         self.teams = saved.teams;
         for team in &mut self.teams {
             team.hold_on_restart();

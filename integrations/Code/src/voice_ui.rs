@@ -32,6 +32,8 @@ struct Transfer {
     model: Option<String>,
 }
 impl Call {
+    pub(super) fn workspace_policy(&self,project:PathBuf)->Option<orchestrator::Policy>{(!self.stopping && self.launched).then(||orchestrator::Policy{project,model:self.settings.model.clone(),allow_edits:self.settings.edits,codex_access:self.settings.access,codex_approvals:self.settings.approvals})}
+
     pub fn connecting(&self, active: Option<&str>) -> bool {
         !self.active && !self.stopping && self.owns_current_chat(active)
     }
@@ -431,7 +433,8 @@ impl Orbit {
             .and_then(|a| a.executable.clone())
             .ok_or_else(|| anyhow::anyhow!("Codex is unavailable"))?;
         let settings=&self.voice_call.as_ref().unwrap().settings;
-        let request = RunRequest { service_tier:self.request_service_tier(), reasoning_effort:settings.effort.clone(),
+        let orchestrator=self.orchestrator_chats.contains(&id)||self.active.is_none()&&self.orchestrator_new;
+        let request = RunRequest { orchestrator, service_tier:self.request_service_tier(), reasoning_effort:settings.effort.clone(),
             agent: AgentKind::Codex,
             executable,
             project: project.clone(),
@@ -449,6 +452,7 @@ impl Orbit {
                 .contains(&(AgentKind::Codex, project)),
         };
         let handle = runtime::launch_native_command(request, "thread/realtime/start", params)?;
+        if orchestrator{self.orchestrator_chats.insert(id.clone());self.orchestrator_new=false;self.queue_workspace_save(cx);}
         let wake = handle.wake.clone();
         if !self.sessions.iter().any(|s| s.id == id) {
             self.sessions.insert(0, session.clone());

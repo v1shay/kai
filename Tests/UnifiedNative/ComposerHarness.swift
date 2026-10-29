@@ -31,7 +31,7 @@ private func auditCommand(_ bytes:UnsafePointer<UInt8>?,_ count:Int)->Bool{guard
   for id in ["gpt-6-luna","gpt-6.1-terra","gpt-6.1-sol","gpt-6-astra"]{precondition(ModelIdentity.image(id) != nil,"Missing model vector \(id)")}
   let modelMenu=ui.settingsMenu("model")!;precondition(modelMenu.items.filter{$0.image != nil}.count==4,"Model menus do not carry all four family glyphs")
   ui.setComposerHasText(true);precondition(model.opacity==1 && permission.opacity==1,"Typing hides the composer controls");ui.setComposerHasText(false)
-  let bolt=member(ui,"fastBolt") as! CALayer;precondition(!bolt.isHidden,"Advertised Fast Mode is missing");let fastBefore=commands.count;_ = ui.handleClick(CGPoint(x:input.frame.minX+bolt.frame.midX,y:input.frame.minY+bolt.frame.midY));precondition(commands.count==fastBefore+1 && commands.last?["action"] as? String == "fast_mode","Fast Mode did not reach owner")
+  let bolt=member(ui,"fastTint") as! CALayer;precondition(!bolt.isHidden,"Advertised Fast Mode is missing");let shimmer=member(ui,"fastShimmer") as! CALayer;precondition(shimmer.sublayers?.count==160,"Fast and intensity must share tile animation geometry");let fastBefore=commands.count;_ = ui.handleClick(CGPoint(x:input.frame.minX+bolt.frame.midX,y:input.frame.minY+bolt.frame.midY));precondition(commands.count==fastBefore+1 && commands.last?["action"] as? String == "fast_mode","Fast Mode did not reach owner")
   let quota=member(ui,"usageLabel") as! CATextLayer;let quotaTrack=member(ui,"usageTrack") as! CALayer;precondition(abs(quota.frame.midY-quotaTrack.frame.midY)<0.01,"Usage bar/text do not share the footer center");let chipShimmer=member(ui,"effortShimmer") as! EffortTileLayer;precondition(chipShimmer.previewing,"Selected thinking button has no tile animation");precondition((quota.string as? String)?.contains("83% left")==true,"Usage footer does not show remaining");_ = ui.handleClick(CGPoint(x:quota.frame.midX,y:quota.frame.midY));let popup=member(ui,"composerPopover") as! ComposerGlassPopover;precondition(popup.visible,"Usage did not open its custom glass panel");popup.dismiss()
   let chip=member(ui,"effortChip") as! CALayer;ui.handleHover(CGPoint(x:input.frame.minX+chip.frame.midX,y:input.frame.minY+chip.frame.midY));precondition(popup.visible,"Thinking hover did not open its custom glass panel")
   precondition(chip.frame.minX-model.frame.maxX>=2 && chip.frame.minX-model.frame.maxX<=5,"Thinking intensity is detached from the model name")
@@ -159,6 +159,18 @@ private func auditCommand(_ bytes:UnsafePointer<UInt8>?,_ count:Int)->Bool{guard
    precondition(catalog.pets.filter{$0.kind=="local"}.allSatisfy{$0.sourceURL != nil},"Local pets still point at packaged copies")
    print("Native libraries: Google Sans and Geist in settings, shared font dispatch, real editor repaint, and live external pet sources passed")
   }
+  // Worker completion may update status/pets, but must not navigate away
+  // from the orchestrator whose final brief is still being produced.
+  var completion=try JSONSerialization.jsonObject(with:packet("workspace","gpt-6.1-sol")) as! [String:Any]
+  completion["threadId"]="code:orchestrator";completion["threadName"]="Orchestrator";completion["finishedTasks"]=[]
+  completion["activeTasks"]=[["id":"code:orchestrator","name":"Orchestrator","scene":"thinking","text":"Coordinating","runId":"parent-run"],["id":"code:worker","name":"Worker","scene":"thinking","text":"Working","runId":"worker-run","parentId":"code:orchestrator"]]
+  runtime.receive(try JSONSerialization.data(withJSONObject:completion));pump()
+  completion["activeTasks"]=[["id":"code:orchestrator","name":"Orchestrator","scene":"thinking","text":"Coordinating","runId":"parent-run"]]
+  completion["finishedTasks"]=[["id":"code:worker","runId":"worker-run","parentId":"code:orchestrator"]]
+  let reviewBefore=commands.count;runtime.receive(try JSONSerialization.data(withJSONObject:completion));pump()
+  let reviews=member(app,"floatingReviews") as! [KaiActiveTask];precondition(!reviews.contains{$0.id=="code:worker"},"Finished worker stole the parent conversation")
+  precondition(!commands.dropFirst(reviewBefore).contains{$0["action"] as? String == "chat"},"Worker completion navigated the shared chat")
+  print("Native orchestration: worker completion updates status without stealing parent selection")
   print("Native composer: four vector model glyphs, per-model tile shimmer choices, exact effort dispatch, independent gradient permissions, stale-owner rejection, typed-draft controls, and narrow layouts passed")
  }
 }

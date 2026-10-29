@@ -120,3 +120,29 @@ import AppKit
         scroll.reflectScrolledClipView(scroll.contentView)
     }
 }
+
+// One bounded snapshot of the visible conversation only, during an explicit
+// work fold. Input stays on the live text view; no timer survives the transition.
+@MainActor final class ConversationFoldTransition {
+    private final class Cover:NSImageView {override func hitTest(_ point:NSPoint)->NSView?{nil}}
+    private var cover:Cover?,expiry:DispatchWorkItem?
+    private(set) var threadID:String?
+    var pending:Bool{cover != nil}
+    func cancel(){expiry?.cancel();expiry=nil;cover?.removeFromSuperview();cover=nil;threadID=nil}
+    func begin(in scroll:NSScrollView,threadID:String?){
+        cancel();guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,let host=scroll.superview,scroll.bounds.width>0,scroll.bounds.height>0 else{return}
+        let source=scroll.contentView
+        guard let bitmap=source.bitmapImageRepForCachingDisplay(in:source.bounds) else{return}
+        source.cacheDisplay(in:source.bounds,to:bitmap);let image=NSImage(size:source.bounds.size);image.addRepresentation(bitmap)
+        let view=Cover(frame:scroll.frame);view.image=image;view.imageScaling = .scaleAxesIndependently;view.wantsLayer=true;host.addSubview(view,positioned:.above,relativeTo:scroll);cover=view;self.threadID=threadID
+        let expiry=DispatchWorkItem{[weak self] in self?.cancel()};self.expiry=expiry;DispatchQueue.main.asyncAfter(deadline:.now()+0.8,execute:expiry)
+    }
+    func finish(in scroll:NSScrollView,threadID:String?){
+        guard let view=cover else{return};guard self.threadID==threadID else{cancel();return}
+        expiry?.cancel();expiry=nil;cover=nil;self.threadID=nil
+        let document=scroll.documentView
+        document?.wantsLayer=true
+        if let layer=document?.layer{let fade=CABasicAnimation(keyPath:"opacity");fade.fromValue=0.45;fade.toValue=1;fade.duration=0.28;fade.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.7,0.25,1);layer.add(fade,forKey:"workFold")}
+        NSAnimationContext.runAnimationGroup({context in context.duration=0.28;context.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.7,0.25,1);view.animator().alphaValue=0},completionHandler:{view.removeFromSuperview()})
+    }
+}
