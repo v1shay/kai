@@ -779,7 +779,7 @@ impl Orbit {
                 if self.history_offset>0 || self.navigation_history{if let Some(id)=self.active.clone(){if self.runs.contains_key(&id){self.restore_live_tail(&id,cx)}else{self.load_history_page(false,cx)}}}
             }
             "usage_reset"=>{self.consume_usage_reset(request["creditId"].as_str().ok_or("Missing reset credit")?,cx)?;}
-            "orchestrator"=>{if self.active.is_none(){if self.orchestrator_new{self.orchestrator_new=false;cx.notify()}else{self.start_orchestrator(window,cx);}}}
+            "orchestrator"=>self.toggle_orchestrator(window,cx),
             "fast_mode"=>{self.toggle_fast(cx);}
             "usage_refresh"=>{self.controls.remove(self.agent.command());self.refresh_unified_models(cx);}
             "refresh" | "models" => {self.refresh_unified_models(cx);}

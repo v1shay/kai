@@ -192,6 +192,7 @@ impl Orbit {
             })
     }
     pub(super) fn start_orchestrator(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let from = self.orchestrator_expansion();
         let draft = self.active.is_none().then(|| self.composer.read(cx).text());
         self.new_unprojected_conversation(window, cx);
         if let Some(draft) = draft {
@@ -201,9 +202,27 @@ impl Orbit {
         self.agent = AgentKind::Codex;
         self.model = self.agent_models.get("codex").cloned().flatten();
         self.orchestrator_new = true;
+        self.orchestrator_transition = Some((Instant::now(), from));
         self.notice = None;
         self.refresh_unified_models(cx);
         cx.notify();
+    }
+    fn orchestrator_expansion(&self) -> f32 {
+        let target = if self.orchestrator_active() { 1. } else { 0. };
+        if !self.motion || native::reduced_motion() { return target; }
+        self.orchestrator_transition.map_or(target, |(at, from)| {
+            let t = (at.elapsed().as_secs_f32() / 0.28).min(1.);
+            from + (target - from) * (1. - (1. - t).powi(3))
+        })
+    }
+    pub(super) fn toggle_orchestrator(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.active.is_some() { return; }
+        if self.orchestrator_new {
+            let from = self.orchestrator_expansion();
+            self.orchestrator_new = false;
+            self.orchestrator_transition = Some((Instant::now(), from));
+            cx.notify();
+        } else { self.start_orchestrator(window, cx); }
     }
     pub(super) fn orchestrator_chip(&self, window: &Window, cx: &Context<Self>) -> AnyElement {
         if self.active.is_some() && !self.orchestrator_active() {
@@ -211,44 +230,37 @@ impl Orbit {
         }
         let active = self.orchestrator_active();
         let color = if active { 0xc3a4ff } else { MUTED };
+        let expansion = self.orchestrator_expansion();
+        if self.motion && !native::reduced_motion() && window.is_window_active()
+            && self.orchestrator_transition.is_some_and(|(at, _)| at.elapsed() < Duration::from_millis(280)) {
+            request_motion_frame(window, cx);
+        }
         let chip = div()
             .id("orchestrator-mode")
             .debug_selector(|| "orchestrator-mode".into())
             .relative()
             .overflow_hidden()
             .h(px(26.))
-            .px_2()
+            .px(px(8.))
+            .flex_none()
+            .whitespace_nowrap()
             .rounded_md()
             .flex()
             .items_center()
-            .gap_1()
             .text_size(theme::ui_px(11.))
             .text_color(rgb(color))
             .cursor_pointer()
             .bg(rgba(if active { 0x9b78ff24 } else { 0xffffff08 }))
-            .child(
-                div()
-                    .relative()
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .child(icon("git-branch", 14., color))
-                    .child(if active {
-                        "Orchestrator"
-                    } else {
-                        "Orchestrate"
-                    }),
-            )
-            .on_click(cx.listener(|this, _, window, cx| {
-                if this.active.is_none() {
-                    if this.orchestrator_new {
-                        this.orchestrator_new = false;
-                        cx.notify()
-                    } else {
-                        this.start_orchestrator(window, cx)
-                    }
-                }
-            }));
+            .when(expansion > 0., |chip| chip.child(
+                div().debug_selector(|| "orchestrator-glyph".into())
+                    .relative().w(px(18. * expansion)).h(px(14.)).flex_none()
+                    .overflow_hidden().opacity(expansion)
+                    .child(icon("branch", 14., color)),
+            ))
+            .child(div().debug_selector(|| "orchestrator-label".into()).relative()
+                .flex_none().whitespace_nowrap()
+                .child(if active { "Orchestrator" } else { "Orchestrate" }))
+            .on_click(cx.listener(|this, _, window, cx| this.toggle_orchestrator(window, cx)));
         if active && self.motion && !native::reduced_motion() && window.is_window_active() {
             chip.with_animation(
                 "orchestrator-entrance",

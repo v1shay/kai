@@ -562,6 +562,7 @@ struct Orbit {
     orchestration_probes:HashSet<(AgentKind,PathBuf)>,
     orchestrator_chats:HashSet<String>,
     orchestrator_new:bool,
+    orchestrator_transition:Option<(Instant,f32)>,
     startup_surface:startup::Surface,
     automatic_titles:bool,
     title_queue:std::collections::VecDeque<chat_titles::Seed>,
@@ -1114,7 +1115,7 @@ impl Orbit {
             final_history_load:None,
             unified_history_end:None,unified_history_wait:false,
             unified_back:vec![],unified_forward:vec![],unified_navigating:false,
-            fast_transition:None,orchestrator_new:false,
+            fast_transition:None,orchestrator_new:false,orchestrator_transition:None,
             automatic_titles:!cfg!(test)&&restored.as_ref().is_none_or(|s|s.automatic_titles),title_queue:Default::default(),title_busy:false,title_work:None,title_motions:HashMap::new(),
             startup_surface:restored.as_ref().map_or_else(Default::default,|s|s.startup_surface),
             orchestration_models:HashMap::new(),orchestration_probes:HashSet::new(),
@@ -2457,6 +2458,7 @@ impl Orbit {
     }
     fn new_conversation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.orchestrator_new=false;
+        self.orchestrator_transition=None;
         if !self.unified_navigating{if let Some(old)=self.active.as_ref().and_then(|id|self.sessions.iter().find(|s|&s.id==id)).cloned(){self.unified_back.push(old);if self.unified_back.len()>100{self.unified_back.remove(0);}self.unified_forward.clear();}}
         self.stop_voice(cx);
         self.new_execution_path = if self.project == self.unprojected_root() {
@@ -5189,6 +5191,7 @@ impl Orbit {
                             .px_2()
                             .pb_2()
                             .flex()
+                            .flex_wrap()
                             .items_center()
                             .gap(px(6.))
                             .child(
