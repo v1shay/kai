@@ -33,7 +33,14 @@ private func auditCommand(_ bytes:UnsafePointer<UInt8>?,_ count:Int)->Bool{guard
   ui.setComposerHasText(true);precondition(model.opacity==1 && permission.opacity==1,"Typing hides the composer controls");ui.setComposerHasText(false)
   let bolt=member(ui,"fastTint") as! CALayer;precondition(!bolt.isHidden,"Advertised Fast Mode is missing");let shimmer=member(ui,"fastShimmer") as! CALayer;precondition(shimmer.sublayers?.count==160,"Fast and intensity must share tile animation geometry");let fastBefore=commands.count;_ = ui.handleClick(CGPoint(x:input.frame.minX+bolt.frame.midX,y:input.frame.minY+bolt.frame.midY));precondition(commands.count==fastBefore+1 && commands.last?["action"] as? String == "fast_mode","Fast Mode did not reach owner")
   let quota=member(ui,"usageLabel") as! CATextLayer;let quotaTrack=member(ui,"usageTrack") as! CALayer;precondition(abs(quota.frame.midY-quotaTrack.frame.midY)<0.01,"Usage bar/text do not share the footer center");let chipShimmer=member(ui,"effortShimmer") as! EffortTileLayer;precondition(chipShimmer.previewing,"Selected thinking button has no tile animation");precondition((quota.string as? String)?.contains("83% left")==true,"Usage footer does not show remaining");_ = ui.handleClick(CGPoint(x:quota.frame.midX,y:quota.frame.midY));let popup=member(ui,"composerPopover") as! ComposerGlassPopover;precondition(popup.visible,"Usage did not open its custom glass panel");popup.dismiss()
-  let chip=member(ui,"effortChip") as! CALayer;ui.handleHover(CGPoint(x:input.frame.minX+chip.frame.midX,y:input.frame.minY+chip.frame.midY));precondition(popup.visible,"Thinking hover did not open its custom glass panel")
+  let chip=member(ui,"effortChip") as! CALayer;ui.handleHover(CGPoint(x:input.frame.minX+chip.frame.midX,y:input.frame.minY+chip.frame.midY));precondition(!popup.visible,"Thinking hover must not open a panel")
+  let effortPoint=CGPoint(x:input.frame.minX+chip.frame.midX,y:input.frame.minY+chip.frame.midY)
+  _=ui.handleClick(effortPoint);precondition(popup.visible,"Thinking click did not open the panel")
+  _=ui.handleClick(effortPoint);precondition(!popup.visible,"Second click must close thinking")
+  _=ui.handleClick(effortPoint);_ = ui.handleClick(CGPoint(x:quota.frame.midX,y:quota.frame.midY));precondition(popup.visible && (member(popup,"effortRows") as! [EffortTileRow]).isEmpty,"Different trigger must replace thinking with usage")
+  _ = ui.handleClick(CGPoint(x:quota.frame.midX,y:quota.frame.midY));precondition(!popup.visible,"Second click must close usage")
+  _=ui.handleClick(effortPoint);_ = ui.handleClick(CGPoint(x:input.frame.midX,y:input.frame.maxY-10));precondition(!popup.visible,"Clicking elsewhere must close thinking")
+  _=ui.handleClick(effortPoint)
   precondition(chip.frame.minX-model.frame.maxX>=2 && chip.frame.minX-model.frame.maxX<=5,"Thinking intensity is detached from the model name")
   let scalableForFooter=member(app,"scalableUI") as! NSView,footerScale=scalableForFooter.frame.height/scalableForFooter.bounds.height
   let composerBottom=scalableForFooter.frame.minY+input.frame.minY*footerScale,usageCenter=scalableForFooter.frame.minY+quota.frame.midY*footerScale
@@ -69,7 +76,7 @@ private func auditCommand(_ bytes:UnsafePointer<UInt8>?,_ count:Int)->Bool{guard
   app.expandToRunningChat();pump();if let panel=member(app,"panel") as? NSPanel,let view=panel.contentView,let bitmap=view.bitmapImageRepForCachingDisplay(in:view.bounds){view.cacheDisplay(in:view.bounds,to:bitmap);if let png=bitmap.representation(using:.png,properties:[:]){try png.write(to:URL(fileURLWithPath:"/private/tmp/kai-v084-native-composer.png"))}}
   if let panel=member(app,"panel") as? NSPanel,let field=member(app,"composerField") as? NSTextField,let scalable=member(app,"scalableUI") as? NSView,let main=member(ui,"main") as? CALayer,let bar=member(ui,"actionBar") as? CALayer,let hits=member(ui,"actionHits") as? [(CGRect,String)],let new=hits.first(where:{$0.1=="new"}) {
    precondition(panel.contentView!.acceptsFirstMouse(for:nil) && scalable.acceptsFirstMouse(for:nil) && field.acceptsFirstMouse(for:nil),"The notch rejects first clicks while another app is active")
-   func click(_ point:CGPoint){let up=NSEvent.mouseEvent(with:.leftMouseUp,location:point,modifierFlags:[],timestamp:ProcessInfo.processInfo.systemUptime,windowNumber:panel.windowNumber,context:nil,eventNumber:1,clickCount:1,pressure:0)!;NSApp.postEvent(up,atStart:false);let down=NSEvent.mouseEvent(with:.leftMouseDown,location:point,modifierFlags:[],timestamp:ProcessInfo.processInfo.systemUptime,windowNumber:panel.windowNumber,context:nil,eventNumber:0,clickCount:1,pressure:1)!;panel.sendEvent(down);pump(0.1)}
+   func click(_ point:CGPoint){let up=NSEvent.mouseEvent(with:.leftMouseUp,location:point,modifierFlags:[],timestamp:ProcessInfo.processInfo.systemUptime,windowNumber:panel.windowNumber,context:nil,eventNumber:1,clickCount:1,pressure:0)!;NSApp.postEvent(up,atStart:false);let down=NSEvent.mouseEvent(with:.leftMouseDown,location:point,modifierFlags:[],timestamp:ProcessInfo.processInfo.systemUptime,windowNumber:panel.windowNumber,context:nil,eventNumber:0,clickCount:1,pressure:1)!;NSApp.sendEvent(down);pump(0.1)}
    click(field.convert(CGPoint(x:field.bounds.midX,y:field.bounds.midY),to:nil))
    precondition(panel.firstResponder is NSTextView,"The actual notch window did not focus its composer")
    precondition(field.cell is ComposerTextCell,"The live composer retained the top-aligned default text cell")
@@ -78,6 +85,11 @@ private func auditCommand(_ bytes:UnsafePointer<UInt8>?,_ count:Int)->Bool{guard
    let insertionLine=field.convert(CGRect(origin:focusedEditor.textContainerOrigin,size:CGSize(width:1,height:lineHeight)),from:focusedEditor)
    precondition(abs(insertionLine.midY-field.bounds.midY)<2,"The typing cursor is not vertically centered with the editing row")
    print("Native composer: focused typing cursor centered in the actual editing row")
+   let actualEffort=scalable.convert(CGPoint(x:ui.layer.frame.minX+effortPoint.x,y:ui.layer.frame.minY+effortPoint.y),to:nil)
+   click(actualEffort);precondition(popup.visible,"Actual thinking click was swallowed")
+   click(actualEffort);precondition(!popup.visible,"Actual trigger click reopened a dismissed panel")
+   click(actualEffort);click(field.convert(CGPoint(x:field.bounds.midX,y:field.bounds.midY),to:nil));precondition(!popup.visible,"Actual composer click left thinking open")
+   print("Native controls: hover is visual only; trigger toggles, panel switching and outside clicks passed")
    let rect=new.0.offsetBy(dx:ui.layer.frame.minX+main.frame.minX+bar.frame.minX,dy:ui.layer.frame.minY+main.frame.minY+bar.frame.minY),before=commands.count
    click(scalable.convert(CGPoint(x:rect.midX,y:rect.midY),to:nil))
    precondition(commands.count>before && commands.last?["action"] as? String == "new","The actual notch window swallowed its New button")

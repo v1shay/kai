@@ -726,6 +726,7 @@ struct Orbit {
     modal: Option<Modal>,
     panel_popover: Option<popovers::PanelPopover>,
     panel_at_pointer_down: Option<Modal>,
+    picker_at_pointer_down: Option<bool>,
     workspace_trust: Option<WorkspaceTrust>,
     session_conflict: Option<WorkspaceTrust>,
     session_conflict_open: bool,
@@ -896,10 +897,13 @@ impl Orbit {
         let file_indicator = cx.new(kai_indicator::KaiFileGlyph::new);
         let activation = cx.observe_window_activation(window, |this, window, cx| {
             if window.is_window_active() {
-                this.overlay_window = Some(window.window_handle().window_id());
+                let id=window.window_handle().window_id();
+                if let Some(previous)=this.overlay_window.filter(|previous|*previous!=id){this.dismiss_controls_for_window(previous);}
+                this.overlay_window = Some(id);
             }
             if !window.is_window_active() {
                 this.dictation_hotkey_down = false;
+                this.dismiss_controls_for_window(window.window_handle().window_id());
             }
             cx.notify();
         });
@@ -1276,6 +1280,7 @@ impl Orbit {
             modal: None,
             panel_popover: None,
             panel_at_pointer_down: None,
+            picker_at_pointer_down: None,
             workspace_trust: None,
             session_conflict: None,
             session_conflict_open: false,
@@ -4143,7 +4148,7 @@ impl Orbit {
                             .child(div().flex_1())
                             .child(icon("chevron-right", 12., MUTED))
                             .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
-                                cx.stop_propagation(); this.toggle_agent_picker(event.position(), window, cx)
+                                cx.stop_propagation(); this.toggle_picker_from_click(false,event.position(), window, cx)
                             })),
                     )
                     .child(
@@ -5178,7 +5183,7 @@ impl Orbit {
                             )
                             .child(
                                 div()
-                                    .id("choose-agent")
+                                    .id("choose-agent").debug_selector(||"choose-agent".into())
                                     .h(px(26.))
                                     .px_2()
                                     .flex()
@@ -5199,7 +5204,7 @@ impl Orbit {
                                     .child(icon("chevron-down", 10., MUTED))
                                     .on_click(cx.listener(
                                         |this, event: &ClickEvent, window, cx| {
-                                            this.toggle_agent_picker(event.position(), window, cx)
+                                            this.toggle_picker_from_click(false,event.position(), window, cx)
                                         },
                                     )),
                             )
@@ -5678,6 +5683,7 @@ impl Render for Orbit {
                 // Outside-dismiss handlers run later in capture. Preserve the
                 // panel for this click so its own trigger can still toggle it.
                 this.panel_at_pointer_down = this.modal;
+                this.remember_picker_press();
             }))
             .on_action(cx.listener(|this, _: &NewConversation, window, cx| {
                 this.new_conversation(window, cx)

@@ -86,6 +86,28 @@ impl Orbit {
             picker.started = Instant::now();
         }
     }
+    pub(super) fn dismiss_controls_for_window(&mut self,id:gpui::WindowId) {
+        if self.overlay_window!=Some(id){return}
+        // Deactivation must not focus/resign native views inside AppKit's callback.
+        self.agent_picker=None;self.panel_popover=None;self.action_menu=None;self.modal=None;
+        self.picker_at_pointer_down=None;self.panel_at_pointer_down=None;
+    }
+    pub(super) fn remember_picker_press(&mut self) {
+        self.picker_at_pointer_down=self.agent_picker.as_ref().filter(|p|!p.closing).map(|p|p.effort_only);
+    }
+    pub(super) fn toggle_picker_from_click(&mut self, effort:bool, position:Point<Pixels>,window:&mut Window,cx:&mut Context<Self>) {
+        // Outside-dismiss runs on pointer down, before the trigger's click.
+        // Use the surface that owned this press, not its closing animation.
+        if self.picker_at_pointer_down.take()==Some(effort) {
+            self.dismiss_agent_picker();cx.notify();return;
+        }
+        self.agent_picker=None;
+        self.toggle_agent_picker(position,window,cx);
+        if let Some(picker)=self.agent_picker.as_mut(){
+            picker.effort_only=effort;
+            if effort{picker.anchor=position-point(px(20.),px(230.));}
+        }
+    }
     pub(super) fn toggle_agent_picker(
         &mut self,
         position: Point<Pixels>,

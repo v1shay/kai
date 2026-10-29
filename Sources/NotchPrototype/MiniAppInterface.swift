@@ -474,6 +474,8 @@ private final class AttachmentLayer:CALayer {
     }
 
     func handleClick(_ point:CGPoint,count:Int=1)->Bool {
+        let popoverGeneration=composerPopover.generation
+        defer{composerPopover.dismiss(ifUnchanged:popoverGeneration)}
         if count>=2,let url=fileURL(at:point){onFileActions?(url);return true}
         // Keep overlapping image previews' existing front-to-back ownership.
         let attachmentPoint=CGPoint(x:point.x-imageStrip.frame.minX,y:point.y-imageStrip.frame.minY)
@@ -579,7 +581,7 @@ private final class AttachmentLayer:CALayer {
         let action=actionPoint.flatMap{p in actionHits.first{$0.0.insetBy(dx:0,dy:-3).contains(p)}?.1}
         if action != hoveredAction,let action,let engine=actionSymbols[action]{engine.showScene(action=="approve" ? "success":action=="reject" ? "failure":action=="review" ? "review":"pause",looping:false)};hoveredAction=action
         let overEffort=point.map{usesUnifiedComposer && !effortChip.isHidden && effortChip.frame.offsetBy(dx:input.frame.minX,dy:input.frame.minY).contains($0)} ?? false
-        if overEffort && !hoveringEffort{effortShimmer.play(restart:true);if !composerPopover.visible{showThinkingPopover()}};hoveringEffort=overEffort
+        if overEffort && !hoveringEffort{effortShimmer.play(restart:true)};hoveringEffort=overEffort
         let overFast=point.map{usesUnifiedComposer && !fastTint.isHidden && fastTint.frame.insetBy(dx:-4,dy:-4).offsetBy(dx:input.frame.minX,dy:input.frame.minY).contains($0)} ?? false
         if overFast && !hoveringFast{fastShimmer.play(restart:true)};hoveringFast=overFast
         let fileHover=point.flatMap{fileAction(at:$0)}
@@ -739,17 +741,17 @@ private final class AttachmentLayer:CALayer {
         guard let state=modelState,let model=selectedEffortModel(state)else{return []};let levels=model.supportedReasoningEfforts.map(\.reasoningEffort),current=state.reasoningEffort.flatMap{$0.isEmpty ? nil:$0} ?? state.effectiveReasoningEffort
         return levels.enumerated().map{i,value in let row=EffortTileRow(value:value,title:value=="xhigh" ? "Extra high":value.capitalized,index:i,count:levels.count,selected:value==current);row.commit={[weak self] value in guard let self,self.modelState?.ownerToken==state.ownerToken,self.modelState?.selectedModel==state.selectedModel else{return};self.onSettings?(state.selectedModel ?? "",value);self.composerPopover.dismiss()};return row}
     }
-    private func showThinkingPopover(){let rows=thinkingRows();if !rows.isEmpty{composerPopover.show(title:"Thinking intensity",rows:rows,at:NSEvent.mouseLocation)}}
+    private func showThinkingPopover(){let rows=thinkingRows();if !rows.isEmpty{composerPopover.show(key:"effort",title:"Thinking intensity",rows:rows,at:NSEvent.mouseLocation)}}
     private func showUsagePopover(){
         guard let state=modelState else{return};var rows:[NSView]=[]
         for text in [state.usageAccount,state.usageUpdated].compactMap({$0})+(state.usageWindows ?? []).map({$0.label+" · "+$0.remaining+($0.reset.map{"\n"+$0} ?? "")}) {let row=NSTextField(wrappingLabelWithString:text);row.font=AppTypography.ui(ofSize:10,weight:.medium);rows.append(row)}
         if let resets=state.usageResets{rows.append(NSTextField(labelWithString:"Banked resets · \(resets.availableCount) available"));for credit in resets.credits{let expiry=credit.expiresAt.map{Date(timeIntervalSince1970:$0>10_000_000_000 ? $0/1000:$0).formatted(date:.abbreviated,time:.shortened)};let text=(credit.title ?? "Full reset")+(expiry.map{" · expires "+$0} ?? "");let row=NSButton(title:text,target:self,action:#selector(useUsageReset(_:)));row.identifier=NSUserInterfaceItemIdentifier(credit.id);row.bezelStyle = .inline;row.isEnabled=credit.status=="available";rows.append(row)}}
         let refresh=NSButton(title:"Refresh usage",target:self,action:#selector(refreshUsage));refresh.bezelStyle = .inline;rows.append(refresh)
-        composerPopover.show(title:(state.agents?.first{$0.id==state.selectedAgent}?.name ?? "Agent")+" usage",rows:rows,at:NSEvent.mouseLocation)
+        composerPopover.show(key:"usage",title:(state.agents?.first{$0.id==state.selectedAgent}?.name ?? "Agent")+" usage",rows:rows,at:NSEvent.mouseLocation)
     }
     @objc private func useUsageReset(_ button:NSButton){guard let id=button.identifier?.rawValue,modelState?.usageResets?.credits.contains(where:{$0.id==id&&$0.status=="available"})==true else{return};composerPopover.dismiss();onUsageReset?(id)}
     @objc private func refreshUsage(){composerPopover.dismiss();onUsageRefresh?()}
-    private func showPermissionsMenu(){permissionMenu()?.popUp(positioning:nil,at:NSEvent.mouseLocation,in:nil)}
+    private func showPermissionsMenu(){composerPopover.dismiss();permissionMenu()?.popUp(positioning:nil,at:NSEvent.mouseLocation,in:nil)}
     func permissionMenu()->NSMenu? {
         guard let state=modelState else{return nil};let menu=NSMenu()
         let path=menu.addItem(withTitle:state.workspaceExecutionPath ?? state.project,action:nil,keyEquivalent:"");path.isEnabled=false
@@ -761,7 +763,7 @@ private final class AttachmentLayer:CALayer {
         return menu
     }
     @objc private func selectPermission(_ item:NSMenuItem){guard let values=item.representedObject as? [String],values.count==3,values[2]==(modelState?.ownerToken ?? "") else{return};onPermissions?(values[0]=="access" ? values[1]:nil,values[0]=="approvals" ? values[1]:nil)}
-    private func showSettingsMenu(_ kind:String){if kind=="effort"{showThinkingPopover();return};settingsMenu(kind)?.popUp(positioning:nil,at:NSEvent.mouseLocation,in:nil)}
+    private func showSettingsMenu(_ kind:String){if kind=="effort"{showThinkingPopover();return};composerPopover.dismiss();settingsMenu(kind)?.popUp(positioning:nil,at:NSEvent.mouseLocation,in:nil)}
     func settingsMenu(_ kind:String)->NSMenu? {
         guard let state=modelState,let models=state.models else{return nil}
         let menu=NSMenu()

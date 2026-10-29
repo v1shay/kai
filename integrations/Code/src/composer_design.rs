@@ -59,8 +59,7 @@ impl Orbit{
         let Some(model)=self.effort_model_choice().filter(|m|!m.reasoning_efforts.is_empty())else{return div().into_any_element()};
         let value=self.unified_effort().map(str::to_owned).or_else(||self.effective_model_settings().1).unwrap_or_default();let i=model.reasoning_efforts.iter().position(|e|e==&value).unwrap_or(0);let t=i as f32/model.reasoning_efforts.len().saturating_sub(1).max(1)as f32;let color=effort_color(&value,t);let label=title(&value);
         let chip=div().id("thinking-chip").debug_selector(||"thinking-chip".into()).px_2().h(px(26.)).relative().overflow_hidden().rounded_md().flex().items_center().text_size(theme::ui_px(11.)).text_color(rgb(color)).bg(linear_gradient(90.,linear_color_stop(rgba((color<<8)|0x24),0.),linear_color_stop(rgba((intensity((t+0.25).min(1.))<<8)|0x10),1.))).cursor_pointer()
-        .on_mouse_move(cx.listener(|this,event:&MouseMoveEvent,window,cx|{if this.agent_picker.is_none(){this.toggle_agent_picker(event.position,window,cx);if let Some(p)=this.agent_picker.as_mut(){p.effort_only=true;p.anchor=event.position-point(px(20.),px(230.));}}}))
-        .on_click(cx.listener(|this,event:&ClickEvent,window,cx|{if this.agent_picker.as_ref().is_none_or(|p|p.closing){this.toggle_agent_picker(event.position(),window,cx);}if let Some(p)=this.agent_picker.as_mut(){p.effort_only=true;}}));
+        .on_click(cx.listener(|this,event:&ClickEvent,window,cx|{this.toggle_picker_from_click(true,event.position(),window,cx);}));
         if self.motion && !native::reduced_motion() && window.is_window_active(){
             chip.with_animation(SharedString::from(format!("thinking-chip-{}-{value}",self.agent.command())),Animation::new(Duration::from_secs(5)),move|chip,t|chip.child(shimmer_tiles(Some(t*5.),color,true)).child(div().relative().child(label.clone()))).into_any_element()
         }else{chip.child(shimmer_tiles(Some(0.),color,false)).child(div().relative().child(label)).into_any_element()}
@@ -131,6 +130,33 @@ impl Orbit{
    app.toggle_fast(cx);assert_eq!(app.request_service_tier().as_deref(),Some("priority"));let saved=app.workspace_snapshot(cx).normalized();assert_eq!(saved.reasoning_efforts.get("codex:service-tier").map(String::as_str),Some("fast"));
    app.agent=AgentKind::Gemini;assert!(app.request_service_tier().is_none());app.agent=AgentKind::Codex;app.toggle_fast(cx);assert_eq!(app.request_service_tier().as_deref(),Some("default"));
   });
+ }
+ #[gpui::test]fn composer_popovers_are_click_only_toggle_and_switch_without_losing_drafts(cx:&mut TestAppContext){
+  let(view,cx)=crate::ui_tests::fixture(cx);
+  view.update(cx,|app,cx|{
+   app.agent=AgentKind::Codex;app.model=Some("thinking-click-fixture".into());app.native_models.insert(AgentKind::Codex,vec![agent_controls::ModelChoice{id:"thinking-click-fixture".into(),label:"Click fixture".into(),reasoning_efforts:vec!["low".into(),"medium".into(),"high".into()]}]);let key=app.effort_key();app.reasoning_efforts.insert(key,"medium".into());app.composer.update(cx,|input,cx|input.set_text("Keep this draft",cx));cx.notify();
+  });
+  for motion in [false,true]{
+   view.update(cx,|app,cx|{app.motion=motion;app.agent_picker=None;cx.notify();});cx.run_until_parked();
+   let chip=cx.debug_bounds("thinking-chip").unwrap();cx.simulate_mouse_move(chip.center(),None,Modifiers::none());cx.run_until_parked();
+   view.update(cx,|app,_|assert!(app.agent_picker.is_none(),"Hover opened a panel"));
+   crate::ui_tests::click_selector(cx,"thinking-chip");cx.run_until_parked();
+   view.update(cx,|app,_|assert!(app.agent_picker.as_ref().is_some_and(|p|p.effort_only&&!p.closing)));
+   crate::ui_tests::click_selector(cx,"thinking-chip");cx.run_until_parked();
+   view.update(cx,|app,_|assert!(app.agent_picker.as_ref().is_none_or(|p|p.closing),"Repeated click reopened thinking"));
+   crate::ui_tests::click_selector(cx,"choose-agent");cx.run_until_parked();
+   view.update(cx,|app,_|assert!(app.agent_picker.as_ref().is_some_and(|p|!p.effort_only&&!p.closing)));
+   crate::ui_tests::click_selector(cx,"thinking-chip");cx.run_until_parked();
+   view.update(cx,|app,_|assert!(app.agent_picker.as_ref().is_some_and(|p|p.effort_only&&!p.closing),"Different trigger did not switch panel"));
+   cx.simulate_click(point(px(900.),px(100.)),Modifiers::none());cx.run_until_parked();
+   view.update(cx,|app,cx|{assert!(app.agent_picker.as_ref().is_none_or(|p|p.closing),"Outside click left a panel open");assert_eq!(app.composer.read(cx).text(),"Keep this draft");});
+   crate::ui_tests::click_selector(cx,"choose-agent");cx.run_until_parked();crate::ui_tests::click_selector(cx,"choose-agent");cx.run_until_parked();
+   view.update(cx,|app,_|assert!(app.agent_picker.as_ref().is_none_or(|p|p.closing),"Repeated click reopened model picker"));
+  }
+  crate::ui_tests::click_selector(cx,"choose-agent");cx.run_until_parked();
+  view.update(cx,|app,_|assert!(app.agent_picker.as_ref().is_some_and(|p|!p.closing)));
+  cx.deactivate_window();cx.run_until_parked();
+  view.update(cx,|app,cx|{assert!(app.agent_picker.is_none(),"Changing apps kept a picker open");assert_eq!(app.composer.read(cx).text(),"Keep this draft");});
  }
  #[gpui::test]fn thinking_preview_defaults_to_selected_and_returns_after_hover(cx:&mut TestAppContext){
   let(view,cx)=crate::ui_tests::fixture(cx);

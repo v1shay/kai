@@ -371,8 +371,8 @@ impl Orbit {
                                                 |this, event: &ClickEvent, window, cx| {
                                                     this.overlay_window =
                                                         Some(window.window_handle().window_id());
-                                                    this.toggle_agent_picker(
-                                                        event.position(),
+                                                    this.toggle_picker_from_click(
+                                                        false,event.position(),
                                                         window,
                                                         cx,
                                                     );

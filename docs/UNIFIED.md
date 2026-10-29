@@ -1374,3 +1374,29 @@ Installed 0.10.0 (31) at the existing `.build/Kai Unified.app` location. The pri
 0.9.6 bundle is preserved as `Kai Unified 0.9.6 backup-20261028-172243.app`.
 Code and both native libraries match the signed staging bundle byte-for-byte.
 The running user session was left open; relaunch loads the new build.
+
+## 0.10.1 — consistent click-operated controls
+
+Thinking controls in Code and the extended notch open only on click. Hover
+retains the existing visual feedback and never opens a panel or changes a
+setting. Repeating a trigger click closes its panel; clicking another control
+switches panels. Clicking elsewhere, pressing Escape, or changing apps dismisses
+the transient controls while preserving the draft and selected settings.
+
+GPUI remembers which picker owned pointer-down before outside-dismiss handlers
+run, sharing the same rule across Code and Quick Chat. Native thinking/usage
+panels identify their trigger and retire only the outgoing panel after event
+dispatch; a queued outside-click cannot close a newly opened replacement.
+Native model/permission menus also dismiss the custom panel before tracking.
+
+Validation: seven composer regressions passed, including actual pointer events
+with motion enabled/disabled, model/intensity switching, outside dismissal,
+window deactivation and draft preservation. The existing dropdown-toggle test
+also passed. Native mouse-event checks verified thinking/usage toggles, panel
+replacement and clicking back into the editor. Swift ran 206 tests with one
+skip and zero failures. The signed release passed the full surface/morph/Quick
+Chat smoke probe and all eleven native ABI exports.
+
+Installed 0.10.1 (32); app and native library hashes match the signed staging
+bundle. The previous app is preserved as `Kai Unified 0.10.0 backup-20261028-180516.app`.
+The running session was preserved; relaunch loads the interaction fix.

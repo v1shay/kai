@@ -205,6 +205,9 @@ impl QuickChat {
                 cx.notify();
             }
         });
+        let activation=cx.observe_window_activation(window,|this,window,cx|{
+            if !window.is_window_active(){this.orbit.update(cx,|app,cx|{app.dismiss_controls_for_window(window.window_handle().window_id());cx.notify();});}
+        });
         let background = orbit.read(cx).background.clone();
         let background_changes = cx.observe(&background, |this, _, cx| {
             if this.visible {
@@ -234,6 +237,7 @@ impl QuickChat {
                 main_changes,
                 orbit_changes,
                 background_changes,
+                activation,
             ],
         }
     }
@@ -270,7 +274,9 @@ impl QuickChat {
         self.visible = true;
         self.show_generation = self.show_generation.wrapping_add(1);
         self.orbit.update(cx, |app, _| {
-            app.overlay_window = Some(window.window_handle().window_id())
+            let id=window.window_handle().window_id();
+            if let Some(previous)=app.overlay_window.filter(|previous|*previous!=id){app.dismiss_controls_for_window(previous);}
+            app.overlay_window = Some(id)
         });
         native::apply_theme(window, &self.orbit.read(cx).resolved_theme);
         native::apply_appearance(window, &self.orbit.read(cx).effective_appearance());
@@ -383,6 +389,7 @@ impl Render for QuickChat {
             .capture_any_mouse_down(cx.listener(|this, _, _, cx| {
                 this.orbit.update(cx, |app, _| {
                     app.panel_at_pointer_down = app.modal;
+                    app.remember_picker_press();
                 });
             }))
             .on_action(cx.listener(|this, _: &Escape, window, cx| this.escape(window, cx)))

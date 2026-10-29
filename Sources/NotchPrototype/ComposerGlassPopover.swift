@@ -59,6 +59,8 @@ import AppKit
 
 @MainActor final class ComposerGlassPopover {
     private var panel:NSPanel?,monitor:Any?,globalMonitor:Any?
+    private var key:String?
+    private(set) var generation=0
     private var effortRows=[EffortTileRow](),hoveredEffort:String?
     private func preview(_ value:String,_ hovering:Bool){
         if hovering{hoveredEffort=value}else if hoveredEffort==value{hoveredEffort=nil}else{return}
@@ -66,9 +68,11 @@ import AppKit
         for row in effortRows{row.setPreview(row.value==target)}
     }
     var visible:Bool{panel?.isVisible == true}
-    func dismiss(){effortRows.forEach{$0.setPreview(false);$0.onPreview=nil};effortRows=[];hoveredEffort=nil;if let monitor{NSEvent.removeMonitor(monitor)};if let globalMonitor{NSEvent.removeMonitor(globalMonitor)};monitor=nil;globalMonitor=nil;panel?.orderOut(nil);panel=nil}
-    func show(title:String,rows:[NSView],at anchor:CGPoint){
-        dismiss();let height=CGFloat(rows.count)*38+42,width:CGFloat=264
+    func dismiss(ifUnchanged token:Int){if generation==token{dismiss()}}
+    func dismiss(){generation &+= 1;key=nil;effortRows.forEach{$0.setPreview(false);$0.onPreview=nil};effortRows=[];hoveredEffort=nil;if let monitor{NSEvent.removeMonitor(monitor)};if let globalMonitor{NSEvent.removeMonitor(globalMonitor)};monitor=nil;globalMonitor=nil;panel?.orderOut(nil);panel=nil}
+    func show(key:String,title:String,rows:[NSView],at anchor:CGPoint){
+        if visible,self.key==key{dismiss();return}
+        dismiss();self.key=key;let height=CGFloat(rows.count)*38+42,width:CGFloat=264
         let screen=NSScreen.screens.first{$0.frame.contains(anchor)}?.visibleFrame ?? NSScreen.main?.visibleFrame ?? CGRect(x:0,y:0,width:1200,height:800)
         let origin=CGPoint(x:min(max(screen.minX+8,anchor.x-30),screen.maxX-width-8),y:max(screen.minY+8,min(anchor.y-height-4,screen.maxY-height-8)))
         let panel=NSPanel(contentRect:CGRect(origin:origin,size:CGSize(width:width,height:height)),styleMask:[.borderless,.nonactivatingPanel],backing:.buffered,defer:false);panel.isOpaque=false;panel.backgroundColor = .clear;panel.hasShadow=true;panel.level = .popUpMenu;panel.collectionBehavior=[.canJoinAllSpaces,.fullScreenAuxiliary]
@@ -78,7 +82,7 @@ import AppKit
         self.panel=panel;panel.alphaValue=0;panel.orderFrontRegardless()
         effortRows=rows.compactMap{$0 as? EffortTileRow};for row in effortRows{row.onPreview={[weak self] value,hovering in self?.preview(value,hovering)};row.setPreview(row.selected)}
         NSAnimationContext.runAnimationGroup{c in c.duration=NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0:0.16;panel.animator().alphaValue=1}
-        monitor=NSEvent.addLocalMonitorForEvents(matching:[.leftMouseDown,.rightMouseDown,.keyDown]){[weak self,weak panel] event in if event.type == .keyDown && event.keyCode==53{self?.dismiss();return nil};if event.type != .keyDown,event.window !== panel{self?.dismiss()};return event}
+        monitor=NSEvent.addLocalMonitorForEvents(matching:[.leftMouseDown,.rightMouseDown,.keyDown]){[weak self,weak panel] event in if event.type == .keyDown && event.keyCode==53{self?.dismiss();return nil};if event.type != .keyDown,event.window !== panel{DispatchQueue.main.async{[weak self,weak panel] in guard let self,let panel,self.panel === panel else{return};self.dismiss()}};return event}
         globalMonitor=NSEvent.addGlobalMonitorForEvents(matching:[.leftMouseDown,.rightMouseDown]){[weak self] _ in Task{@MainActor in self?.dismiss()}}
     }
 }
