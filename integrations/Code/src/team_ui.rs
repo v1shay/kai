@@ -70,6 +70,7 @@ impl Orbit {
                     session: uuid::Uuid::new_v4().to_string(),
                     agent: m.agent,
                     model: self.agent_models.get(m.agent.command()).cloned().flatten(),
+                    reasoning_effort:None,
                     task: task.trim().into(),
                     status: teams::Status::Queued,
                     attempted: false,
@@ -228,7 +229,7 @@ impl Orbit {
         } else {
             prompt
         };
-        let request = RunRequest { orchestrator:false, service_tier:None, reasoning_effort:None,
+        let request = RunRequest { orchestrator:false, service_tier:None, reasoning_effort:member.reasoning_effort.clone(),
             agent: member.agent,
             executable,
             project: team.project.clone(),
@@ -729,6 +730,7 @@ mod tests {
             session: uuid::Uuid::new_v4().to_string(),
             agent,
             model: None,
+            reasoning_effort:None,
             task: task.into(),
             status: teams::Status::Queued,
             attempted: false,

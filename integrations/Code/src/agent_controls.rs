@@ -1045,10 +1045,37 @@ impl Drop for ProbeChild {
     }
 }
 
+#[cfg(test)]
+pub(crate) fn archive_test_threads(executable:&Path,root:&Path,ids:&[String])->Result<()>{
+    let root=root.canonicalize()?;anyhow::ensure!(root.parent()==Some(Path::new("/private/tmp"))&&root.file_name().and_then(|s|s.to_str()).is_some_and(|s|s.starts_with("kai-agent-ui-")),"Not a probe workspace");
+    let reads:Vec<_>=ids.iter().enumerate().map(|(i,id)|(i as u64+1,"thread/read",serde_json::json!({"threadId":id,"includeTurns":false}))).collect();
+    let values=codex_rpc(executable,&root,&reads)?;
+    for (i,id) in ids.iter().enumerate(){let thread=&values[&(i as u64+1)]["result"]["thread"];anyhow::ensure!(thread["id"]==*id&&thread["cwd"].as_str().is_some_and(|cwd|Path::new(cwd).canonicalize().ok().as_ref()==Some(&root)),"Probe thread ownership mismatch");}
+    let archives:Vec<_>=ids.iter().enumerate().map(|(i,id)|(i as u64+1,"thread/archive",serde_json::json!({"threadId":id}))).collect();let results=codex_rpc(executable,&root,&archives)?;for value in results.values(){anyhow::ensure!(value.get("error").is_none(),"Could not archive owned probe thread");}Ok(())
+}
+
+/// One ephemeral, read-only request. No native user thread or transcript is
+/// created, and user MCP servers/hooks/config are not loaded into title work.
+pub fn generate_chat_title(executable:&Path,model:&str,prompt:&str,cancel:&std::sync::atomic::AtomicBool)->Option<String>{
+    if !valid_model_id(model){return None}
+    struct Scratch(PathBuf);impl Drop for Scratch{fn drop(&mut self){let _=fs::remove_dir_all(&self.0);}}
+    let scratch=Scratch(std::env::temp_dir().join(format!("kai-title-{}",uuid::Uuid::new_v4())));
+    fs::create_dir(&scratch.0).ok()?;
+    let request=crate::chat_titles::prompt(prompt);
+    let output=probe_with_limit_cancel(executable,&["exec","--ephemeral","--ignore-user-config","--ignore-rules","--sandbox","read-only","--skip-git-repo-check","--json","--color","never","--model",model,"--config","approval_policy=\"never\"","--config","model_provider=\"kai-openai-https\"","--config","model_providers.kai-openai-https.name=\"OpenAI\"","--config","model_providers.kai-openai-https.wire_api=\"responses\"","--config","model_providers.kai-openai-https.requires_openai_auth=true","--config","model_providers.kai-openai-https.supports_websockets=false",&request],&scratch.0,Duration::from_secs(45),128*1024,Some(cancel)).ok()?;
+    if !output.success{return None}
+    let mut result=None;
+    for line in output.stdout.split(|b|*b==b'\n'){
+        if let Ok(value)=serde_json::from_slice::<Value>(line){if value["type"]=="item.completed"&&value["item"]["type"]=="agent_message"{result=value["item"]["text"].as_str().and_then(crate::chat_titles::parse);}}
+    }result
+}
 fn probe(executable: &Path, args: &[&str], home: &Path, timeout: Duration) -> Result<ProbeOutput> {
     probe_with_limit(executable,args,home,timeout,PROBE_BYTES)
 }
 fn probe_with_limit(executable:&Path,args:&[&str],home:&Path,timeout:Duration,limit:usize)->Result<ProbeOutput>{
+    probe_with_limit_cancel(executable,args,home,timeout,limit,None)
+}
+fn probe_with_limit_cancel(executable:&Path,args:&[&str],home:&Path,timeout:Duration,limit:usize,cancel:Option<&std::sync::atomic::AtomicBool>)->Result<ProbeOutput>{
     let mut command = Command::new(executable);
     crate::process_env::apply(&mut command);
     command
@@ -1084,6 +1111,7 @@ fn probe_with_limit(executable:&Path,args:&[&str],home:&Path,timeout:Duration,li
     };
     let mut eof = [false, false];
     loop {
+        if cancel.is_some_and(|c|c.load(std::sync::atomic::Ordering::Acquire)){bail!("Title request cancelled")}
         for (index, (reader, bytes)) in [
             (&mut stdout as &mut dyn Read, &mut output.stdout),
             (&mut stderr as &mut dyn Read, &mut output.stderr),
@@ -1356,6 +1384,14 @@ printf '%s\n' '{"id":3,"result":{"rateLimits":{"primary":{"usedPercent":99}},"ra
         );
     }
 
+    #[test]
+    #[ignore="One short ephemeral Codex subscription title request; no user chat is created"]
+    fn installed_ephemeral_title_is_generated_from_a_real_available_model(){
+        let executable=PathBuf::from(std::env::var("CODE_METADATA_CLI").expect("CODE_METADATA_CLI"));let home=PathBuf::from(std::env::var("CODE_METADATA_HOME").expect("CODE_METADATA_HOME"));
+        let info=codex_metadata(&executable,&home).unwrap();let model=info.models.iter().filter(|m|m.id.contains("-luna")).last().or_else(||info.models.first()).expect("actual available model");
+        let started=Instant::now();let title=generate_chat_title(&executable,&model.id,"Make the native workspace glass readable and add simple keyboard controls. Preserve the existing voice and approval flows.",&Default::default()).expect("semantic title from ephemeral request");
+        assert!(title.len()<160);eprintln!("KAI_TITLE_PROBE_OK model={} title={title:?} elapsed={:.2}s",model.id,started.elapsed().as_secs_f64());
+    }
     #[test]
     fn claude_catalog_uses_live_sdk_model_values_without_inference() {
         let fixture = Fixture::new();

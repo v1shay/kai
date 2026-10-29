@@ -36,7 +36,9 @@ extension KeyedDecodingContainer {
 struct KaiQuota:Decodable {let label:String;let remaining:String;let reset:String?;let fraction:Double}
 struct KaiReset:Decodable {let id:String;let title:String?;let description:String?;let status:String;let expiresAt:Double?}
 struct KaiResets:Decodable {let availableCount:Int;let credits:[KaiReset]}
+struct KaiContextWindow:Decodable{let used:UInt64,limit:UInt64,fraction:Double}
 struct KaiState: Decodable {
+    let contextWindow:KaiContextWindow?
     let usageResets:KaiResets?
     let orchestratorMode:Bool?
     let orchestratorAvailable:Bool?
@@ -308,7 +310,7 @@ enum KaiBridgeEvent {
             request["ownerToken"]=ownerToken
             request["draftBase"]=draftBaseProvider?()
             if action == "interrupt"{request["runId"]=selectedRunID}
-            if ["chat","project","new","new_project","workspace_expand","navigate"].contains(action){request["draft"]=draftProvider?() ?? ""}
+            if ["chat","project","new","new_project","workspace_expand","navigate","ui_command"].contains(action){request["draft"]=draftProvider?() ?? ""}
             if request["targetThreadId"] == nil{request["targetThreadId"]=selectedThreadID}
             if let data=try? JSONSerialization.data(withJSONObject:request){EmbeddedCodeRuntime.shared.send(data)}
             return

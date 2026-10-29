@@ -713,6 +713,7 @@ impl Orbit {
         div()
             .id("native-request-tray")
             .debug_selector(|| "native-request-tray".into())
+            .flex().flex_col().min_w(px(0.))
             .w_full()
             .max_w(px(800.))
             .max_h(px(300.))
@@ -776,6 +777,7 @@ impl Orbit {
             .unwrap_or(1.);
         let token = request.id.clone();
         let mut panel = div()
+            .flex().flex_col().min_w(px(0.))
             .relative()
             .top(px(if live { 5. * (1. - phase) } else { 0. }))
             .w_full()
@@ -1141,6 +1143,49 @@ mod tests {
             cx.notify();
         });
         crate::ui_tests::draw_frame(&view, cx);
+        let bounds = cx.debug_bounds("native-request-tray").unwrap();
+        assert!(bounds.size.height <= px(300.));
+        assert!(bounds.bottom() <= cx.debug_bounds("composer-card").unwrap().top());
+        let button = cx.debug_bounds("native-approval-decline").unwrap();
+        cx.simulate_click(button.center(), Modifiers::none());
+        assert!(
+            matches!(decisions.try_recv(), Ok(runtime::NativeControl::Respond { id, answer: NativeAnswer::Choice(choice) }) if id == "opaque" && choice == "decline")
+        );
+        view.update(cx, |app, cx| {
+            app.respond_native("opaque", NativeAnswer::Choice("decline".into()), cx);
+            assert!(
+                decisions.try_recv().is_err(),
+                "Decision must not be sent twice"
+            );
+            app.native_pending.get_mut("opaque").unwrap().retry();
+            app.runs.get_mut("fixture-session").unwrap().parse_epoch = uuid::Uuid::new_v4();
+            app.respond_native("opaque", NativeAnswer::Choice("decline".into()), cx);
+            assert!(
+                decisions.try_recv().is_err(),
+                "Old tool controls must not answer a new run"
+            );
+        });
+        crate::ui_tests::draw_frame(&view, cx);
+        view.update(cx, |app, _| assert!(app.native_pending.is_empty()));
+    }
+
+    #[gpui::test]
+    fn approval_tray_still_accepts_a_real_click_with_a_docked_terminal(cx: &mut TestAppContext) {
+        let (view, cx) = crate::ui_tests::fixture(cx);
+        let (handle, decisions) = RunHandle::interactive_test_handle();
+        view.update(cx, |app, cx| {
+            app.active = Some("fixture-session".into());
+            let mut run = crate::ui_tests::idle_run("x".repeat(64 * 1024));
+            run.handle = handle;
+            app.native_pending.insert(
+                "opaque".into(),
+                LiveRequest::new("fixture-session", run.parse_epoch, approval("opaque")),
+            );
+            app.runs.insert("fixture-session".into(), run);
+            cx.notify();
+        });
+        cx.update(|window,cx|view.update(cx,|app,cx|{if app.terminal_panel.is_none(){let panel=cx.new(|cx|crate::terminal_ui::TerminalPanel::new(app.project.clone(),window,cx));panel.update(cx,|panel,_|panel.stop());app.terminal_panel=Some(panel);app.terminal_visible=true;cx.notify();}}));
+        cx.run_until_parked();
         let bounds = cx.debug_bounds("native-request-tray").unwrap();
         assert!(bounds.size.height <= px(300.));
         assert!(bounds.bottom() <= cx.debug_bounds("composer-card").unwrap().top());

@@ -94,6 +94,8 @@ impl Orbit {
             let panel = cx.new(|cx| terminal_ui::TerminalPanel::new(root, window, cx));
             self.terminal_subscription =
                 Some(cx.subscribe_in(&panel, window, |this, _, event, _, cx| {
+                    if let terminal_ui::TerminalEvent::Dock(side)=event{this.dock_terminal(*side,cx);}
+                    if matches!(event,terminal_ui::TerminalEvent::DockStarted){this.terminal_dock_hover=None;}
                     if matches!(event, terminal_ui::TerminalEvent::Close) {
                         this.terminal_visible = false;
                         this.terminal_panel = None;
@@ -120,6 +122,7 @@ impl Orbit {
             return;
         }
         self.quit_pending = true;
+        self.title_work=None;self.title_queue.clear();
         self.background
             .update(cx, |background, cx| background.set_quitting(true, cx));
         self.cancel_pending_launches();
@@ -405,6 +408,9 @@ impl Orbit {
         expanded_projects.sort_unstable();
         expanded_projects.truncate(workspace_state::MAX_EXPANDED_PROJECTS);
         WorkspaceState {
+            startup_surface:self.startup_surface,
+            automatic_titles:self.automatic_titles,
+            terminal_dock:self.terminal_dock.normalized(),
             activity: self.activity.saved.clone(),
             prompt_queue: self.prompt_queue.clone(),
             teams: self.teams.clone(),orchestrator_chats:self.orchestrator_chats.iter().cloned().collect(),

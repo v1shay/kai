@@ -36,6 +36,11 @@ mod kai_icons;
 mod kai_indicator;
 mod loading_logo;
 mod native;
+mod startup;
+mod keyboard;
+mod chat_titles;
+mod launch_metrics;
+mod terminal_dock;
 mod orchestrator;
 #[cfg(target_os="macos")]
 mod native_backdrop;
@@ -553,8 +558,16 @@ struct Orbit {
     unified_navigating:bool,
     unified_text_morph:bool,
     fast_transition:Option<Instant>,
+    orchestration_models:HashMap<(AgentKind,PathBuf),(Instant,agent_controls::ControlInfo)>,
+    orchestration_probes:HashSet<(AgentKind,PathBuf)>,
     orchestrator_chats:HashSet<String>,
     orchestrator_new:bool,
+    startup_surface:startup::Surface,
+    automatic_titles:bool,
+    title_queue:std::collections::VecDeque<chat_titles::Seed>,
+    title_busy:bool,
+    title_work:Option<chat_titles::Work>,
+    title_motions:HashMap<String,(String,Instant)>,
     orchestrator_window:WindowHandle<Orbit>,
     reasoning_efforts:std::collections::BTreeMap<String,String>,
     unified_children:Vec<runtime::broker::ChildSnapshot>,
@@ -582,6 +595,8 @@ struct Orbit {
     queue_editing: Option<queue_ui::Editing>,
     terminal_panel: Option<Entity<terminal_ui::TerminalPanel>>,
     terminal_visible: bool,
+    terminal_dock:terminal_dock::Dock,
+    terminal_dock_hover:Option<terminal_dock::Side>,
     terminal_subscription: Option<Subscription>,
     teams: Vec<teams::Team>,
     team_panel: Option<team_ui::Panel>,
@@ -601,6 +616,7 @@ struct Orbit {
     slash: Option<command_ui::SlashPicker>,
     slash_dismissed: Option<String>,
     conversations_visible: bool,
+    conversations_transition:Option<(Instant,f32)>,
     sidebar_split: bool,
     expanded_projects: HashSet<PathBuf>,
     project_tree: project_tree::ProjectTree,
@@ -1099,6 +1115,9 @@ impl Orbit {
             unified_history_end:None,unified_history_wait:false,
             unified_back:vec![],unified_forward:vec![],unified_navigating:false,
             fast_transition:None,orchestrator_new:false,
+            automatic_titles:!cfg!(test)&&restored.as_ref().is_none_or(|s|s.automatic_titles),title_queue:Default::default(),title_busy:false,title_work:None,title_motions:HashMap::new(),
+            startup_surface:restored.as_ref().map_or_else(Default::default,|s|s.startup_surface),
+            orchestration_models:HashMap::new(),orchestration_probes:HashSet::new(),
             orchestrator_chats:restored.as_ref().map(|s|s.orchestrator_chats.iter().cloned().collect()).unwrap_or_default(),
             orchestrator_window:window.window_handle().downcast::<Orbit>().expect("Orbit window"),
             reasoning_efforts:restored.as_ref().map(|s|s.reasoning_efforts.clone()).unwrap_or_default(),
@@ -1124,6 +1143,8 @@ impl Orbit {
             queue_editing: None,
             terminal_panel: None,
             terminal_visible: false,
+            terminal_dock:restored.as_ref().map_or_else(Default::default,|s|s.terminal_dock.normalized()),
+            terminal_dock_hover:None,
             terminal_subscription: None,
             teams: Vec::new(),
             team_panel: None,
@@ -1145,6 +1166,7 @@ impl Orbit {
             sidebar_split: restored.as_ref().is_some_and(|state| state.sidebar_split),
             expanded_projects: saved_expanded_projects,
             project_tree: project_tree::ProjectTree::default(),
+            conversations_transition:None,
             conversations_visible: restored
                 .as_ref()
                 .is_none_or(|state| state.conversations_visible),
@@ -1440,12 +1462,21 @@ impl Orbit {
             .sort_by_key(|project| !self.lifecycle.pinned_projects.contains(&project.path));
         self.rebuild_project_tree();
     }
+    fn conversations_are_visible(&self, window: &Window) -> bool {
+        self.sidebar_split && self.conversations_visible
+            && (!(self.files_visible || self.diff_view.is_some()) || window.viewport_size().width >= px(1180.))
+    }
+    fn visible_reveal_work(&self, window: &Window) -> bool {
+        if self.active.is_some() {
+            !self.loading && self.transcript_reveal.is_some()
+        } else {
+            self.sidebar && self.project_reveal.is_some()
+                || self.conversations_are_visible(window) && self.sessions_reveal.is_some()
+        }
+    }
     fn tick_list_reveals(&mut self, window: &Window, cx: &Context<Self>) {
         let active = window.is_window_active();
-        let sessions_visible = self.sidebar_split
-            && self.conversations_visible
-            && (!(self.files_visible || self.diff_view.is_some())
-                || window.viewport_size().width >= px(1180.));
+        let sessions_visible = self.conversations_are_visible(window);
         if !self.projects_revealed
             && !self.projects.is_empty()
             && (!self.motion || (self.sidebar && active))
@@ -1897,6 +1928,7 @@ impl Orbit {
                 }
             }
             Event::Ready(discovery, sessions, preferred_project) => {
+                launch_metrics::mark("discovery-ready");
                 self.invalidate_project_branches();
                 self.agents = discovery.agents;
                 self.source_projects = discovery.projects;
@@ -3098,6 +3130,7 @@ impl Orbit {
         } = submission;
         let id = session.id.clone();
         if request.orchestrator{self.orchestrator_chats.insert(id.clone());self.orchestrator_new=false;}
+        if self.active.is_none() && self.automatic_titles && !self.lifecycle.chat_names.contains_key(&id){self.queue_chat_title(&session,&original_prompt);}
         self.fork_next = None;
         self.indicator_terminal = None;
         self.active = Some(id.clone());
@@ -3643,6 +3676,7 @@ impl Orbit {
             self.update_stream(id, cx);
         }
         if finished {
+            self.advance_chat_titles(cx);
             let ended_voice=self.runs.get(id).is_some_and(|r|self.voice_runs.remove(&(id.to_owned(),r.parse_epoch)));
             if self
                 .voice_call
@@ -4551,7 +4585,7 @@ impl Orbit {
                     .font_weight(FontWeight::SEMIBOLD)
                     .overflow_hidden()
                     .text_ellipsis()
-                    .child(self.chat_label(&session)),
+                    .child(self.animated_chat_title(&session)),
             )
             .child(
                 div()
@@ -4638,7 +4672,7 @@ impl Orbit {
                             .text_size(theme::ui_px(12.))
                             .overflow_hidden()
                             .text_ellipsis()
-                            .child(self.chat_label(&session)),
+                            .child(self.animated_chat_title(&session)),
                     )
                     .child(
                         div()
@@ -5593,13 +5627,7 @@ impl Render for Orbit {
         });
         let logo_allowed = self.active.is_none() || !live_activity;
         let logo_busy = logo_allowed
-            && (self.discovering
-                || self.loading
-                || if self.active.is_none() {
-                    self.project_reveal.is_some() || self.sessions_reveal.is_some()
-                } else {
-                    self.transcript_reveal.is_some()
-                });
+            && (self.discovering || self.loading || self.visible_reveal_work(window));
         self.loading_logo.update(cx, |logo, cx| {
             logo.configure(
                 loading_logo::Config {
@@ -5685,6 +5713,7 @@ impl Render for Orbit {
                 this.panel_at_pointer_down = this.modal;
                 this.remember_picker_press();
             }))
+            .on_action(cx.listener(|this, action: &keyboard::Execute, window, cx| this.execute_shortcut(&action.id,window,cx)))
             .on_action(cx.listener(|this, _: &NewConversation, window, cx| {
                 this.new_conversation(window, cx)
             }))
@@ -5763,28 +5792,28 @@ impl Render for Orbit {
             })
             .when(
                 (self.sidebar_split || self.sidebar_layout_transition.is_some())
-                    && self.conversations_visible
+                    && (self.conversations_visible||self.conversations_transition.is_some())
                     && (!inspector_open || window.viewport_size().width >= px(1180.)),
                 |s| {
                     s.child(
                         entrance.container(WorkspacePart::Sidebar)
-                            .w(px(260. * self.sidebar_layout_progress()))
-                            .opacity(self.sidebar_layout_progress())
+                            .w(px(260. * self.sidebar_layout_progress()*self.conversations_progress()))
+                            .opacity(self.sidebar_layout_progress()*self.conversations_progress())
                             .h_full()
                             .flex_none()
                             .overflow_hidden()
-                            .child(self.workspace(cx)),
+                            .child(div().w(px(260.)).h_full().child(self.workspace(cx))),
                     )
                 },
             )
-            .child(
+            .child(self.docked_conversation(
                 div()
                     .flex_1()
                     .min_w(px(0.))
                     .h_full()
                     .flex()
                     .flex_col()
-                    .debug_selector(|| "chat-pane".into())
+                    .w_full().min_h(px(0.)).debug_selector(|| "chat-pane".into())
                     .bg(gpui::rgba(self.resolved_theme.main_rgba()))
                     .relative()
                     .overflow_hidden()
@@ -6081,9 +6110,7 @@ impl Render for Orbit {
                         )
                     })
                     .child(entrance.container(WorkspacePart::Composer).flex_none().child(self.composer(window, cx)))
-                    .when(self.terminal_visible, |s| {
-                        s.when_some(self.terminal_panel.clone(), |s, panel| s.child(panel))
-                    }),
+                    .into_any_element(),window,cx)
             )
             .when(self.files_visible, |s| {
                 s.when_some(self.file_browser.clone(), |s, browser| {
@@ -6228,6 +6255,7 @@ fn request_motion_frame(window: &Window, cx: &Context<Orbit>) {
 
 fn bind_app_keys(cx: &mut App) {
     input::bind_keys(cx);
+    keyboard::bind(cx);
     cx.bind_keys([
         KeyBinding::new("cmd-q", Quit, None),
         KeyBinding::new("cmd-w", CloseWindow, None),
@@ -6236,7 +6264,7 @@ fn bind_app_keys(cx: &mut App) {
         KeyBinding::new("cmd-t", NewConversation, None),
         KeyBinding::new("cmd-e", ToggleConversations, None),
         KeyBinding::new("cmd-s", input::SaveFile, None),
-        KeyBinding::new("cmd-alt-n", ReturnToNotch, None),
+        KeyBinding::new("cmd-shift-k", ReturnToNotch, None),
         KeyBinding::new("cmd-a", ToggleSettings, Some("Orbit && !TextInput")),
         KeyBinding::new("cmd-f", ToggleFiles, None),
         KeyBinding::new("cmd-d", ToggleDiffs, None),
@@ -6251,6 +6279,7 @@ fn bind_app_keys(cx: &mut App) {
 
 mod failure_diagnostics;
 fn main() {
+    launch_metrics::start();
     failure_diagnostics::install();
     if std::env::args().any(|a|a=="--diagnose-native-voice"){if let Err(error)=voice::transport_diagnostic(){eprintln!("Native voice diagnostic: {error}");std::process::exit(1)}return}
     unified::prepare_environment();
@@ -6317,11 +6346,12 @@ fn main() {
                     // Order the actual window after creation/restoration and its
                     // first frame, rather than relying on app activation alone.
                     // One launch callback only; background work never raises it.
-                    window.on_next_frame(|window,cx|{if !unified::active(){cx.activate(true);window.activate_window();}});
+                    window.on_next_frame(|window,cx|{launch_metrics::mark("first-workspace-frame");if !unified::active(){cx.activate(true);window.activate_window();}});
                     cx.new(|cx| Orbit::new(window, cx, workspace_store))
                 },
             )
             .expect("open Code window");
+        launch_metrics::mark("workspace-created");
         if let Err(error) = unified::attach(main_window, cx) {
             eprintln!("Kai integration unavailable: {error}");
         }

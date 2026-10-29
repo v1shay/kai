@@ -106,6 +106,9 @@ impl Default for TranscriptAnchor {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WorkspaceState {
+    pub startup_surface:crate::startup::Surface,
+    pub automatic_titles:bool,
+    pub terminal_dock:crate::terminal_dock::Dock,
     pub activity: crate::sidebar_activity::Saved,
     pub prompt_queue: Vec<crate::prompt_queue::Prompt>,
     pub teams: Vec<crate::teams::Team>,
@@ -149,6 +152,9 @@ pub struct WorkspaceState {
 impl Default for WorkspaceState {
     fn default() -> Self {
         Self {
+            startup_surface:Default::default(),
+            automatic_titles:true,
+            terminal_dock:Default::default(),
             activity: Default::default(),
             prompt_queue: Vec::new(),
             teams: Vec::new(),orchestrator_chats:Vec::new(),
@@ -871,6 +877,7 @@ mod integration_regressions {
                     session: uuid::Uuid::new_v4().to_string(),
                     agent: AgentKind::Codex,
                     model: None,
+                    reasoning_effort:None,
                     task: "Inspect without modifications".into(),
                     status,
                     attempted: true,

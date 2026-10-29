@@ -1030,6 +1030,15 @@ impl Session {
                         }
                     }
                 }
+                if matches!(method,"item/started"|"item/completed")&&p["item"]["type"]=="subAgentActivity"{
+                    let item=&p["item"];
+                    if let Some(id)=item["agentThreadId"].as_str().filter(|id|*id!=self.thread){
+                        let parent=p["threadId"].as_str().filter(|parent|*parent==self.thread||service.child(parent)).unwrap_or(&self.thread);
+                        let known=service.child(id);
+                        service.observe(id,parent,"native/subagent_activity",item)?;
+                        if !known{write_message(stdin,&ctx.cancelled,&json!({"id":format!("code-child-subscribe:{id}"),"method":"thread/resume","params":{"threadId":id,"excludeTurns":true}}))?;}
+                    }
+                }
                 if matches!(method, "item/started" | "item/completed")
                     && matches!(
                         p["item"]["type"].as_str(),
@@ -1055,10 +1064,13 @@ impl Session {
                         let known = service.child(id);
                         service.observe(
                             id,
-                            &self.thread,
+                            item["senderThreadId"].as_str().filter(|sender|*sender==self.thread||service.child(sender)).unwrap_or(&self.thread),
                             "native/state",
                             &item["agentsStates"][id],
                         )?;
+                        if matches!(item["tool"].as_str(),Some("spawnAgent"|"spawn_agent")){
+                            service.observe(id,item["senderThreadId"].as_str().unwrap_or(&self.thread),"native/metadata",&json!({"task":item["prompt"],"model":item["model"],"reasoningEffort":item["reasoningEffort"]}))?;
+                        }
                         if !known {
                             write_message(
                                 stdin,
@@ -1093,12 +1105,14 @@ impl Session {
                         service.child_error(child, error);
                     }
                     if value.get("error").is_none() {
+                        service.observe(child,&self.thread,"thread/started",&json!({"thread":value["result"]["thread"]}))?;
                         write_message(
                             stdin,
                             &ctx.cancelled,
                             &json!({"id":format!("code-child-latest:{child}"),"method":"thread/turns/list","params":{"threadId":child,"limit":1,"itemsView":"notLoaded","sortDirection":"desc"}}),
                         )?;
                     }
+                    if value.get("error").is_none()&&service.needs_initial_items(child){write_message(stdin,&ctx.cancelled,&json!({"id":format!("code-child-items:{child}"),"method":"thread/items/list","params":{"threadId":child,"limit":32,"sortDirection":"desc"}}))?;}
                     for turn in value["result"]["thread"]["turns"]
                         .as_array()
                         .into_iter()
@@ -1115,6 +1129,17 @@ impl Session {
                     }
                 }
                 return Ok(());
+            }
+            if let Some(child)=id.strip_prefix("code-child-items:"){
+                if let Some(service)=&self.service{
+                    if !service.has_child_output(child){
+                        for entry in value["result"]["data"].as_array().into_iter().flatten().rev(){
+                            let item=&entry["item"];
+                            if item["type"]=="agentMessage"{service.observe(child,&self.thread,"item/completed",&json!({"item":item}))?;}
+                            if item["type"]=="userMessage"{if let Some(text)=item["content"].as_array().into_iter().flatten().find_map(|c|c["text"].as_str()){service.observe(child,&self.thread,"native/metadata",&json!({"task":text}))?;}}
+                        }
+                    }
+                }return Ok(());
             }
             if let Some(child) = id.strip_prefix("code-child-latest:") {
                 if let Some(service) = &self.service {
@@ -3250,6 +3275,28 @@ send({'method':'thread/realtime/closed','params':{'threadId':'12345678-1234-4234
             seen |= crate::presentation::message_blocks("assistant",&source).iter().any(|b|matches!(b,crate::presentation::MessageBlock::Interaction(crate::chat_interactions::ChatInteraction::Status{title,details,..})if title=="Thinking"&&!details.is_empty()));
         }
         handle.cancel();assert!(seen,"Native subscription did not emit readable reasoning with detailed summaries");eprintln!("Real Codex subscription streamed a readable reasoning summary in {:.1}s",started.elapsed().as_secs_f64());
+    }
+    #[test]
+    #[ignore="Real Codex parent and one native child in a disposable workspace; archives only verified probe threads"]
+    fn installed_codex_child_is_observed_with_task_model_and_full_output(){
+        let root=std::path::Path::new("/private/tmp").join(format!("kai-agent-ui-children-{}",uuid::Uuid::new_v4()));std::fs::create_dir(&root).unwrap();let root=root.canonicalize().unwrap();
+        let executable=PathBuf::from(std::env::var("KAI_NATIVE_TEST_EXECUTABLE").unwrap_or_else(|_|"codex".into()));
+        let mut request=request(&executable);request.project=root.clone();request.model=std::env::var("KAI_NATIVE_TEST_MODEL").ok();request.allow_edits=false;request.reasoning_effort=Some("high".into());
+        request.prompt="Use your native collaboration spawn tool to delegate exactly one child agent. Give it this task: compute the sum of squares from 1 through 200, use no tools or files, and reply KAI_CHILD_OK with the answer. You must actually spawn the child and wait for it to finish. Then reply KAI_PARENT_OK. Do not modify any files.".into();
+        let handle=launch(request).unwrap();let started=Instant::now();let mut parent=None;let mut seen=Vec::new();let mut finished=false;let mut failure=None;
+        while started.elapsed()<Duration::from_secs(150){
+            match handle.events.recv_timeout(Duration::from_millis(200)){
+                Ok(RuntimeEvent::SessionId(id))=>parent=Some(id),Ok(RuntimeEvent::Failed(e))=>{failure=Some(e);break},Ok(RuntimeEvent::Finished)=>{finished=true;break},_=>{}
+            }
+            for child in broker::children(&root){if !seen.iter().any(|c:&broker::ChildSnapshot|c.id==child.id){eprintln!("KAI_CHILD_OBSERVED task={} model={} parent={}",child.task.is_some(),child.model.is_some(),child.parent_id);}if let Some(existing)=seen.iter_mut().find(|c|c.id==child.id){*existing=child}else{seen.push(child)}}
+        }
+        for child in broker::children(&root){if let Some(existing)=seen.iter_mut().find(|c|c.id==child.id){*existing=child}else{seen.push(child)}}
+        let pages:Vec<_>=seen.iter().map(|child|broker::child_transcript_page(&root,child.provider,&child.id,0).map(|p|p.text).unwrap_or_default()).collect();
+        handle.cancel();if let Some(parent)=&parent{let _=broker::shutdown_service(&root,crate::discovery::AgentKind::Codex,parent).recv_blocking();}
+        let ids:Vec<_>=parent.iter().cloned().chain(seen.iter().map(|c|c.id.clone())).collect();std::fs::write(root.join("probe-thread-ids.json"),serde_json::to_vec(&ids).unwrap()).unwrap();
+        if !ids.is_empty(){crate::agent_controls::archive_test_threads(&executable,&root,&ids).expect("Archive verified test threads");}
+        if finished&&!seen.is_empty(){std::fs::remove_dir_all(&root).unwrap();}
+        assert!(failure.is_none(),"Native parent failed: {failure:?}");assert!(finished,"Parent never finished");assert_eq!(seen.len(),1,"Expected exactly one real native child");assert!(seen[0].task.is_some()||seen[0].scope.is_some(),"Provider-reported delegated scope was lost");assert_eq!(seen[0].parent_id,parent.unwrap());assert!(pages.iter().any(|s|s.contains("KAI_CHILD_OK")),"Child output was not captured: {pages:?}");eprintln!("KAI_CHILD_PROBE_OK one real child, delegated scope, exact parent, full transcript and verified archive in {:.1}s",started.elapsed().as_secs_f64());
     }
     #[test]
     fn voice_partials_update_one_transcript_card_and_final_corrections_replace_it(){

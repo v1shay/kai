@@ -184,9 +184,67 @@ pub unsafe fn install(pointer: *mut AnyObject, enabled: bool, tint: u32) {
     }
 }
 
+// Public macOS 26 API, resolved at runtime so older SDKs/OSes remain supported.
+// The actual GPUI view becomes contentView; it is never snapshotted or replaced.
+const GLASS:&str="kai.workspace-liquid-glass";
+pub fn liquid_available()->bool{objc2::runtime::AnyClass::get(c"NSGlassEffectView").is_some()}
+fn liquid_selected(material:crate::theme::GlassMaterial)->bool{material!=crate::theme::GlassMaterial::Classic&&liquid_available()}
+unsafe fn restore_renderer(content:&NSView){
+    if let Some(glass)=find(content,GLASS){unsafe{
+        let renderer:Option<Retained<NSView>>=msg_send![&*glass,contentView];
+        if let Some(renderer)=renderer{
+            let first=content.window().and_then(|w|w.firstResponder());
+            let _:()=msg_send![&*glass,setContentView:std::ptr::null::<AnyObject>()];
+            renderer.setFrame(content.bounds());
+            content.addSubview_positioned_relativeTo(&renderer,NSWindowOrderingMode::Above,None);
+            if let (Some(window),Some(first))=(content.window(),first){window.makeFirstResponder(Some(&first));}
+        }
+        glass.removeFromSuperview();
+    }}
+}
+pub unsafe fn apply_material(pointer:*mut AnyObject,enabled:bool,tint:u32,material:crate::theme::GlassMaterial){unsafe{
+    let content=content(pointer);
+    if !enabled||!liquid_selected(material){restore_renderer(content);install(pointer,enabled,tint);return}
+    let Some(mtm)=MainThreadMarker::new()else{return};
+    let glass=if let Some(glass)=find(content,GLASS){glass}else{
+        // GPUI's native container has one renderer/event child. Effects/tint are
+        // siblings identified above, never candidates for contentView.
+        let renderer=content.subviews().iter().find(|v|v.class().name().to_bytes()==b"GPUIView");
+        let Some(renderer)=renderer else{return};
+        let Some(class)=objc2::runtime::AnyClass::get(c"NSGlassEffectView")else{return};
+        let raw:*mut AnyObject=msg_send![class,alloc];
+        let initialized:*mut NSView=msg_send![raw,initWithFrame:content.bounds()];
+        let Some(glass)=Retained::from_raw(initialized)else{return};
+        use objc2_app_kit::NSUserInterfaceItemIdentification;
+        glass.setIdentifier(Some(&NSString::from_str(GLASS)));
+        glass.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable|NSAutoresizingMaskOptions::ViewHeightSizable);
+        let first=content.window().and_then(|w|w.firstResponder());
+        renderer.removeFromSuperview();
+        let _:()=msg_send![&*glass,setContentView:&*renderer];
+        let _:()=msg_send![&*glass,setCornerRadius:12f64];
+        content.addSubview_positioned_relativeTo(&glass,NSWindowOrderingMode::Above,None);
+        renderer.setFrame(glass.bounds());
+        if let (Some(window),Some(first))=(content.window(),first){window.makeFirstResponder(Some(&first));}
+        glass
+    };
+    let _=mtm;
+    // Liquid Glass owns blur/refraction; the independent public tintColor
+    // property leaves text/Metal content fully opaque and interactive.
+    let color=NSColor::colorWithSRGBRed_green_blue_alpha(((tint>>24)&255)as f64/255.,((tint>>16)&255)as f64/255.,((tint>>8)&255)as f64/255.,(tint&255)as f64/255.);
+    let _:()=msg_send![&*glass,setTintColor:&*color];
+    if let Some(view)=find(content,BACKDROP){view.setHidden(true)}
+    if let Some(view)=find(content,TINT){view.setHidden(true)}
+}}
+
 /// Bounded read-only inspection for the isolated packaged-app verification.
 pub unsafe fn inspect(pointer: *mut AnyObject) -> Result<(), String> {
     let content = unsafe { content(pointer) };
+    if let Some(glass)=find(content,GLASS){
+        let renderer:Option<Retained<NSView>>=unsafe{msg_send![&*glass,contentView]};
+        if renderer.is_none(){return Err("Liquid Glass lost its live renderer".into())}
+        if find(content,BACKDROP).is_some_and(|v|!v.isHidden()){return Err("Duplicate glass backdrop".into())}
+        return Ok(())
+    }
     let backing = find(content, BACKDROP).ok_or("No native workspace backdrop")?;
     let tint = find(content, TINT).ok_or("No independent native tint")?;
     let alpha: f64 = unsafe { msg_send![&*backing, alphaValue] };

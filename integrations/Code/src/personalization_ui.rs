@@ -58,6 +58,7 @@ impl Orbit {
         if let Some(editor) = &self.appearance_editor {
             panel = panel.child(self.appearance_editor_panel(editor, cx));
         }
+        if theme_controls::matches(&query,"Startup launch window notch workspace automatic chat titles"){panel=panel.child(self.startup_controls(cx));}
         panel = panel.child(theme_controls::controls(
             &self.theme,
             &self.resolved_theme,
@@ -98,6 +99,9 @@ impl Orbit {
         if theme_controls::matches(&query, "Quick Chat global keyboard shortcut hotkey") {
             panel = panel.child(self.quick_shortcut_controls(cx));
         }
+        if query.is_empty()||query.to_lowercase().contains("keyboard")||query.eq_ignore_ascii_case("commands"){
+            panel=panel.child(self.keyboard_controls());
+        }
         panel.into_any_element()
     }
     pub(super) fn appearance_action(
@@ -131,6 +135,7 @@ impl Orbit {
             Action::ClearColor(slot) => self.theme.colors.set(slot, None),
             Action::FontSize(FontSlot::Ui, value) => self.theme.ui_font_size = value,
             Action::FontSize(FontSlot::Mono, value) => self.theme.mono_font_size = value,
+            Action::GlassMaterial(value)=>self.theme.glass_material=value,
             Action::ToggleTransparency => self.theme.transparency = !self.theme.transparency,
             Action::ToggleSidebarGlass => self.theme.sidebar_glass = !self.theme.sidebar_glass,
             Action::ToggleMainGlass => self.theme.main_glass = !self.theme.main_glass,

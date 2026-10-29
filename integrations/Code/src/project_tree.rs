@@ -9,10 +9,12 @@ enum Node {
     Placeholder(usize),
     RecentHeader,
 }
-#[derive(Default)]
 pub(super) struct ProjectTree {
     pub activity: Vec<usize>,
     rows: Vec<Node>,
+    groups:Vec<std::ops::Range<usize>>,
+    scroll:ListState,
+    loaded_at:HashMap<PathBuf,Instant>,
     recent_roots: Vec<PathBuf>,
     pending: HashMap<PathBuf, u64>,
     ready: HashSet<PathBuf>,
@@ -22,6 +24,10 @@ pub(super) struct ProjectTree {
     restored: bool,
     #[cfg(test)]
     rendered: usize,
+}
+
+impl Default for ProjectTree {
+    fn default()->Self{Self{activity:vec![],rows:vec![],groups:vec![],scroll:ListState::new(0,ListAlignment::Top,px(160.)),loaded_at:HashMap::new(),recent_roots:vec![],pending:HashMap::new(),ready:HashSet::new(),failed:HashSet::new(),motions:HashMap::new(),sequence:0,restored:false,#[cfg(test)]rendered:0}}
 }
 
 impl Orbit {
@@ -63,6 +69,7 @@ impl Orbit {
 
     pub(super) fn invalidate_project_branches(&mut self) {
         self.project_tree.ready.clear();
+        self.project_tree.loaded_at.clear();
         self.project_tree.failed.clear();
         // Replies from discovery before this refresh must not mark a branch
         // current again. Visible expanded rows request fresh summaries lazily.
@@ -190,7 +197,13 @@ impl Orbit {
                     .map(|(n, ix)| Node::Chat(ix, None, n)),
             );
         }
-        self.project_tree.rows = rows;
+        let mut groups=Vec::new();let mut start=0;
+        for (ix,row) in rows.iter().enumerate(){if ix>0&&matches!(row,Node::Project(_)|Node::RecentHeader){groups.push(start..ix);start=ix;}}
+        if start<rows.len(){groups.push(start..rows.len());}
+        let anchor=self.project_tree.scroll.logical_scroll_top();
+        self.project_tree.scroll.reset(groups.len());
+        self.project_tree.scroll.scroll_to(ListOffset{item_ix:anchor.item_ix.min(groups.len().saturating_sub(1)),offset_in_item:anchor.offset_in_item});
+        self.project_tree.groups=groups;self.project_tree.rows = rows;
     }
 
     fn request_project_branch(&mut self, path: PathBuf) {
@@ -218,6 +231,7 @@ impl Orbit {
         self.project_tree.pending.remove(&path);
         match sessions {
             Ok(sessions) => {
+                self.project_tree.loaded_at.insert(path.clone(),Instant::now());
                 self.project_tree.ready.insert(path);
                 let mut positions: HashMap<_, _> = self
                     .sessions
@@ -243,12 +257,12 @@ impl Orbit {
         cx.notify();
     }
 
-    fn toggle_project_branch(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+    pub(super) fn toggle_project_branch(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         let open = !self.expanded_projects.contains(&path);
         let from = self.project_fold_fraction(&path).clamp(0., 1.);
         if open {
             self.expanded_projects.insert(path.clone());
-            self.project_tree.ready.remove(&path);
+            if self.project_tree.loaded_at.get(&path).is_none_or(|at|at.elapsed()>Duration::from_secs(15)){self.project_tree.ready.remove(&path);}
             self.request_project_branch(path.clone());
         } else {
             self.expanded_projects.remove(&path);
@@ -304,7 +318,8 @@ impl Orbit {
             .motions
             .get(path)
             .map_or(target, |(start, open, from)| {
-                let p = presentation::spring((start.elapsed().as_secs_f32() / 0.24).min(1.));
+                let t=(start.elapsed().as_secs_f32()/0.24).min(1.);
+                let p=1.-(1.-t).powi(3);
                 let target = if *open { 1. } else { 0. };
                 from + (target - from) * p
             })
@@ -322,6 +337,7 @@ impl Orbit {
     }
 
     pub(super) fn tick_project_tree(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if let Some((at,_))=self.conversations_transition{if !self.motion||native::reduced_motion()||at.elapsed()>=Duration::from_millis(320){self.conversations_transition=None;}else if window.is_window_active(){request_motion_frame(window,cx);}}
         if let Some((start, _)) = self.sidebar_layout_transition {
             if !self.motion || start.elapsed() >= Duration::from_millis(650) {
                 self.sidebar_layout_transition = None;
@@ -339,6 +355,11 @@ impl Orbit {
             .retain(|_, (start, _, _)| self.motion && start.elapsed() < Duration::from_millis(240));
         if before != self.project_tree.motions.len() {
             self.rebuild_project_tree();
+        }
+        if !self.project_tree.motions.is_empty() && window.is_window_active(){
+            for (ix,range) in self.project_tree.groups.iter().enumerate(){
+                if let Some(Node::Project(project))=self.project_tree.rows.get(range.start){if self.project_tree.motions.contains_key(&self.projects[*project].path){self.project_tree.scroll.splice(ix..ix+1,1);}}
+            }
         }
         if !self.project_tree.motions.is_empty()
             && !self.sidebar_split
@@ -369,23 +390,15 @@ impl Orbit {
     }
 
     pub(super) fn project_tree_list(&self, cx: &Context<Self>) -> impl IntoElement {
-        div()
+        let anchor=self.project_tree.scroll.logical_scroll_top();
+        div().debug_selector(||"project-chat-tree".into())
             .flex_1()
             .min_h(px(0.))
             .w_full()
             .flex()
             .flex_col()
             .child(
-                uniform_list(
-                    "project-chat-tree",
-                    self.project_tree.rows.len(),
-                    cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
-                        range
-                            .map(|ix| this.project_tree_row(ix, cx))
-                            .collect::<Vec<_>>()
-                    }),
-                )
-                .debug_selector(|| "project-chat-tree".into())
+                list(self.project_tree.scroll.clone(),cx.processor(move |this,ix,window,cx|this.project_tree_group(ix,anchor,window,cx)))
                 .flex_1()
                 .min_h(px(0.))
                 .w_full()
@@ -433,6 +446,19 @@ impl Orbit {
                         this.new_conversation(window, cx);
                     })),
             )
+    }
+
+    fn project_tree_group(&mut self,ix:usize,anchor:ListOffset,window:&Window,cx:&mut Context<Self>)->AnyElement {
+        let Some(range)=self.project_tree.groups.get(ix).cloned()else{return div().into_any_element()};
+        let first=&self.project_tree.rows[range.start];let header=matches!(first,Node::Project(_)|Node::RecentHeader);
+        let fraction=match first{Node::Project(project)=>self.project_fold_fraction(&self.projects[*project].path).clamp(0.,1.),_=>1.};
+        let children=range.len()-usize::from(header);let header_h=if header{32.}else{0.};let height=header_h+children as f32*32.*fraction;
+        let offset=if anchor.item_ix==ix{f32::from(anchor.offset_in_item).max(0.)}else{0.};
+        let start=((offset-header_h).max(0.)/32.)as usize;let end=(start+(f32::from(window.viewport_size().height)/32.).ceil()as usize+8).min(children).min((children as f32*fraction).ceil()as usize);
+        let mut group=div().id(("project-branch-group",ix)).debug_selector(move||format!("project-branch-group-{ix}")).relative().h(px(height.max(0.01))).w_full().overflow_hidden();
+        if header{group=group.child(div().absolute().top_0().left_0().right_0().h(px(32.)).child(self.project_tree_row(range.start,cx)));}
+        for child in start..end{group=group.child(div().absolute().left_0().right_0().top(px(header_h+child as f32*32.)).h(px(32.)).child(self.project_tree_row(range.start+usize::from(header)+child,cx)));}
+        group.into_any_element()
     }
 
     fn project_tree_row(&mut self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
@@ -649,7 +675,7 @@ impl Orbit {
                                 .text_size(crate::theme::ui_px(12.))
                                 .flex()
                                 .flex_col()
-                                .child(div().text_ellipsis().child(self.chat_label(&session)))
+                                .child(div().text_ellipsis().child(self.animated_chat_title(&session)))
                                 .when(self.all_projects, |s| {
                                     s.child(
                                         div()
@@ -1217,6 +1243,11 @@ emit({'type':'result','subtype':'success','is_error':False,'result':'Standalone 
         });
     }
 
+    #[gpui::test]fn accordion_geometry_is_intermediate_and_conversation_fold_reverses(cx:&mut TestAppContext){
+        let(view,cx)=unified(cx);view.update(cx,|app,cx|{app.motion=true;let path=app.custom_projects[0].path.clone();app.toggle_project_branch(path.clone(),cx);app.project_tree.motions.insert(path,(Instant::now()-Duration::from_millis(25),true,0.));cx.notify();});draw_frame(&view,cx);
+        let height=f32::from(cx.debug_bounds("project-branch-group-0").unwrap().size.height);assert!(height>32.&&height<64.,"actual group must ease between header and one chat, got {height}");
+        view.update(cx,|app,cx|{app.sidebar_split=true;app.conversations_visible=true;app.conversations_transition=None;app.toggle_conversations(cx);app.conversations_transition=Some((Instant::now()-Duration::from_millis(80),1.));let before=app.conversations_progress();assert!(before>0.&&before<1.);app.toggle_conversations(cx);assert!((app.conversations_progress()-before).abs()<0.01);});
+    }
     #[gpui::test]
     fn rapid_fold_reversal_is_continuous_and_all_animation_work_stops(cx: &mut TestAppContext) {
         let (view, cx) = unified(cx);

@@ -785,6 +785,7 @@ mod regressions {
                             session: uuid::Uuid::new_v4().to_string(),
                             agent: AgentKind::Codex,
                             model: None,
+                            reasoning_effort:None,
                             task: "Read".into(),
                             status: teams::Status::Held,
                             attempted: false,

@@ -652,75 +652,22 @@ impl Orbit {
                         ))
                 }))
             })
-            .child(
-                uniform_list(
-                    "child-list",
-                    panel.children.len(),
-                    cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
-                        let Some(panel) = &this.broker_panel else {
-                            return vec![];
-                        };
-                        range
-                            .map(|ix| {
-                                let child = &panel.children[ix];
-                                let provider = child.provider;
-                                let id = child.id.clone();
-                                let (_, color, status) =
-                                    crate::interaction_ui::status_appearance(child.status);
-                                div()
-                                    .id(("child", ix))
-                                    .h(px(52.))
-                                    .px_3()
-                                    .flex()
-                                    .flex_col()
-                                    .justify_center()
-                                    .gap_1()
-                                    .cursor_pointer()
-                                    .hover(|s| s.bg(rgba(GLASS_HOVER)))
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .items_center()
-                                            .gap_2()
-                                            .child(this.task_pet(&crate::unified::child_id(child),22.,child.connected&&matches!(child.status,chat_interactions::InteractionStatus::Started|chat_interactions::InteractionStatus::Working)).unwrap_or_else(||icon(agent_icon(provider),13.,agent_color(provider)).into_any_element()))
-                                            .child(format!(
-                                                "{} · {}",
-                                                agent_name(provider),
-                                                short(&id, 14)
-                                            ))
-                                            .child(div().flex_1())
-                                            .child(
-                                                div()
-                                                    .text_size(crate::theme::ui_px(10.))
-                                                    .text_color(rgb(color))
-                                                    .child(status),
-                                            ),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(crate::theme::ui_px(11.))
-                                            .text_color(rgb(MUTED))
-                                            .text_ellipsis()
-                                            .child(if child.requests.is_empty() {
-                                                short(&child.preview, 54)
-                                            } else {
-                                                format!(
-                                                    "{} decisions waiting",
-                                                    child.requests.len()
-                                                )
-                                            }),
-                                    )
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.select_child(provider, id.clone(), cx);
-                                        this.open_child_decisions(provider, &id, window, cx);
-                                    }))
-                            })
-                            .collect()
-                    }),
-                )
-                .h(px((panel.children.len().min(4) * 52).max(52) as f32))
-                .flex_none(),
-            )
+            .child(div().id("child-tabs").debug_selector(||"child-tabs".into()).flex_none().h(px(74.)).overflow_x_scroll().flex().gap_2().px_3().py_2().children(panel.children.iter().enumerate().map(|(ix,child)|{
+                let provider=child.provider;let id=child.id.clone();let selected=panel.selected.as_ref()==Some(&(provider,id.clone()));let key=crate::unified::child_id(child);
+                let colors=self.task_pet_visuals.get(&key).map(|v|v.colors.as_slice()).unwrap_or(&[0x94b8db,0x6c819c]);
+                let tint=colors[0];let (_,_,status)=crate::interaction_ui::status_appearance(child.status);
+                div().id(("child",ix)).debug_selector(move||format!("child-tab-{ix}")).w(px(168.)).flex_none().rounded_lg().border_1().border_color(rgba((tint<<8)|if selected{150}else{32})).bg(linear_gradient(135.,linear_color_stop(rgba((tint<<8)|if selected{42}else{12}),0.),linear_color_stop(rgba(0xffffff04),1.))).px_2().py_1().flex().items_center().gap_2().cursor_pointer().hover(|s|s.bg(rgba(GLASS_HOVER)))
+                .child(self.task_pet(&key,30.,selected&&child.connected&&matches!(child.status,chat_interactions::InteractionStatus::Started|chat_interactions::InteractionStatus::Working)).unwrap_or_else(||icon(agent_icon(provider),18.,agent_color(provider)).into_any_element()))
+                .child(div().flex_1().min_w(px(0.)).flex().flex_col().gap_1().child(div().text_ellipsis().text_size(theme::ui_px(12.)).font_weight(FontWeight::MEDIUM).child(child.name.clone().unwrap_or_else(||format!("{} {}",provider.name(),short(&id,8))))).child(div().text_size(theme::ui_px(10.)).text_color(rgb(MUTED)).child(status)))
+                .on_click(cx.listener(move|app,_,window,cx|{app.select_child(provider,id.clone(),cx);app.open_child_decisions(provider,&id,window,cx);})).into_any_element()
+            })))
+            .when_some(panel.selected.as_ref().and_then(|key|panel.children.iter().find(|c|(c.provider,&c.id)==(key.0,&key.1))),|s,child|{
+                s.child(div().px_3().py_2().flex_none().flex().flex_col().gap_1().text_size(theme::ui_px(11.))
+                .when_some(child.task.clone(),|s,task|s.child(div().max_h(px(64.)).overflow_hidden().child(task)))
+                .when_some(child.scope.as_ref(),|s,path|s.child(div().text_color(rgb(MUTED)).child(format!("Delegated scope · {path}"))))
+                .child(div().text_color(rgb(MUTED)).child(format!("{}{} · delegated by {}",child.model.as_deref().unwrap_or_else(||child.provider.name()),child.effort.as_ref().map(|e|format!(" · {e}")).unwrap_or_default(),short(&child.parent_id,18))))
+                .when_some(child.workspace.as_ref(),|s,path|s.child(div().text_color(rgb(MUTED)).text_ellipsis().child(path.display().to_string()))))
+            })
             .when(panel.children.is_empty(), |s| {
                 s.child(
                     div()
@@ -978,6 +925,7 @@ mod tests {
             app.sessions[0].external_id = Some("native-root".into());
             app.sessions[0].execution_path = Some(root.clone());
             let child = ChildSnapshot {
+                name:None,scope:None,task:None,model:None,effort:None,workspace:None,
                 provider: AgentKind::Codex,
                 project: root,
                 parent_id: "native-root".into(),
@@ -1057,6 +1005,7 @@ mod tests {
                 .input
                 .update(cx, |input, cx| input.set_text("Steer old child", cx));
             panel.children = vec![ChildSnapshot {
+                name:None,scope:None,task:None,model:None,effort:None,workspace:None,
                 provider: AgentKind::Gemini,
                 project: panel.project.clone(),
                 parent_id: "parent".into(),

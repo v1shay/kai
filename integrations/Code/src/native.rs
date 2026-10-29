@@ -17,7 +17,7 @@ mod mac {
         // GPUI calls native chrome on the UI thread. WindowId is checked before
         // any Objective-C messages, so opacity-only updates do no native work.
         static APPLIED_BLUR: RefCell<HashMap<gpui::WindowId, u8>> = RefCell::new(HashMap::new());
-        static APPLIED_THEME: RefCell<HashMap<gpui::WindowId, (bool,u32,u32)>> = RefCell::new(HashMap::new());
+        static APPLIED_THEME: RefCell<HashMap<gpui::WindowId, (bool,u32,u32,crate::theme::GlassMaterial,bool)>> = RefCell::new(HashMap::new());
     }
     unsafe fn ns_window(window: &Window) -> Option<*mut AnyObject> {
         let RawWindowHandle::AppKit(handle) = HasWindowHandle::window_handle(window).ok()?.as_raw()
@@ -99,7 +99,7 @@ mod mac {
     #[cfg(not(test))]
     pub fn apply_theme(window: &mut Window, theme: &crate::theme::ResolvedTheme) {
         let id = gpui::Window::window_handle(window).window_id();
-        let signature = (theme.native_transparency, theme.background,theme.backdrop_rgba());
+        let signature = (theme.native_transparency, theme.background,theme.backdrop_rgba(),theme.glass_material,theme.dark);
         if APPLIED_THEME.with(|cache| cache.borrow().get(&id) == Some(&signature)) {
             return;
         }
@@ -120,6 +120,7 @@ mod mac {
                 return;
             };
             let _: () = msg_send![native, setOpaque: Bool::new(!theme.native_transparency)];
+            if let Some(class)=AnyClass::get(c"NSAppearance"){let appearance:*mut AnyObject=msg_send![class,appearanceNamed:&*NSString::from_str(if theme.dark{"NSAppearanceNameDarkAqua"}else{"NSAppearanceNameAqua"})];if !appearance.is_null(){let _:()=msg_send![native,setAppearance:appearance];}}
             let Some(color_class) = AnyClass::get(c"NSColor") else {
                 return;
             };
@@ -135,7 +136,7 @@ mod mac {
             if content.is_null() {
                 return;
             }
-            crate::native_backdrop::install(content,theme.native_transparency,theme.backdrop_rgba());
+            crate::native_backdrop::apply_material(content,theme.native_transparency,theme.backdrop_rgba(),theme.glass_material);
         }
     }
     pub fn show_window(window: &gpui::Window) {
@@ -329,3 +330,8 @@ mod citation_tests {
 
 #[cfg(all(target_os="macos",not(test)))]
 pub use mac::verify_glass;
+
+#[cfg(target_os="macos")]
+pub use crate::native_backdrop::liquid_available;
+#[cfg(not(target_os="macos"))]
+pub fn liquid_available()->bool{false}

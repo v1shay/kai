@@ -58,8 +58,12 @@ enum UnifiedDraftHandoff {
         guard data != lastState else{return}
         guard let packet=try? JSONDecoder().decode(OwnerPacket.self,from:data) else{onError?("Could not read Code’s owner state");fputs("Kai unified state decode failed\n",stderr);return}
         switch packet.type {
+        case "keyboardCatalog":keyboardCommands=packet.commands ?? [];return
         case "quickPrepare":app?.prepareQuickOpening();return
         case "workspaceReveal":app?.revealWorkspace();return
+        case "launchWorkspace":app?.revealWorkspace();return
+        case "launchExtended":app?.expandToRunningChat();return
+        case "launchCompact":app?.showUnifiedNotchOnLaunch();return
         case "workspaceDismiss":app?.dismissUnifiedSurface();return
         case "probeDoubleCommand":if CommandLine.arguments.contains("--unified-smoke-test"){app?.probeDoubleCommand()};return
         case "quickVisibility":if let visible=packet.visible{app?.setQuickChatVisible(visible)};return
@@ -74,11 +78,15 @@ enum UnifiedDraftHandoff {
         else{history=[];historyOwner=state.threadId}
         lastState=data;onState?(state)
     }
+    struct KeyboardCommand:Decodable {let key:String,id:String,label:String}
+    private(set) var keyboardCommands=[KeyboardCommand]()
     private struct OwnerPacket:Decodable {
         let type:String?,visible:Bool?,rect:[Double]?,state:KaiState?,hasHistory:Bool
-        private enum Keys:String,CodingKey{case type,visible,rect,history}
+        let commands:[KeyboardCommand]?
+        private enum Keys:String,CodingKey{case type,visible,rect,history,commands}
         init(from decoder:Decoder)throws{
             let fields=try decoder.container(keyedBy:Keys.self)
+            commands=try fields.decodeIfPresent([KeyboardCommand].self,forKey:.commands)
             type=try fields.decodeIfPresent(String.self,forKey:.type)
             if type == nil || type == "state"{state=try KaiState(from:decoder);hasHistory=fields.contains(.history);visible=nil;rect=nil}
             else{state=nil;hasHistory=false;visible=try fields.decodeIfPresent(Bool.self,forKey:.visible);rect=try fields.decodeIfPresent([Double].self,forKey:.rect)}

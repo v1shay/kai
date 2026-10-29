@@ -3,6 +3,20 @@ import XCTest
 @testable import NotchPrototype
 
 final class FloatingTaskPetsTests:XCTestCase {
+    func testNestedFamiliesHandleGrandchildrenMissingParentsDuplicatesAndCycles(){
+        let root=KaiActiveTask(id:"root",name:"Parent",scene:"thinking",text:"Orchestrating")
+        let child=KaiActiveTask(id:"child",name:"Child",scene:"thinking",text:"Task",parentId:"root")
+        let grandchild=KaiActiveTask(id:"grandchild",name:"Grandchild",scene:"thinking",text:"Task",parentId:"child")
+        let orphan=KaiActiveTask(id:"orphan",name:"Orphan",scene:"thinking",text:"Task",parentId:"missing")
+        let groups=TaskPetFamily.group([grandchild,orphan,child,root,child])
+        XCTAssertEqual(groups.count,2)
+        let family=groups.first{$0.parent.id=="root"}!
+        XCTAssertEqual(Set(family.children.map(\.id)),["child","grandchild"])
+        let frame=CGRect(x:100,y:100,width:64,height:64)
+        for index in 0..<6{let child=family.nestedFrame(in:frame,index:index,count:6);XCTAssertTrue(frame.contains(child));XCTAssertLessThan(child.width,frame.width/2)}
+        let a=KaiActiveTask(id:"a",name:"A",scene:"thinking",text:"",parentId:"b"),b=KaiActiveTask(id:"b",name:"B",scene:"thinking",text:"",parentId:"a")
+        let cycle=TaskPetFamily.group([a,b]);XCTAssertEqual(cycle.count,1);XCTAssertEqual(cycle[0].children.count,1)
+    }
     private func task(_ id:String,run:String="run",text:String="Working")->KaiActiveTask{KaiActiveTask(id:id,name:id,scene:"terminal",text:text,runId:run)}
     func testSnapshotRemovesMissingTasksAndKeepsRemainingTaskVisible(){
         var model=FloatingTaskLifecycle()
@@ -75,6 +89,18 @@ final class FloatingTaskPetsTests:XCTestCase {
         row.handleClick(1);row.cancelClick()
         try await Task.sleep(nanoseconds:UInt64((FloatingTaskPetView.clickDelay+0.05)*1_000_000_000))
         XCTAssertEqual(cycles,1);XCTAssertEqual(opens,1)
+    }
+    @MainActor func testNestedCompanionsShareTwoParentWindowsAndClearWhenSuppressed()throws{
+        _=NSApplication.shared
+        let suite="FloatingFamily-\(UUID().uuidString)",defaults=try XCTUnwrap(UserDefaults(suiteName:suite));defer{defaults.removePersistentDomain(forName:suite)}
+        defaults.set(true,forKey:"floatingTasks.enabled")
+        let controller=FloatingTaskPets(defaults:defaults);defer{controller.stop()}
+        let parent=task("parent"),children=(0..<10).map{KaiActiveTask(id:"child-\($0)",name:"Child",scene:"thinking",text:"Task",parentId:"parent")}
+        controller.update([parent]+children,finished:[],pets:[:])
+        XCTAssertEqual(controller.nativePetWindowCount,2);XCTAssertEqual(controller.companionViewCount,6)
+        controller.setSuppressed(true);controller.setSuppressed(false)
+        XCTAssertEqual(controller.nativePetWindowCount,2);XCTAssertEqual(controller.companionViewCount,6)
+        controller.update([],finished:[],pets:[:]);XCTAssertEqual(controller.nativePetWindowCount,0)
     }
     @MainActor func testPreferencesPersistAndMalformedSizeDoesNotBreakMenu()throws{
         _=NSApplication.shared

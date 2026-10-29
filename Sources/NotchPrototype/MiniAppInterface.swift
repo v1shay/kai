@@ -244,6 +244,8 @@ private final class AttachmentLayer:CALayer {
 }
 
 @MainActor final class MiniAppInterface {
+    private let contextRing=CAShapeLayer(),contextTrack=CAShapeLayer(),contextText=CATextLayer()
+    private var contextHit=CGRect.zero
     let layer=CALayer()
     private var renderingScale:CGFloat=NSScreen.main?.backingScaleFactor ?? 2
     func setRenderingScale(_ scale:CGFloat){renderingScale=scale;NotchSizing.updateTextResolution(layer,scale:scale)}
@@ -484,6 +486,7 @@ private final class AttachmentLayer:CALayer {
             if attachment.closeContains(local){remove(attachment)}
             return true
         }
+        if usesUnifiedComposer,contextHit.contains(point){showUsagePopover();return true}
         if usesUnifiedComposer,usageLabel.frame.union(usageTrack.frame).insetBy(dx:-4,dy:-3).contains(point){showUsagePopover();return true}
         var targets=[(frame:CGRect,limit:CGRect,action:()->Void)]()
         func add(_ rect:CGRect,limit:CGRect?=nil,_ action:@escaping()->Void){
@@ -695,6 +698,7 @@ private final class AttachmentLayer:CALayer {
         state.models?.first{$0.model==state.selectedModel} ?? state.models?.first{$0.model==state.effectiveModel || ($0.resolvedModel != nil && $0.resolvedModel==state.effectiveModel)}
     }
     private func effortMenuItem(_ model:KaiModel,state:KaiState)->NSMenuItem {let item=NSMenuItem(title:"Thinking intensity…",action:#selector(openThinkingPanel),keyEquivalent:"");item.target=self;return item}
+    func performKeyboardCommand(_ id:String)->Bool{switch id{case "model":showSettingsMenu("model");case "thinking":showThinkingPopover();case "usage":showUsagePopover();default:return false};return true}
     @objc private func openThinkingPanel(){showThinkingPopover()}
     private func layoutComposerControls(){
         let shown=usesUnifiedComposer
@@ -704,7 +708,9 @@ private final class AttachmentLayer:CALayer {
         let name=state.effectiveModel ?? state.selectedModel ?? state.providerDefaultModel ?? "Model"
         let levels=selectedEffortModel(state)?.supportedReasoningEfforts.map(\.reasoningEffort) ?? []
         let effort=state.reasoningEffort.flatMap{$0.isEmpty ? nil:$0} ?? state.effectiveReasoningEffort ?? ""
-        let key=[name,effort,levels.joined(separator:","),state.workspaceAccess ?? "",state.workspaceApprovalPolicy ?? "",String(Double(input.bounds.width)),String(state.fastMode == true),String(state.fastSupported == true),String(state.orchestratorMode == true),String(state.orchestratorAvailable == true),state.usageSummary ?? "",String(Double(renderingScale)),String(Double(bottomInset)),String(Double(input.frame.minY))]
+        var key:[String]=[name,effort,levels.joined(separator:","),state.workspaceAccess ?? "",state.workspaceApprovalPolicy ?? ""]
+        key += [String(Double(input.bounds.width)),String(state.fastMode == true),String(state.fastSupported == true),String(state.orchestratorMode == true),String(state.orchestratorAvailable == true)]
+        key += [state.usageSummary ?? "",String(state.contextWindow?.fraction ?? -1),String(Double(renderingScale)),String(Double(bottomInset)),String(Double(input.frame.minY))]
         guard key != composerControlKey else{return};composerControlKey=key
         input.colors=[NSColor.white.withAlphaComponent(0.085).cgColor,NSColor.white.withAlphaComponent(0.035).cgColor];input.borderColor=NSColor.white.withAlphaComponent(0.16).cgColor
         let width=input.bounds.width,hasEffort = !levels.isEmpty && width>=215
@@ -732,6 +738,21 @@ private final class AttachmentLayer:CALayer {
         if orchestratorWasOn != state.orchestratorMode{orchestratorWasOn=state.orchestratorMode;if state.orchestratorMode == true && layer.opacity>0{orchestratorShimmer.play(restart:true)}else{orchestratorShimmer.stop()}}
         let footerCenter=(input.frame.minY-bottomInset)/2
         usageLabel.string=state.usageSummary ?? "";usageLabel.frame=CGRect(x:input.frame.minX+42,y:footerCenter-7,width:max(0,width-42),height:14);usageLabel.setNeedsDisplay();usageTrack.frame=CGRect(x:input.frame.minX+5,y:footerCenter-1,width:30,height:2);usageFill.frame=CGRect(x:0,y:0,width:30*CGFloat(state.usageWindows?.first?.fraction ?? 0),height:2);usageTrack.isHidden=state.usageWindows?.isEmpty != false
+        if contextTrack.superlayer==nil{layer.addSublayer(contextTrack);layer.addSublayer(contextRing);layer.addSublayer(contextText)}
+        let context=state.contextWindow
+        contextTrack.isHidden=context==nil;contextRing.isHidden=context==nil;contextText.isHidden=context==nil
+        if let context{
+            let x=input.frame.maxX-65,y=footerCenter-5
+            contextHit=CGRect(x:x-3,y:y-3,width:68,height:18)
+            let circle=CGPath(ellipseIn:CGRect(x:x,y:y,width:10,height:10),transform:nil)
+            for shape in [contextTrack,contextRing]{shape.frame=layer.bounds;shape.path=circle;shape.fillColor=nil;shape.lineWidth=1.5}
+            contextTrack.strokeColor=NSColor.white.withAlphaComponent(0.16).cgColor
+            contextRing.strokeColor=EffortAppearance.color(CGFloat(context.fraction)).cgColor
+            let old=contextRing.presentation()?.strokeEnd ?? contextRing.strokeEnd;contextRing.strokeEnd=context.fraction
+            if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion{let animation=CABasicAnimation(keyPath:"strokeEnd");animation.fromValue=old;animation.toValue=context.fraction;animation.duration=0.25;contextRing.add(animation,forKey:"context")}
+            contextText.contentsScale=renderingScale;contextText.font=AppTypography.ui(ofSize:7);contextText.fontSize=7;contextText.foregroundColor=NSColor.white.withAlphaComponent(0.7).cgColor;contextText.string=String(format:"%.0f%%",context.fraction*100);contextText.frame=CGRect(x:x+15,y:y-1,width:45,height:12)
+            usageLabel.frame.size.width=max(0,width-114)
+        }else{contextHit = .zero}
         composerHits=[(permissionGlyph.frame.insetBy(dx:-4,dy:-4),"permissions"),(modelChip.frame,"model")]
         if orchestrator{composerHits.append((orchestratorChip.frame,"orchestrator"))}
         if fast{composerHits.append((fastTint.frame.insetBy(dx:-3,dy:-4),"fast"))}

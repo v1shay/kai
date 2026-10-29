@@ -17,6 +17,27 @@ struct FloatingTaskLifecycle {
     }
 }
 
+/// Root ownership is independent of array order. Missing parents stay visible;
+/// malformed cycles never hide a running task or recurse indefinitely.
+struct TaskPetFamily {
+    let parent:KaiActiveTask,children:[KaiActiveTask]
+    static func group(_ tasks:[KaiActiveTask])->[TaskPetFamily]{
+        let unique=tasks.reduce(into:[String:KaiActiveTask]()){if $0[$1.id]==nil{$0[$1.id]=$1}}
+        func root(_ task:KaiActiveTask)->String{
+            var current=task,seen=Set([task.id])
+            while let id=current.parentId,let parent=unique[id]{guard seen.insert(id).inserted else{return seen.sorted().first ?? task.id};current=parent}
+            return current.id
+        }
+        var order=[String](),groups=[String:[KaiActiveTask]]()
+        for task in tasks{let id=root(task);if groups[id]==nil{order.append(id)};if !(groups[id] ?? []).contains(where:{$0.id==task.id}){groups[id,default:[]].append(task)}}
+        return order.compactMap{id in guard let parent=unique[id]else{return nil};return TaskPetFamily(parent:parent,children:(groups[id] ?? []).filter{$0.id != id})}
+    }
+    func nestedFrame(in frame:CGRect,index:Int,count:Int)->CGRect{
+        let side=frame.width*0.40,spacing=min(side*0.80,(frame.width-side)/CGFloat(max(1,count-1)))
+        return CGRect(x:frame.midX-(CGFloat(count-1)*spacing+side)/2+CGFloat(index)*spacing,y:frame.minY+frame.height*0.04,width:side,height:side)
+    }
+}
+
 enum FloatingTaskCorner:String,CaseIterable {
     case topRight,topLeft,bottomRight,bottomLeft
     var title:String{switch self{case .topRight:return "Top right";case .topLeft:return "Top left";case .bottomRight:return "Bottom right";case .bottomLeft:return "Bottom left"}}
@@ -33,7 +54,7 @@ enum FloatingTaskCorner:String,CaseIterable {
     let menu=NSMenu()
     private let defaults:UserDefaults,images=SpriteAssetCache(maxPixelSize:960)
     private var model=FloatingTaskLifecycle(),entries=[String:Entry](),specs=[PetGallerySpec](),profiles=[String:PetGradientProfile](),pets=[String:String](),root:URL?
-    private var preview=false,offset=0
+    private var preview=false,offset=0,childOffsets=[String:Int]()
     private var suppressed=false
     func setSuppressed(_ value:Bool){guard value != suppressed else{return};suppressed=value;refresh()}
     private let enabledItem=NSMenuItem(),textItem=NSMenuItem(),previewItem=NSMenuItem(),finishItem=NSMenuItem(),nextItem=NSMenuItem()
@@ -44,16 +65,22 @@ enum FloatingTaskCorner:String,CaseIterable {
     private var showText:Bool{defaults.object(forKey:"floatingTasks.text") as? Bool ?? true}
     private var size:CGFloat{let value=defaults.double(forKey:"floatingTasks.size");return value.isFinite && value>0 ? min(112,max(40,value)):64}
     private var corner:FloatingTaskCorner{FloatingTaskCorner(rawValue:defaults.string(forKey:"floatingTasks.corner") ?? "") ?? .topRight}
+    @MainActor private final class Companion {
+        let row=FloatingTaskPetView(frame:.zero),transition=NotchVisualTransition()
+        var pet="",motion="",loading:UUID?
+        func stop(){loading=nil;pet="";motion="";row.cancelClick();row.sprite.removeAllAnimations()}
+    }
     @MainActor private final class Entry {
         let row=FloatingTaskPetView(frame:.zero),pill=FloatingTaskStatusPill()
         var label:NSTextField{pill.label};var icon:NotchIndicatorEngine{pill.icon}
         let petWindow=FloatingPetPanel(),pillWindow=FloatingPetPanel(),transition=NotchVisualTransition()
         var pet="",motion="",scene="",loading:UUID?
+        var children=[String:Companion]()
         var petFrame=CGRect.null,pillFrame=CGRect.null
         init(){
             petWindow.contentView=row;row.layer?.opacity=0;pillWindow.contentView=pill;pillWindow.ignoresMouseEvents=true
         }
-        func hide(){loading=nil;row.cancelClick();row.sprite.removeAllAnimations();icon.hide();petWindow.orderOut(nil);pillWindow.orderOut(nil)}
+        func hide(){loading=nil;pet="";motion="";scene="";children.values.forEach{$0.stop()};row.cancelClick();row.sprite.removeAllAnimations();icon.hide();petWindow.orderOut(nil);pillWindow.orderOut(nil)}
     }
     init(defaults:UserDefaults = .standard){
         self.defaults=defaults;super.init()
@@ -65,7 +92,7 @@ enum FloatingTaskCorner:String,CaseIterable {
         for (item,title,selector) in [(nextItem,"Next tasks",#selector(nextTasks)),(previewItem,"Preview floating pets",#selector(previewPets)),(finishItem,"Finish a preview task",#selector(finishPreview))]{item.title=title;item.target=self;item.action=selector;menu.addItem(item)}
         refreshMenu()
     }
-    func configure(_ specs:[PetGallerySpec],profiles:[String:PetGradientProfile],root:URL){self.specs=specs;self.profiles=profiles;self.root=root;images.invalidate();for entry in entries.values{entry.pet="";entry.loading=nil};if active{refresh()}}
+    func configure(_ specs:[PetGallerySpec],profiles:[String:PetGradientProfile],root:URL){self.specs=specs;self.profiles=profiles;self.root=root;images.invalidate();for entry in entries.values{entry.pet="";entry.loading=nil;entry.children.values.forEach{$0.stop()}};if active{refresh()}}
     func update(_ tasks:[KaiActiveTask],finished:[KaiFinishedTask],pets:[String:String]){
         guard enabled || active || preview else{return}
         guard !preview else{self.pets.merge(pets){_,new in new};refresh();return};self.pets=pets
@@ -77,8 +104,12 @@ enum FloatingTaskCorner:String,CaseIterable {
         if let pets{if preview{self.pets.merge(pets){_,new in new}}else{self.pets=pets}}
         guard let screen=NSScreen.screens.first(where:{$0.auxiliaryTopLeftArea != nil}) ?? NSScreen.main else{return}
         let area=screen.visibleFrame,stride=size+(showText ? 34:0)+14,capacity=max(1,Int((area.height-36)/stride))
-        offset=min(offset,max(0,model.tasks.count-capacity))
-        let visible=Array(model.tasks.dropFirst(offset).prefix(capacity)),ids=Set(visible.map(\.id))
+        let families=TaskPetFamily.group(model.tasks)
+        offset=min(offset,max(0,families.count-capacity))
+        let shown=Array(families.dropFirst(offset).prefix(capacity))
+        let visible=shown.map(\.parent)
+        childOffsets=childOffsets.filter{key,_ in families.contains{$0.parent.id==key}}
+        let ids=Set(visible.map(\.id))
         for id in Array(entries.keys) where !ids.contains(id){
             guard let entry=entries.removeValue(forKey:id) else{continue}
             entry.loading=nil;entry.row.cancelClick();entry.row.sprite.removeAnimation(forKey:"spriteFrames");entry.icon.hide()
@@ -89,7 +120,8 @@ enum FloatingTaskCorner:String,CaseIterable {
         for (index,task) in visible.enumerated(){
             let isNew=entries[task.id] == nil,entry=entries[task.id] ?? Entry();entries[task.id]=entry
             entry.row.onSingle={ [weak self] in self?.onCycle?(task) };entry.row.onDouble={ [weak self] in guard let self else{return};self.onOpen?(task,self.preview) }
-            entry.row.onScroll={ [weak self] delta in self?.page(delta) }
+            let family=shown[index]
+            entry.row.onScroll={ [weak self] delta in self?.pageFamily(family,delta:delta) }
             entry.row.setAccessibilityLabel(task.name);entry.row.toolTip=task.name+"\n"+task.text+(model.tasks.count>capacity ? "\nScroll for more tasks":"")
             let frames=corner.frames(screen:area,index:index,size:size,text:showText)
             if entry.petFrame != frames.pet || entry.pillFrame != frames.pill{
@@ -99,7 +131,9 @@ enum FloatingTaskCorner:String,CaseIterable {
                 }else{entry.petWindow.setFrame(frames.pet,display:true);entry.pillWindow.setFrame(frames.pill,display:true)}
             }
             entry.row.layoutSubtreeIfNeeded();entry.pill.layoutSubtreeIfNeeded()
-            let text=task.text.split(separator:"\n").last.map(String.init) ?? task.name
+            updateCompanions(family,entry:entry)
+            let detail=task.text.split(separator:"\n").last.map(String.init) ?? task.name
+            let text=family.children.isEmpty ? detail:"\(detail) · \(family.children.count) agents"
             if entry.label.stringValue != text{entry.label.stringValue=text}
             let pet=self.pets[task.id] ?? specs.first?.id ?? "",motion=["thinking","waiting","permission","question"].contains(task.scene) ? "waiting":"running"
             if entry.pet != pet || entry.motion != motion{
@@ -128,9 +162,42 @@ enum FloatingTaskCorner:String,CaseIterable {
         }
         refreshMenu()
     }
+    // Child sprites share their parent's existing window, decoded image cache,
+    // render server and event hierarchy. No process/window per child.
+    var nativePetWindowCount:Int{entries.count*2}
+    var companionViewCount:Int{entries.values.reduce(0){$0+$1.children.count}}
+    private func pageFamily(_ family:TaskPetFamily,delta:Int){
+        guard family.children.count>6 else{page(delta);return}
+        let pages=(family.children.count+5)/6;childOffsets[family.parent.id]=((childOffsets[family.parent.id] ?? 0)+delta+pages)%pages;refresh()
+    }
+    private func updateCompanions(_ family:TaskPetFamily,entry:Entry){
+        let page=min(childOffsets[family.parent.id] ?? 0,max(0,(family.children.count-1)/6))
+        let children=Array(family.children.dropFirst(page*6).prefix(6)),ids=Set(children.map(\.id))
+        for id in Array(entry.children.keys) where !ids.contains(id){if let child=entry.children.removeValue(forKey:id){child.stop();if let layer=child.row.layer{child.transition.reveal(layer,visible:false)};DispatchQueue.main.asyncAfter(deadline:.now()+0.28){child.row.removeFromSuperview()}}}
+        for (index,task) in children.enumerated(){
+            let fresh=entry.children[task.id]==nil,child=entry.children[task.id] ?? Companion();entry.children[task.id]=child
+            if child.row.superview !== entry.row{entry.row.addSubview(child.row)}
+            let frame=family.nestedFrame(in:entry.row.bounds,index:index,count:children.count)
+            if !fresh,!NSWorkspace.shared.accessibilityDisplayShouldReduceMotion{NSAnimationContext.runAnimationGroup{context in context.duration=0.28;child.row.animator().frame=frame}}else{child.row.frame=frame}
+            child.row.layer?.cornerRadius=frame.width/2;child.row.layer?.borderWidth=0.5;child.row.layer?.borderColor=NSColor.white.withAlphaComponent(0.2).cgColor
+            child.row.setAccessibilityLabel(task.name);child.row.toolTip=task.name+"\n"+task.text
+            child.row.onSingle={ [weak self] in self?.onCycle?(task) };child.row.onDouble={ [weak self] in guard let self else{return};self.onOpen?(task,self.preview) };child.row.onScroll={ [weak self] delta in self?.pageFamily(family,delta:delta) }
+            let pet=self.pets[task.id] ?? specs.first?.id ?? "",motion=["thinking","waiting","permission","question"].contains(task.scene) ? "waiting":"running"
+            guard child.pet != pet || child.motion != motion else{continue};child.pet=pet;child.motion=motion
+            if let spec=specs.first(where:{$0.id==pet}),let animation=spec.motions[motion] ?? spec.motions["idle"],let timeline=SpriteTimeline(row:animation.row,rows:spec.rows,columns:animation.columns,durationsMs:animation.durationsMs,loops:animation.loop),let root{
+                let token=UUID();child.loading=token
+                images.load(spec.sourceURL ?? root.appendingPathComponent(spec.spritesheet)){[weak child] image in
+                    guard let child,child.loading==token,let image else{return}
+                    CATransaction.begin();CATransaction.setDisableActions(true);child.row.sprite.contents=image;child.row.sprite.contentsRect=timeline.frames[0];CATransaction.commit();child.row.sprite.removeAnimation(forKey:"spriteFrames")
+                    if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion{child.row.sprite.add(timeline.animation(),forKey:"spriteFrames")}
+                    if let layer=child.row.layer{child.transition.reveal(layer,visible:true,fromOpacity:fresh ? 0:nil)}
+                }
+            }
+        }
+    }
     func stop(){entries.values.forEach{$0.hide()};entries=[:]}
-    private func refreshMenu(){enabledItem.state=enabled ? .on:.off;textItem.state=showText ? .on:.off;finishItem.isHidden = !preview;previewItem.title=preview ? "End preview":"Preview floating pets";previewItem.isEnabled=preview || !active;nextItem.isEnabled=model.tasks.count>entries.count;for item in menu.items.flatMap({$0.submenu?.items ?? []}){item.state=item.representedObject as? String == corner.rawValue ? .on:.off}}
-    private func page(_ delta:Int){let pages=max(1,model.tasks.count-entries.count+1);offset=(offset+delta+pages)%pages;refresh()}
+    private func refreshMenu(){enabledItem.state=enabled ? .on:.off;textItem.state=showText ? .on:.off;finishItem.isHidden = !preview;previewItem.title=preview ? "End preview":"Preview floating pets";previewItem.isEnabled=preview || !active;nextItem.isEnabled=TaskPetFamily.group(model.tasks).count>entries.keys.filter{id in model.tasks.first(where:{$0.id==id})?.parentId==nil}.count;for item in menu.items.flatMap({$0.submenu?.items ?? []}){item.state=item.representedObject as? String == corner.rawValue ? .on:.off}}
+    private func page(_ delta:Int){let families=TaskPetFamily.group(model.tasks);let shown=families.filter{entries[$0.parent.id] != nil}.count;let pages=max(1,families.count-shown+1);offset=(offset+delta+pages)%pages;refresh()}
     @objc private func nextTasks(){page(1)}
     @objc private func toggle(){if preview{preview=false};defaults.set(!enabled,forKey:"floatingTasks.enabled");_ = model.update([],finished:[],enabled:false);refresh();onChange?()}
     @objc private func toggleText(){defaults.set(!showText,forKey:"floatingTasks.text");refresh()}

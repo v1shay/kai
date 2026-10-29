@@ -3872,6 +3872,32 @@ fn inline_slash_completes_at_the_caret_and_keeps_the_surrounding_draft(cx:&mut T
 }
 
 #[gpui::test]
+fn hidden_reveals_do_not_keep_idle_new_chat_loading(cx: &mut TestAppContext) {
+    let (view,cx)=fixture(cx);
+    cx.run_until_parked();
+    view.update(cx,|app,cx|{
+        app.motion=true;app.active=None;app.discovering=false;app.loading=false;
+        app.sidebar_split=false;app.projects_revealed=true;app.project_reveal=None;
+        app.sessions_reveal=Some(ListReveal::new(Some(0)));
+        app.transcript_reveal=Some(ListReveal::new(Some(0)));
+        cx.notify();
+    });
+    draw_frame(&view,cx);
+    let logo=cx.update(|window,cx|{
+        let app=view.read(cx);
+        assert!(!app.visible_reveal_work(window));
+        assert!(app.sessions_reveal.is_some(),"A hidden reveal is retained for opening its actual pane");
+        app.loading_logo.clone()
+    });
+    logo.update(cx,|logo,cx|{logo.advance(3.,cx);assert!(!logo.needs_frames(),"Idle welcome logo must settle with motion enabled");});
+    // Opening the conversation pane still starts its original reveal normally.
+    view.update(cx,|app,cx|{app.sidebar_split=true;app.conversations_visible=true;cx.notify();});
+    draw_frame(&view,cx);
+    cx.update(|window,cx|{let app=view.read(cx);assert!(app.visible_reveal_work(window));assert!(app.sessions_reveal.as_ref().unwrap().started.is_some());});
+    logo.update(cx,|logo,_|assert!(logo.needs_frames()));
+}
+
+#[gpui::test]
 fn real_provider_svg_rotates_in_place_during_loading_then_settles_and_stops(
     cx: &mut TestAppContext,
 ) {

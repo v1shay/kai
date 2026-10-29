@@ -35,6 +35,7 @@ struct Host {
     pet_rect:Option<[f32;4]>,
     quick_pet_rect:Option<[f32;4]>,
     workspace_motion:workspace_motion::Transition,
+    publish_pending:bool,
 }
 
 extern "C" fn command(bytes: *const u8, count: usize) -> bool {
@@ -147,7 +148,7 @@ pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Resul
                 reported_successes: Default::default(),
                 finished: vec![],
                 pet_rect:None,quick_pet_rect:None,
-                workspace_motion:Default::default(),
+                workspace_motion:Default::default(),publish_pending:false,
             })
         });
         let entity = window.update(cx, |_, window, cx| {
@@ -166,12 +167,14 @@ pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Resul
             // Chat progress belongs to the owner, including while both GPUI
             // windows are hidden behind the native notch. Never wait for paint
             // or the next keystroke to advance a queued send or handoff.
-            let _=window.update(cx,|app,window,cx|{app.advance_shared_chat(window,cx);app.sync_flow_layout();app.refresh_unified_models(cx);let empty=app.active.is_none();let visible=wallpaper_visible()&&app.motion;app.background.update(cx,|background,cx|background.set_native_context(empty,visible,cx));app.publish_unified(cx)});
+            let _=window.update(cx,|app,window,cx|{app.advance_shared_chat(window,cx);app.sync_flow_layout();app.refresh_unified_models(cx);let empty=app.active.is_none();let visible=wallpaper_visible()&&app.motion;app.background.update(cx,|background,cx|background.set_native_context(empty,visible,cx));});
+            queue_publish(window,cx);
         })
         .detach();
         let background=entity.read(cx).background.clone();
         cx.observe(&background,|background,cx|publish_wallpaper(background.read(cx))).detach();
         entity.read(cx).publish_unified(cx);
+        launch_metrics::mark("native-owner-ready");
         anyhow::ensure!(
             unsafe { ready() },
             "Kai did not accept the initial owner state"
@@ -180,7 +183,16 @@ pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Resul
             "Kai unified: native layer and owner state ready in process {}",
             std::process::id()
         );
-        if std::env::args().any(|arg|arg=="--unified-voice-probe"){
+        if std::env::args().any(|arg|arg=="--unified-startup-probe"){
+            anyhow::ensure!(std::env::args().any(|arg|arg=="--unified-smoke-test"),"Startup probe requires isolated data");
+            let diagnostics=unsafe{libc::dlsym(library,c"kai_unified_diagnostics".as_ptr())};anyhow::ensure!(!diagnostics.is_null(),"No native diagnostics");let diagnostics:unsafe extern "C" fn()->u32=unsafe{std::mem::transmute(diagnostics)};
+            let surface=entity.read(cx).startup_surface;
+            cx.spawn(async move|cx|{Timer::after(Duration::from_millis(std::env::var("KAI_STARTUP_WAIT_MS").ok().and_then(|s|s.parse::<u64>().ok()).unwrap_or(1400).clamp(1400,60000))).await;let state=unsafe{diagnostics()};match surface{
+                startup::Surface::Workspace=>{assert_eq!(state&31,9,"Default startup must show only the workspace and its shared pet");assert_ne!(state&64,0,"Startup workspace must fill the working area");},
+                startup::Surface::Extended=>{assert_eq!(state&3,2);assert_ne!(state&512,0,"Extended startup must really expand the notch");},
+                startup::Surface::Compact=>{assert_eq!(state&3,2);assert_eq!(state&512,0,"Compact startup must not show the mini chat");}
+            }eprintln!("KAI_STARTUP_PROBE_OK {surface:?}");let _=cx.update(|cx|cx.quit());}).detach();
+        }else if std::env::args().any(|arg|arg=="--unified-voice-probe"){
             anyhow::ensure!(std::env::args().any(|arg|arg=="--unified-smoke-test") && std::env::var("KAI_CODE_VOICE_DIAGNOSTIC").as_deref()==Ok("1"),"Live voice probe requires isolated, generated-audio diagnostic mode");
             start_voice_probe(window,cx)?;
         }else if std::env::args().any(|arg|arg=="--unified-orchestrator-probe"){
@@ -242,6 +254,13 @@ pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Resul
                 });
             }).detach();
         }
+        emit(&json!({"type":"keyboardCatalog","commands":keyboard::catalog()}));
+        if !std::env::args().any(|arg|arg=="--unified-smoke-test") || std::env::args().any(|arg|arg=="--unified-startup-probe") {
+            let surface=entity.read(cx).startup_surface;
+            // The native owner already has a state packet. Present immediately;
+            // discovery and provider catalogs continue independently.
+            cx.defer(move|_|{emit(&json!({"type":surface.packet()}));launch_metrics::mark(surface.packet());});
+        }
         cx.spawn(async move |cx| {
             while let Ok(request) = receiver.recv().await {
                 if cx
@@ -264,6 +283,18 @@ pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Resul
         .detach();
     }
     Ok(())
+}
+
+// Progress bursts share one publication per display interval. Command replies
+// still publish synchronously below, so request acknowledgements cannot vanish.
+#[cfg(target_os="macos")]
+fn queue_publish(window:WindowHandle<Orbit>,cx:&mut App){
+    let queued=HOST.with(|host|{let mut host=host.borrow_mut();let Some(host)=host.as_mut()else{return false};if host.publish_pending{return false}host.publish_pending=true;true});
+    if !queued{return}
+    cx.spawn(async move|cx|{Timer::after(Duration::from_millis(16)).await;let _=cx.update(|cx|{
+        HOST.with(|host|{if let Some(host)=host.borrow_mut().as_mut(){host.publish_pending=false;}});
+        let _=window.update(cx,|app,_,cx|app.publish_unified(cx));
+    });}).detach();
 }
 
 fn native_id(value: &Value, key: &str) -> Option<String> {
@@ -392,7 +423,7 @@ impl Orbit {
         } else {
             None
         };
-        let navigates = matches!(
+        let navigates = (action=="ui_command"&&matches!(request["command"].as_str(),Some("new"|"close_tab"|"next_tab"|"previous_tab"|"next_project"|"previous_project"|"orchestrator"|"open_project"))) || matches!(
             action,
             "chat" | "project" | "new" | "new_project" | "orchestrator" | "workspace_expand" | "navigate"
         );
@@ -430,11 +461,12 @@ impl Orbit {
                 return Err("Project is unavailable".into());
             }
         }
-        if navigates || matches!(action,"send"|"composer_command") {
+        if navigates || matches!(action,"send"|"composer_command"|"ui_command") {
             if request["draftBase"].as_str() != Some(self.composer.read(cx).text().as_str()) {
                 return Err("The IDE has a different draft. Both drafts are preserved; review the workspace before continuing.".into());
             }
         }
+        if action=="ui_command"&&!navigates{if let Some(draft)=request["draft"].as_str(){if draft.len()>input::MAX_DRAFT_BYTES||draft.contains('\0'){return Err("The draft is too large".into())}self.composer.update(cx,|input,cx|input.set_text(draft,cx));}}
         if navigates || action == "send"{self.unified_history_end=None;self.unified_history_wait=false;}
         if navigates {
             if action != "workspace_expand" {
@@ -514,6 +546,7 @@ impl Orbit {
                 if let Some(current)=self.active.as_ref().and_then(|id|self.sessions.iter().find(|s|&s.id==id)).cloned(){if back{self.unified_forward.push(current)}else{self.unified_back.push(current)}}
                 self.unified_navigating=true;self.open_session(target,window,cx);self.unified_navigating=false;
             }
+            "ui_command"=>{let id=request["command"].as_str().filter(|id|keyboard::COMMANDS.iter().any(|(_,known,_)|id==known)).ok_or("Unknown keyboard command")?;self.execute_shortcut(id,window,cx);},
             "new" => self.new_unprojected_conversation(window, cx),
             "new_project" => self.new_conversation(window, cx),
             "send" => {
@@ -827,7 +860,7 @@ impl Orbit {
         for child in self.unified_children.iter().filter(|c|c.connected && (matches!(c.status,chat_interactions::InteractionStatus::Started|chat_interactions::InteractionStatus::Working)||!c.requests.is_empty())){
             let parent=self.child_owner(child,&self.unified_children).map(|s|format!("code:{}",s.id));
             if parent.is_none(){continue}
-            tasks.push(json!({"id":child_id(child),"name":format!("{} · {}",child.provider.name(),short(&child.id,10)),"runId":child.turn_id.clone().unwrap_or_else(||child.id.clone()),"scene":if child.requests.is_empty(){"thinking"}else{"permission"},"text":child.preview,"agent":child.provider.command(),"parentId":parent}));
+            tasks.push(json!({"id":child_id(child),"name":child.name.clone().unwrap_or_else(||format!("{} · {}",child.provider.name(),short(&child.id,10))),"runId":child.turn_id.clone().unwrap_or_else(||child.id.clone()),"scene":if child.requests.is_empty(){"thinking"}else{"permission"},"text":if child.preview.is_empty(){child.task.as_deref().or(child.scope.as_deref()).unwrap_or("")}else{&child.preview},"agent":child.provider.command(),"parentId":parent}));
         }
         tasks.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
         let approval = self.unified_pending();
@@ -882,6 +915,7 @@ impl Orbit {
         if let Some(elapsed)=self.elapsed_label(){if let Some(text)=snapshot["sessionActivity"]["text"].as_str().map(str::to_owned){snapshot["sessionActivity"]["text"]=json!(format!("{text} · {elapsed}"));}}
         snapshot["usageResets"]=json!(self.controls.get(self.agent.command()).and_then(|(_,c)|c.defaults.reset_credits.as_ref()));
         snapshot["orchestratorMode"]=json!(self.orchestrator_active());snapshot["orchestratorAvailable"]=json!(self.active.is_none()||self.orchestrator_active());
+        snapshot["contextWindow"]=json!(self.context_usage().map(|(used,limit)|json!({"used":used,"limit":limit,"fraction":(used as f64/limit as f64).clamp(0.,1.)})));
         snapshot["fastMode"]=json!(self.fast_enabled());snapshot["fastSupported"]=json!(self.fast_supported());snapshot["usageSummary"]=json!(self.usage_summary());snapshot["usageWindows"]=json!(self.usage_windows().iter().map(|w|json!({"label":w.window_title().unwrap_or_else(||w.label.clone()),"remaining":w.remaining_text(),"fraction":((100.-w.used_percent)/100.).clamp(0.,1.),"reset":w.resets_at.and_then(|t|chrono::DateTime::from_timestamp(t,0)).map(|t|format!("Resets {}",t.with_timezone(&chrono::Local).format("%b %-d at %-I:%M %p")))})).collect::<Vec<_>>());snapshot["usageAccount"]=json!(self.controls.get(self.agent.command()).and_then(|(_,c)|c.account.clone()));snapshot["usageUpdated"]=json!(self.controls.get(self.agent.command()).map(|(at,_)|format!("Updated {}s ago",at.elapsed().as_secs())));
         snapshot["workspaceVoiceError"]=json!(self.voice_error);snapshot["historyEarlier"]=json!(self.unified_history_end.as_ref().is_some_and(|(owner,_)|owner==&self.unified_token()) || self.history_offset>0 || self.navigation_history);snapshot["approvalCount"]=json!(self.unified_pending_ids().len());snapshot["workspaceMotion"]=json!(self.motion);snapshot["workspaceTextMorph"]=json!(self.unified_text_morph);snapshot
 
@@ -1033,6 +1067,11 @@ pub(super) fn prepare_environment() {
     if std::env::args().any(|arg| arg == "--unified-smoke-test") {
         let path = std::env::temp_dir().join(format!("kai-unified-smoke-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&path);
+        if std::env::args().any(|arg|arg=="--unified-startup-probe"){
+            if let Ok(surface)=std::env::var("KAI_STARTUP_SURFACE"){
+                if matches!(surface.as_str(),"workspace"|"extended"|"compact"){let _=std::fs::write(path.join("workspace.json"),serde_json::to_vec(&json!({"startup_surface":surface})).unwrap());}
+            }
+        }
         unsafe { std::env::set_var("ORBIT_DATA_DIR", path) };
         return;
     }
@@ -1068,6 +1107,14 @@ pub(super) fn prepare_environment() {
 mod tests {
     use super::*;
     use std::prelude::v1::test;
+    #[gpui::test]fn nonnavigating_native_keyboard_command_keeps_context_and_synchronizes_typed_draft(cx:&mut TestAppContext){
+        let(view,cx)=crate::ui_tests::fixture(cx);cx.update(|window,cx|view.update(cx,|app,cx|{
+            app.unified_context=Some("Captured app context".into());
+            let mut body=request(app,"ui_command",cx);body["command"]=json!("fold_work");body["draft"]=json!("The current native draft");
+            app.unified_command(&body,window,cx).unwrap();assert_eq!(app.composer.read(cx).text(),"The current native draft");assert_eq!(app.unified_context.as_deref(),Some("Captured app context"));
+            assert!(app.unified_command(&body,window,cx).is_err(),"A stale draft base must never overwrite newer input");
+        }));
+    }
     fn request(app: &Orbit, action: &str, cx: &App) -> Value {
         json!({"action":action,"ownerToken":app.unified_token(),"draftBase":app.composer.read(cx).text(),"targetThreadId":app.active.as_ref().map(|id|format!("code:{id}")),"requestId":uuid::Uuid::new_v4().to_string()})
     }
@@ -1462,7 +1509,7 @@ mod regression_tests {
     fn delegated_task_snapshot_keeps_parent_provider_and_native_epoch(cx:&mut TestAppContext){
         let (view,cx)=crate::ui_tests::fixture(cx);view.update(cx,|app,cx|{
             let parent=&mut app.sessions[0];parent.agent=AgentKind::Codex;parent.external_id=Some("native-parent".into());let project=parent.execution_path.as_ref().unwrap_or(&parent.project_path).clone();let parent_id=parent.id.clone();
-            app.unified_children=vec![runtime::broker::ChildSnapshot{provider:AgentKind::Codex,project,parent_id:"native-parent".into(),id:"native-child".into(),turn_id:Some("child-turn".into()),status:chat_interactions::InteractionStatus::Working,preview:"Working child".into(),requests:vec![],transcript_bytes:0,transcript_revision:0,connected:true}];
+            app.unified_children=vec![runtime::broker::ChildSnapshot{name:None,scope:None,task:None,model:None,effort:None,workspace:None,provider:AgentKind::Codex,project,parent_id:"native-parent".into(),id:"native-child".into(),turn_id:Some("child-turn".into()),status:chat_interactions::InteractionStatus::Working,preview:"Working child".into(),requests:vec![],transcript_bytes:0,transcript_revision:0,connected:true}];
             let snapshot=app.unified_snapshot(cx);let child=snapshot["activeTasks"].as_array().unwrap().iter().find(|v|v["id"].as_str().unwrap().starts_with("child:")).unwrap();assert_eq!(child["parentId"],format!("code:{parent_id}"));assert_eq!(child["runId"],"child-turn");assert_eq!(child["agent"],"codex");
             app.unified_children[0].status=chat_interactions::InteractionStatus::Cancelled;assert!(!app.unified_snapshot(cx)["activeTasks"].as_array().unwrap().iter().any(|v|v["id"].as_str().unwrap().starts_with("child:")));
         });
@@ -1646,7 +1693,7 @@ impl Orbit{
  impl Drop for Restore{fn drop(&mut self){HOST.with(|h|{*h.borrow_mut()=self.0.take()});}}
  #[gpui::test]fn native_state_callback_can_reenter_and_replace_cached_bytes(cx:&mut TestAppContext){
   let(view,cx)=crate::ui_tests::fixture(cx);
-  let _restore=Restore(HOST.with(|h|h.replace(Some(Host{_library:std::ptr::null_mut(),publish,levels,voice_host,wallpaper,quick_surface:surface,wallpaper_visible:false,last_wallpaper:None,collapse:noop,_toggle:noop,last:Vec::new().into(),history:Value::Null,history_owner:String::new(),completed:None,error:None,results:Default::default(),reported_successes:Default::default(),finished:vec![],pet_rect:None,quick_pet_rect:None,workspace_motion:Default::default()}))));
+  let _restore=Restore(HOST.with(|h|h.replace(Some(Host{_library:std::ptr::null_mut(),publish,levels,voice_host,wallpaper,quick_surface:surface,wallpaper_visible:false,last_wallpaper:None,collapse:noop,_toggle:noop,last:Vec::new().into(),history:Value::Null,history_owner:String::new(),completed:None,error:None,results:Default::default(),reported_successes:Default::default(),finished:vec![],pet_rect:None,quick_pet_rect:None,workspace_motion:Default::default(),publish_pending:false}))));
   REENTERED.set(false);STABLE.set(false);
   view.update(cx,|app,cx|app.publish_unified(cx));
   assert!(REENTERED.get(),"State delivery held the owner borrow across AppKit reentry");

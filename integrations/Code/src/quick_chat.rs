@@ -395,6 +395,9 @@ impl Render for QuickChat {
             .on_action(cx.listener(|this, _: &Escape, window, cx| this.escape(window, cx)))
             .on_action(cx.listener(|this, _: &CloseWindow, window, cx| this.hide(window, cx)))
             .on_action(cx.listener(|this, _: &Send, window, cx| this.submit(window, cx)))
+            .on_action(cx.listener(|this, action: &keyboard::Execute, window, cx| {
+                if action.id=="composer"{this.composer.read(cx).focus_handle.focus(window);}else{this.sync_to_main(cx);this.orbit.update(cx,|app,cx|app.execute_shortcut(&action.id,window,cx));this.sync_from_main(cx);}
+            }))
             .on_action(cx.listener(|this, _: &NewConversation, window, cx| {
                 this.orbit
                     .update(cx, |app, cx| app.new_conversation(window, cx));

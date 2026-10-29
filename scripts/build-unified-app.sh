@@ -13,7 +13,9 @@ mkdir -p "$root/.build/unified" "$swift_cache"
 args=(build --offline --manifest-path "$root/integrations/Code/Cargo.toml" --bin orbit)
 [[ "$configuration" != release ]] || args+=(--release)
 cargo "${args[@]}"
-swiftc -parse-as-library -emit-library -O -D KAI_UNIFIED -module-cache-path "$swift_cache" "$root"/Sources/NotchPrototype/*.swift -o "$root/.build/unified/libKaiNotch.dylib"
+swift_optimization=(-O -whole-module-optimization)
+[[ "$configuration" == release ]] || swift_optimization=(-Onone)
+python3 "$root/scripts/build-native-cached.py" "$root/.build/unified/libKaiNotch.dylib" -parse-as-library -emit-library "${swift_optimization[@]}" -D KAI_UNIFIED -module-cache-path "$swift_cache" "$root"/Sources/NotchPrototype/*.swift
 python3 - "$root/.build/unified/libKaiNotch.dylib" <<'PYABI'
 import ctypes,sys
 library=ctypes.CDLL(sys.argv[1])
@@ -21,7 +23,7 @@ for name in ['start','publish','toggle','collapse','ready','workspace_visible','
  getattr(library,'kai_unified_'+name)
 print('Verified all eleven native ABI exports')
 PYABI
-swiftc -parse-as-library -emit-library -O -module-cache-path "$swift_cache" "$root/integrations/Code/native_helpers/CodeVoiceMedia.swift" -framework AppKit -framework WebKit -framework AVFoundation -o "$root/.build/unified/libCodeVoice.dylib"
+python3 "$root/scripts/build-native-cached.py" "$root/.build/unified/libCodeVoice.dylib" -parse-as-library -emit-library "${swift_optimization[@]}" -module-cache-path "$swift_cache" "$root/integrations/Code/native_helpers/CodeVoiceMedia.swift" -framework AppKit -framework WebKit -framework AVFoundation
 staging=$(mktemp -d "$root/.build/unified/.package.XXXXXX")
 trap 'rm -rf "$staging"' EXIT
 product="$staging/Kai Unified.app"
@@ -50,7 +52,7 @@ for pet in catalog['pets']:
  source=root/'kai_pets'/pet['spritesheet'];target=resources/'kai_pets'/pet['spritesheet']
  target.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(source,target)
 info=plistlib.loads((root/'integrations/Code/scripts/Info.plist').read_bytes())
-info.update(CFBundleName='Kai Unified',CFBundleDisplayName='Kai Unified',CFBundleIdentifier='com.kai.unified.experimental',CFBundleExecutable='kai-unified',CFBundleVersion='32',CFBundleShortVersionString='0.10.1')
+info.update(CFBundleName='Kai Unified',CFBundleDisplayName='Kai Unified',CFBundleIdentifier='com.kai.unified.experimental',CFBundleExecutable='kai-unified',CFBundleVersion='33',CFBundleShortVersionString='0.11.0')
 icon=root/'integrations/Code/assets/Code.icns'
 if icon.exists():shutil.copy2(icon,resources/'Code-Bonsai.icns')
 info['NSAppleEventsUsageDescription']='Kai reads Spotify playback status for its optional idle media display.'

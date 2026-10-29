@@ -295,6 +295,7 @@ private final class NotchSurfaceHost:NSView {
     private let petAppIcon=PetAppIcon()
     private var petFilterItem:NSMenuItem?,explicitTaskPets=Set<String>()
     private var petID = "codex", userPetID = "codex", renderedPetID = "", motionID = "idle", indicatorID = "demo", frame = 0, playToken = 0
+    private var compactPetCycle:DispatchWorkItem?,compactPetCycleID:String?
     private var taskPets=[String:String](),focusedTaskID:String?,autoCompact=false
     private let floatingTasks=FloatingTaskPets()
     private var floatingFocus:String?,floatingReviews=[KaiActiveTask]()
@@ -605,6 +606,7 @@ private final class NotchSurfaceHost:NSView {
             localMonitor = NSEvent.addLocalMonitorForEvents(matching:[.flagsChanged,.keyDown]) { [weak self] e in
                 if e.type == .flagsChanged {self?.flags(e)}
                 else {
+                    if self?.performNativeKeyboardCommand(e) == true{return nil}
                     self?.cancelShortcutHold();self?.cancelWorkspaceHold();self?.commandDismissGesture.cancel();self?.lastControlTap=0
                     if e.keyCode == 53,self?.panel.isKeyWindow == true,self?.open == true {self?.dismissNotchView();return nil}
                     self?.cancelVoicePromptForKeypress()
@@ -628,7 +630,20 @@ private final class NotchSurfaceHost:NSView {
         DistributedNotificationCenter.default().addObserver(self,selector:#selector(previewCompactApproval),name:NSNotification.Name("com.kai.approval.preview"),object:nil)
     }
 
-    func applicationWillTerminate(_ notification:Notification){NSWorkspace.shared.notificationCenter.removeObserver(self);NotificationCenter.default.removeObserver(self);hangDiagnostics.stop();cancelWorkspaceHold();quickMorph.cancel();workspaceMorph.cancel();workspaceStatusMorph.cancel();workspaceStatusRetire?.cancel();passiveRetire?.cancel();textReveal.finish();petAppIcon.stop();floatingTasks.stop();imageEncodingWork?.cancel();voicePrompt.cancel();voiceLaunchTimeout?.cancel();shortcutPreparation.cancel();cancelShortcutHold();mediaReleaseWork?.cancel();chatVoice.stop();dictation.cancel();speech.stop();media.stop();artworkTask?.cancel();bridge.stop();attachmentFiles.forEach{try? FileManager.default.removeItem(at:$0)}}
+    func performNativeKeyboardCommand(_ event:NSEvent)->Bool {
+        guard event.type == .keyDown,EmbeddedCodeRuntime.shared.active,miniOpen,panel.isKeyWindow,
+              (composerField.currentEditor() as? NSTextView)?.hasMarkedText() != true else{return false}
+        let flags=event.modifierFlags.intersection([.control,.shift,.command,.option])
+        let prefix:String
+        switch flags{case [.control]:prefix="ctrl-";case [.control,.shift]:prefix="ctrl-shift-";case [.command,.shift]:prefix="cmd-shift-";default:return false}
+        guard let char=event.charactersIgnoringModifiers?.lowercased(),let command=EmbeddedCodeRuntime.shared.keyboardCommands.first(where:{$0.key==prefix+char}) else{return false}
+        if command.id == "composer"{panel.makeFirstResponder(composerField)}
+        else if miniUI.performKeyboardCommand(command.id){}
+        else {bridge.send("ui_command",["command":command.id]);if ["terminal","files","changes","children","keyboard","projects","search","open_project"].contains(command.id){revealWorkspace()}}
+        return true
+    }
+
+    func applicationWillTerminate(_ notification:Notification){NSWorkspace.shared.notificationCenter.removeObserver(self);NotificationCenter.default.removeObserver(self);hangDiagnostics.stop();compactPetCycle?.cancel();cancelWorkspaceHold();quickMorph.cancel();workspaceMorph.cancel();workspaceStatusMorph.cancel();workspaceStatusRetire?.cancel();passiveRetire?.cancel();textReveal.finish();petAppIcon.stop();floatingTasks.stop();imageEncodingWork?.cancel();voicePrompt.cancel();voiceLaunchTimeout?.cancel();shortcutPreparation.cancel();cancelShortcutHold();mediaReleaseWork?.cancel();chatVoice.stop();dictation.cancel();speech.stop();media.stop();artworkTask?.cancel();bridge.stop();attachmentFiles.forEach{try? FileManager.default.removeItem(at:$0)}}
     @objc private func codexPreview(_ note:Notification){guard let path=note.userInfo?["path"] as? String else{return};pinned=true;setOpen(true,mini:true,userInitiated:true);miniUI.previewFile(URL(fileURLWithPath:(path as NSString).expandingTildeInPath))}
 
     private func buildMenu() {
@@ -1196,7 +1211,7 @@ private final class NotchSurfaceHost:NSView {
 
     private func floatingTasksItem()->NSMenuItem{let item=NSMenuItem(title:"Floating task pets",action:nil,keyEquivalent:"");item.submenu=floatingTasks.menu;return item}
     private func displayActivity(_ state:KaiState)->KaiActivity{
-        if !miniOpen,!state.approval,let task=state.activeTasks.first(where:{$0.id == floatingFocus}){return KaiActivity(scene:task.scene,text:task.text)}
+        if !miniOpen,!state.approval,let task=state.activeTasks.first(where:{$0.id == (floatingFocus ?? compactPetCycleID)}){return KaiActivity(scene:task.scene,text:task.text)}
         return miniOpen ? state.viewedActivity:state.activity
     }
     private func cycleFloatingPet(_ task:KaiActiveTask){
@@ -1513,6 +1528,7 @@ private final class NotchSurfaceHost:NSView {
         if quickChatVisible{value |= 128}
         if !workspaceBackground.isHidden && workspaceBackground.hasImage{value |= 256}
         if indicator.mode != .off && indicator.layer.opacity>0{value |= 32}
+        if miniOpen{value |= 512}
         return value
     }
     func workspacePetGeometry(_ frame:CGRect){workspacePetSlot=frame;syncWorkspacePet()}
@@ -2025,14 +2041,30 @@ private final class NotchSurfaceHost:NSView {
     private func reconcileTaskPets(priority:String){
         taskPets=TaskPetAssignments.reconcile(taskPets,taskIDs:petAssignmentTaskIDs(for:priority),available:petSelection.automaticIDs(catalog.pets.map(\.id)),preferred:petID,explicit:explicitTaskPets,priority:priority)
     }
+    private func syncCompactPetCycle(_ state:KaiState){
+        let eligible=state.activeTasks.filter{$0.scene != "off"}
+        guard open,!miniOpen,!compactVoiceMode,!state.approval,state.workspaceVoiceActive != true,floatingFocus==nil,eligible.count>1 else{compactPetCycle?.cancel();compactPetCycle=nil;compactPetCycleID=nil;return}
+        if !eligible.contains(where:{$0.id==compactPetCycleID}){compactPetCycleID=eligible.first?.id}
+        guard compactPetCycle==nil else{return}
+        let work=DispatchWorkItem{[weak self] in
+            guard let self else{return};self.compactPetCycle=nil
+            guard let state=self.latestState,self.open,!self.miniOpen,!self.compactVoiceMode,!state.approval,state.workspaceVoiceActive != true,self.floatingFocus==nil else{self.compactPetCycleID=nil;return}
+            let tasks=state.activeTasks.filter{$0.scene != "off"};guard tasks.count>1 else{self.compactPetCycleID=nil;return}
+            let current=tasks.firstIndex(where:{$0.id==self.compactPetCycleID}) ?? 0
+            self.compactPetCycleID=tasks[(current+1)%tasks.count].id
+            self.syncTaskPet(state);self.showActivity(self.displayActivity(state))
+            if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion{let fade=CATransition();fade.type = .fade;fade.duration=0.3;self.sprite.add(fade,forKey:"familyPetChange")}
+        };compactPetCycle=work;DispatchQueue.main.asyncAfter(deadline:.now()+3.2,execute:work)
+    }
     private func syncTaskPet(_ state:KaiState){
+        syncCompactPetCycle(state)
         let ids=Set(state.activeTasks.map(\.id)),pets=petSelection.automaticIDs(catalog.pets.map(\.id))
         if let floatingFocus,!ids.contains(floatingFocus){self.floatingFocus=nil}
         taskPets=TaskPetAssignments.reconcile(taskPets,taskIDs:state.activeTasks.reversed().filter{$0.scene != "off"}.map(\.id),available:pets,preferred:petID,explicit:explicitTaskPets)
         if let viewed=state.threadId,taskPets[viewed] == nil {taskPets[viewed]=pets.contains(userPetID) ? userPetID : (pets.first ?? userPetID)}
         if miniOpen || compactVoiceMode,let viewed=state.threadId,let assigned=taskPets[viewed] {
             if petID != assigned {petID=assigned;currentScene="";play()}
-        } else if let focus=floatingFocus ?? state.focusThreadId {
+        } else if let focus=floatingFocus ?? compactPetCycleID ?? state.focusThreadId {
             let assigned=taskPets[focus] ?? petID
             if focusedTaskID != focus || petID != assigned {focusedTaskID=focus;petID=assigned;currentScene="";play()}
         } else {

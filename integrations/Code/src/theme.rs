@@ -71,6 +71,11 @@ impl Preset {
         Self::ALL.iter().position(|p| *p == self).unwrap_or(0)
     }
 }
+/// Native material preference. Automatic follows public API availability.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all="snake_case")]
+pub enum GlassMaterial { #[default] Automatic, Classic, Liquid }
+impl GlassMaterial { pub const ALL:[Self;3]=[Self::Automatic,Self::Classic,Self::Liquid];pub fn label(self)->&'static str{match self{Self::Automatic=>"Automatic",Self::Classic=>"Classic blur",Self::Liquid=>"Liquid Glass"}} }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Contrast {
@@ -158,6 +163,7 @@ pub struct Theme {
     pub sidebar_glass: bool,
     pub main_glass: bool,
     pub transparency: bool,
+    pub glass_material: GlassMaterial,
     pub contrast: Contrast,
     pub diff_palette: DiffPalette,
 }
@@ -173,6 +179,7 @@ impl Hash for Theme {
         self.sidebar_glass.hash(state);
         self.main_glass.hash(state);
         self.transparency.hash(state);
+        self.glass_material.hash(state);
         self.contrast.hash(state);
         self.diff_palette.hash(state);
     }
@@ -190,6 +197,7 @@ impl Default for Theme {
             sidebar_glass: true,
             main_glass: true,
             transparency: true,
+            glass_material:GlassMaterial::Automatic,
             contrast: Contrast::Standard,
             diff_palette: DiffPalette::Standard,
         }
@@ -274,32 +282,15 @@ impl Theme {
         } else {
             opacity
         };
-        let native_alpha=if native_transparency{panel_alpha*0.30}else{0.};
+        // MonoCode's transparent inset panes preserve one backdrop. Tint it
+        // once natively; reserve local fill for chrome/cards rather than stacking
+        // multiple 70% overlays across the reading surface.
+        let high=next.contrast==Contrast::High;
+        let native_alpha=if native_transparency {if high{0.80}else{0.16+0.30*panel_alpha}}else{0.};
         let residual=|target:f32|((target-native_alpha)/(1.-native_alpha)).clamp(0.,1.);
-        let sidebar_rgba = with_alpha(
-            sidebar,
-            if native_transparency && next.sidebar_glass {
-                residual(panel_alpha+0.08*(1.-panel_alpha))
-            } else {
-                1.
-            },
-        );
-        let main_rgba = with_alpha(
-            background,
-            if native_transparency && next.main_glass {
-                residual(panel_alpha+0.25*(1.-panel_alpha))
-            } else {
-                1.
-            },
-        );
-        let surface_rgba = with_alpha(
-            surface,
-            if native_transparency && next.main_glass {
-                0.40 + panel_alpha * 0.60
-            } else {
-                1.
-            },
-        );
+        let sidebar_rgba=with_alpha(sidebar,if native_transparency&&next.sidebar_glass{residual(if high{0.96}else{0.26+0.38*panel_alpha})}else{1.});
+        let main_rgba=with_alpha(background,if native_transparency&&next.main_glass{residual(if high{0.96}else{0.20+0.34*panel_alpha})}else{1.});
+        let surface_rgba=with_alpha(surface,if native_transparency&&next.main_glass{if high{0.94}else{0.16+0.30*panel_alpha}}else{1.});
         let menu_rgba = with_alpha(
             surface,
             if native_transparency {
@@ -350,6 +341,7 @@ impl Theme {
             ui_font_size: next.ui_font_size,
             mono_font_size: next.mono_font_size,
             native_transparency,
+            glass_material:next.glass_material,
             sidebar_glass: native_transparency && next.sidebar_glass,
             main_glass: native_transparency && next.main_glass,
             backdrop_rgba:with_alpha(background,native_alpha),
@@ -534,6 +526,7 @@ pub struct ResolvedTheme {
     pub ui_font_size: f32,
     pub mono_font_size: f32,
     pub native_transparency: bool,
+    pub glass_material:GlassMaterial,
     pub sidebar_glass: bool,
     pub main_glass: bool,
     backdrop_rgba:u32,
@@ -771,7 +764,7 @@ mod tests {
     }
     #[test]
     fn native_tint_and_reading_surfaces_compose_independently(){
-        for opacity in [0.,0.3,0.6,1.]{let theme=Theme::default().resolve(true,Appearance{opacity,blur_radius:24});let base=(theme.backdrop_rgba()&255)as f32/255.;let composed=|rgba:u32|base+(1.-base)*(rgba&255)as f32/255.;assert!((composed(theme.main_rgba())-(opacity+0.25*(1.-opacity))).abs()<0.008);assert!((composed(theme.sidebar_rgba())-(opacity+0.08*(1.-opacity))).abs()<0.008);assert!((theme.surface_rgba()&255)>=(theme.sidebar_rgba()&255));}
+        for opacity in [0.,0.3,0.6,1.]{let theme=Theme::default().resolve(true,Appearance{opacity,blur_radius:24});let base=(theme.backdrop_rgba()&255)as f32/255.;let composed=|rgba:u32|base+(1.-base)*(rgba&255)as f32/255.;assert!((composed(theme.main_rgba())-(0.20+0.34*opacity)).abs()<0.008);assert!((composed(theme.sidebar_rgba())-(0.26+0.38*opacity)).abs()<0.008);assert!((theme.surface_rgba()&255)>=(theme.sidebar_rgba()&255));}
         let theme=Theme{transparency:false,..Theme::default()}.resolve(true,Appearance::default());assert_eq!(theme.backdrop_rgba()&255,0);assert_eq!(theme.main_rgba()&255,255);
     }
     #[test]

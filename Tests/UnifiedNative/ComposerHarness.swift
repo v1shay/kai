@@ -58,6 +58,23 @@ private func auditCommand(_ bytes:UnsafePointer<UInt8>?,_ count:Int)->Bool{guard
   let staleMenu=ui.permissionMenu()!,full=staleMenu.items.first{$0.title=="Full access"}!
   _=NSApp.sendAction(full.action!,to:full.target,from:full);precondition(commands.last?["access"] as? String == "full" && commands.last?["approvals"] == nil,"Sandbox symbol coupled access to approvals")
   owner="another-owner";runtime.receive(packet("workspace","gpt-6.1-terra"));pump(0.1);let after=commands.count;_ = choice.accessibilityPerformPress();_ = NSApp.sendAction(full.action!,to:full.target,from:full);precondition(commands.count==after,"Stale thinking option or permission menu changed another chat")
+  runtime.receive(try JSONSerialization.data(withJSONObject:["type":"keyboardCatalog","commands":[["key":"ctrl-l","id":"composer","label":"Focus message"],["key":"ctrl-t","id":"new","label":"New chat"]]]))
+  let nativePanel=member(app,"panel") as! NSPanel
+  nativePanel.makeKeyAndOrderFront(nil);pump(0.1)
+  let focusKey=NSEvent.keyEvent(with:.keyDown,location:.zero,modifierFlags:.control,timestamp:0,windowNumber:nativePanel.windowNumber,context:nil,characters:"l",charactersIgnoringModifiers:"l",isARepeat:false,keyCode:37)!
+  precondition(app.performNativeKeyboardCommand(focusKey),"Native catalog did not route composer focus")
+  edit.stringValue="Preserve keyboard draft"
+  let newKey=NSEvent.keyEvent(with:.keyDown,location:.zero,modifierFlags:.control,timestamp:0,windowNumber:nativePanel.windowNumber,context:nil,characters:"t",charactersIgnoringModifiers:"t",isARepeat:false,keyCode:17)!
+  precondition(app.performNativeKeyboardCommand(newKey),"Native catalog did not route new chat")
+  precondition(commands.last?["action"] as? String == "ui_command" && commands.last?["command"] as? String == "new" && commands.last?["draft"] as? String == "Preserve keyboard draft","Native keyboard navigation lost its draft or bypassed shared dispatch")
+  var contextPacket=try JSONSerialization.jsonObject(with:packet("workspace","gpt-6.1-sol")) as! [String:Any]
+  contextPacket["contextWindow"]=["used":64000,"limit":128000,"fraction":0.5]
+  runtime.receive(try JSONSerialization.data(withJSONObject:contextPacket));pump(0.1)
+  let contextRing=member(ui,"contextRing") as! CAShapeLayer
+  precondition(!contextRing.isHidden && contextRing.strokeEnd==0.5,"Real context-window fraction was not drawn independently of quota")
+  contextPacket.removeValue(forKey:"contextWindow");runtime.receive(try JSONSerialization.data(withJSONObject:contextPacket));pump(0.1)
+  precondition(contextRing.isHidden,"A stale context estimate remained after provider telemetry disappeared")
+  print("Native keyboard and context: catalog routing, focused composer, draft-safe navigation, independent real token window, and unavailable-state clearing passed")
   var palettes=[[CGColor]]()
   for (access,id) in [("read-only","gpt-6-luna"),("workspace","gpt-6.1-terra"),("full","gpt-6-astra")]{runtime.receive(packet(access,id));pump(0.3);palettes.append(permission.colors as! [CGColor])}
   precondition(palettes[0] != palettes[1] && palettes[1] != palettes[2],"Permission colors do not reflect actual sandbox")

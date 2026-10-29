@@ -12,6 +12,12 @@ const PAGE_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Debug)]
 pub struct ChildSnapshot {
+    pub name:Option<String>,
+    pub scope:Option<String>,
+    pub task:Option<String>,
+    pub model:Option<String>,
+    pub effort:Option<String>,
+    pub workspace:Option<PathBuf>,
     pub provider: AgentKind,
     pub project: PathBuf,
     pub parent_id: String,
@@ -59,6 +65,7 @@ struct ChildRecord {
     item: String,
     item_start: usize,
     request_errors: HashMap<String, String>,
+    updated:Instant,
 }
 struct ActiveTurn {
     cancelled: Arc<AtomicBool>,
@@ -340,6 +347,8 @@ impl Service {
             .unwrap_or_else(|e| e.into_inner())
             .contains_key(id)
     }
+    pub fn needs_initial_items(&self,id:&str)->bool{self.children.lock().unwrap_or_else(|e|e.into_inner()).get(id).is_some_and(|child|child.snapshot.scope.is_some()&&child.text.is_empty())}
+    pub fn has_child_output(&self,id:&str)->bool{self.children.lock().unwrap_or_else(|e|e.into_inner()).get(id).is_some_and(|child|!child.text.is_empty())}
     pub fn has_item_output(&self, child: &str, item: &str) -> bool {
         self.children
             .lock()
@@ -353,6 +362,13 @@ impl Service {
             "The provider returned an invalid child ID"
         );
         let mut children = self.children.lock().unwrap_or_else(|e| e.into_inner());
+        if !children.contains_key(id)&&children.len()>=MAX_CHILDREN{
+            // Retire completed leaves only. An ancestor still owns its live
+            // descendants' approvals and controls even after its own turn ends.
+            let parents:std::collections::HashSet<&str>=children.values().map(|c|c.snapshot.parent_id.as_str()).chain(std::iter::once(parent)).collect();
+            let old=children.iter().filter(|(id,c)|!parents.contains(id.as_str())&&c.snapshot.requests.is_empty()&&!matches!(c.snapshot.status,InteractionStatus::Started|InteractionStatus::Working)).min_by_key(|(_,c)|c.updated).map(|(id,_)|id.clone());
+            if let Some(old)=old{children.remove(&old);}
+        }
         if !children.contains_key(id) && children.len() >= MAX_CHILDREN {
             bail!(
                 "The provider exceeded the 128-child live ownership limit; no partial completion was claimed"
@@ -360,6 +376,7 @@ impl Service {
         }
         let child = children.entry(id.into()).or_insert_with(|| ChildRecord {
             snapshot: ChildSnapshot {
+                name:None,scope:None,task:None,model:None,effort:None,workspace:None,
                 provider: self.agent,
                 project: self.project.clone(),
                 parent_id: parent.into(),
@@ -376,17 +393,32 @@ impl Service {
             item: String::new(),
             item_start: 0,
             request_errors: HashMap::new(),
+            updated:Instant::now(),
         });
+        child.updated=Instant::now();
+        let bound=|text:&str,limit:usize|text.chars().take(limit).collect::<String>();
+        let thread=&p["thread"];let source=&thread["source"]["subAgent"]["thread_spawn"];
+        if let Some(name)=thread["agentNickname"].as_str().or_else(||source["agent_nickname"].as_str()).or_else(||thread["name"].as_str()).filter(|s|!s.is_empty()){child.snapshot.name=Some(bound(name,128));}
+        if let Some(task)=p["task"].as_str().or_else(||thread["preview"].as_str()).filter(|s|!s.is_empty()){if child.snapshot.task.is_none(){child.snapshot.task=Some(bound(task,4096));}}
+        if let Some(model)=p["model"].as_str().or_else(||thread["model"].as_str()).filter(|s|super::valid_model_id(s)){child.snapshot.model=Some(model.into());}
+        if let Some(effort)=p["reasoningEffort"].as_str().or_else(||thread["reasoningEffort"].as_str()).filter(|s|s.len()<=64){child.snapshot.effort=Some(effort.into());}
+        if let Some(cwd)=thread["cwd"].as_str().filter(|s|s.len()<=4096&&Path::new(s).is_absolute()){child.snapshot.workspace=Some(cwd.into());}
         if let Some(turn) = p["turn"]["id"].as_str().or_else(|| p["turnId"].as_str()) {
             child.snapshot.turn_id = Some(turn.into());
         }
         match method {
+            "native/subagent_activity"=>{
+                if let Some(path)=p["agentPath"].as_str().filter(|s|!s.is_empty()&&s.len()<=1024){child.snapshot.scope=Some(path.into());}
+                if child.snapshot.name.is_none(){child.snapshot.name=p["agentPath"].as_str().and_then(|p|p.rsplit('/').next()).filter(|s|!s.is_empty()).map(|s|bound(s,128));}
+                child.snapshot.status=match p["kind"].as_str(){Some("completed")=>InteractionStatus::Completed,Some("interrupted")=>InteractionStatus::Cancelled,Some("started"|"interacted")=>InteractionStatus::Working,_=>child.snapshot.status};
+            }
             "native/state" => {
+                if let Some(message)=p["message"].as_str().filter(|s|!s.is_empty()){child.snapshot.preview=bound(message,1024);}
                 child.snapshot.status = match p["status"].as_str() {
                     Some("completed") => InteractionStatus::Completed,
                     Some("interrupted" | "shutdown") => InteractionStatus::Cancelled,
-                    Some("errored" | "not_found") => InteractionStatus::Failed,
-                    Some("running" | "pending_init") => InteractionStatus::Working,
+                    Some("errored" | "not_found" | "notFound") => InteractionStatus::Failed,
+                    Some("running" | "pending_init" | "pendingInit") => InteractionStatus::Working,
                     _ => child.snapshot.status,
                 };
             }
@@ -836,6 +868,22 @@ mod tests {
             active_turn: Mutex::new(None),
             usage: Mutex::new(None),
         }
+    }
+    #[test]fn child_metadata_and_camel_case_status_match_current_native_protocol(){
+        let service=service();service.observe("child","root","thread/started",&serde_json::json!({"thread":{"id":"child","agentNickname":"Hopper","model":"exact-model","reasoningEffort":"high","cwd":"/fixture/worktree","preview":"Inspect the renderer"}})).unwrap();
+        service.observe("child","root","native/state",&serde_json::json!({"status":"pendingInit"})).unwrap();let snapshot=service.children.lock().unwrap()["child"].snapshot.clone();assert_eq!(snapshot.name.as_deref(),Some("Hopper"));assert_eq!(snapshot.task.as_deref(),Some("Inspect the renderer"));assert_eq!(snapshot.model.as_deref(),Some("exact-model"));assert_eq!(snapshot.effort.as_deref(),Some("high"));assert_eq!(snapshot.workspace.as_deref(),Some(Path::new("/fixture/worktree")));assert_eq!(snapshot.status,InteractionStatus::Working);
+        service.observe("child","root","native/state",&serde_json::json!({"status":"notFound","message":"No longer loaded"})).unwrap();assert_eq!(service.children.lock().unwrap()["child"].snapshot.status,InteractionStatus::Failed);
+        for i in 0..128{service.observe(&format!("done-{i}"),"root","native/state",&serde_json::json!({"status":"completed"})).unwrap();}assert!(service.children.lock().unwrap().len()<=128);service.observe("new-working-child","root","native/state",&serde_json::json!({"status":"running"})).unwrap();assert!(service.child("new-working-child"));
+    }
+    #[test]
+    fn terminal_child_retention_preserves_ancestors_of_live_descendants() {
+        let service=service();
+        service.observe("finished-parent","root","native/state",&serde_json::json!({"status":"completed"})).unwrap();
+        service.observe("working-grandchild","finished-parent","native/state",&serde_json::json!({"status":"running"})).unwrap();
+        for i in 0..256 { service.observe(&format!("finished-leaf-{i}"),"root","native/state",&serde_json::json!({"status":"completed"})).unwrap(); }
+        assert!(service.child("finished-parent"));
+        assert!(service.child("working-grandchild"));
+        assert!(service.children.lock().unwrap().len()<=MAX_CHILDREN);
     }
     #[test]
     fn child_page_aligns_tail_start_and_end_for_memory_and_spilled_utf8() {

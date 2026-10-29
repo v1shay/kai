@@ -41,6 +41,8 @@ pub struct Member {
     pub session: String,
     pub agent: AgentKind,
     pub model: Option<String>,
+    #[serde(default)]
+    pub reasoning_effort:Option<String>,
     pub task: String,
     pub status: Status,
     #[serde(default)]
@@ -80,7 +82,8 @@ impl Team {
                 (uuid::Uuid::parse_str(&m.session).is_ok()||self.owner.is_some()&&!m.session.is_empty()&&m.session.len()<=512&&!m.session.chars().any(char::is_control))
                     && !m.task.trim().is_empty()
                     && m.task.len() <= MAX_TASK_BYTES
-                    && m.model.as_ref().is_none_or(|s| s.len() <= 256)
+                    && m.model.as_ref().is_none_or(|s| crate::runtime::valid_model_id(s))
+                    && m.reasoning_effort.as_ref().is_none_or(|s|!s.is_empty()&&s.len()<=64&&!s.chars().any(char::is_control))
             })
             && self.members.iter().enumerate().all(|(i, m)| {
                 !self.members[..i]
@@ -117,6 +120,7 @@ mod tests {
                     session: uuid::Uuid::new_v4().to_string(),
                     agent: AgentKind::Codex,
                     model: None,
+                    reasoning_effort:None,
                     task: "Inspect".into(),
                     status: Status::Working,
                     attempted: false,
@@ -126,6 +130,7 @@ mod tests {
                     session: uuid::Uuid::new_v4().to_string(),
                     agent: AgentKind::Claude,
                     model: None,
+                    reasoning_effort:None,
                     task: "Review".into(),
                     status: Status::Complete,
                     attempted: false,

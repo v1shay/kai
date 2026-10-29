@@ -538,8 +538,14 @@ impl Orbit {
         }
         cx.notify();
     }
+    pub(super) fn conversations_progress(&self)->f32{
+        let target=if self.conversations_visible{1.}else{0.};
+        self.conversations_transition.map_or(target,|(at,from)|(from+(target-from)*(1.-(1.-(at.elapsed().as_secs_f32()/0.32).min(1.)).powi(3))).clamp(0.,1.))
+    }
     pub(super) fn toggle_conversations(&mut self, cx: &mut Context<Self>) {
+        let from=self.conversations_progress();
         self.conversations_visible = !self.conversations_visible;
+        self.conversations_transition=(self.motion&&!native::reduced_motion()).then_some((Instant::now(),from));
         if !self.conversations_visible {
             self.sessions_revealed = false;
             self.sessions_reveal = None;
@@ -901,10 +907,23 @@ impl Orbit {
         self.usage_windows().first().map(|w|format!("{} · {}{}",self.agent.name(),w.remaining_text(),if w.label=="Context window"{" context"}else{""})).unwrap_or_else(||format!("{} usage",self.agent.name()))
     }
     pub(super) fn usage_footer(&self,cx:&Context<Self>)->AnyElement{
-        let quota=self.usage_windows().first().cloned();let fraction=quota.as_ref().map(|w|((100.-w.used_percent)/100.)as f32);
+        let quota=self.reported_limit_windows().first().cloned();let fraction=quota.as_ref().map(|w|((100.-w.used_percent)/100.)as f32);
         div().id("provider-usage-footer").debug_selector(||"provider-usage-footer".into()).h(px(20.)).flex().items_center().gap_2().cursor_pointer().child(icon(agent_icon(self.agent),12.,agent_color(self.agent)))
         .when_some(fraction,|s,t|s.child(div().w(px(36.)).h(px(3.)).rounded_full().bg(rgba(0xffffff18)).child(div().w(px(36.*t)).h_full().rounded_full().bg(rgb(composer_design::intensity(1.-t))))))
-        .child(self.usage_summary()).on_click(cx.listener(|this,event:&ClickEvent,window,cx|{this.toggle_panel_from_click(Modal::Status,event.position(),true,window,cx);})).into_any_element()
+        .child(self.usage_summary()).child(self.context_indicator()).on_click(cx.listener(|this,event:&ClickEvent,window,cx|{this.toggle_panel_from_click(Modal::Status,event.position(),true,window,cx);})).into_any_element()
+    }
+    pub(super) fn context_usage(&self)->Option<(u64,u64)>{let usage=self.active.as_ref().and_then(|id|self.usage.get(id))?;Some((usage.context_used?,usage.context_limit.filter(|n|*n>0)?))}
+    fn context_indicator(&self)->AnyElement{
+        let Some((used,limit))=self.context_usage()else{return div().into_any_element()};
+        let fraction=(used as f64/limit as f64).clamp(0.,1.)as f32;
+        div().id("context-window-indicator").debug_selector(||"context-window-indicator".into()).ml_2().flex().items_center().gap_1().text_color(rgb(MUTED))
+        .child(canvas(|bounds,_,_|bounds,move|b,_,window,_|{
+            let center=b.center();let radius=f32::from(b.size.width)/2.-1.5;
+            for (portion,color)in [(1.,rgba(0xffffff20)),(fraction,rgb(composer_design::intensity(fraction)))]{
+                let mut path=PathBuilder::stroke(px(1.6));let count=48;for i in 0..=count{let a=-std::f32::consts::FRAC_PI_2+portion*std::f32::consts::TAU*i as f32/count as f32;let p=center+point(px(radius*a.cos()),px(radius*a.sin()));if i==0{path.move_to(p)}else{path.line_to(p)}}if let Ok(path)=path.build(){window.paint_path(path,color)}
+            }
+        }).size(px(12.)))
+        .child(format!("{:.0}% context",fraction*100.)).into_any_element()
     }
     pub(super) fn usage_panel(&self, height: Pixels, cx: &mut Context<Self>) -> AnyElement {
         let session = self.active.as_ref().and_then(|id| {

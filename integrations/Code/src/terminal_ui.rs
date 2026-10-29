@@ -13,6 +13,8 @@ use std::{
 };
 pub enum TerminalEvent {
     Close,
+    Dock(crate::terminal_dock::Side),
+    DockStarted,
 }
 pub struct TerminalPanel {
     runtime: Option<Terminal>,
@@ -373,13 +375,13 @@ impl Render for TerminalPanel {
         let frame = self.frame.clone();
         let cursor_focus = self.focus.clone();
         div()
-            .id("native-terminal-panel")
+            .id("native-terminal-panel").debug_selector(||"native-terminal-panel".into())
             .flex()
             .flex_col()
-            .h(px(298.))
+            .h_full()
             .w_full()
             .min_w(px(0.))
-            .flex_none()
+            .flex_none().overflow_hidden()
             .border_t_1()
             .border_color(rgba(0xebebeb18))
             .bg(rgba(0xebebeb08))
@@ -387,7 +389,8 @@ impl Render for TerminalPanel {
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::key))
             .child(
-                div()
+                div().id("terminal-drag-handle").debug_selector(||"terminal-drag-handle".into()).cursor_move()
+                    .on_drag(crate::terminal_dock::MoveTerminal,{let weak=cx.weak_entity();move|_,_,_,cx|{let _=weak.update(cx,|_,cx|cx.emit(TerminalEvent::DockStarted));cx.new(|_|crate::terminal_dock::MoveTerminal)}})
                     .h(px(32.))
                     .px_3()
                     .flex()
@@ -395,7 +398,7 @@ impl Render for TerminalPanel {
                     .gap_2()
                     .text_size(crate::theme::ui_px(11.))
                     .text_color(rgb(0x929292))
-                    .child(self.frame.title.clone())
+                    .child(div().flex_1().min_w(px(0.)).truncate().child(self.frame.title.clone()))
                     .when(self.frame.alternate, |s| s.child("Full screen"))
                     .when(self.frame.display_offset > 0, |s| {
                         s.child(format!("↑ {}", self.frame.display_offset))
@@ -408,6 +411,7 @@ impl Render for TerminalPanel {
                             .into_owned(),
                     )
                     .child(div().flex_1())
+                    .children(crate::terminal_dock::Side::ALL.into_iter().map(|side|div().id(("terminal-dock-side",side as usize)).px_1().cursor_pointer().hover(|s|s.bg(rgba(0xffffff14))).child(side.glyph()).on_click(cx.listener(move|_,_,_,cx|{cx.stop_propagation();cx.emit(TerminalEvent::Dock(side));}))))
                     .child(self.error.clone().unwrap_or_else(|| {
                         if self.starting {
                             "Starting…".into()
