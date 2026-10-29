@@ -116,7 +116,6 @@ impl Orbit {
             run.map(|run| run.status.clone())
         };
         let input = composer.clone();
-        let send_focus = composer.clone();
         let empty=self.rows.is_empty();
         let transcript=list(scroll.clone(),cx.processor(|this,ix,window,cx|this.row(ix,window,cx))).size_full();
         let artwork = self
@@ -334,114 +333,7 @@ impl Orbit {
                                     .child(input),
                             )
                             .child(self.attachment_strip(cx))
-                            .child(
-                                div()
-                                    .px_2()
-                                    .pb_2()
-                                    .flex()
-                                    .items_center()
-                                    .gap_2()
-                                    .child(
-                                        div()
-                                            .id("quick-agent-model")
-                                            .debug_selector(|| "quick-agent-model".into())
-                                            .max_w(px(245.))
-                                            .min_w(px(0.))
-                                            .h(px(28.))
-                                            .px_2()
-                                            .flex()
-                                            .items_center()
-                                            .gap_1()
-                                            .rounded_md()
-                                            .cursor_pointer()
-                                            .hover(|s| s.bg(rgba(GLASS_HOVER)))
-                                            .text_size(theme::ui_px(11.))
-                                            .child(icon(
-                                                agent_icon(self.agent),
-                                                14.,
-                                                agent_color(self.agent),
-                                            ))
-                                            .child(
-                                                div().min_w(px(0.)).text_ellipsis().child(
-                                                    composer_design::display_label(self.effective_model_label().split(" · ").next().unwrap_or("")),
-                                                ),
-                                            )
-                                            .child(icon("chevron-down", 10., MUTED))
-                                            .on_click(cx.listener(
-                                                |this, event: &ClickEvent, window, cx| {
-                                                    this.overlay_window =
-                                                        Some(window.window_handle().window_id());
-                                                    this.toggle_picker_from_click(
-                                                        false,event.position(),
-                                                        window,
-                                                        cx,
-                                                    );
-                                                },
-                                            )),
-                                    )
-                            .child(self.orchestrator_chip(window,cx))
-                            .child(self.thinking_chip(window,cx))
-                            .when(self.fast_supported(),|s|s.child(self.fast_button(window,cx)))
-                                    .child(
-                                        div()
-                                            .id("quick-permissions")
-                                            .debug_selector(|| "quick-permissions".into())
-                                            .h(px(28.))
-                                            .px_2()
-                                            .flex()
-                                            .items_center()
-                                            .gap_1()
-                                            .rounded_md()
-                                            .cursor_pointer()
-                                            .hover(|s| s.bg(rgba(GLASS_HOVER)))
-                                            .text_size(theme::ui_px(11.))
-                                            .child(icon("shield", 13., MUTED))
-                                            .child(if self.allow_edits {
-                                                if self.agent==AgentKind::Codex && self.codex_access==runtime::CodexAccess::Full { "Full access" } else { "Build" }
-                                            } else {
-                                                "Read only"
-                                            })
-                                            .on_click(cx.listener(
-                                                |this, event: &ClickEvent, window, cx| {
-                                                    this.show_panel_at(
-                                                        Modal::Permissions,
-                                                        event.position()
-                                                            + point(px(-12.), px(-20.)),
-                                                        true,
-                                                        window,
-                                                        cx,
-                                                    );
-                                                },
-                                            )),
-                                    )
-                                    .child(div().flex_1())
-                                    .child(self.attachment_button(cx))
-                                    .child(self.dictation_button(cx))
-                                    .when(
-                                        self.agent == AgentKind::Codex || self.voice_call.is_some(),
-                                        |view| view.child(self.voice_button(cx)),
-                                    )
-                                    .child(
-                                        div()
-                                            .id("quick-send")
-                                            .debug_selector(|| "quick-send".into())
-                                            .cursor_pointer()
-                                            .hover(|s| s.opacity(0.88))
-                                            .child(self.send_symbol((running
-                                                        && composer
-                                                            .read(cx)
-                                                            .text()
-                                                            .trim()
-                                                            .is_empty()
-                                                        && self.attachments.is_empty()) || self.handoff_pending.is_some()))
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                if !this.cancel_send_handoff(cx) {
-                                                    this.send(window, cx);
-                                                }
-                                                send_focus.read(cx).focus_handle.focus(window);
-                                            })),
-                                    ),
-                            ),
+                            .child(self.composer_toolbar(true, composer.clone(), (running && composer.read(cx).text().trim().is_empty() && self.attachments.is_empty()) || self.handoff_pending.is_some(), window, cx)),
                     )
                     .child(self.usage_footer(cx))
                     .child(

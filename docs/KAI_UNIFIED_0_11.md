@@ -21,6 +21,21 @@ a bounded separate read-only ephemeral Codex request generates a semantic title;
 it is not inserted into the conversation. This requires an available Codex CLI.
 Manual renames and deleted chats always win over a late generated name.
 
+## Adaptive composer toolbar (0.11.2)
+
+Code and Quick Chat keep their composer controls on one row. As the actual
+conversation area narrows, permission and voice labels fold into icons, then
+orchestration/thinking labels compact. At smaller widths, secondary controls
+move into the click-only “…” menu. The model remains reachable, and microphone
+and send/stop stay together at the right edge. Growing the conversation area
+restores full labels. Width, icon and label changes use a finite 240 ms transition
+that reverses from its current pose; Reduced Motion snaps to the fitting layout.
+An open overflow menu keeps its trigger visible until dismissed.
+
+This responds to the space left by sidebars, file inspectors and terminal docks,
+not just the outer window width. Model identity glyphs and chevrons fade as the
+model chip narrows; the exact name remains available in its picker and menu.
+
 ## Terminal and navigation
 
 Drag the terminal header toward any of the four highlighted workspace edges.

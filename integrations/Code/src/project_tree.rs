@@ -24,10 +24,12 @@ pub(super) struct ProjectTree {
     restored: bool,
     #[cfg(test)]
     rendered: usize,
+    #[cfg(test)]
+    frame_elapsed: Option<Duration>,
 }
 
 impl Default for ProjectTree {
-    fn default()->Self{Self{activity:vec![],rows:vec![],groups:vec![],scroll:ListState::new(0,ListAlignment::Top,px(160.)),loaded_at:HashMap::new(),recent_roots:vec![],pending:HashMap::new(),ready:HashSet::new(),failed:HashSet::new(),motions:HashMap::new(),sequence:0,restored:false,#[cfg(test)]rendered:0}}
+    fn default()->Self{Self{activity:vec![],rows:vec![],groups:vec![],scroll:ListState::new(0,ListAlignment::Top,px(160.)),loaded_at:HashMap::new(),recent_roots:vec![],pending:HashMap::new(),ready:HashSet::new(),failed:HashSet::new(),motions:HashMap::new(),sequence:0,restored:false,#[cfg(test)]rendered:0,#[cfg(test)]frame_elapsed:None}}
 }
 
 impl Orbit {
@@ -318,7 +320,9 @@ impl Orbit {
             .motions
             .get(path)
             .map_or(target, |(start, open, from)| {
-                let t=(start.elapsed().as_secs_f32()/0.24).min(1.);
+                #[cfg(test)] let elapsed=self.project_tree.frame_elapsed.unwrap_or_else(||start.elapsed());
+                #[cfg(not(test))] let elapsed=start.elapsed();
+                let t=(elapsed.as_secs_f32()/0.24).min(1.);
                 let p=1.-(1.-t).powi(3);
                 let target = if *open { 1. } else { 0. };
                 from + (target - from) * p
@@ -350,9 +354,12 @@ impl Orbit {
             self.rebuild_project_tree();
         }
         let before = self.project_tree.motions.len();
-        self.project_tree
-            .motions
-            .retain(|_, (start, _, _)| self.motion && start.elapsed() < Duration::from_millis(240));
+        #[cfg(test)] let frame_elapsed=self.project_tree.frame_elapsed;
+        self.project_tree.motions.retain(|_,(start,_,_)|{
+            #[cfg(test)] let elapsed=frame_elapsed.unwrap_or_else(||start.elapsed());
+            #[cfg(not(test))] let elapsed=start.elapsed();
+            self.motion && elapsed<Duration::from_millis(240)
+        });
         if before != self.project_tree.motions.len() {
             self.rebuild_project_tree();
         }
@@ -361,6 +368,9 @@ impl Orbit {
                 if let Some(Node::Project(project))=self.project_tree.rows.get(range.start){if self.project_tree.motions.contains_key(&self.projects[*project].path){self.project_tree.scroll.splice(ix..ix+1,1);}}
             }
         }
+        // Geometry tests paint an exact frame instead of racing the machine's
+        // wall clock. Real transitions retain their normal frame scheduling.
+        #[cfg(test)] if self.project_tree.frame_elapsed.is_some(){return}
         if !self.project_tree.motions.is_empty()
             && !self.sidebar_split
             && self.sidebar
@@ -1244,9 +1254,9 @@ emit({'type':'result','subtype':'success','is_error':False,'result':'Standalone 
     }
 
     #[gpui::test]fn accordion_geometry_is_intermediate_and_conversation_fold_reverses(cx:&mut TestAppContext){
-        let(view,cx)=unified(cx);view.update(cx,|app,cx|{app.motion=true;let path=app.custom_projects[0].path.clone();app.toggle_project_branch(path.clone(),cx);app.project_tree.motions.insert(path,(Instant::now()-Duration::from_millis(25),true,0.));cx.notify();});draw_frame(&view,cx);
+        let(view,cx)=unified(cx);crate::ui_tests::settle_composer(&view,cx);view.update(cx,|app,cx|{app.motion=true;app.project_tree.frame_elapsed=Some(Duration::from_millis(25));let path=app.custom_projects[0].path.clone();app.toggle_project_branch(path.clone(),cx);app.project_tree.motions.insert(path,(Instant::now()-Duration::from_millis(25),true,0.));cx.notify();});draw_frame(&view,cx);
         let height=f32::from(cx.debug_bounds("project-branch-group-0").unwrap().size.height);assert!(height>32.&&height<64.,"actual group must ease between header and one chat, got {height}");
-        view.update(cx,|app,cx|{app.sidebar_split=true;app.conversations_visible=true;app.conversations_transition=None;app.toggle_conversations(cx);app.conversations_transition=Some((Instant::now()-Duration::from_millis(80),1.));let before=app.conversations_progress();assert!(before>0.&&before<1.);app.toggle_conversations(cx);assert!((app.conversations_progress()-before).abs()<0.01);});
+        view.update(cx,|app,cx|{app.project_tree.frame_elapsed=None;app.sidebar_split=true;app.conversations_visible=true;app.conversations_transition=None;app.toggle_conversations(cx);app.conversations_transition=Some((Instant::now()-Duration::from_millis(80),1.));let before=app.conversations_progress();assert!(before>0.&&before<1.);app.toggle_conversations(cx);assert!((app.conversations_progress()-before).abs()<0.01);});
     }
     #[gpui::test]
     fn rapid_fold_reversal_is_continuous_and_all_animation_work_stops(cx: &mut TestAppContext) {

@@ -224,13 +224,15 @@ impl Orbit {
             cx.notify();
         } else { self.start_orchestrator(window, cx); }
     }
-    pub(super) fn orchestrator_chip(&self, window: &Window, cx: &Context<Self>) -> AnyElement {
+    pub(super) fn orchestrator_chip_adaptive(&self, window: &Window, cx: &Context<Self>, detail: f32) -> AnyElement {
         if self.active.is_some() && !self.orchestrator_active() {
             return div().into_any_element();
         }
         let active = self.orchestrator_active();
         let color = if active { 0xc3a4ff } else { MUTED };
-        let expansion = self.orchestrator_expansion();
+        let expansion = self.orchestrator_expansion().max(1. - detail);
+        let label = if active { "Orchestrator" } else { "Orchestrate" };
+        let label_width = composer_toolbar::text_width(window, label) * detail;
         if self.motion && !native::reduced_motion() && window.is_window_active()
             && self.orchestrator_transition.is_some_and(|(at, _)| at.elapsed() < Duration::from_millis(280)) {
             request_motion_frame(window, cx);
@@ -241,7 +243,8 @@ impl Orbit {
             .relative()
             .overflow_hidden()
             .h(px(26.))
-            .px(px(8.))
+            .px(px(6. + 2. * detail))
+            .w_full()
             .flex_none()
             .whitespace_nowrap()
             .rounded_md()
@@ -258,8 +261,8 @@ impl Orbit {
                     .child(icon("branch", 14., color)),
             ))
             .child(div().debug_selector(|| "orchestrator-label".into()).relative()
-                .flex_none().whitespace_nowrap()
-                .child(if active { "Orchestrator" } else { "Orchestrate" }))
+                .w(px(label_width)).overflow_hidden().opacity(detail).flex_none().whitespace_nowrap()
+                .child(label))
             .on_click(cx.listener(|this, _, window, cx| this.toggle_orchestrator(window, cx)));
         if active && self.motion && !native::reduced_motion() && window.is_window_active() {
             chip.with_animation(

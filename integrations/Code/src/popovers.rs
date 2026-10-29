@@ -68,6 +68,7 @@ impl Orbit {
             }
             Modal::Status
             | Modal::Permissions
+            | Modal::ComposerControls
             | Modal::Handoff
             | Modal::Realtime
             | Modal::Activity => (
@@ -222,6 +223,7 @@ impl Orbit {
                     150.
                 },
             ),
+            Modal::ComposerControls => ("Composer controls", "more", "composer-more-popover", 320., 490.),
             Modal::Handoff => ("Continue with", "branch", "handoff-popover", 360., 420.),
             Modal::WorkspaceTrust => (
                 "Trust project",
@@ -248,6 +250,7 @@ impl Orbit {
             .max_h(height - px(40.))
             .overflow_y_scroll();
         match panel.kind {
+            Modal::ComposerControls => { body = body.child(self.composer_more_controls(cx)); }
             Modal::Activity => {
                 body = body.child(self.activity_menu(cx));
             }

@@ -189,3 +189,25 @@ Native desktop automation repeatedly failed to start (Sky Computer Use service);
 behavior/geometry/materials were verified through native integration probes, not
 pixel-identical screenshot comparison. This release does not claim proof that
 arbitrary future workloads cannot crash or that every external provider is online.
+
+## 0.11.2 — adaptive composer follow-up
+
+Replaced the wrapping composer row with one measured shared implementation for
+Code and Quick Chat. Permission/voice labels compact first, followed by optional
+mode labels; smaller layouts move secondary actions into the click-only overflow
+menu. Model access stays present, and microphone/send remain one fixed trailing
+group. Width, label opacity and glyph details reverse smoothly through a finite
+240 ms transition. The overflow trigger remains available while its menu is open.
+No timer, process or background polling loop was added.
+
+Verified after compiler contention ended: 28 composer checks, all 15 project-tree
+checks, and the hidden-reveal/large-history regressions pass. The broader suite
+exposed wall-clock-sensitive assertions under concurrent release compilation;
+the accordion geometry test now paints an explicit test-only 25 ms frame. The
+other load-sensitive checks passed when rerun sequentially. This is not a claim
+that every broad run was failure-free.
+
+Signed 0.11.2 startup and native glass/morph probes passed. The fresh-process
+workspace frame measured 288–340 ms; the idle probe measured 1.02% of one core,
+219.1 MiB resident memory and about 12 threads with motion enabled. Installed
+build 35 with the 0.11.1 (34) bundle backed up; the running user session was kept.

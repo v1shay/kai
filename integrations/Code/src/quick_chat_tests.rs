@@ -145,18 +145,20 @@ fn quick_codex_voice_is_visible_distinct_from_dictation_and_uses_shared_launch(
     cx: &mut TestAppContext,
 ) {
     let (orbit, panel, cx) = fixture(cx);
-    for width in [540., 680.] {
+    for width in [540., 680., 940.] {
         cx.simulate_resize(size(px(width), px(520.)));
         cx.draw(point(px(0.), px(0.)), size(px(width), px(520.)), |_, _| {
             panel.clone().into_any_element()
         });
+        cx.run_until_parked();
+        cx.draw(point(px(0.), px(0.)), size(px(width), px(520.)), |_, _| panel.clone().into_any_element());
         let voice = cx
             .debug_bounds("conversation-voice")
             .expect("Visible Codex Voice control");
         let card = cx.debug_bounds("quick-composer-card").unwrap();
         assert!(
-            voice.size.width > px(70.),
-            "Voice must have a readable label"
+            voice.size.width >= px(if width >= 940. { 70. } else { 28. }),
+            "Voice keeps a full label when it fits and an accessible icon when compact"
         );
         assert!(voice.left() >= card.left() && voice.right() <= card.right());
     }
@@ -190,7 +192,8 @@ fn quick_codex_voice_is_visible_distinct_from_dictation_and_uses_shared_launch(
 #[gpui::test]
 fn main_codex_voice_control_has_a_readable_label_and_fits_the_composer(cx: &mut TestAppContext) {
     let (orbit, cx) = ui_tests::fixture(cx);
-    ui_tests::draw_frame(&orbit, cx);
+    orbit.update(cx, |app, cx| { app.sidebar = false; app.sidebar_width = 0.; app.sidebar_transition = None; cx.notify(); });
+    ui_tests::settle_composer(&orbit, cx);
     let voice = cx
         .debug_bounds("conversation-voice")
         .expect("Visible Codex Voice control");

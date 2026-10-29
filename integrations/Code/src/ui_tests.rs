@@ -110,6 +110,12 @@ pub(super) fn fixture(cx: &mut TestAppContext) -> (Entity<Orbit>, &mut VisualTes
     (view, cx)
 }
 
+pub(super) fn settle_composer(view: &Entity<Orbit>, cx: &mut VisualTestContext) {
+    draw_frame(view, cx);
+    cx.run_until_parked();
+    draw_frame(view, cx);
+}
+
 pub(super) fn draw_frame(view: &Entity<Orbit>, cx: &mut VisualTestContext) {
     cx.draw(point(px(0.), px(0.)), size(px(1180.), px(790.)), |_, _| {
         view.clone().into_any_element()
@@ -2464,6 +2470,7 @@ fn file_citation_opens_the_native_inspector_without_losing_the_draft(cx: &mut Te
 fn native_voice_controls_and_question_choices_use_the_composer(cx: &mut TestAppContext) {
     use chat_interactions::{ChatInteraction, InteractionStatus, QuestionCard, QuestionOption};
     let (view, cx) = fixture(cx);
+    settle_composer(&view, cx);
     assert!(cx.debug_bounds("attach-image").is_some());
     assert!(cx.debug_bounds("dictate").is_some());
     view.update(cx, |app, _| {
@@ -4983,7 +4990,7 @@ fn composer_permissions_open_real_approval_controls_and_save_the_selected_mode(
         app.allow_edits = true;
         cx.notify();
     });
-    draw_frame(&view, cx);
+    settle_composer(&view, cx);
     let position = cx
         .debug_bounds("mode")
         .expect("composer mode control")

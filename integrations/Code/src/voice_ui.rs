@@ -604,51 +604,6 @@ impl Orbit {
         }
         self.synchronize_voice_status();cx.notify();
     }
-    pub(super) fn voice_button(&self, cx: &Context<Self>) -> AnyElement {
-        if self.agent != AgentKind::Codex && self.voice_call.is_none() {
-            return div().into_any_element();
-        }
-        div()
-            .id("conversation-voice")
-            .debug_selector(|| "conversation-voice".into())
-            .h(px(28.))
-            .px_2()
-            .flex_none()
-            .flex()
-            .items_center()
-            .justify_center()
-            .gap_1()
-            .text_size(theme::ui_px(11.))
-            .rounded_md()
-            .cursor_pointer()
-            .bg(rgba(if self.voice_call.is_some() {
-                0x9fbaee26
-            } else {
-                0xffffff00
-            }))
-            .hover(|s| s.bg(rgba(GLASS_HOVER)))
-            .child(icon(
-                "assets/kai/status/listening.svg",
-                14.,
-                if self.voice_call.is_some() {
-                    ACCENT
-                } else {
-                    MUTED
-                },
-            ))
-            .child("RealTime")
-            .child(icon("chevron-down", 9., MUTED))
-            .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
-                this.toggle_panel_from_click(
-                    Modal::Realtime,
-                    event.position() + point(px(-12.), px(-20.)),
-                    true,
-                    window,
-                    cx,
-                );
-            }))
-            .into_any_element()
-    }
     pub(super) fn realtime_settings(&self, cx: &Context<Self>) -> AnyElement {
         let mut panel = div()
             .id("realtime-settings")

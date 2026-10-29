@@ -55,14 +55,17 @@ impl Orbit{
             chip.with_animation(SharedString::from(key),Animation::new(Duration::from_secs(5)),move|chip,t|chip.child(shimmer_tiles(Some(t*5.),0xffd968,true)).child(bolt())).into_any_element()
         }else{chip.child(shimmer_tiles(Some(0.),0xffd968,false)).child(bolt()).into_any_element()}
     }
-    pub(super) fn thinking_chip(&self,window:&Window,cx:&Context<Self>)->AnyElement{
+    pub(super) fn thinking_chip_adaptive(&self,window:&Window,cx:&Context<Self>,detail:f32)->AnyElement{
         let Some(model)=self.effort_model_choice().filter(|m|!m.reasoning_efforts.is_empty())else{return div().into_any_element()};
-        let value=self.unified_effort().map(str::to_owned).or_else(||self.effective_model_settings().1).unwrap_or_default();let i=model.reasoning_efforts.iter().position(|e|e==&value).unwrap_or(0);let t=i as f32/model.reasoning_efforts.len().saturating_sub(1).max(1)as f32;let color=effort_color(&value,t);let label=title(&value);
-        let chip=div().id("thinking-chip").debug_selector(||"thinking-chip".into()).px_2().h(px(26.)).relative().overflow_hidden().rounded_md().flex().items_center().text_size(theme::ui_px(11.)).text_color(rgb(color)).bg(linear_gradient(90.,linear_color_stop(rgba((color<<8)|0x24),0.),linear_color_stop(rgba((intensity((t+0.25).min(1.))<<8)|0x10),1.))).cursor_pointer()
+        let value=self.unified_effort().map(str::to_owned).or_else(||self.effective_model_settings().1).unwrap_or_default();let i=model.reasoning_efforts.iter().position(|e|e==&value).unwrap_or(0);let t=i as f32/model.reasoning_efforts.len().saturating_sub(1).max(1)as f32;let color=effort_color(&value,t);let label=if value.is_empty(){"Thinking".into()}else{title(&value)};let label_width=composer_toolbar::text_width(window,&label)*detail;
+        let contents=move||div().relative().flex().items_center()
+            .child(div().w(px(14.*(1.-detail))).h(px(14.)).flex_none().overflow_hidden().opacity(1.-detail).child(icon("sparkles",14.,color)))
+            .child(div().w(px(label_width)).overflow_hidden().opacity(detail).whitespace_nowrap().child(label.clone()));
+        let chip=div().id("thinking-chip").debug_selector(||"thinking-chip".into()).w_full().px(px(6.+2.*detail)).h(px(26.)).relative().overflow_hidden().rounded_md().flex().items_center().text_size(theme::ui_px(11.)).text_color(rgb(color)).bg(linear_gradient(90.,linear_color_stop(rgba((color<<8)|0x24),0.),linear_color_stop(rgba((intensity((t+0.25).min(1.))<<8)|0x10),1.))).cursor_pointer()
         .on_click(cx.listener(|this,event:&ClickEvent,window,cx|{this.toggle_picker_from_click(true,event.position(),window,cx);}));
         if self.motion && !native::reduced_motion() && window.is_window_active(){
-            chip.with_animation(SharedString::from(format!("thinking-chip-{}-{value}",self.agent.command())),Animation::new(Duration::from_secs(5)),move|chip,t|chip.child(shimmer_tiles(Some(t*5.),color,true)).child(div().relative().child(label.clone()))).into_any_element()
-        }else{chip.child(shimmer_tiles(Some(0.),color,false)).child(div().relative().child(label)).into_any_element()}
+            chip.with_animation(SharedString::from(format!("thinking-chip-{}-{value}",self.agent.command())),Animation::new(Duration::from_secs(5)),move|chip,t|chip.child(shimmer_tiles(Some(t*5.),color,true)).child(contents())).into_any_element()
+        }else{chip.child(shimmer_tiles(Some(0.),color,false)).child(contents()).into_any_element()}
     }
     fn effort_fraction(&self,count:usize,current:usize)->f32{
         let target=current as f32/count.saturating_sub(1).max(1)as f32;
@@ -133,6 +136,7 @@ impl Orbit{
  }
  #[gpui::test]fn composer_popovers_are_click_only_toggle_and_switch_without_losing_drafts(cx:&mut TestAppContext){
   let(view,cx)=crate::ui_tests::fixture(cx);
+  crate::ui_tests::settle_composer(&view,cx);
   view.update(cx,|app,cx|{
    app.agent=AgentKind::Codex;app.model=Some("thinking-click-fixture".into());app.native_models.insert(AgentKind::Codex,vec![agent_controls::ModelChoice{id:"thinking-click-fixture".into(),label:"Click fixture".into(),reasoning_efforts:vec!["low".into(),"medium".into(),"high".into()]}]);let key=app.effort_key();app.reasoning_efforts.insert(key,"medium".into());app.composer.update(cx,|input,cx|input.set_text("Keep this draft",cx));cx.notify();
   });

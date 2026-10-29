@@ -16,6 +16,7 @@ mod command_ui;
 mod commands;
 mod composer_controls;
 mod composer_design;
+mod composer_toolbar;
 mod context_refs;
 mod context_ui;
 mod diff_view;
@@ -345,6 +346,7 @@ enum Modal {
     Settings,
     Status,
     Permissions,
+    ComposerControls,
     Realtime,
     Activity,
     Handoff,
@@ -563,6 +565,7 @@ struct Orbit {
     orchestrator_chats:HashSet<String>,
     orchestrator_new:bool,
     orchestrator_transition:Option<(Instant,f32)>,
+    composer_toolbars:std::cell::RefCell<HashMap<WindowId,composer_toolbar::State>>,
     startup_surface:startup::Surface,
     automatic_titles:bool,
     title_queue:std::collections::VecDeque<chat_titles::Seed>,
@@ -1115,7 +1118,7 @@ impl Orbit {
             final_history_load:None,
             unified_history_end:None,unified_history_wait:false,
             unified_back:vec![],unified_forward:vec![],unified_navigating:false,
-            fast_transition:None,orchestrator_new:false,orchestrator_transition:None,
+            fast_transition:None,orchestrator_new:false,orchestrator_transition:None,composer_toolbars:Default::default(),
             automatic_titles:!cfg!(test)&&restored.as_ref().is_none_or(|s|s.automatic_titles),title_queue:Default::default(),title_busy:false,title_work:None,title_motions:HashMap::new(),
             startup_surface:restored.as_ref().map_or_else(Default::default,|s|s.startup_surface),
             orchestration_models:HashMap::new(),orchestration_probes:HashSet::new(),
@@ -5186,150 +5189,7 @@ impl Orbit {
                             .child(self.composer.clone()),
                     )
                     .child(self.attachment_strip(cx))
-                    .child(
-                        div()
-                            .px_2()
-                            .pb_2()
-                            .flex()
-                            .flex_wrap()
-                            .items_center()
-                            .gap(px(6.))
-                            .child(
-                                div()
-                                    .id("choose-project")
-                                    .size(px(26.))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .rounded_md()
-                                    .bg(rgba(0xffffff14))
-                                    .cursor_pointer()
-                                    .hover(|s| s.bg(rgba(0xebebeb24)))
-                                    .child(icon("folder", 14., MUTED))
-                                    .on_click(cx.listener(
-                                        |this, event: &ClickEvent, window, cx| {
-                                            this.toggle_panel_from_click(
-                                                Modal::Projects,
-                                                event.position() + point(px(-12.), px(-20.)),
-                                                true,
-                                                window,
-                                                cx,
-                                            )
-                                        },
-                                    )),
-                            )
-                            .child(
-                                div()
-                                    .id("choose-agent").debug_selector(||"choose-agent".into())
-                                    .h(px(26.))
-                                    .px_2()
-                                    .flex()
-                                    .items_center()
-                                    .gap_1()
-                                    .rounded_md()
-                                    .bg(rgba(0xffffff14))
-                                    .text_size(theme::ui_px(11.))
-                                    .cursor_pointer()
-                                    .hover(|s| s.bg(rgba(0xebebeb24)))
-                                    .child(icon(
-                                        agent_icon(self.agent),
-                                        14.,
-                                        agent_color(self.agent),
-                                    ))
-                                    .when_some(composer_design::model_glyph(&self.effective_model_label()),|s,glyph|s.child(icon(glyph,14.,TEXT)))
-                                    .child(composer_design::display_label(self.effective_model_label().split(" · ").next().unwrap_or("")))
-                                    .child(icon("chevron-down", 10., MUTED))
-                                    .on_click(cx.listener(
-                                        |this, event: &ClickEvent, window, cx| {
-                                            this.toggle_picker_from_click(false,event.position(), window, cx)
-                                        },
-                                    )),
-                            )
-                            .child(self.orchestrator_chip(window,cx))
-                            .child(self.thinking_chip(window,cx))
-                            .when(self.fast_supported(),|s|s.child(self.fast_button(window,cx)))
-                            .child(
-                                div()
-                                    .id("mode")
-                                    .debug_selector(|| "mode".into())
-                                    .h(px(26.))
-                                    .px_2()
-                                    .flex()
-                                    .items_center()
-                                    .gap_1()
-                                    .rounded_md()
-                                    .bg(rgba(0xffffff14))
-                                    .text_size(theme::ui_px(11.))
-                                    .cursor_pointer()
-                                    .hover(|s| s.bg(rgba(0xebebeb24)))
-                                    .child(icon(
-                                        if self.allow_edits {
-                                            "assets/kai/status/code.svg"
-                                        } else {
-                                            "assets/kai/status/plan.svg"
-                                        },
-                                        16.,
-                                        MUTED,
-                                    ))
-                                    .child(if self.allow_edits {
-                                        if self.agent==AgentKind::Codex && self.codex_access==runtime::CodexAccess::Full { "Full access" } else { "Build" }
-                                    } else {
-                                        "Read only"
-                                    })
-                                    .child(icon("chevron-down", 10., MUTED))
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.show_modal(Modal::Permissions, window, cx);
-                                    })),
-                            )
-                            .child(div().flex_1())
-                            .when(runtime::supports_native_delegation(self.agent), |s| {
-                                s.child(
-                                    div()
-                                        .id("delegate-task")
-                                        .debug_selector(|| "delegate-task".into())
-                                        .size(px(26.))
-                                        .rounded_md()
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .cursor_pointer()
-                                        .hover(|s| s.bg(rgba(GLASS_HOVER)))
-                                        .child(icon("assets/kai/status/agents.svg", 16., MUTED))
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            let draft = this.composer.read(cx).text();
-                                            if commands::name(draft.trim()) != Some("delegate") {
-                                                this.composer.update(cx, |input, cx| {
-                                                    input
-                                                        .set_text(&format!("/delegate {draft}"), cx)
-                                                });
-                                            }
-                                            this.composer.read(cx).focus_handle.focus(window);
-                                            cx.notify();
-                                        })),
-                                )
-                            })
-                            .when(
-                                self.agent == AgentKind::Codex || self.voice_call.is_some(),
-                                |view| view.child(self.voice_button(cx)),
-                            )
-                            .child(self.attachment_button(cx))
-                            .child(self.dictation_button(cx))
-                            .child(
-                                div()
-                                    .id("send")
-                                    .cursor_pointer()
-                                    .hover(|s| s.opacity(0.88))
-                                    .child(self.send_symbol((running
-                                                && self.composer.read(cx).text().trim().is_empty()
-                                                && self.attachments.is_empty())
-                                                || self.handoff_pending.is_some()))
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        if !this.cancel_send_handoff(cx) {
-                                            this.send(window, cx);
-                                        }
-                                    })),
-                            ),
-                    ),
+                    .child(self.composer_toolbar(false, self.composer.clone(), (running && self.composer.read(cx).text().trim().is_empty() && self.attachments.is_empty()) || self.handoff_pending.is_some(), window, cx)),
             )
             .child(
                 div()
