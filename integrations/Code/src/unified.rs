@@ -913,6 +913,7 @@ impl Orbit {
             "agents":self.agents.iter().map(|a|json!({"id":a.kind.command(),"name":a.kind.name(),"available":a.available&&a.executable.is_some()})).collect::<Vec<_>>(),"selectedAgent":self.agent.command(),"workspaceVoiceChoice":self.voice_choice,"workspaceVoiceActive":self.voice_call.is_some(),"workspaceVoiceScene":self.voice_call.as_ref().map(|v|v.scene())});
         snapshot["slashCommands"]=self.unified_slash_commands();
         snapshot["interfaceFont"]=json!(self.theme.ui_font);snapshot["codeFont"]=json!(self.theme.mono_font);
+        snapshot["borderlessComposer"]=json!(self.theme.borderless_composer);
         snapshot["workspaceAccess"]=json!(if !self.allow_edits{"read-only"}else if self.agent!=AgentKind::Codex{"native"}else if self.codex_access==runtime::CodexAccess::Full{"full"}else{"workspace"});
         snapshot["workspaceApprovalPolicy"]=json!(match self.codex_approvals{runtime::CodexApprovals::Ask=>"ask",runtime::CodexApprovals::AutoReview=>"auto-review",runtime::CodexApprovals::Never=>"never"});
         snapshot["workspaceExecutionPath"]=json!(self.execution_root().unwrap_or_else(||self.project.clone()));

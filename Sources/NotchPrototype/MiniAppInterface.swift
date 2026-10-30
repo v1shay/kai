@@ -274,6 +274,7 @@ private final class AttachmentLayer:CALayer {
     private var composerControlKey=[String](),composerHits=[(CGRect,String)]()
     // All visible glyphs and optical text centers share this footer rail.
     private let composerControlsCenterY:CGFloat=14.5
+    private var borderlessComposer:Bool{modelState?.borderlessComposer == true}
     private var usesUnifiedComposer:Bool{EmbeddedCodeRuntime.shared.active || modelState?.workspaceAccess != nil}
     private let voiceWaveform=CALayer()
     private let voiceButton=CATextLayer()
@@ -702,6 +703,15 @@ private final class AttachmentLayer:CALayer {
     private func effortMenuItem(_ model:KaiModel,state:KaiState)->NSMenuItem {let item=NSMenuItem(title:"Thinking intensity…",action:#selector(openThinkingPanel),keyEquivalent:"");item.target=self;return item}
     func performKeyboardCommand(_ id:String)->Bool{switch id{case "model":showSettingsMenu("model");case "thinking":showThinkingPopover();case "usage":showUsagePopover();default:return false};return true}
     @objc private func openThinkingPanel(){showThinkingPopover()}
+    private func applyComposerFrameStyle(){
+        CATransaction.begin();CATransaction.setDisableActions(true)
+        input.colors=borderlessComposer ? [NSColor.clear.cgColor,NSColor.clear.cgColor]:[NSColor.white.withAlphaComponent(0.085).cgColor,NSColor.white.withAlphaComponent(0.035).cgColor]
+        input.borderColor=borderlessComposer ? NSColor.clear.cgColor:NSColor.white.withAlphaComponent(0.16).cgColor
+        if borderlessComposer{input.removeAnimation(forKey:"theme")}
+        command.borderWidth=borderlessComposer ? 0:0.7
+        command.backgroundColor=borderlessComposer ? nil:rowProfile.flatMap{profile in profile.gradients.ambient.stops.first.map{alpha(color($0.color),0.14)}}
+        CATransaction.commit()
+    }
     private func layoutComposerControls(){
         let shown=usesUnifiedComposer
         permissionGlyph.isHidden = !shown;modelChip.isHidden = !shown;effortChip.isHidden = !shown
@@ -711,10 +721,10 @@ private final class AttachmentLayer:CALayer {
         let levels=selectedEffortModel(state)?.supportedReasoningEfforts.map(\.reasoningEffort) ?? []
         let effort=state.reasoningEffort.flatMap{$0.isEmpty ? nil:$0} ?? state.effectiveReasoningEffort ?? ""
         var key:[String]=[name,effort,levels.joined(separator:","),state.workspaceAccess ?? "",state.workspaceApprovalPolicy ?? ""]
-        key += [String(Double(input.bounds.width)),String(state.fastMode == true),String(state.fastSupported == true),String(state.orchestratorMode == true),String(state.orchestratorAvailable == true)]
+        key += [String(state.borderlessComposer == true),String(Double(input.bounds.width)),String(state.fastMode == true),String(state.fastSupported == true),String(state.orchestratorMode == true),String(state.orchestratorAvailable == true)]
         key += [state.usageSummary ?? "",String(state.contextWindow?.fraction ?? -1),String(Double(renderingScale)),String(Double(bottomInset)),String(Double(input.frame.minY))]
         guard key != composerControlKey else{return};composerControlKey=key
-        input.colors=[NSColor.white.withAlphaComponent(0.085).cgColor,NSColor.white.withAlphaComponent(0.035).cgColor];input.borderColor=NSColor.white.withAlphaComponent(0.16).cgColor
+        applyComposerFrameStyle()
         let width=input.bounds.width,hasEffort = !levels.isEmpty && width>=215
         permissionGlyph.frame=CGRect(x:9,y:composerControlsCenterY-7.5,width:15,height:15);permissionMask.frame=permissionGlyph.bounds
         let access=state.workspaceAccess ?? "read-only",symbol=access=="full" ? "lock.open.fill":access=="read-only" ? "lock.fill":"shield.lefthalf.filled"
@@ -733,10 +743,10 @@ private final class AttachmentLayer:CALayer {
         effortShimmer.frame=effortChip.bounds;effortShimmer.configure(size:effortChip.bounds.size,tint:color);let shimmerKey=name+"|"+effort
         if shimmerKey != effortShimmerKey{effortShimmerKey=shimmerKey;if layer.opacity>0 && hasEffort{effortShimmer.play(restart:true)}else{effortShimmer.stop()}}
         effortFill.frame=effortChip.bounds;effortFill.colors=[color.cgColor,EffortAppearance.color(min(1,fraction+0.25)).cgColor];effortLabel.frame=CGRect(x:0,y:2,width:50,height:14);effortLabel.setNeedsDisplay();effortLabel.string=effort=="xhigh" ? "Extra high":effort.capitalized;effortLabel.contentsScale=renderingScale
-        fastTint.isHidden = !fast;fastTint.frame=CGRect(x:width-78,y:composerControlsCenterY-8.5,width:17,height:17);fastBolt.frame=fastTint.bounds;fastBolt.contents=NSImage(systemSymbolName:state.fastMode == true ? "bolt.fill":"bolt",accessibilityDescription:"Fast mode")?.withSymbolConfiguration(.init(paletteColors:[.white]));fastTint.colors=(state.fastMode == true ? [NSColor(calibratedRed:1,green:0.94,blue:0.60,alpha:1),NSColor(calibratedRed:1,green:0.74,blue:0.21,alpha:1)]:[NSColor.secondaryLabelColor,NSColor.secondaryLabelColor]).map(\.cgColor)
+        fastTint.isHidden = !fast;fastTint.frame=CGRect(x:(hasEffort ? effortChip.frame.maxX:modelChip.frame.maxX)+5,y:composerControlsCenterY-8.5,width:17,height:17);fastBolt.frame=fastTint.bounds;fastBolt.contents=NSImage(systemSymbolName:state.fastMode == true ? "bolt.fill":"bolt",accessibilityDescription:"Fast mode")?.withSymbolConfiguration(.init(paletteColors:[.white]));fastTint.colors=(state.fastMode == true ? [NSColor(calibratedRed:1,green:0.94,blue:0.60,alpha:1),NSColor(calibratedRed:1,green:0.74,blue:0.21,alpha:1)]:[NSColor.secondaryLabelColor,NSColor.secondaryLabelColor]).map(\.cgColor)
         fastShimmer.isHidden = !fast;fastShimmer.frame=fastTint.frame.insetBy(dx:-4,dy:-1);fastShimmer.configure(size:fastShimmer.bounds.size,tint:NSColor(calibratedRed:1,green:0.85,blue:0.41,alpha:1));fastBolt.shadowOpacity=0
         if fastWasOn != state.fastMode{fastWasOn=state.fastMode;if layer.opacity>0 && fast{fastShimmer.play(restart:true)}else{fastShimmer.stop()}}
-        orchestratorChip.isHidden = !orchestrator;orchestratorChip.frame=CGRect(x:width-(fast ? 100:78),y:composerControlsCenterY-9,width:20,height:18);orchestratorChip.cornerRadius=4;orchestratorChip.backgroundColor=state.orchestratorMode == true ? NSColor.systemPurple.withAlphaComponent(0.12).cgColor:nil;orchestratorGlyph.frame=CGRect(x:3,y:2,width:14,height:14);orchestratorGlyph.contents=NSImage(systemSymbolName:"point.3.connected.trianglepath.dotted",accessibilityDescription:"Orchestrator")?.withSymbolConfiguration(.init(paletteColors:[state.orchestratorMode == true ? .systemPurple:.secondaryLabelColor]));orchestratorShimmer.frame=orchestratorChip.bounds;orchestratorShimmer.configure(size:orchestratorShimmer.bounds.size,tint:.systemPurple)
+        orchestratorChip.isHidden = !orchestrator;orchestratorChip.frame=CGRect(x:(fast ? fastTint.frame.maxX:(hasEffort ? effortChip.frame.maxX:modelChip.frame.maxX))+5,y:composerControlsCenterY-9,width:20,height:18);orchestratorChip.cornerRadius=4;orchestratorChip.backgroundColor=state.orchestratorMode == true && !borderlessComposer ? NSColor.systemPurple.withAlphaComponent(0.12).cgColor:nil;orchestratorGlyph.frame=CGRect(x:3,y:2,width:14,height:14);orchestratorGlyph.contents=NSImage(systemSymbolName:"point.3.connected.trianglepath.dotted",accessibilityDescription:"Orchestrator")?.withSymbolConfiguration(.init(paletteColors:[state.orchestratorMode == true ? .systemPurple:.secondaryLabelColor]));orchestratorShimmer.frame=orchestratorChip.bounds;orchestratorShimmer.configure(size:orchestratorShimmer.bounds.size,tint:.systemPurple)
         if orchestratorWasOn != state.orchestratorMode{orchestratorWasOn=state.orchestratorMode;if state.orchestratorMode == true && layer.opacity>0{orchestratorShimmer.play(restart:true)}else{orchestratorShimmer.stop()}}
         let footerCenter=(input.frame.minY-bottomInset)/2
         usageLabel.string=state.usageSummary ?? "";usageLabel.frame=CGRect(x:input.frame.minX+42,y:footerCenter-7,width:max(0,width-42),height:14);usageLabel.setNeedsDisplay();usageTrack.frame=CGRect(x:input.frame.minX+5,y:footerCenter-1,width:30,height:2);usageFill.frame=CGRect(x:0,y:0,width:30*CGFloat(state.usageWindows?.first?.fraction ?? 0),height:2);usageTrack.isHidden=state.usageWindows?.isEmpty != false
@@ -867,7 +877,7 @@ private final class AttachmentLayer:CALayer {
     func setVisible(_ visible:Bool,duration:Double) { if !visible{orchestratorShimmer.stop();fastShimmer.stop();effortShimmer.stop();composerPopover.dismiss();handleHover(nil)}else {if !effortChip.isHidden{effortShimmer.play(restart:true)};if !fastTint.isHidden{fastShimmer.play(restart:true)};if orchestratorWasOn == true{orchestratorShimmer.play(restart:true)}};let fade=CABasicAnimation(keyPath:"opacity");fade.fromValue=layer.presentation()?.opacity ?? layer.opacity;fade.toValue=visible ? 1:0;fade.duration=duration*0.72;fade.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.65,0.25,1);CATransaction.begin();CATransaction.setDisableActions(true);layer.opacity=visible ? 1:0;CATransaction.commit();layer.add(fade,forKey:"visibility");notifyPreviewContent() }
 
     func setProfile(_ profile:PetGradientProfile,animated:Bool) {
-        defer{if usesUnifiedComposer{input.colors=[NSColor.white.withAlphaComponent(0.085).cgColor,NSColor.white.withAlphaComponent(0.035).cgColor];input.borderColor=NSColor.white.withAlphaComponent(0.16).cgColor}}
+        defer{if usesUnifiedComposer{applyComposerFrameStyle()}}
         rowProfile=profile
         actionSymbols.values.forEach{$0.setProfile(profile,wave:false)}
         let s=profile.gradients.ambient.stops;guard !s.isEmpty else{return};let c=[s.first!,s[s.count/2],s.last!].map{color($0.color)},radial=c.sorted{brightness($0)<brightness($1)};fileGlyphColors=c.map{readable($0)};fileRows.forEach{$0.setColors(fileGlyphColors,animated:animated)};animate(input,to:[alpha(c[0],0.15),alpha(c[1],0.065),alpha(c[2],0.1)],animated ? 0.72:0);animate(response,to:c.map{alpha(readable($0),0.92)},animated ? 0.72:0);animate(send,to:[mix(radial[2],NSColor.white.cgColor,0.2),mix(radial[1],NSColor.black.cgColor,0.16),mix(radial[0],NSColor.black.cgColor,0.58)],animated ? 0.72:0)

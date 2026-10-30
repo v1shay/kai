@@ -162,6 +162,7 @@ pub struct Theme {
     pub mono_font_size: f32,
     pub sidebar_glass: bool,
     pub main_glass: bool,
+    pub borderless_composer: bool,
     pub transparency: bool,
     pub glass_material: GlassMaterial,
     pub contrast: Contrast,
@@ -178,6 +179,7 @@ impl Hash for Theme {
         self.mono_font_size.to_bits().hash(state);
         self.sidebar_glass.hash(state);
         self.main_glass.hash(state);
+        self.borderless_composer.hash(state);
         self.transparency.hash(state);
         self.glass_material.hash(state);
         self.contrast.hash(state);
@@ -196,6 +198,7 @@ impl Default for Theme {
             mono_font_size: 12.,
             sidebar_glass: true,
             main_glass: true,
+            borderless_composer: false,
             transparency: true,
             glass_material:GlassMaterial::Automatic,
             contrast: Contrast::Standard,

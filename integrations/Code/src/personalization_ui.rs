@@ -138,6 +138,7 @@ impl Orbit {
             Action::GlassMaterial(value)=>self.theme.glass_material=value,
             Action::ToggleTransparency => self.theme.transparency = !self.theme.transparency,
             Action::ToggleSidebarGlass => self.theme.sidebar_glass = !self.theme.sidebar_glass,
+            Action::ToggleBorderlessComposer => self.theme.borderless_composer = !self.theme.borderless_composer,
             Action::ToggleMainGlass => self.theme.main_glass = !self.theme.main_glass,
             Action::Contrast(value) => self.theme.contrast = value,
             Action::DiffPalette(value) => self.theme.diff_palette = value,

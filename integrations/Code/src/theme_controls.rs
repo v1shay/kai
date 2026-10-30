@@ -29,6 +29,7 @@ pub enum Action {
     ToggleTransparency,
     ToggleSidebarGlass,
     ToggleMainGlass,
+    ToggleBorderlessComposer,
     Contrast(Contrast),
     DiffPalette(DiffPalette),
     Reset,
@@ -287,6 +288,14 @@ pub fn controls<T: 'static>(
         let available=crate::native::liquid_available();
         let row=div().flex().flex_wrap().gap_1().children(theme::GlassMaterial::ALL.into_iter().filter(|v|*v!=theme::GlassMaterial::Liquid||available).map(|value|button(format!("glass-material-{value:?}"),value.label(),Action::GlassMaterial(value),settings.glass_material==value,cx,callback.clone())));
         view=view.child(section("Native glass",div().flex().flex_col().gap_2().child(row).child(div().text_size(theme::ui_px(10.)).text_color(gpui::rgb(resolved.muted)).child(if available{"Automatic uses Liquid Glass. Classic keeps the Gaussian desktop backdrop."}else{"Liquid Glass becomes available on macOS 26. Automatic uses classic blur on this Mac."})).into_any_element()));
+    }
+    if matches(query, "Composer prompt controls borderless invisible frames buttons outlines") {
+        count += 1;
+        view = view.child(section("Composer", div().flex().flex_col().gap_2()
+            .child(toggle("Borderless prompt boxes", settings.borderless_composer, Action::ToggleBorderlessComposer, cx, callback.clone()))
+            .child(div().text_size(theme::ui_px(10.)).text_color(gpui::rgb(resolved.muted))
+                .child("Hide prompt frames and control backgrounds in Code, Quick Chat and the notch. Click targets stay the same."))
+            .into_any_element()));
     }
     if matches(
         query,

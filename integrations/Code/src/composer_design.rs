@@ -44,7 +44,7 @@ impl Orbit{
     pub(super) fn fast_button(&self,window:&Window,cx:&Context<Self>)->AnyElement{
         let on=self.fast_enabled();let color=if on{0xffd968}else{MUTED};
         let chip=div().id("fast-mode").debug_selector(||"fast-mode".into()).h(px(26.)).w(px(28.)).relative().overflow_hidden().rounded_md().flex().items_center().justify_center().cursor_pointer()
-            .bg(linear_gradient(90.,linear_color_stop(rgba(if on{0xffee9824}else{0xffffff08}),0.),linear_color_stop(rgba(if on{0xffbd3510}else{0xffffff08}),1.)))
+            .bg(linear_gradient(90.,linear_color_stop(rgba(if self.theme.borderless_composer{0}else if on{0xffee9824}else{0xffffff08}),0.),linear_color_stop(rgba(if self.theme.borderless_composer{0}else if on{0xffbd3510}else{0xffffff08}),1.)))
             .on_hover(cx.listener(|this,hover:&bool,_,cx|{if *hover{this.fast_transition=Some(Instant::now());cx.notify();}}))
             .on_click(cx.listener(|this,_,_,cx|this.toggle_fast(cx)));
         let bolt=move ||div().relative().child(icon("bolt",15.,color));
@@ -61,7 +61,7 @@ impl Orbit{
         let contents=move||div().relative().flex().items_center()
             .child(div().w(px(14.*(1.-detail))).h(px(14.)).flex_none().overflow_hidden().opacity(1.-detail).child(icon("sparkles",14.,color)))
             .child(div().w(px(label_width)).overflow_hidden().opacity(detail).whitespace_nowrap().child(label.clone()));
-        let chip=div().id("thinking-chip").debug_selector(||"thinking-chip".into()).w_full().px(px(6.+2.*detail)).h(px(26.)).relative().overflow_hidden().rounded_md().flex().items_center().text_size(theme::ui_px(11.)).text_color(rgb(color)).bg(linear_gradient(90.,linear_color_stop(rgba((color<<8)|0x24),0.),linear_color_stop(rgba((intensity((t+0.25).min(1.))<<8)|0x10),1.))).cursor_pointer()
+        let chip=div().id("thinking-chip").debug_selector(||"thinking-chip".into()).w_full().px(px(6.+2.*detail)).h(px(26.)).relative().overflow_hidden().rounded_md().flex().items_center().text_size(theme::ui_px(11.)).text_color(rgb(color)).when(!self.theme.borderless_composer,|s|s.bg(linear_gradient(90.,linear_color_stop(rgba((color<<8)|0x24),0.),linear_color_stop(rgba((intensity((t+0.25).min(1.))<<8)|0x10),1.)))).cursor_pointer()
         .on_click(cx.listener(|this,event:&ClickEvent,window,cx|{this.toggle_picker_from_click(true,event.position(),window,cx);}));
         if self.motion && !native::reduced_motion() && window.is_window_active(){
             chip.with_animation(SharedString::from(format!("thinking-chip-{}-{value}",self.agent.command())),Animation::new(Duration::from_secs(5)),move|chip,t|chip.child(shimmer_tiles(Some(t*5.),color,true)).child(contents())).into_any_element()

@@ -5203,9 +5203,9 @@ impl Orbit {
                         )
                     }))
                     .rounded_lg()
-                    .bg(rgba(self.appearance.tint(0xebebeb08)))
+                    .bg(rgba(if self.theme.borderless_composer { 0 } else { self.appearance.tint(0xebebeb08) }))
                     .border_1()
-                    .border_color(rgba(0xebebeb1a))
+                    .border_color(rgba(if self.theme.borderless_composer { 0 } else { 0xebebeb1a }))
                     .flex()
                     .flex_col()
                     .child(

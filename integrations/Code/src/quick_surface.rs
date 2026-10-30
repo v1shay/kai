@@ -310,8 +310,8 @@ impl Orbit {
                             .w_full()
                             .rounded_lg()
                             .border_1()
-                            .border_color(rgba(0xebebeb22))
-                            .bg(rgba(self.appearance.tint(GLASS_SURFACE)))
+                            .border_color(rgba(if self.theme.borderless_composer { 0 } else { 0xebebeb22 }))
+                            .bg(rgba(if self.theme.borderless_composer { 0 } else { self.appearance.tint(GLASS_SURFACE) }))
                             .drag_over::<ExternalPaths>(|s, _, _, _| s.border_color(rgb(ACCENT)))
                             .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
                                 this.add_attachments(

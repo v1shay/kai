@@ -250,18 +250,11 @@ impl Orbit {
         if self.fast_supported() {
             plan.widths[FAST] = 28.;
         }
-        plan.widths[PERMISSIONS] = 50. + text_width(window, self.toolbar_permission_label());
-        if runtime::supports_native_delegation(self.agent) {
-            plan.widths[DELEGATE] = 26.;
-        }
-        if self.agent == AgentKind::Codex || self.voice_call.is_some() {
-            plan.widths[VOICE] = 47. + text_width(window, "RealTime");
-        }
-        plan.widths[ATTACH] = 28.;
+        plan.widths[PERMISSIONS] = 28.;
         if self.modal == Some(Modal::ComposerControls) {
             plan.widths[MORE] = 28.;
         }
-        for i in [MODEL, ORCHESTRATE, THINKING, PERMISSIONS, VOICE] {
+        for i in [MODEL, ORCHESTRATE, THINKING] {
             plan.detail[i] = 1.;
         }
         plan
@@ -300,7 +293,9 @@ impl Orbit {
             .cursor_pointer()
             .hover(|s| s.bg(rgba(GLASS_HOVER)))
             .bg(rgba(
-                if matches!(action, Action::Voice) && self.voice_call.is_some() {
+                if self.theme.borderless_composer {
+                    0
+                } else if matches!(action, Action::Voice) && self.voice_call.is_some() {
                     0x9fbaee26
                 } else if matches!(action, Action::Permissions) {
                     0xffffff14
@@ -408,7 +403,7 @@ impl Orbit {
             .flex()
             .items_center()
             .child(measure);
-        for i in 0..COUNT {
+        for i in [PROJECT, PERMISSIONS, MODEL, THINKING, FAST, ORCHESTRATE, MORE] {
             if plan.widths[i] < 0.1 {
                 continue;
             }
@@ -423,7 +418,7 @@ impl Orbit {
                     .items_center()
                     .justify_center()
                     .cursor_pointer()
-                    .bg(rgba(0xffffff14))
+                    .bg(rgba(if self.theme.borderless_composer { 0 } else { 0xffffff14 }))
                     .child(icon("folder", 14., MUTED))
                     .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
                         this.toolbar_action(Action::Project, event.position(), window, cx)
@@ -454,7 +449,7 @@ impl Orbit {
                         .flex()
                         .items_center()
                         .rounded_md()
-                        .bg(rgba(0xffffff14))
+                        .bg(rgba(if self.theme.borderless_composer { 0 } else { 0xffffff14 }))
                         .overflow_hidden()
                         .text_size(theme::ui_px(11.))
                         .cursor_pointer()
@@ -503,14 +498,16 @@ impl Orbit {
                 ORCHESTRATE => self.orchestrator_chip_adaptive(window, cx, plan.detail[i]),
                 THINKING => self.thinking_chip_adaptive(window, cx, plan.detail[i]),
                 FAST => self.fast_button(window, cx),
-                PERMISSIONS => self.toolbar_detail_button(
-                    if quick { "quick-permissions" } else { "mode" },
-                    "shield",
-                    self.toolbar_permission_label(),
-                    plan.detail[i],
-                    Action::Permissions,
-                    cx,
-                ),
+                PERMISSIONS => {
+                    let color = if !self.allow_edits { 0xd5dce5 } else if self.agent == AgentKind::Codex && self.codex_access == runtime::CodexAccess::Full { 0xff7d75 } else { 0xffb86b };
+                    div().id(if quick { "quick-permissions" } else { "mode" })
+                        .debug_selector(move || if quick { "quick-permissions".into() } else { "mode".into() })
+                        .w_full().h(px(28.)).flex().items_center().justify_center().rounded_md().cursor_pointer()
+                        .hover(|s|s.bg(rgba(GLASS_HOVER)))
+                        .child(icon("shield",16.,color))
+                        .on_click(cx.listener(|this,event:&ClickEvent,window,cx|this.toolbar_action(Action::Permissions,event.position(),window,cx)))
+                        .into_any_element()
+                },
                 DELEGATE => div()
                     .id("delegate-task")
                     .debug_selector(|| "delegate-task".into())
@@ -544,7 +541,9 @@ impl Orbit {
                     .justify_center()
                     .rounded_md()
                     .cursor_pointer()
-                    .bg(rgba(if self.modal == Some(Modal::ComposerControls) {
+                    .bg(rgba(if self.theme.borderless_composer {
+                        0
+                    } else if self.modal == Some(Modal::ComposerControls) {
                         GLASS_HOVER
                     } else {
                         0xffffff08
@@ -602,6 +601,9 @@ impl Orbit {
                             .flex()
                             .items_center()
                             .gap(px(4.))
+                            .child(div().debug_selector(||"composer-realtime-anchor".into())
+                                .w(px(if window.viewport_size().width < px(600.) {28.} else {47.+text_width(window,"RealTime")}))
+                                .flex_none().child(self.toolbar_detail_button("conversation-voice", "assets/kai/status/listening.svg", "RealTime", if window.viewport_size().width < px(600.) {0.} else {1.}, Action::Voice, cx)))
                             .child(self.dictation_button(cx).flex_none())
                             .child(
                                 div()
@@ -946,6 +948,36 @@ mod tests {
                 assert_eq!(app.composer.read(cx).text(), "Keep this draft")
             });
         }
+    }
+
+    #[gpui::test]
+    fn grouped_identity_and_fixed_voice_survive_borderless_preferences(cx: &mut TestAppContext) {
+        let (view,cx) = crate::ui_tests::fixture(cx);
+        view.update(cx, prepare);
+        draw(&view,cx,1040.);
+        let model=cx.debug_bounds("choose-agent").unwrap();
+        let thinking=cx.debug_bounds("thinking-chip").unwrap();
+        let fast=cx.debug_bounds("fast-mode").unwrap();
+        let orchestrate=cx.debug_bounds("orchestrator-mode").unwrap();
+        assert!(model.right() <= thinking.left() && thinking.right() <= fast.left() && fast.right() <= orchestrate.left());
+        assert!(cx.debug_bounds("delegate-task").is_none());
+        assert!(cx.debug_bounds("attach-image").is_none());
+        let voice=cx.debug_bounds("conversation-voice").unwrap();
+        let primary=cx.debug_bounds("composer-primary-actions").unwrap();
+        assert!(voice.left() >= primary.left() && voice.right() <= primary.right());
+        assert!(voice.left() > orchestrate.right());
+        view.update(cx,|app,cx| {
+            app.theme.borderless_composer=true;
+            let restored:theme::Theme=serde_json::from_str(&serde_json::to_string(&app.theme).unwrap()).unwrap();
+            assert!(restored.borderless_composer);
+            assert_eq!(app.unified_snapshot(cx)["borderlessComposer"],true);
+            cx.notify();
+        });
+        draw(&view,cx,1040.);
+        let borderless=cx.debug_bounds("choose-agent").unwrap();
+        assert_eq!(model,borderless,"Borderless preference changed the hit target");
+        crate::ui_tests::click_selector(cx,"mode");
+        view.update(cx,|app,_|assert!(app.modal==Some(Modal::Permissions)));
     }
 
     #[gpui::test]

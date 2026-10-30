@@ -498,7 +498,7 @@ impl Orbit {
             .justify_center()
             .rounded_md()
             .cursor_pointer()
-            .bg(rgba(if listening { 0x8fc89a20 } else { 0xffffff00 }))
+            .bg(rgba(if listening && !self.theme.borderless_composer { 0x8fc89a20 } else { 0xffffff00 }))
             .hover(|s| s.bg(rgba(GLASS_HOVER)))
             .child(
                 div()

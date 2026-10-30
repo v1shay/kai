@@ -261,7 +261,7 @@ impl Orbit {
             .text_size(theme::ui_px(11.))
             .text_color(rgb(color))
             .cursor_pointer()
-            .bg(rgba(if active { 0x9b78ff24 } else { 0xffffff08 }))
+            .bg(rgba(if self.theme.borderless_composer { 0 } else if active { 0x9b78ff24 } else { 0xffffff08 }))
             .when(expansion > 0., |chip| chip.child(
                 div().debug_selector(|| "orchestrator-glyph".into())
                     .relative().w(px(18. * expansion)).h(px(14.)).flex_none()
