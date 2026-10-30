@@ -61,7 +61,7 @@ measurement. CPU/RSS/thread measurements cover the app process, with CLI agents
 and dev servers excluded. Startup timing includes the launch-to-main interval when invoked by the packaged
 probe. Background idle uses the compact native surface with Code hidden; the
 visible workspace has its own idle budget. Input-interfered samples and
-mixed-binary cohorts cannot certify a release. The delivery gate is **failed / incomplete**;
+mixed-binary cohorts cannot certify a release. The delivery gate is **failed**;
 passing functional tests alone does not meet the performance release requirement.
 
 Native computer-use inspection is unavailable on this machine (Sky Computer Use
@@ -76,14 +76,25 @@ test found and now covers macOS socket-path length and accepted-socket blocking
 mode. The native suite completed 208 tests with zero failures and one skip;
 the real native morph matrix passed all surface transitions and reversals.
 
-Delivery-candidate observations: warm chat switching p95 40.91 ms (24 samples),
-warm reveal p95 221.98 ms (20 samples). The visible-idle process exited cleanly
-before its 30-second completion marker; compact idle was not reached. Idle CPU
-is therefore unverified for this candidate. Startup exceeded its 200 ms budget (p95 2,796.65 ms in relocated,
-re-signed isolated app copies, including the pre-main launch interval).
-The signed 0.12.0 (37) bundle is an experimental test build, not a performance-
-qualified release. The installer preserves 0.11.3 and does not restart the user’s
-running copy. Use Command-Q and reopen to load the new executable.
+Final quiet-interval measurements completed all probes without native control
+input. Candidate hashes matched throughout and match the installed build:
+
+| Measurement | Result | Budget | Gate |
+| --- | ---: | ---: | --- |
+| Startup first workspace frame, isolated signed copies, p95 | 2,102.41 ms | 200 ms | Fail |
+| Warm chat switch, p95 (24 samples) | 27.76 ms | 50 ms | Pass |
+| Warm reveal, p95 (20 samples) | 179.63 ms | 50 ms | Fail |
+| Visible idle CPU, one-core percentage | 0.535% | 0.5% | Fail |
+| Compact native surface, Code hidden, idle CPU | 2.195% | 0.1% | Fail |
+| Root render CPU, p95 (2,075 samples) | 0.467 ms | 8.3 ms | Pass |
+
+Average app-process RSS was 245.27 MiB visible and 250.90 MiB compact, with about
+12 and 11 threads respectively. Startup includes pre-main launch/signature work
+and uses relocated, re-signed isolated copies. Root render CPU is not GPU or
+presentation latency. No idle result was substituted or budget loosened.
+The performance gate **fails**; 0.12.0 (37) remains an experimental test build.
+The installer preserved 0.11.3 and did not restart the user's running copy.
+Use Command-Q and reopen to load the new executable.
 
 Installed at `/Users/vishayagarwal/Documents/ChatGPT/notchdex/.build/Kai Unified.app`.
 Previous bundle: `Kai Unified-0.11.3-36-backup-20261029-175245.app` in the same directory.
