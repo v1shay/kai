@@ -146,3 +146,13 @@ been visually compared against the user's live MonoCode window.
 The signed packaged native glass probe also passed: one full-opacity AppKit
 backdrop, independent tint, material/opacity/radius round trips, continuous morph
 reversal, repeat opening, extended return, double-Command and exclusive Quick Chat.
+
+0.12.6 (43) corrects additive alpha blending and upgrades transparent Metal
+surfaces to RGBA16Float; opaque windows retain BGRA8. Actual GPU tests reproduce
+the old wrong coverage and verify the fix, dark-gradient precision and format
+round trips. Signed native glass/morph checks and live dark-backdrop old/new
+captures pass. High-precision transparent drawables use more GPU/shared memory;
+one process-RSS sample measured 209.19 -> 216.47 MiB, not total GPU footprint.
+The full pre-format-upgrade suite had 870 passes, 19 ignored and two timing
+failures, both passing isolated reruns. Final native GPU/backdrop tests pass.
+See GLASS_COMPOSITING.md for exact scope, cost and evidence limits.

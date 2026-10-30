@@ -45,3 +45,8 @@ strip = true
 # Thin LTO still optimizes across units; avoid one enormous LLVM unit for the UI.
 [profile.release.package.orbit]
 codegen-units = 4
+
+# Keep the transparent Metal blend correction in the application source rather
+# than modifying a machine's Cargo cache. Same GPUI code and GPU buffer formats.
+[patch.crates-io]
+gpui = { path = "vendor/gpui" }

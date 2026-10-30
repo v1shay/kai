@@ -1,0 +1,5 @@
+GPUI 0.2.2 — Zed Industries (https://github.com/zed-industries/zed), Apache-2.0.
+Kai modifies Metal destination-alpha blending to source-over and uses RGBA16Float
+for transparent drawables, BGRA8Unorm for opaque drawables, with explicit sRGB.
+Includes bounded real-GPU compositing/precision diagnostics. Original license:
+GPUI-Apache-2.0.txt. Source changes: integrations/Code/vendor/gpui/KAI-MODIFICATIONS.md.

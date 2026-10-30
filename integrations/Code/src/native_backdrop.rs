@@ -280,6 +280,10 @@ pub unsafe fn inspect(pointer: *mut AnyObject) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn real_gpu_preserves_native_backdrop_through_overlapping_translucent_ui() {
+        gpui::verify_macos_translucency().unwrap();
+    }
     use objc2::runtime::AnyClass;
     #[test]
     fn gaussian_filter_is_copied_and_saturation_is_removed_without_churning_unchanged_filters() {

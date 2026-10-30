@@ -168,6 +168,8 @@ mod mac {
         }
         eprintln!("Kai native pane drag: background movement disabled, pane gesture locked, chrome movement restored");
 
+        gpui::verify_macos_translucency().map_err(|error| error.to_string())?;
+        eprintln!("Kai Metal glass: GPU source-over coverage, floating-point glass gradients, premultiplied paths, ten-layer transparency and opaque controls passed");
         let appearance=Appearance::default();let original=theme.resolve(true,appearance);apply_appearance(window,&appearance);apply_theme(window,&original);
         unsafe{let native=ns_window(window).ok_or("No AppKit window")?;let content:*mut AnyObject=msg_send![native,contentView];crate::native_backdrop::inspect(content)?;}
         // Opaque and independent glass combinations must survive round trips.
