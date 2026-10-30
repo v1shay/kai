@@ -180,12 +180,13 @@ private func member(_ object:Any,_ name:String)->Any?{Mirror(reflecting:object).
           let codeHost=member(handoff,"host") as? NSView else{fatalError("Missing direct notch handoff")}
     precondition(window.frame==workspaceFrame && workspaceSprite.frame==workspaceSpriteFrame,"Handoff resized Code or moved its shared pet before retirement")
     precondition(abs((handoffClip.path?.boundingBoxOfPath.height ?? 0)-miniHeight)<0.1,"Workspace took an extra compact-notch step")
-    precondition(codeHost.layer?.opacity==0 && member(app,"miniOpen") as? Bool == false,"Code content did not begin retirement before mini appeared")
+    precondition(codeHost.layer?.opacity==1,"Continuous morph faded the shared material host")
+    precondition(window.contentView?.layer?.opacity==0 && member(app,"miniOpen") as? Bool == false,"Code content did not begin retirement before mini appeared")
     let overlap=Date().addingTimeInterval(0.23);while Date()<overlap{RunLoop.current.run(until:Date().addingTimeInterval(0.005))}
     guard let notchMask=member(app,"mask") as? CAShapeLayer,let nativeMorph=notchMask.animation(forKey:"width") as? CABasicAnimation else{fatalError("The real extended notch did not use its original morph during the workspace collapse")}
     precondition(handoff.transitioning && window.isVisible && nativePanel.isVisible && member(app,"miniOpen") as? Bool == true,"The native notch did not overlap the direct workspace morph")
-    precondition(nativePanel.level.rawValue>window.level.rawValue && codeHost.layer?.opacity==0,"Code's UI could cover the extended notch")
-    precondition((codeHost.layer?.presentation()?.opacity ?? 0)<0.01,"Workspace pixels remained visible inside the destination notch")
+    precondition(nativePanel.level.rawValue>window.level.rawValue && window.contentView?.layer?.opacity==0,"Code's UI could cover the extended notch")
+    precondition((window.contentView?.layer?.presentation()?.opacity ?? 0)<0.01,"Workspace pixels remained visible inside the destination notch")
     let nativeStart=nativeMorph.fromValue as! CGPath,nativeEnd=nativeMorph.toValue as! CGPath
     precondition(abs(nativeStart.boundingBoxOfPath.height-compactHeight)<0.1 && abs(nativeEnd.boundingBoxOfPath.height-miniHeight)<0.1,"Handoff replaced Kai's original native notch morph")
     let foldedMini=Date().addingTimeInterval(0.5);while Date()<foldedMini{RunLoop.current.run(until:Date().addingTimeInterval(0.005))}
@@ -197,7 +198,7 @@ private func member(_ object:Any,_ name:String)->Any?{Mirror(reflecting:object).
     app.revealWorkspace();let reopenedCode=Date().addingTimeInterval(1);while Date()<reopenedCode{RunLoop.current.run(until:Date().addingTimeInterval(0.01))}
     app.collapseWorkspace();let reverseAt=Date().addingTimeInterval(0.23);while Date()<reverseAt{RunLoop.current.run(until:Date().addingTimeInterval(0.005))}
     app.revealWorkspace();let expandedAgain=Date().addingTimeInterval(1);while Date()<expandedAgain{RunLoop.current.run(until:Date().addingTimeInterval(0.01))}
-    precondition(window.isVisible && !nativePanel.isVisible && codeHost.layer?.opacity==1 && nativePanel.level==nativeLevel,"Reversing the live handoff left a stale notch or invisible workspace")
+    precondition(window.isVisible && !nativePanel.isVisible && window.contentView?.layer?.opacity==1 && nativePanel.level==nativeLevel,"Reversing the live handoff left a stale notch or invisible workspace")
     let originalLevel=window.level
     window.setFrame(CGRect(x:retainedFrame.minX+90,y:retainedFrame.minY+80,width:850,height:580),display:true)
     app.dismissUnifiedSurface()

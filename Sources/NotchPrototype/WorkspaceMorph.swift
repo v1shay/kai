@@ -8,9 +8,11 @@ import AppKit
     private var revision=0
     private weak var window:NSWindow?,host:NSView?
     private var shell:NSPanel?,clip:CAShapeLayer?,previousMask:CALayer?
+    private var glassBridge:WorkspaceGlassBridge?,opaqueFill:CALayer?
+    private var contentOpacities:[(layer:CALayer,opacity:Float)]=[]
     private var delayed:DispatchWorkItem?,handoff:DispatchWorkItem?
     private weak var incomingNotch:NSPanel?
-    private var incomingLevel:NSWindow.Level?,originalContentOpacity:Float?
+    private var incomingLevel:NSWindow.Level?
     private(set) var presentingNotch=false
     private var originalBackground:NSColor?,originalOpaque=false,originalShadow=true,originalIgnores=false
     private var originalLevel:NSWindow.Level?
@@ -31,16 +33,17 @@ import AppKit
 
     /// The incoming surface owns glass during an app-to-app handoff. Retiring
     /// the outgoing backdrop must not cancel its live contour or content fade.
-    func retireBackdrop(){shell?.orderOut(nil);shell?.contentView=nil;shell=nil}
+    func retireBackdrop(){glassBridge?.hide()}
 
     private func clearVisuals(){
         delayed?.cancel();delayed=nil;handoff?.cancel();handoff=nil;presentingNotch=false
         if let incomingNotch,let incomingLevel{incomingNotch.level=incomingLevel};incomingNotch=nil;incomingLevel=nil
         retireBackdrop()
-        if let host,let originalContentOpacity{
-            host.layer?.removeAnimation(forKey:"workspaceContent")
-            CATransaction.begin();CATransaction.setDisableActions(true);host.layer?.opacity=originalContentOpacity;CATransaction.commit()
-        };originalContentOpacity=nil
+        for item in contentOpacities{
+            item.layer.removeAnimation(forKey:"workspaceContent")
+            CATransaction.begin();CATransaction.setDisableActions(true);item.layer.opacity=item.opacity;CATransaction.commit()
+        };contentOpacities=[]
+        opaqueFill?.removeFromSuperlayer()
         if let host,let clip,host.layer?.mask === clip{host.layer?.mask=previousMask}
         clip=nil;previousMask=nil;host=nil
         if let window,let originalBackground{
@@ -91,25 +94,50 @@ import AppKit
         self.host=host;host.wantsLayer=true
         let mask=CAShapeLayer();mask.frame=host.bounds;previousMask=host.layer?.mask;host.layer?.mask=mask;clip=mask
         animate(mask,from:contour.map{local($0,in:host,window:window)} ?? Self.outline(local(source,in:host,window:window),notch:sourceNotch ?? expanding,radius:sourceRadius),to:Self.outline(local(target,in:host,window:window),notch:targetNotch ?? !expanding,radius:targetRadius),duration:duration,delay:delay)
-        if !backdrop{present(window);return}
-        // A single glass backdrop bridges the menu-bar gap. It sits UNDER the
-        // live workspace, so each real UI component is visible as it arrives.
-        let union=source.union(target)
-        let panel=NSPanel(contentRect:union,styleMask:[.borderless,.nonactivatingPanel],backing:.buffered,defer:false)
-        panel.isOpaque=false;panel.backgroundColor = .clear;panel.hasShadow=false;panel.ignoresMouseEvents=true;panel.level=window.level
-        panel.collectionBehavior=[.fullScreenAuxiliary,.canJoinAllSpaces]
-        let glass=NSVisualEffectView(frame:CGRect(origin:.zero,size:union.size));glass.wantsLayer=true;glass.material = .underWindowBackground;glass.blendingMode = .behindWindow;glass.state = .active
-        panel.contentView=glass;shell=panel
-        let glassMask=CAShapeLayer();glass.layer?.mask=glassMask
-        animate(glassMask,from:contour.map{Self.convert($0){CGPoint(x:$0.x-union.minX,y:$0.y-union.minY)}} ?? Self.outline(source.offsetBy(dx:-union.minX,dy:-union.minY),notch:sourceNotch ?? expanding,radius:sourceRadius),to:Self.outline(target.offsetBy(dx:-union.minX,dy:-union.minY),notch:targetNotch ?? !expanding,radius:targetRadius),duration:duration,delay:delay)
-        present(window);panel.order(.below,relativeTo:window.windowNumber)
+        // Fade foreground content separately, keeping the actual material and
+        // tint alive beneath the same contour for the entire transition.
+        if !WorkspaceGlassBridge.hasNativeGlass(window){
+            let fill=opaqueFill ?? CALayer();opaqueFill=fill
+            fill.frame=host.bounds;fill.backgroundColor=originalBackground?.cgColor
+            host.layer?.insertSublayer(fill,at:0)
+        }
+        guard backdrop,let outside=WorkspaceGlassBridge.outsideBounds(source.union(target),excluding:window.frame) else{present(window);return}
+        let bridge=glassBridge ?? WorkspaceGlassBridge();glassBridge=bridge;shell=bridge.panel
+        bridge.configure(window:window,frame:outside,opaqueColor:originalBackground)
+        animate(bridge.shape,from:contour.map{Self.convert($0){CGPoint(x:$0.x-outside.minX,y:$0.y-outside.minY)}} ?? Self.outline(source.offsetBy(dx:-outside.minX,dy:-outside.minY),notch:sourceNotch ?? expanding,radius:sourceRadius),to:Self.outline(target.offsetBy(dx:-outside.minX,dy:-outside.minY),notch:targetNotch ?? !expanding,radius:targetRadius),duration:duration,delay:delay)
+        present(window);bridge.panel.order(.below,relativeTo:window.windowNumber)
+    }
+    private func liveContentOpacities()->[ObjectIdentifier:Float]{
+        var values=Dictionary(uniqueKeysWithValues:contentOpacities.map{(ObjectIdentifier($0.layer),$0.layer.presentation()?.opacity ?? $0.layer.opacity)})
+        // Translate progress when an interrupted app-to-app handoff switches
+        // between fading the full source and fading just foreground content.
+        if let hostLayer=host?.layer,let item=contentOpacities.first(where:{$0.opacity>0}){
+            let progress=(item.layer.presentation()?.opacity ?? item.layer.opacity)/item.opacity
+            let original=contentOpacities.first(where:{$0.layer === hostLayer})?.opacity ?? hostLayer.opacity
+            values[ObjectIdentifier(hostLayer)]=original*progress
+        }
+        return values
+    }
+    private func animateContent(_ window:NSWindow,from values:[ObjectIdentifier:Float],appearing:Bool,duration:Double,includeGlass:Bool=false){
+        let layers=includeGlass ? host?.layer.map{[$0]} ?? []:WorkspaceGlassBridge.foregroundLayers(window)
+        for layer in layers{
+            let original=layer.opacity
+            contentOpacities.append((layer,original))
+            let fade=CABasicAnimation(keyPath:"opacity")
+            let inherited=host?.layer.flatMap{hostLayer in values[ObjectIdentifier(hostLayer)].map{original*$0/max(hostLayer.opacity,0.0001)}}
+            let current:Float=layer.presentation()?.opacity ?? original
+            let initial:Float=values[ObjectIdentifier(layer)] ?? inherited ?? (appearing ? 0:current)
+            fade.fromValue=NSNumber(value:initial)
+            fade.toValue=NSNumber(value:appearing ? original:0);fade.duration=duration;fade.timingFunction=curve
+            layer.opacity=appearing ? original:0;layer.add(fade,forKey:"workspaceContent")
+        }
     }
     func expand(_ window:NSWindow,from source:CGRect,replay:Bool=false,destination:CGRect?=nil,sourceNotch:Bool=true,crossfade:Bool=false,sourceRadius:CGFloat=10,destinationRadius:CGFloat=10,completion:@escaping()->Void={}){
         NSApp.activate(ignoringOtherApps:true)
         if expanded && !transitioning && !replay{present(window);completion();return}
         CATransaction.begin();CATransaction.setDisableActions(true);defer{CATransaction.commit()}
         let contour=transitioning ? liveContour():nil
-        let returningOpacity=originalContentOpacity.map{_ in host?.layer?.presentation()?.opacity ?? host?.layer?.opacity ?? 1}
+        let returningOpacity=liveContentOpacities()
         let start=contour?.boundingBoxOfPath ?? source
         revision += 1;let token=revision;clearVisuals();self.window=window;expanded=true;transitioning=true
         let screen=NSScreen.screens.first{$0.frame.contains(CGPoint(x:source.midX,y:source.maxY-1))} ?? window.screen ?? NSScreen.main
@@ -124,9 +152,8 @@ import AppKit
         window.alphaValue=1
         if !reduce{
             prepare(window,from:start,to:target,duration:0.68,expanding:true,contour:contour,sourceNotch:sourceNotch,targetNotch:false,sourceRadius:sourceNotch ? 14:sourceRadius,targetRadius:destinationRadius)
-            if (returningOpacity != nil || crossfade),let layer=host?.layer{
-                originalContentOpacity=layer.opacity
-                let fade=CABasicAnimation(keyPath:"opacity");fade.fromValue=returningOpacity ?? 0;fade.toValue=layer.opacity;fade.duration=crossfade ? 0.24:0.14;fade.timingFunction=curve;layer.add(fade,forKey:"workspaceContent")
+            if !returningOpacity.isEmpty || crossfade{
+                animateContent(window,from:returningOpacity,appearing:true,duration:crossfade ? 0.24:0.14)
             }
         }else{
             window.alphaValue=0;window.orderFront(nil)
@@ -144,7 +171,7 @@ import AppKit
     func collapse(_ window:NSWindow,to target:CGRect,into notch:NSPanel?=nil,revealNotch:(()->Void)?=nil,targetNotch:Bool=true,retireContent:Bool=false,targetRadius:CGFloat=10,backdrop:Bool=true,completion:@escaping()->Void){
         if !expanded && !transitioning && !window.isVisible{completion();return}
         CATransaction.begin();CATransaction.setDisableActions(true);defer{CATransaction.commit()}
-        let retiringOpacity=originalContentOpacity.map{_ in host?.layer?.presentation()?.opacity ?? host?.layer?.opacity ?? 0}
+        let retiringOpacity=liveContentOpacities()
         let contour=transitioning ? liveContour():nil
         let source=contour?.boundingBoxOfPath ?? window.frame
         revision += 1;let token=revision;clearVisuals();self.window=window;expanded=false;transitioning=true
@@ -153,10 +180,10 @@ import AppKit
         if !reduce{prepare(window,from:source,to:target,duration:0.48,delay:0.10,expanding:false,contour:contour,sourceNotch:false,targetNotch:targetNotch,sourceRadius:surfaceRadius,targetRadius:targetNotch ? 14:targetRadius,backdrop:backdrop)}else{
             NSAnimationContext.runAnimationGroup{context in context.duration=0.12;window.animator().alphaValue=0}
         }
-        if let layer=host?.layer,!reduce,(notch != nil || retiringOpacity != nil || retireContent){
-            originalContentOpacity=layer.opacity
-            let fade=CABasicAnimation(keyPath:"opacity");fade.fromValue=retiringOpacity ?? layer.presentation()?.opacity ?? layer.opacity;fade.toValue=0;fade.duration=0.14;fade.timingFunction=curve
-            layer.opacity=0;layer.add(fade,forKey:"workspaceContent")
+        if !reduce && (notch != nil || !retiringOpacity.isEmpty || retireContent){
+            // App-to-app transfers keep the original source retirement: the
+            // incoming surface already owns the glass across that handoff.
+            animateContent(window,from:retiringOpacity,appearing:false,duration:0.14,includeGlass:!backdrop)
         }
         if let notch,let revealNotch{
             // Keep only the continuous glass contour as Code retires. The real
@@ -170,8 +197,10 @@ import AppKit
                 // before revealing the native notch; workspace pixels must
                 // never survive onto its surface.
                 CATransaction.begin();CATransaction.setDisableActions(true)
-                self.host?.layer?.removeAnimation(forKey:"workspaceContent")
-                self.host?.layer?.opacity=0
+                for item in self.contentOpacities{
+                    item.layer.removeAnimation(forKey:"workspaceContent")
+                    item.layer.opacity=0
+                }
                 CATransaction.commit();CATransaction.flush()
                 self.presentingNotch=true;revealNotch()
             };handoff=reveal;DispatchQueue.main.asyncAfter(deadline:.now()+(reduce ? 0.06:0.16),execute:reveal)

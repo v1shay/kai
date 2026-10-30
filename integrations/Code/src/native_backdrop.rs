@@ -25,6 +25,16 @@ define_class!(
  impl Backdrop{
   #[unsafe(method(updateLayer))]
   fn update_layer(&self){unsafe{let _:()=msg_send![super(self),updateLayer];}self.configure();}
+  #[unsafe(method(kaiBackdropRadius))]
+  fn backdrop_radius(&self)->usize{self.ivars().radius.get() as usize}
+  #[unsafe(method_id(copyKaiTransitionBackdrop))]
+  fn copy_transition_backdrop(&self)->Retained<NSView>{
+      let view=Backdrop::new(self.frame(),self.mtm());
+      view.ivars().radius.set(self.ivars().radius.get());
+      view.setMaterial(self.material());view.setBlendingMode(self.blendingMode());view.setState(self.state());
+      view.configure();
+      view.into_super().into_super()
+  }
   #[unsafe(method(hitTest:))]
   fn hit_test(&self,_point:objc2_foundation::NSPoint)->*mut AnyObject{std::ptr::null_mut()}
  }

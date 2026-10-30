@@ -156,3 +156,16 @@ one process-RSS sample measured 209.19 -> 216.47 MiB, not total GPU footprint.
 The full pre-format-upgrade suite had 870 passes, 19 ignored and two timing
 failures, both passing isolated reruns. Final native GPU/backdrop tests pass.
 See GLASS_COMPOSITING.md for exact scope, cost and evidence limits.
+
+0.12.7 (44) keeps the window's existing native material/tint live throughout its
+notch morph. Foreground renderer/pet layers fade independently; app-to-app
+transfers retain their existing source retirement. The cached bridge copies the
+actual native material/radius/tint and covers only space outside the real window,
+with a fixed exclusion mask for windowed layouts. It no longer stacks another
+full-window blur behind the settled material. Profile/geometry updates occur at
+transition boundaries; there is no per-frame window resize or blur rebuilding.
+Expansion/collapse durations, contour geometry, component entrances, shortcuts,
+reduced motion and renderer buffer formats are unchanged.
+The focused native glass audit, native state regression, final surface-transition
+matrix, two Rust native/GPU tests and signed packaged glass/morph probe pass.
+The user is performing the visual check; no manual visual review was requested.
