@@ -214,13 +214,14 @@ private func auditCommand(_ bytes:UnsafePointer<UInt8>?,_ count:Int)->Bool{guard
   let fastControl=member(ui,"fastTint") as! CALayer,orchestratorControl=member(ui,"orchestratorChip") as! CALayer
   let effortControl=member(ui,"effortChip") as! CALayer
   precondition(model.frame.maxX < effortControl.frame.minX && effortControl.frame.maxX < fastControl.frame.minX && fastControl.frame.maxX < orchestratorControl.frame.minX,"Notch controls are not grouped in model/thinking/speed/orchestrator order")
-  precondition(input.borderColor?.alpha==0 && ((input as? CAGradientLayer)?.colors as? [CGColor])?.allSatisfy{$0.alpha==0}==true,"Borderless composer retained a frame")
+  precondition((input.borderColor?.alpha ?? 0)>0 && ((input as? CAGradientLayer)?.colors as? [CGColor])?.contains{$0.alpha>0}==true,"Borderless controls removed the prompt’s outer frame")
+  precondition((member(ui,"command") as! CALayer).borderWidth==0 && orchestratorControl.backgroundColor==nil,"Borderless controls retained their own boxes")
   if let profile=member(ui,"rowProfile") as? PetGradientProfile{ui.setProfile(profile,animated:false)}
-  precondition(input.borderColor?.alpha==0,"Pet profile restored the hidden composer frame")
+  precondition((input.borderColor?.alpha ?? 0)>0,"Pet profile removed the prompt’s outer border")
   let bareFast=commands.count;_ = ui.handleClick(CGPoint(x:input.frame.minX+fastControl.frame.midX,y:input.frame.minY+fastControl.frame.midY))
   precondition(commands.count==bareFast+1 && commands.last?["action"] as? String=="fast_mode","Borderless control lost its click target")
   bare["borderlessComposer"]=false;runtime.receive(try JSONSerialization.data(withJSONObject:bare));pump(0.1)
-  precondition((input.borderColor?.alpha ?? 0)>0,"Composer frame did not return when borderless was disabled")
+  precondition((input.borderColor?.alpha ?? 0)>0,"Composer frame disappeared when borderless was disabled")
   print("Native borderless composer: grouped controls, retained hit targets, profile-safe frames and live setting changes passed")
   print("Native composer: four vector model glyphs, per-model tile shimmer choices, exact effort dispatch, independent gradient permissions, stale-owner rejection, typed-draft controls, and narrow layouts passed")
  }

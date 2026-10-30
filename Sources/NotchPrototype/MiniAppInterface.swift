@@ -705,9 +705,8 @@ private final class AttachmentLayer:CALayer {
     @objc private func openThinkingPanel(){showThinkingPopover()}
     private func applyComposerFrameStyle(){
         CATransaction.begin();CATransaction.setDisableActions(true)
-        input.colors=borderlessComposer ? [NSColor.clear.cgColor,NSColor.clear.cgColor]:[NSColor.white.withAlphaComponent(0.085).cgColor,NSColor.white.withAlphaComponent(0.035).cgColor]
-        input.borderColor=borderlessComposer ? NSColor.clear.cgColor:NSColor.white.withAlphaComponent(0.16).cgColor
-        if borderlessComposer{input.removeAnimation(forKey:"theme")}
+        input.colors=[NSColor.white.withAlphaComponent(0.085).cgColor,NSColor.white.withAlphaComponent(0.035).cgColor]
+        input.borderColor=NSColor.white.withAlphaComponent(0.16).cgColor
         command.borderWidth=borderlessComposer ? 0:0.7
         command.backgroundColor=borderlessComposer ? nil:rowProfile.flatMap{profile in profile.gradients.ambient.stops.first.map{alpha(color($0.color),0.14)}}
         CATransaction.commit()
