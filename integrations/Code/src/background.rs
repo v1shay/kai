@@ -1231,6 +1231,23 @@ fn sample_haze(image: &image::Rgba32FImage, x: f32, y: f32) -> [f32; 3] {
 fn fade_alpha(pixels: &mut RgbaImage, empty: bool) {
     fade_pixels::<false>(pixels, empty, None);
 }
+// Stable, spatially decorrelated thresholds for the final 8-bit conversion.
+// Stochastic rounding retains fractional coverage across adjacent pixels instead
+// of turning the smooth fade into entire rows of identical 8-bit alpha. Unlike
+// animated grain, the pattern is unchanged across GIF frames and redraws.
+fn quantization_threshold(x: usize, y: usize, salt: u32) -> f32 {
+    let mut hash = (x as u32).wrapping_mul(0x9e3779b9)
+        ^ (y as u32).wrapping_mul(0x85ebca6b) ^ salt;
+    hash ^= hash >> 16;
+    hash = hash.wrapping_mul(0x7feb352d);
+    hash ^= hash >> 15;
+    hash = hash.wrapping_mul(0x846ca68b);
+    hash ^= hash >> 16;
+    (hash >> 8) as f32 / 16_777_216.
+}
+fn quantize_coverage(value: f32, threshold: f32) -> u8 {
+    (value.clamp(0., 255.) + threshold).floor().min(255.) as u8
+}
 fn fade_pixels<const BGRA: bool>(
     pixels: &mut RgbaImage,
     empty: bool,
@@ -1259,13 +1276,14 @@ fn fade_pixels<const BGRA: bool>(
                     x as f32 * x_scale,
                     position * haze.height().saturating_sub(1) as f32,
                 );
+                let threshold = quantization_threshold(x, y, 0x68bc21eb);
                 for channel in 0..3 {
-                    pixel[channel] = (pixel[channel] as f32 * (1. - soften)
-                        + soft[channel] * soften)
-                        .round() as u8;
+                    pixel[channel] = quantize_coverage(pixel[channel] as f32 * (1. - soften)
+                        + soft[channel] * soften, threshold);
                 }
             }
-            pixel[3] = (pixel[3] as f32 * alpha).round() as u8;
+            pixel[3] = quantize_coverage(pixel[3] as f32 * alpha,
+                quantization_threshold(x, y, 0x02e5be93));
             if BGRA {
                 pixel.swap(0, 2);
             }
@@ -2002,15 +2020,25 @@ fn ramp(y: f32, stops: &[(f32, f32)]) -> f32 {
     for pair in stops.windows(2) {
         if y <= pair[1].0 {
             let t = ((y - pair[0].0) / (pair[1].0 - pair[0].0)).clamp(0., 1.);
-            return pair[0].1 + (pair[1].1 - pair[0].1) * t;
+            return pair[0].1 + (pair[1].1 - pair[0].1) * smootherstep(t);
         }
     }
     stops.last().map(|s| s.1).unwrap_or(0.)
 }
 fn haze(source: &RgbaImage, empty: bool) -> RgbaImage {
     let source = resize(source, 1024);
-    let soft = image::imageops::blur(&source, if empty { 7. } else { 5. });
-    let strong = image::imageops::blur(&source, if empty { 18. } else { 12. });
+    // Keep both blur passes in floating point, premultiplied for transparent
+    // artwork. Quantize only after mixing the progressive blur/tint, never
+    // between the horizontal/vertical filters or at intermediate blur levels.
+    let floating = image::Rgba32FImage::from_fn(source.width(), source.height(), |x, y| {
+        let pixel = source.get_pixel(x, y);
+        let alpha = pixel[3] as f32 / 255.;
+        image::Rgba([pixel[0] as f32 * alpha, pixel[1] as f32 * alpha,
+            pixel[2] as f32 * alpha, alpha])
+    });
+    let soft = image::imageops::blur(&floating, if empty { 7. } else { 5. });
+    let strong = image::imageops::blur(&floating, if empty { 18. } else { 12. });
+    drop(floating);
     let mut output = source.clone();
     let (_, height) = source.dimensions();
     for (x, y, pixel) in output.enumerate_pixels_mut() {
@@ -2022,13 +2050,16 @@ fn haze(source: &RgbaImage, empty: bool) -> RgbaImage {
         } else {
             ramp(p, &[(0.15, 0.), (0.76, 0.70)])
         };
-        let scan = if y % 3 == 0 { 0.36 } else { 0. };
-        let overlay = overlay + scan * (1. - overlay);
+        let unpremultiply = |blur: &image::Rgba32FImage, color: usize| {
+            let sample = blur.get_pixel(x, y);
+            if sample[3] > 0. { sample[color] / sample[3] } else { 0. }
+        };
+        let threshold = quantization_threshold(x as usize, y as usize, 0x68bc21eb);
         for color in 0..3 {
             let value = source.get_pixel(x, y)[color] as f32 * (1. - a)
-                + soft.get_pixel(x, y)[color] as f32 * a;
-            let value = value * (1. - b) + strong.get_pixel(x, y)[color] as f32 * b;
-            pixel[color] = (value * (1. - overlay) + 23. * overlay).round() as u8;
+                + unpremultiply(&soft, color) * a;
+            let value = value * (1. - b) + unpremultiply(&strong, color) * b;
+            pixel[color] = quantize_coverage(value * (1. - overlay) + 23. * overlay, threshold);
         }
         pixel[3] = source.get_pixel(x, y)[3];
     }
@@ -2108,6 +2139,55 @@ mod tests {
         assert_eq!(empty.get_pixel(10, 0)[3], 255);
         assert_ne!(empty, session);
         assert!(empty.get_pixel(33, 64)[0] > 0);
+    }
+    #[test]
+    fn fade_keeps_fractional_coverage_instead_of_full_width_quantization_bands() {
+        let source = RgbaImage::from_pixel(1024, 512, Rgba([70, 140, 210, 123]));
+        for empty in [true, false] {
+            let frame = super::render_image(source.clone(), Effect::None, empty);
+            let bytes = frame.as_bytes(0).unwrap();
+            let again = super::render_image(source.clone(), Effect::None, empty);
+            assert_eq!(bytes, again.as_bytes(0).unwrap(), "No time-varying grain/flicker");
+            let mut checked = 0;
+            for y in (40..480).step_by(7) {
+                let expected = 123. * super::wallpaper_alpha(y as f32 / 511., empty);
+                if !(0.2..0.8).contains(&expected.fract()) { continue; }
+                let alphas: Vec<_> = bytes[y * 1024 * 4..(y + 1) * 1024 * 4]
+                    .chunks_exact(4).map(|p| p[3]).collect();
+                let low = *alphas.iter().min().unwrap();
+                let high = *alphas.iter().max().unwrap();
+                assert_eq!(high - low, 1, "A fractional fade must not become one solid-opacity band");
+                let mean = alphas.iter().map(|a| *a as f32).sum::<f32>() / 1024.;
+                assert!((mean - expected).abs() < 0.065, "Fractional coverage must preserve brightness: {mean} vs {expected}");
+                checked += 1;
+            }
+            assert!(checked >= 20);
+        }
+    }
+    #[test]
+    fn gradient_blur_is_smooth_without_hidden_scanlines_and_preserves_transparent_hues() {
+        let source = RgbaImage::from_pixel(160, 160, Rgba([100, 100, 100, 255]));
+        let blurred = super::haze(&source, true);
+        for y in 0..24 {
+            let mean = (0..160).map(|x| blurred.get_pixel(x, y)[0] as f32).sum::<f32>() / 160.;
+            assert!((mean - 100.).abs() < 0.02, "Gradient blur must not secretly darken every third row: {y}: {mean}");
+        }
+        let transparent = RgbaImage::from_fn(80, 80, |x, _| {
+            if x < 40 { Rgba([240, 120, 60, 255]) } else { Rgba([0, 0, 0, 0]) }
+        });
+        let blurred = super::haze(&transparent, true);
+        // At the same progressive tint, transparent black must not darken
+        // the Gaussian's neighboring orange compared with opaque orange.
+        let opaque = super::haze(&RgbaImage::from_pixel(80, 80, Rgba([240, 120, 60, 255])), true);
+        let edge = blurred.get_pixel(39, 48);
+        let reference = opaque.get_pixel(39, 48);
+        for color in 0..3 {
+            assert!((edge[color] as i16 - reference[color] as i16).abs() <= 1,
+                "Transparent black must not contaminate blurred artwork: {edge:?} vs {reference:?}");
+        }
+        assert_eq!(blurred.get_pixel(40, 48)[3], 0);
+        // Scanlines remain a separate, explicitly selected artwork effect.
+        assert_ne!(effects(&source, Effect::Scanlines, true).get_pixel(0, 0), source.get_pixel(0, 0));
     }
     #[test]
     fn shared_fade_softens_detail_for_every_effect_and_preserves_the_crisp_top() {
@@ -2438,8 +2518,8 @@ mod tests {
                 assert_eq!(alpha(100), 0, "every effect clears the bottom");
                 assert!(alpha(80) > 0, "the soft tail extends beyond the old cutoff");
                 assert!(
-                    (0..100).all(|y| alpha(y) >= alpha(y + 1)),
-                    "fade must be monotonic"
+                    (0..100).all(|y| alpha(y).saturating_add(1) >= alpha(y + 1)),
+                    "coverage rounding must stay within one alpha level of the monotonic fade"
                 );
                 assert!(alpha(30) > 100);
                 assert!((40..90).contains(&alpha(54)));

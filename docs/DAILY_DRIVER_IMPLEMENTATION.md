@@ -131,3 +131,18 @@ the affordance remains after completion and does not leak into new/other chats.
 Reduced motion skips the entrance. Eight focused checks pass across historical
 sub-agent visibility, header toggles/outside dismissal, transcript folding and
 wallpaper settings. Surface morphs are unchanged.
+
+0.12.5 (42) corrects wallpaper gradient banding at final 8-bit conversion:
+spatially stable stochastic coverage rounding preserves fractional fade alpha,
+and progressive blur uses premultiplied floating-point filtering before its
+final color quantization. Gradient blur no longer includes hidden scanlines;
+Scanlines remains its own explicit effect. Blur ramps have smooth derivatives.
+The existing 8-bit frame allocation, worker and morph choreography remain.
+All 27 wallpaper tests pass (one opt-in diagnostic ignored), including new
+coverage/mean-brightness, redraw stability, scanline and transparent-edge checks.
+The native-app automation service is unavailable on this host; screenshot
+analysis confirms broad quantization plateaus, but the final appearance has not
+been visually compared against the user's live MonoCode window.
+The signed packaged native glass probe also passed: one full-opacity AppKit
+backdrop, independent tint, material/opacity/radius round trips, continuous morph
+reversal, repeat opening, extended return, double-Command and exclusive Quick Chat.
