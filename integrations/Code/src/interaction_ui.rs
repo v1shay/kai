@@ -438,24 +438,7 @@ impl Orbit {
                                 .child({
                                     let copy = details.to_owned();
                                     div().flex().justify_end().mb_1().child(
-                                        div()
-                                            .id(("interaction-copy", ix))
-                                            .debug_selector(move || {
-                                                format!("interaction-copy-{ix}")
-                                            })
-                                            .px_2()
-                                            .py_1()
-                                            .rounded_md()
-                                            .text_size(crate::theme::ui_px(10.))
-                                            .cursor_pointer()
-                                            .hover(|s| s.bg(rgba(GLASS_HOVER)))
-                                            .active(|s| s.bg(rgba(0xffffff12)))
-                                            .child("Copy")
-                                            .on_click(move |_, _, cx| {
-                                                cx.write_to_clipboard(ClipboardItem::new_string(
-                                                    copy.clone(),
-                                                ));
-                                            }),
+                                        copy_control::CopyControl::text(format!("interaction-copy-{ix}"), copy).label("Copy").scope(self.active.clone().unwrap_or_default()).motion(self.motion),
                                     )
                                 })
                                 .child(

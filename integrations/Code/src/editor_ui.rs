@@ -286,16 +286,10 @@ impl Render for FileEditor {
                         "Saved"
                     })
                     .child(
-                        div()
-                            .id("copy-file-draft")
-                            .debug_selector(|| "copy-file-draft".into())
-                            .cursor_pointer()
-                            .child("Copy draft")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                cx.write_to_clipboard(ClipboardItem::new_string(
-                                    this.input.read(cx).text(),
-                                ))
-                            })),
+                        crate::copy_control::CopyControl::source("copy-file-draft", {
+                            let input = self.input.clone();
+                            move |cx| input.read(cx).text()
+                        }).label("Copy draft"),
                     ),
             )
     }

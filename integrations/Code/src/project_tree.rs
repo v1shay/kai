@@ -82,6 +82,22 @@ impl Orbit {
         if self.sidebar_split { 200. } else { 280. }
     }
 
+    pub(super) fn sort_projects_by_prompt(&mut self) {
+        let mut latest: HashMap<PathBuf, i64> = HashMap::new();
+        let roots: HashSet<_> = self.projects.iter().map(|p| p.path.as_path()).collect();
+        for session in &self.sessions {
+            if self.hidden_sessions.contains(&session.id) || self.lifecycle.archived_chats.contains(&session.id) { continue; }
+            let at = self.activity.prompt_at(session);
+            if let Some(root) = session.project_path.ancestors().find(|root| roots.contains(root)) {
+                latest.entry(root.to_path_buf()).and_modify(|old| *old = (*old).max(at)).or_insert(at);
+            }
+        }
+        self.projects.sort_by_key(|project| (
+            std::cmp::Reverse(latest.get(&project.path).copied().unwrap_or(0)),
+            !self.lifecycle.pinned_projects.contains(&project.path), project.path.clone(),
+        ));
+    }
+
     pub(super) fn rebuild_project_tree(&mut self) {
         self.project_tree.activity = self
             .sessions
@@ -105,13 +121,8 @@ impl Orbit {
             let key = |ix: usize| {
                 let s = &self.sessions[ix];
                 (
-                    std::cmp::Reverse(if self.all_projects {
-                        self.activity.opened_rank(&s.id)
-                    } else {
-                        0
-                    }),
+                    std::cmp::Reverse(self.activity.prompt_at(s)),
                     !self.lifecycle.pinned_chats.contains(&s.id),
-                    std::cmp::Reverse(s.updated_at),
                     s.id.as_str(),
                 )
             };

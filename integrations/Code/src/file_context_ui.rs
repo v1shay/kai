@@ -494,13 +494,8 @@ impl Orbit {
                     div()
                         .flex()
                         .gap_2()
-                        .child(button("copy-file-context", "Copy exact context").on_click(
-                            move |_, _, cx| {
-                                cx.write_to_clipboard(ClipboardItem::new_string(
-                                    excerpt.to_string(),
-                                ))
-                            },
-                        ))
+                        .child(copy_control::CopyControl::text("copy-file-context", excerpt.to_string()).label("Copy exact context")
+                        )
                         .when(!picker.inspect_only, |body| {
                             body.child(button("attach-file-context", "Attach snapshot").on_click(
                                 cx.listener(|this, _, window, cx| {

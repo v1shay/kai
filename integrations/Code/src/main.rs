@@ -73,6 +73,7 @@ mod quick_surface;
 mod response_buffer;
 mod runtime;
 mod sidebar_activity;
+mod copy_control;
 mod speech;
 mod store;
 #[path = "../assets/generated.rs"]
@@ -1462,17 +1463,21 @@ impl Orbit {
             })
             .cloned()
             .collect();
-        self.workspace_sessions.sort_by_key(|session| {
-            (
-                std::cmp::Reverse(if self.all_projects {
-                    self.activity.opened_rank(&session.id)
-                } else {
-                    0
-                }),
-                !self.lifecycle.pinned_chats.contains(&session.id),
-                std::cmp::Reverse(session.updated_at),
-            )
-        });
+        // Capture legacy summary recency once; completion/refresh must not reorder
+        // a conversation after its next real prompt has been recorded.
+        let mut submitted: HashMap<&str, i64> = HashMap::new();
+        for timing in &self.turn_timings {
+            submitted.entry(&timing.session).and_modify(|at| *at = (*at).max(timing.submitted_ms)).or_insert(timing.submitted_ms);
+        }
+        for session in &self.sessions {
+            let at = submitted.get(session.id.as_str()).copied().unwrap_or(session.updated_at.saturating_mul(1000));
+            self.activity.saved.seed_prompt(&session.id, at);
+        }
+        self.workspace_sessions.sort_by_key(|session| (
+            std::cmp::Reverse(self.activity.prompt_at(session)),
+            !self.lifecycle.pinned_chats.contains(&session.id), session.id.clone(),
+        ));
+        self.sort_projects_by_prompt();
         self.rebuild_project_tree();
     }
     fn rebuild_projects(&mut self) {
@@ -1484,8 +1489,7 @@ impl Orbit {
             .filter(|p| !self.hidden_projects.contains(&p.path) && !discovery::internal_probe_project(&p.path) && seen.insert(p.path.clone()))
             .cloned()
             .collect();
-        self.projects
-            .sort_by_key(|project| !self.lifecycle.pinned_projects.contains(&project.path));
+        self.sort_projects_by_prompt();
         self.rebuild_project_tree();
     }
     fn conversations_are_visible(&self, window: &Window) -> bool {
@@ -4040,7 +4044,7 @@ impl Orbit {
                             .child(icon("inbox", 16., MUTED))
                             .child("Priority")
                             .on_click(cx.listener(|this, _, _, cx| {
-                                cx.stop_propagation(); this.all_projects = true; this.archived_view = false;
+                                cx.stop_propagation(); this.all_projects = !this.all_projects; this.archived_view = false;
                                 this.rebuild_workspace_sessions();
                                 cx.notify();
                             })),
@@ -5022,15 +5026,7 @@ impl Orbit {
                                     language.clone()
                                 })
                                 .child(
-                                    div()
-                                        .id(("copy", ix))
-                                        .cursor_pointer()
-                                        .child("Copy")
-                                        .on_click(move |_, _, cx| {
-                                            cx.write_to_clipboard(ClipboardItem::new_string(
-                                                copy.clone(),
-                                            ))
-                                        }),
+                                    copy_control::CopyControl::text(format!("code-copy-{ix}"), copy).label("Copy").scope(self.active.clone().unwrap_or_default()).motion(self.motion),
                                 ),
                         )
                         .child(
@@ -5060,6 +5056,18 @@ impl Orbit {
                 )
             }
         };
+        }
+        if let Some(range) = self.flow_index.message_ends.get(ix).cloned().flatten() {
+            let owner = cx.entity().downgrade();
+            let chat = self.active.clone();
+            content = content.child(div().mt_1().flex().justify_end().child(
+                copy_control::CopyControl::source(format!("message-copy-{ix}"), move |cx| {
+                    owner.upgrade().and_then(|owner| {
+                        let app = owner.read(cx);
+                        (app.active == chat).then(|| app.rows.get(range.clone()).map(copy_control::message_text)).flatten()
+                    }).unwrap_or_default()
+                }).scope(self.active.clone().unwrap_or_default()).motion(self.motion)
+            ));
         }
         if let Some(stamp)=timestamp.filter(|_|user){content=content.child(div().mt_1().text_size(theme::ui_px(9.)).text_color(rgb(MUTED)).opacity(self.timestamp_opacity()).child(stamp));}
         if let Some(t)=timing.filter(|t|t.elapsed_ms.is_some() && !user && (ix+1==self.rows.len() || self.rows.get(ix+1).is_some_and(|r|r.role.as_deref()==Some("user")))){

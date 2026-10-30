@@ -76,6 +76,8 @@ impl Orbit {
             elapsed_ms: None,
             outcome: None,
         });
+        self.activity.prompted(id, self.turn_timings.last().unwrap().submitted_ms);
+        self.rebuild_workspace_sessions();
         self.queue_workspace_save(cx);
         let id = id.to_owned();
         let key = key.to_owned();

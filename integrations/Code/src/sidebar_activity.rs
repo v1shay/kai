@@ -9,9 +9,14 @@ pub(super) struct Saved {
     clock: u64,
     opened: BTreeMap<String, u64>,
     pending: BTreeMap<String, u64>,
+    prompted: BTreeMap<String, i64>,
 }
 impl Saved {
+    pub fn seed_prompt(&mut self, id: &str, at: i64) {
+        self.prompted.entry(id.into()).or_insert(at);
+    }
     pub fn normalize(&mut self) {
+        self.prompted.retain(|id, at| !id.is_empty() && id.len() <= 512 && !id.chars().any(char::is_control) && *at > 0);
         fn trim(map: &mut BTreeMap<String, u64>, limit: usize) {
             map.retain(|id, _| {
                 !id.is_empty() && id.len() <= 512 && !id.chars().any(char::is_control)
@@ -57,8 +62,14 @@ impl Activity {
     pub fn revision(&self) -> u64 {
         self.revision
     }
-    pub fn opened_rank(&self, id: &str) -> u64 {
-        self.saved.opened.get(id).copied().unwrap_or(0)
+    #[cfg(test)]
+    pub fn opened_rank(&self, id: &str) -> u64 { self.saved.opened.get(id).copied().unwrap_or(0) }
+    pub fn prompt_at(&self, session: &SessionSummary) -> i64 {
+        self.saved.prompted.get(&session.id).copied().unwrap_or(session.updated_at.saturating_mul(1000))
+    }
+    pub fn prompted(&mut self, id: &str, at: i64) {
+        self.saved.prompted.insert(id.into(), at);
+        self.revision = self.revision.wrapping_add(1);
     }
     pub fn pending_rank(&self, id: &str) -> Option<u64> {
         self.saved.pending.get(id).copied()
@@ -447,7 +458,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn priority_uses_last_opened_chats_across_projects_and_acknowledging_current_chat_keeps_viewport(
+    fn priority_uses_last_prompt_across_projects_and_acknowledging_current_chat_keeps_viewport(
         cx: &mut TestAppContext,
     ) {
         let (view, cx) = ui_tests::fixture(cx);
@@ -459,11 +470,14 @@ mod tests {
             old.updated_at = 1;
             old.project_path = app.project.join("other-project");
             app.sessions.push(old);
-            app.activity.open("fixture-session");
-            app.activity.open("old-but-visited");
+            app.activity.prompted("fixture-session", 1000);
+            app.activity.prompted("old-but-visited", 2000);
             app.rebuild_workspace_sessions();
             assert_eq!(app.workspace_sessions[0].id, "old-but-visited");
             app.activity.open("fixture-session");
+            app.rebuild_workspace_sessions();
+            assert_eq!(app.workspace_sessions[0].id, "old-but-visited");
+            app.activity.prompted("fixture-session", 3000);
             app.rebuild_workspace_sessions();
             assert_eq!(app.workspace_sessions[0].id, "fixture-session");
             app.active = Some("fixture-session".into());

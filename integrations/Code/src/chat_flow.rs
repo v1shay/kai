@@ -2,11 +2,11 @@
 use super::{Row,MessageBlock,chat_interactions::{ChatInteraction,Speaker,InteractionStatus}};
 use std::ops::Range;
 #[derive(Default,Clone,Debug,PartialEq,Eq)]
-pub(super) struct Index {pub work:Vec<Option<Range<usize>>>,pub commands:Vec<Option<Range<usize>>>,pub hidden:Vec<bool>,pub has_subagents:bool}
+pub(super) struct Index {pub message_ends:Vec<Option<Range<usize>>>,pub work:Vec<Option<Range<usize>>>,pub commands:Vec<Option<Range<usize>>>,pub hidden:Vec<bool>,pub has_subagents:bool}
 impl Index {
  pub fn new(rows:&[Row])->Self{Self::for_transcript(rows,false,None)}
  pub fn for_transcript(rows:&[Row],settled:bool,live_start:Option<usize>)->Self{
-  let mut out=Self{work:vec![None;rows.len()],commands:vec![None;rows.len()],hidden:vec![false;rows.len()],has_subagents:false};
+  let mut out=Self{message_ends:vec![None;rows.len()],work:vec![None;rows.len()],commands:vec![None;rows.len()],hidden:vec![false;rows.len()],has_subagents:false};
   let mut at=0;while at<rows.len(){if let Some(span)=command_span(rows,at){for i in span.clone(){out.commands[i]=Some(span.clone())}at=span.end}else{at+=1}}
   let mut starts=vec![0];for i in 0..rows.len(){if matches!(&rows[i].block,MessageBlock::Interaction(ChatInteraction::Delegation{agent:Some(_),..})){out.has_subagents=true;}if starts_turn(&rows[i])&&i>0{starts.push(i)}}starts.push(rows.len());
   for bounds in starts.windows(2){
@@ -27,7 +27,23 @@ impl Index {
    for i in body..end{if is_success(&rows[i].block){out.hidden[i]=true}}
    if let Some(first)=(body..final_start).find(|i|!out.hidden[*i]&&!user(&rows[*i])&&!attention(&rows[*i].block)){for i in first..final_start{if !user(&rows[i])&&!attention(&rows[i].block){out.work[i]=Some(first..final_start)}}}
    for i in final_start..end{if work_item(&rows[i].block)&&!attention(&rows[i].block){out.hidden[i]=true}}
-  }out
+  }
+  // A footer belongs to a complete authored message, never a Markdown paragraph
+  // or a tool result. Store ranges only; build clipboard text on click.
+  let mut message:Option<usize>=None;
+  for i in 0..=rows.len(){
+   let boundary=i==rows.len() || rows.get(i).is_some_and(|r| {
+    let role=r.role.as_deref();
+    role.is_some_and(|r|r!="user:continuation"&&!r.starts_with("continuation:")) || !body_content(&r.block)&&!user(r)
+   });
+   if boundary {
+    if let Some(start)=message.take(){
+     if let Some(end)=(start..i).rev().find(|j|!out.hidden[*j] && (user(&rows[*j])||body_content(&rows[*j].block))) {out.message_ends[end]=Some(start..i);}
+    }
+   }
+   if i<rows.len() && message.is_none() && (user(&rows[i])||body_content(&rows[i].block)) && !matches!(rows[i].block,MessageBlock::Interaction(_)) {message=Some(i);}
+  }
+  out
  }
  pub fn visible(&self,ix:usize,expanded:&std::collections::HashSet<usize>)->bool{if self.hidden.get(ix)==Some(&true){return false}if self.commands.get(ix).and_then(|s|s.as_ref()).is_some_and(|r|r.start!=ix){return false}self.work.get(ix).and_then(|r|r.as_ref()).is_none_or(|r|r.start==ix||expanded.contains(&r.start))}
  pub fn anchor(&self,ix:usize,expanded:&std::collections::HashSet<usize>)->usize{if self.visible(ix,expanded){return ix}if let Some(span)=self.work.get(ix).and_then(|s|s.as_ref()){if !expanded.contains(&span.start){return span.start}}if let Some(span)=self.commands.get(ix).and_then(|s|s.as_ref()){if self.visible(span.start,expanded){return span.start}}(ix..self.work.len()).find(|i|self.visible(*i,expanded)).or_else(||(0..ix.min(self.work.len())).rev().find(|i|self.visible(*i,expanded))).unwrap_or(self.work.len())}

@@ -504,9 +504,7 @@ impl Orbit {
                             move |this, _, window, cx| this.recall_prompt(&id, window, cx),
                         )))
                         .child(
-                            button("copy-saved-prompt", "Copy").on_click(move |_, _, cx| {
-                                cx.write_to_clipboard(ClipboardItem::new_string(text.to_string()))
-                            }),
+                            copy_control::CopyControl::text("copy-saved-prompt", text.to_string()).label("Copy"),
                         )
                         .child(
                             button("rename-saved-prompt", "Rename").on_click(cx.listener(
