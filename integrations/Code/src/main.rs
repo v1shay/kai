@@ -5728,7 +5728,7 @@ impl Render for Orbit {
                             .flex()
                             .items_center()
                             .px_4()
-                            .gap_2()
+                            .gap_1()
                             .border_b_1()
                             .border_color(rgba(0xebebeb12))
                             .when(
@@ -5739,10 +5739,7 @@ impl Render for Orbit {
                                             && window.viewport_size().width < px(1180.))),
                                 |s| {
                                     s.child(
-                                        div()
-                                            .id("expand")
-                                            .debug_selector(|| "expand".into())
-                                            .cursor_pointer()
+                                        context_ui::header_control("expand", false)
                                             .child(icon("sidebar", 16., MUTED))
                                             .on_click(cx.listener(|this, _, _, cx| {
                                                 this.toggle_sidebar();
@@ -5787,14 +5784,7 @@ impl Render for Orbit {
                             )
                             .when(unified::active(), |s| {
                                 s.child(
-                                    div()
-                                        .id("return-to-notch")
-                                        .debug_selector(|| "return-to-notch".into())
-                                        .px_2()
-                                        .py_1()
-                                        .rounded_md()
-                                        .cursor_pointer()
-                                        .hover(|s| s.bg(rgba(GLASS_HOVER)))
+                                    context_ui::header_control("return-to-notch", false)
                                         .text_size(theme::ui_px(11.))
                                         .text_color(rgb(MUTED))
                                         .child("↗ Notch")
@@ -5803,54 +5793,10 @@ impl Render for Orbit {
                             })
                             .child(self.workspace_action_buttons(cx))
                             .child(
-                                div()
-                                    .id("toggle-files")
-                                    .debug_selector(|| "toggle-files".into())
-                                    .cursor_pointer()
-                                    .p_1()
-                                    .rounded_md()
-                                    .hover(|s| s.bg(rgba(GLASS_HOVER)))
+                                context_ui::header_control("toggle-files", self.files_visible)
                                     .child(self.file_indicator.clone())
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.toggle_files(window, cx)
-                                    })),
-                            )
-                            .child(
-                                div()
-                                    .id("chat-background")
-                                    .debug_selector(|| "chat-background".into())
-                                    .cursor_pointer()
-                                    .p_1()
-                                    .rounded_md()
-                                    .hover(|s| s.bg(rgba(GLASS_HOVER)))
-                                    .child(icon("file-image", 14., MUTED))
-                                    .on_click(cx.listener(
-                                        |this, event: &ClickEvent, window, cx| {
-                                            this.toggle_panel_from_click(
-                                                Modal::Background,
-                                                event.position() + point(px(-324.), px(20.)),
-                                                false,
-                                                window,
-                                                cx,
-                                            )
-                                        },
-                                    )),
-                            )
-                            .child(
-                                div()
-                                    .id("motion")
-                                    .cursor_pointer()
-                                    .p_1()
-                                    .rounded_md()
-                                    .hover(|s| s.bg(rgba(GLASS_HOVER)))
-                                    .child(icon(
-                                        "sparkles",
-                                        14.,
-                                        if self.motion { MUTED } else { 0x555555 },
-                                    ))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.motion = !this.motion;
-                                        cx.notify();
                                     })),
                             ),
                     )

@@ -114,3 +114,10 @@ performance measurements above apply to 0.12.0, not this unqualified hotfix.
 extended notch. Three focused dispatch regressions pass, including the last tab,
 empty draft retention and mini-window visibility. The native composer harness
 also verifies repeated Command-W cannot trigger double-Command dismissal.
+
+0.12.3 (40) gives every workspace header action the same 28-point rounded
+backing, faint outline, hover treatment and selected-state highlight. Header
+spacing is consistent. Wallpaper and motion toggles are removed from the header;
+Wallpaper remains in Settings and both actions remain in the command palette.
+Existing header toggle/outside-dismiss and wallpaper-settings tests pass.
+This appearance hotfix does not change surface morphs or wallpaper rendering.

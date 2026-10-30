@@ -13,6 +13,26 @@ pub(super) struct Pending {
     pub session: SessionSummary,
     pub title: String,
 }
+/// Shared backing keeps header controls legible over wallpaper without a solid toolbar.
+pub(super) fn header_control(id: &'static str, selected: bool) -> Stateful<Div> {
+    div()
+        .id(id)
+        .debug_selector(move || id.into())
+        .h(px(28.))
+        .min_w(px(28.))
+        .px(px(6.))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_md()
+        .border_1()
+        .border_color(rgba(if selected { 0xebebeb28 } else { 0xebebeb12 }))
+        .bg(rgba(if selected { 0xebebeb20 } else { 0xebebeb0e }))
+        .cursor_pointer()
+        .hover(|s| s.bg(rgba(0xebebeb24)).border_color(rgba(0xebebeb28)))
+}
+
 impl Orbit {
     pub(super) fn workspace_action_buttons(&self, cx: &Context<Self>) -> AnyElement {
         div()
@@ -20,87 +40,45 @@ impl Orbit {
             .items_center()
             .gap_1()
             .child(
-                div()
-                    .id("attach-chat-context")
-                    .debug_selector(|| "attach-chat-context".into())
-                    .p_1()
-                    .rounded_md()
-                    .cursor_pointer()
-                    .hover(|s| s.bg(rgba(GLASS_HOVER)))
+                header_control("attach-chat-context", self.context_picker.is_some())
                     .child(icon("paperclip", 14., MUTED))
                     .on_click(
                         cx.listener(|this, event:&ClickEvent, window, cx| this.toggle_top_control(control_clicks::Control::Context,event.position(),window,cx)),
                     ),
             )
             .child(
-                div()
-                    .id("attach-local-context")
-                    .debug_selector(|| "attach-local-context".into())
-                    .p_1()
-                    .rounded_md()
-                    .cursor_pointer()
-                    .hover(|s| s.bg(rgba(GLASS_HOVER)))
+                header_control("attach-local-context", self.file_context_picker.is_some())
                     .child(icon("file-code", 14., MUTED))
                     .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
                         this.toggle_top_control(control_clicks::Control::FileContext,event.position(),window,cx)
                     })),
             )
             .child(
-                div()
-                    .id("native-children")
-                    .debug_selector(|| "native-children".into())
-                    .p_1()
-                    .rounded_md()
-                    .cursor_pointer()
-                    .hover(|s| s.bg(rgba(GLASS_HOVER)))
+                header_control("native-children", self.broker_panel.is_some())
                     .child(icon("kai/status/agents", 14., MUTED))
                     .on_click(cx.listener(|this, _, window, cx| this.toggle_children(window, cx))),
             )
             .child(
-                div()
-                    .id("prompt-library")
-                    .debug_selector(|| "prompt-library".into())
-                    .p_1()
-                    .rounded_md()
-                    .cursor_pointer()
-                    .hover(|s| s.bg(rgba(GLASS_HOVER)))
+                header_control("prompt-library", self.prompt_library_picker.is_some())
                     .child(icon("file-document", 14., MUTED))
                     .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
                         this.toggle_top_control(control_clicks::Control::Prompts,event.position(),window,cx)
                     })),
             )
             .child(
-                div()
-                    .id("agent-teams")
-                    .debug_selector(|| "agent-teams".into())
-                    .p_1()
-                    .rounded_md()
-                    .cursor_pointer()
-                    .hover(|s| s.bg(rgba(GLASS_HOVER)))
+                header_control("agent-teams", self.team_panel.is_some())
                     .child(icon("branch", 14., MUTED))
                     .on_click(
                         cx.listener(|this, event:&ClickEvent, window, cx| this.toggle_top_control(control_clicks::Control::Teams,event.position(),window,cx)),
                     ),
             )
             .child(
-                div()
-                    .id("native-terminal")
-                    .debug_selector(|| "native-terminal".into())
-                    .p_1()
-                    .rounded_md()
-                    .cursor_pointer()
-                    .hover(|s| s.bg(rgba(GLASS_HOVER)))
+                header_control("native-terminal", self.terminal_visible)
                     .child(icon("terminal", 14., MUTED))
                     .on_click(cx.listener(|this, _, window, cx| this.toggle_terminal(window, cx))),
             )
             .child(
-                div()
-                    .id("task-timeline")
-                    .debug_selector(|| "task-timeline".into())
-                    .p_1()
-                    .rounded_md()
-                    .cursor_pointer()
-                    .hover(|s| s.bg(rgba(GLASS_HOVER)))
+                header_control("task-timeline", self.checkpoint_timeline.is_some())
                     .child(icon("clock", 14., MUTED))
                     .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
                         this.toggle_top_control(control_clicks::Control::Timeline,event.position(),window,cx)

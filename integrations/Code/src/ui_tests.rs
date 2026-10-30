@@ -837,21 +837,29 @@ fn collapsed_sidebar_has_a_visible_reopen_control(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn chat_background_control_opens_settings_and_preserves_the_draft(cx: &mut TestAppContext) {
+fn wallpaper_settings_remain_accessible_without_a_header_shortcut(cx: &mut TestAppContext) {
     let (view, cx) = fixture(cx);
     cx.simulate_input("keep this draft");
     draw_frame(&view, cx);
     for (control, expected) in [
         ("settings", Modal::Settings),
-        ("chat-background", Modal::Background),
+        ("wallpaper-settings", Modal::Background),
     ] {
+        if control == "wallpaper-settings" {
+            view.update(cx, |app, cx| {
+                app.appearance_search.as_ref().unwrap().clone().update(cx, |input, cx| {
+                    input.set_text("wallpaper", cx)
+                });
+            });
+            draw_frame(&view, cx);
+        }
         let button = cx.debug_bounds(control).unwrap();
         cx.simulate_click(button.center(), Modifiers::none());
         draw_frame(&view, cx);
         cx.update(|_, cx| assert!(view.read(cx).modal == Some(expected)));
-        cx.simulate_keystrokes("escape");
-        draw_frame(&view, cx);
     }
+    cx.simulate_keystrokes("escape");
+    draw_frame(&view, cx);
     assert_eq!(composer_text(&view, cx), "keep this draft");
     assert!(composer_focused(&view, cx));
 }
