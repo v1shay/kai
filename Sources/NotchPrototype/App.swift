@@ -631,12 +631,17 @@ private final class NotchSurfaceHost:NSView {
     }
 
     func performNativeKeyboardCommand(_ event:NSEvent)->Bool {
-        guard event.type == .keyDown,EmbeddedCodeRuntime.shared.active,miniOpen,panel.isKeyWindow,
-              (composerField.currentEditor() as? NSTextView)?.hasMarkedText() != true else{return false}
+        guard event.type == .keyDown,EmbeddedCodeRuntime.shared.active,miniOpen,panel.isKeyWindow else{return false}
         let flags=event.modifierFlags.intersection([.control,.shift,.command,.option])
         let prefix:String
-        switch flags{case [.control]:prefix="ctrl-";case [.control,.shift]:prefix="ctrl-shift-";case [.command,.shift]:prefix="cmd-shift-";default:return false}
+        switch flags{case [.control]:prefix="ctrl-";case [.control,.shift]:prefix="ctrl-shift-";case [.command]:prefix="cmd-";case [.command,.shift]:prefix="cmd-shift-";default:return false}
         guard let char=event.charactersIgnoringModifiers?.lowercased(),let command=EmbeddedCodeRuntime.shared.keyboardCommands.first(where:{$0.key==prefix+char}) else{return false}
+        if command.id != "close_tab",(composerField.currentEditor() as? NSTextView)?.hasMarkedText() == true{return false}
+        if flags.contains(.command){
+            // A Command shortcut is not a bare Command tap. Repeated Cmd-W
+            // must never also trigger the double-Command surface dismissal.
+            commandChordActive=true;commandDismissGesture.cancel();cancelShortcutHold();cancelWorkspaceHold();lastControlTap=0;cancelVoicePromptForKeypress()
+        }
         if command.id == "composer"{panel.makeFirstResponder(composerField)}
         else if miniUI.performKeyboardCommand(command.id){}
         else {bridge.send("ui_command",["command":command.id]);if ["terminal","files","changes","children","keyboard","projects","search","open_project"].contains(command.id){revealWorkspace()}}

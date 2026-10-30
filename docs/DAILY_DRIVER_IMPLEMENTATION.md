@@ -108,3 +108,9 @@ All 25 focused wallpaper regressions pass (one opt-in test ignored), including
 GIF playback, resize, settings and shutdown; the signed packaged dither probe
 also passed startup, native-notch wallpaper and surface transitions. The earlier
 performance measurements above apply to 0.12.0, not this unqualified hotfix.
+
+
+0.12.2 (39) maps Command-W to Close tab throughout Code, mini Code and the native
+extended notch. Three focused dispatch regressions pass, including the last tab,
+empty draft retention and mini-window visibility. The native composer harness
+also verifies repeated Command-W cannot trigger double-Command dismissal.

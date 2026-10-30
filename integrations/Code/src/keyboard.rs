@@ -8,6 +8,7 @@ pub struct Execute {
 pub const COMMANDS: &[(&str, &str, &str)] = &[
     ("ctrl-t", "new", "New chat"),
     ("ctrl-w", "close_tab", "Close tab"),
+    ("cmd-w", "close_tab", "Close tab"),
     ("ctrl-l", "composer", "Focus message"),
     ("ctrl-shift-l", "conversation", "Focus conversation"),
     ("ctrl-m", "model", "Choose agent and model"),
@@ -221,8 +222,25 @@ mod tests {
             })
         });
     }
+    #[gpui::test]
+    fn command_w_closes_tabs_and_keeps_the_workspace_and_empty_draft(cx:&mut TestAppContext){
+        let(view,cx)=crate::ui_tests::fixture(cx);
+        view.update(cx,|app,cx|{
+            let mut second=app.sessions[0].clone();second.id="second-tab".into();app.sessions.push(second);
+            app.open_tabs=vec!["fixture-session".into(),"second-tab".into()];app.active=Some("second-tab".into());
+            app.composer.update(cx,|input,cx|input.set_text("Preserved closed-tab draft",cx));cx.notify();
+        });
+        crate::ui_tests::draw_frame(&view,cx);
+        cx.simulate_keystrokes("cmd-w");
+        view.update(cx,|app,_|{assert_eq!(app.open_tabs,["fixture-session"]);assert_eq!(app.active.as_deref(),Some("fixture-session"));assert_eq!(app.drafts["second-tab"],"Preserved closed-tab draft");assert_eq!(app.sessions.len(),2);});
+        cx.simulate_keystrokes("cmd-w");
+        view.update(cx,|app,cx|{assert!(app.open_tabs.is_empty());assert!(app.active.is_none());app.composer.update(cx,|input,cx|input.set_text("Keep empty-tab draft",cx));});
+        cx.simulate_keystrokes("cmd-w cmd-w");
+        view.update(cx,|app,cx|{assert!(app.active.is_none());assert_eq!(app.composer.read(cx).text(),"Keep empty-tab draft");});
+        assert_eq!(cx.update(|_,cx|cx.windows().len()),1,"Cmd-W removed the Code window");
+    }
     #[test]
-    fn catalog_has_unique_simple_keys_and_ids_are_shared() {
+    fn command_w_and_catalog_use_unique_simple_keys() {
         let mut keys = std::collections::HashSet::new();
         for (key, id, label) in COMMANDS {
             assert!(keys.insert(key));
@@ -230,7 +248,7 @@ mod tests {
             let parts: Vec<_> = key.split('-').collect();
             assert!(matches!(
                 parts.as_slice(),
-                ["ctrl", _] | ["ctrl", "shift", _] | ["cmd", "shift", _]
+                ["ctrl", _] | ["ctrl", "shift", _] | ["cmd", _] | ["cmd", "shift", _]
             ));
         }
         assert_eq!(catalog().as_array().unwrap().len(), COMMANDS.len());

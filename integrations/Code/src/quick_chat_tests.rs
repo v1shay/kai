@@ -28,6 +28,13 @@ fn draw(panel: &Entity<quick_chat::QuickChat>, cx: &mut VisualTestContext) {
     });
 }
 #[gpui::test]
+fn command_w_keeps_mini_code_open_when_no_chat_tab_remains(cx:&mut TestAppContext){
+    let(orbit,panel,cx)=fixture(cx);
+    cx.simulate_keystrokes("cmd-w cmd-w");draw(&panel,cx);
+    cx.update(|_,cx|{assert!(panel.read(cx).is_visible());assert_eq!(panel.read(cx).composer.read(cx).text(),"Draft 🦀");assert_eq!(orbit.read(cx).composer.read(cx).text(),"Draft 🦀");});
+}
+
+#[gpui::test]
 fn repeated_mini_dismissal_cannot_overwrite_the_shared_code_or_notch_draft(cx:&mut TestAppContext){
     let(orbit,panel,cx)=fixture(cx);
     panel.update_in(cx,|panel,window,cx|panel.hide(window,cx));

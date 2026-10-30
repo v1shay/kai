@@ -50,3 +50,13 @@ permission-skip flag is installed. The hook is inactive after Kai's turn ends.
 
 The live verification used a hook only inside each disposable test project;
 existing global hooks, user conversations and permission lists were untouched.
+
+
+## Closing tabs
+
+Command-W and Control-W close the current chat tab. Closing the last tab leaves
+an empty Code workspace; Command-W on an empty workspace preserves its draft.
+Saved chats and drafts remain available. Mini Code and the extended notch route
+Command-W to that same tab command; repeated chords cannot become a bare double-
+Command dismissal. This mapping is local to Kai. Command-Q still quits and bare
+double-Command still dismisses the unified surface.

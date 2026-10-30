@@ -5670,7 +5670,7 @@ impl Render for Orbit {
             }))
             .on_action(cx.listener(|this, _: &Send, window, cx| this.send(window, cx)))
             .on_action(cx.listener(|this, _: &CloseWindow, window, cx| {
-                if unified::active(){unified::dismiss();return}
+                if unified::active(){this.execute_shortcut("close_tab",window,cx);return}
                 this.stop_dictation(cx);
                 this.stop_voice(cx);
                 this.window_state = Some(workspace_ui::capture_window(window));
@@ -6154,7 +6154,7 @@ fn bind_app_keys(cx: &mut App) {
     keyboard::bind(cx);
     cx.bind_keys([
         KeyBinding::new("cmd-q", Quit, None),
-        KeyBinding::new("cmd-w", CloseWindow, None),
+        KeyBinding::new("cmd-w", keyboard::Execute{id:"close_tab".into()}, None),
         KeyBinding::new("cmd-m", MinimizeWindow, None),
         KeyBinding::new("cmd-n", NewConversation, None),
         KeyBinding::new("cmd-t", NewConversation, None),

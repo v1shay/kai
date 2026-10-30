@@ -58,7 +58,7 @@ private func auditCommand(_ bytes:UnsafePointer<UInt8>?,_ count:Int)->Bool{guard
   let staleMenu=ui.permissionMenu()!,full=staleMenu.items.first{$0.title=="Full access"}!
   _=NSApp.sendAction(full.action!,to:full.target,from:full);precondition(commands.last?["access"] as? String == "full" && commands.last?["approvals"] == nil,"Sandbox symbol coupled access to approvals")
   owner="another-owner";runtime.receive(packet("workspace","gpt-6.1-terra"));pump(0.1);let after=commands.count;_ = choice.accessibilityPerformPress();_ = NSApp.sendAction(full.action!,to:full.target,from:full);precondition(commands.count==after,"Stale thinking option or permission menu changed another chat")
-  runtime.receive(try JSONSerialization.data(withJSONObject:["type":"keyboardCatalog","commands":[["key":"ctrl-l","id":"composer","label":"Focus message"],["key":"ctrl-t","id":"new","label":"New chat"]]]))
+  runtime.receive(try JSONSerialization.data(withJSONObject:["type":"keyboardCatalog","commands":[["key":"ctrl-l","id":"composer","label":"Focus message"],["key":"ctrl-t","id":"new","label":"New chat"],["key":"cmd-w","id":"close_tab","label":"Close tab"]]]))
   let nativePanel=member(app,"panel") as! NSPanel
   nativePanel.makeKeyAndOrderFront(nil);pump(0.1)
   let focusKey=NSEvent.keyEvent(with:.keyDown,location:.zero,modifierFlags:.control,timestamp:0,windowNumber:nativePanel.windowNumber,context:nil,characters:"l",charactersIgnoringModifiers:"l",isARepeat:false,keyCode:37)!
@@ -67,6 +67,14 @@ private func auditCommand(_ bytes:UnsafePointer<UInt8>?,_ count:Int)->Bool{guard
   let newKey=NSEvent.keyEvent(with:.keyDown,location:.zero,modifierFlags:.control,timestamp:0,windowNumber:nativePanel.windowNumber,context:nil,characters:"t",charactersIgnoringModifiers:"t",isARepeat:false,keyCode:17)!
   precondition(app.performNativeKeyboardCommand(newKey),"Native catalog did not route new chat")
   precondition(commands.last?["action"] as? String == "ui_command" && commands.last?["command"] as? String == "new" && commands.last?["draft"] as? String == "Preserve keyboard draft","Native keyboard navigation lost its draft or bypassed shared dispatch")
+  let closeKey=NSEvent.keyEvent(with:.keyDown,location:.zero,modifierFlags:.command,timestamp:0,windowNumber:nativePanel.windowNumber,context:nil,characters:"w",charactersIgnoringModifiers:"w",isARepeat:false,keyCode:13)!
+  let release=NSEvent.keyEvent(with:.flagsChanged,location:.zero,modifierFlags:[],timestamp:0,windowNumber:nativePanel.windowNumber,context:nil,characters:"",charactersIgnoringModifiers:"",isARepeat:false,keyCode:55)!
+  for _ in 0..<2{
+   precondition(app.performNativeKeyboardCommand(closeKey),"Cmd-W did not reach the tab owner")
+   precondition(commands.last?["command"] as? String=="close_tab","Cmd-W routed to window dismissal")
+   app.flags(release)
+   precondition(nativePanel.isVisible,"Repeated Cmd-W triggered double-Command dismissal")
+  }
   var contextPacket=try JSONSerialization.jsonObject(with:packet("workspace","gpt-6.1-sol")) as! [String:Any]
   contextPacket["contextWindow"]=["used":64000,"limit":128000,"fraction":0.5]
   runtime.receive(try JSONSerialization.data(withJSONObject:contextPacket));pump(0.1)
