@@ -13,7 +13,7 @@ pub(super) struct Pending {
     pub session: SessionSummary,
     pub title: String,
 }
-/// Shared backing keeps header controls legible over wallpaper without a solid toolbar.
+/// Borderless white header controls share a stable hit target and hover emphasis.
 pub(super) fn header_control(id: &'static str, selected: bool) -> Stateful<Div> {
     div()
         .id(id)
@@ -25,64 +25,61 @@ pub(super) fn header_control(id: &'static str, selected: bool) -> Stateful<Div> 
         .flex()
         .items_center()
         .justify_center()
-        .rounded_md()
-        .border_1()
-        .border_color(rgba(if selected { 0xebebeb28 } else { 0xebebeb12 }))
-        .bg(rgba(if selected { 0xebebeb20 } else { 0xebebeb0e }))
+        .text_color(gpui::rgb(0xffffff))
+        .opacity(if selected { 1. } else { 0.85 })
         .cursor_pointer()
-        .hover(|s| s.bg(rgba(0xebebeb24)).border_color(rgba(0xebebeb28)))
+        .hover(|s| s.opacity(1.))
+}
+fn header_icon(name: &'static str) -> Svg {
+    icon(name, 14., TEXT).text_color(gpui::rgb(0xffffff))
 }
 
 impl Orbit {
+    fn chat_has_subagents(&self) -> bool {
+        self.active.as_ref().is_some_and(|id| self.subagent_chats.contains(id))
+    }
     pub(super) fn workspace_action_buttons(&self, cx: &Context<Self>) -> AnyElement {
+        let has_children = self.chat_has_subagents();
         div()
             .flex()
             .items_center()
-            .gap_1()
-            .child(
-                header_control("attach-chat-context", self.context_picker.is_some())
-                    .child(icon("paperclip", 14., MUTED))
-                    .on_click(
-                        cx.listener(|this, event:&ClickEvent, window, cx| this.toggle_top_control(control_clicks::Control::Context,event.position(),window,cx)),
-                    ),
-            )
-            .child(
-                header_control("attach-local-context", self.file_context_picker.is_some())
-                    .child(icon("file-code", 14., MUTED))
-                    .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
-                        this.toggle_top_control(control_clicks::Control::FileContext,event.position(),window,cx)
-                    })),
-            )
-            .child(
-                header_control("native-children", self.broker_panel.is_some())
-                    .child(icon("kai/status/agents", 14., MUTED))
-                    .on_click(cx.listener(|this, _, window, cx| this.toggle_children(window, cx))),
-            )
-            .child(
-                header_control("prompt-library", self.prompt_library_picker.is_some())
-                    .child(icon("file-document", 14., MUTED))
-                    .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
-                        this.toggle_top_control(control_clicks::Control::Prompts,event.position(),window,cx)
-                    })),
-            )
+            .when(has_children, |s| {
+                let button = div()
+                    .debug_selector(|| "header-subagents-reveal".into())
+                    .flex_none()
+                    .h(px(28.))
+                    .w(px(32.))
+                    .overflow_hidden()
+                    .child(
+                        header_control("native-children", self.broker_panel.is_some())
+                            .child(header_icon("kai/status/agents"))
+                            .on_click(cx.listener(|this, _, window, cx| this.toggle_children(window, cx))),
+                    );
+                if self.motion && !native::reduced_motion() {
+                    s.child(button.with_animation(
+                        ("header-subagents", self.generation),
+                        Animation::new(Duration::from_millis(280)),
+                        |s, progress| {
+                            let eased = 1. - (1. - progress).powi(3);
+                            s.w(px(32. * eased)).opacity(eased)
+                        },
+                    ))
+                } else {
+                    s.child(button)
+                }
+            })
             .child(
                 header_control("agent-teams", self.team_panel.is_some())
-                    .child(icon("branch", 14., MUTED))
-                    .on_click(
-                        cx.listener(|this, event:&ClickEvent, window, cx| this.toggle_top_control(control_clicks::Control::Teams,event.position(),window,cx)),
-                    ),
+                    .mr(px(4.))
+                    .child(header_icon("branch"))
+                    .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
+                        this.toggle_top_control(control_clicks::Control::Teams, event.position(), window, cx)
+                    })),
             )
             .child(
                 header_control("native-terminal", self.terminal_visible)
-                    .child(icon("terminal", 14., MUTED))
+                    .child(header_icon("terminal"))
                     .on_click(cx.listener(|this, _, window, cx| this.toggle_terminal(window, cx))),
-            )
-            .child(
-                header_control("task-timeline", self.checkpoint_timeline.is_some())
-                    .child(icon("clock", 14., MUTED))
-                    .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
-                        this.toggle_top_control(control_clicks::Control::Timeline,event.position(),window,cx)
-                    })),
             )
             .into_any_element()
     }
@@ -497,5 +494,55 @@ mod regressions {
             assert!(app.notice.as_deref().unwrap().contains("Too many drafts"));
             assert!(!app.chat_context.contains_key(&app.context_scope()));
         });
+    }
+}
+
+#[cfg(test)]
+mod header_tests {
+    use super::*;
+    use std::prelude::v1::test;
+    #[gpui::test]
+    fn subagent_header_tracks_chat_history_and_hides_unused_controls(cx: &mut TestAppContext) {
+        let (view, cx) = crate::ui_tests::fixture(cx);
+        crate::ui_tests::draw_frame(&view, cx);
+        for removed in ["native-children", "attach-chat-context", "attach-local-context", "prompt-library", "task-timeline"] {
+            assert!(cx.debug_bounds(removed).is_none(), "{removed} should be absent");
+        }
+        assert!(cx.debug_bounds("chat-background").is_some());
+        view.update(cx, |app, cx| {
+            app.active = Some("fixture-session".into());
+            app.rows = vec![Row {
+                role: Some("assistant:codex".into()),
+                block: MessageBlock::Interaction(chat_interactions::ChatInteraction::Delegation {
+                    title: "Inspect the code".into(),
+                    details: "Completed delegated inspection".into(),
+                    status: chat_interactions::InteractionStatus::Completed,
+                    agent: Some("child-one".into()),
+                }),
+            }];
+            cx.notify();
+        });
+        crate::ui_tests::draw_frame(&view, cx);
+        assert!(cx.debug_bounds("native-children").is_some(), "Historical/completed delegation reveals the button");
+        view.update(cx, |app, cx| {
+            app.active = None;
+            app.rows.clear();
+            cx.notify();
+        });
+        crate::ui_tests::draw_frame(&view, cx);
+        view.update(cx, |app, _| assert!(!app.chat_has_subagents(), "A new chat cannot inherit the button"));
+        view.update(cx, |app, cx| {
+            app.active = Some("unrelated-chat".into());
+            cx.notify();
+        });
+        crate::ui_tests::draw_frame(&view, cx);
+        view.update(cx, |app, _| assert!(!app.chat_has_subagents(), "Other chats remain unaffected"));
+        view.update(cx, |app, cx| {
+            app.active = Some("fixture-session".into());
+            app.motion = true;
+            cx.notify();
+        });
+        crate::ui_tests::draw_frame(&view, cx);
+        assert!(cx.debug_bounds("header-subagents-reveal").is_some(), "Returning to a used chat keeps its animated affordance after page eviction");
     }
 }

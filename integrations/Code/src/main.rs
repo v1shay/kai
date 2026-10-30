@@ -603,6 +603,7 @@ struct Orbit {
     broker_refreshing: bool,
     broker_dirty: bool,
     broker_children: HashMap<String, usize>,
+    subagent_chats: HashSet<String>,
     broker_project: PathBuf,
     file_context_picker: Option<file_context_ui::Picker>,
     prompt_library_picker: Option<prompt_library_ui::Picker>,
@@ -1157,6 +1158,7 @@ impl Orbit {
             broker_refreshing: false,
             broker_dirty: false,
             broker_children: HashMap::new(),
+            subagent_chats: HashSet::new(),
             broker_project: PathBuf::new(),
             file_context_picker: None,
             prompt_library_picker: None,
@@ -5740,7 +5742,7 @@ impl Render for Orbit {
                                 |s| {
                                     s.child(
                                         context_ui::header_control("expand", false)
-                                            .child(icon("sidebar", 16., MUTED))
+                                            .child(icon("sidebar", 16., TEXT).text_color(gpui::rgb(0xffffff)))
                                             .on_click(cx.listener(|this, _, _, cx| {
                                                 this.toggle_sidebar();
                                                 cx.notify();
@@ -5786,7 +5788,7 @@ impl Render for Orbit {
                                 s.child(
                                     context_ui::header_control("return-to-notch", false)
                                         .text_size(theme::ui_px(11.))
-                                        .text_color(rgb(MUTED))
+                                        .text_color(gpui::rgb(0xffffff))
                                         .child("↗ Notch")
                                         .on_click(|_, _, _| unified::collapse()),
                                 )
@@ -5797,6 +5799,19 @@ impl Render for Orbit {
                                     .child(self.file_indicator.clone())
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.toggle_files(window, cx)
+                                    })),
+                            )
+                            .child(
+                                context_ui::header_control("chat-background", self.modal == Some(Modal::Background))
+                                    .child(icon("file-image", 14., TEXT).text_color(gpui::rgb(0xffffff)))
+                                    .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
+                                        this.toggle_panel_from_click(
+                                            Modal::Background,
+                                            event.position() + point(px(-324.), px(20.)),
+                                            false,
+                                            window,
+                                            cx,
+                                        )
                                     })),
                             ),
                     )

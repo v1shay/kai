@@ -121,3 +121,13 @@ spacing is consistent. Wallpaper and motion toggles are removed from the header;
 Wallpaper remains in Settings and both actions remain in the command palette.
 Existing header toggle/outside-dismiss and wallpaper-settings tests pass.
 This appearance hotfix does not change surface morphs or wallpaper rendering.
+
+0.12.4 (41) replaces the boxed toolbar treatment with white, borderless icons.
+The header removes chat-context attachment, local-file context, prompt library
+and timeline shortcuts, and restores wallpaper. Those removed header functions
+remain available through the command palette. Sub-agents reveal with a finite
+280 ms width/fade entrance only for chats with observed or historical delegation;
+the affordance remains after completion and does not leak into new/other chats.
+Reduced motion skips the entrance. Eight focused checks pass across historical
+sub-agent visibility, header toggles/outside dismissal, transcript folding and
+wallpaper settings. Surface morphs are unchanged.

@@ -46,11 +46,8 @@ mod tests {
             });
             for (selector, control) in [
                 ("mode", Control::Panel(Modal::Permissions)),
-                ("attach-chat-context", Control::Context),
-                ("attach-local-context", Control::FileContext),
-                ("prompt-library", Control::Prompts),
                 ("agent-teams", Control::Teams),
-                ("task-timeline", Control::Timeline),
+                ("chat-background", Control::Panel(Modal::Background)),
             ] {
                 crate::ui_tests::click_selector(cx, selector);
                 cx.run_until_parked();
@@ -79,13 +76,13 @@ mod tests {
                     assert!(!open(app, control), "{selector} ignored an outside click")
                 });
             }
-            crate::ui_tests::click_selector(cx, "attach-chat-context");
+            crate::ui_tests::click_selector(cx, "agent-teams");
             cx.run_until_parked();
-            crate::ui_tests::click_selector(cx, "prompt-library");
+            crate::ui_tests::click_selector(cx, "chat-background");
             cx.run_until_parked();
             view.update(cx, |app, _| {
-                assert!(app.context_picker.is_none());
-                assert!(app.prompt_library_picker.is_some());
+                assert!(app.team_panel.is_none());
+                assert!(app.modal == Some(Modal::Background));
             });
             cx.simulate_click(point(px(5.), px(500.)), Modifiers::none());
             cx.run_until_parked();

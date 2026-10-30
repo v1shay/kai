@@ -223,6 +223,12 @@ impl Orbit {
                     let event=(crate::unified::child_id(child),child.turn_id.clone().unwrap_or_else(||child.id.clone()));
                     if !this.unified_successes.contains(&event){if this.unified_successes.len()>=128{this.unified_successes.pop_front();}this.unified_successes.push_back(event);}
                 }
+                // Keep the affordance after completion, scoped to the owning chat.
+                for child in &children {
+                    if let Some(owner) = this.child_owner(child, &children).map(|s| s.id.clone()) {
+                        this.subagent_chats.insert(owner);
+                    }
+                }
                 this.unified_children=children.clone();
                 for child in children.iter().filter(|c| c.connected) {
                     let owner = this.child_owner(child, &children).map(|s| s.id.clone());

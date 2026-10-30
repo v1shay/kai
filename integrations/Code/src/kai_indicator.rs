@@ -1052,7 +1052,7 @@ impl Render for KaiFileGlyph {
                     path.line_to(point_for(vertices[b]));
                 }
                 if let Ok(path) = path.build() {
-                    window.paint_path(path, rgb(0xd5d6d8));
+                    window.paint_path(path, gpui::rgb(0xffffff));
                 }
                 for [x, y] in vertices {
                     let cap = Pose {
@@ -1067,7 +1067,7 @@ impl Render for KaiFileGlyph {
                         line_width: 1.6,
                     };
                     if let Ok(path) = pose_path(cap, origin, scale).build() {
-                        window.paint_path(path, rgb(0xd5d6d8));
+                        window.paint_path(path, gpui::rgb(0xffffff));
                     }
                 }
             },

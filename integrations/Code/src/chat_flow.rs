@@ -2,13 +2,13 @@
 use super::{Row,MessageBlock,chat_interactions::{ChatInteraction,Speaker,InteractionStatus}};
 use std::ops::Range;
 #[derive(Default,Clone,Debug,PartialEq,Eq)]
-pub(super) struct Index {pub work:Vec<Option<Range<usize>>>,pub commands:Vec<Option<Range<usize>>>,pub hidden:Vec<bool>}
+pub(super) struct Index {pub work:Vec<Option<Range<usize>>>,pub commands:Vec<Option<Range<usize>>>,pub hidden:Vec<bool>,pub has_subagents:bool}
 impl Index {
  pub fn new(rows:&[Row])->Self{Self::for_transcript(rows,false,None)}
  pub fn for_transcript(rows:&[Row],settled:bool,live_start:Option<usize>)->Self{
-  let mut out=Self{work:vec![None;rows.len()],commands:vec![None;rows.len()],hidden:vec![false;rows.len()]};
+  let mut out=Self{work:vec![None;rows.len()],commands:vec![None;rows.len()],hidden:vec![false;rows.len()],has_subagents:false};
   let mut at=0;while at<rows.len(){if let Some(span)=command_span(rows,at){for i in span.clone(){out.commands[i]=Some(span.clone())}at=span.end}else{at+=1}}
-  let mut starts=vec![0];for i in 0..rows.len(){if starts_turn(&rows[i])&&i>0{starts.push(i)}}starts.push(rows.len());
+  let mut starts=vec![0];for i in 0..rows.len(){if matches!(&rows[i].block,MessageBlock::Interaction(ChatInteraction::Delegation{agent:Some(_),..})){out.has_subagents=true;}if starts_turn(&rows[i])&&i>0{starts.push(i)}}starts.push(rows.len());
   for bounds in starts.windows(2){
    let begin=bounds[0];let end=bounds[1];if begin==end{continue}
    let body=(begin..end).find(|i|!user(&rows[*i])&&!matches!(rows[*i].block,MessageBlock::Attachment{..})).unwrap_or(end);if body==end{continue}

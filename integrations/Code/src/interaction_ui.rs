@@ -55,7 +55,9 @@ impl Orbit {
         for(ix,row)in self.rows.iter().enumerate(){if let MessageBlock::Interaction(ChatInteraction::NativeRequest(request))=&row.block{if self.native_pending.values().any(|p|p.current(&self.runs)&&p.request_id()==request.id){if let Some(span)=flow.work[ix].clone(){for i in span{flow.work[i]=None;}}flow.hidden[ix]=false;}}}flow
     }
     pub(super) fn sync_flow_layout(&mut self)->bool{
-        let next=self.transcript_flow();if next==self.flow_index{return false}
+        let next=self.transcript_flow();
+        if next.has_subagents && let Some(id)=&self.active { self.subagent_chats.insert(id.clone()); }
+        if next==self.flow_index{return false}
         let anchor=self.list.logical_scroll_top();self.flow_index=next;self.flow_revision=self.flow_revision.wrapping_add(1);
         self.list.reset(self.rows.len());
         if self.following_bottom{self.list.scroll_to(ListOffset{item_ix:self.rows.len(),offset_in_item:px(0.)});}
