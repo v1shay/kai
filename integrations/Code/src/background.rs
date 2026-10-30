@@ -260,13 +260,27 @@ impl ChatBackground {
                 empty,
                 viewport,
             } if generation == self.generation => {
-                self.clear_image(cx);
                 self.settings = settings;
+                self.busy = false;
+                self.error = None;
+                // An unmeasured or superseded crop changes the apparent size
+                // of pixel effects when stretched, then snaps on the next
+                // Ready. Publish only the current layout to Code and the notch.
+                // Retain an existing good frame while a resize is in flight.
+                if self.settings.path.is_some()
+                    && (viewport.is_none() || viewport != self.viewport || empty != self.empty)
+                {
+                    if self.viewport.is_some() {
+                        if self.image.is_none() || empty != self.empty {self.prepare(cx)}
+                        else {self.schedule_resize(cx)}
+                    }
+                    self.changed(cx);
+                    return;
+                }
+                self.clear_image(cx);
                 self.image = image;
                 self.animated = animated;
                 self.prepared_viewport = viewport;
-                self.busy = false;
-                self.error = None;
                 let _ = self.tx.send(Command::Active((self.active || self.native_active) && self.visible()));
                 if self.empty != empty && self.settings.path.is_some() {
                     self.prepare(cx);
@@ -277,7 +291,7 @@ impl ChatBackground {
                     self.changed(cx);
                 }
             }
-            Event::Frame(generation, image) if generation == self.generation => {
+            Event::Frame(generation, image) if generation == self.generation && self.prepared_viewport.is_some() => {
                 self.clear_image(cx);
                 self.image = Some(image);
                 cx.notify();
@@ -406,10 +420,12 @@ impl ChatBackground {
         if self.quitting || self.viewport == Some(viewport) {
             return;
         }
+        let first_layout=self.viewport.is_none();
         self.viewport = Some(viewport);
         self.resized_at = Instant::now();
         if self.settings.path.is_some() {
-            self.schedule_resize(cx);
+            if first_layout && !self.busy {self.prepare(cx)}
+            else {self.schedule_resize(cx)}
         }
     }
     fn schedule_resize(&mut self, cx: &mut Context<Self>) {
@@ -3013,6 +3029,9 @@ mod tests {
         let bounds = cx.debug_bounds("chat-background-artwork").unwrap();
         assert_eq!(bounds.size.width, gpui::px(500.));
         assert_eq!(bounds.size.height, gpui::px(350.));
+        // This fixture injects an already decoded image without a worker.
+        // Mark it prepared for the measured canvas before exercising controls.
+        view.update(cx,|this,_|{this.prepared_viewport=this.viewport;this.busy=false;});
         // The same controls fit inside the anchored wallpaper dropdown without
         // clipping the preview, effects, scope, or either opacity track.
         struct SettingsPanel(gpui::Entity<super::ChatBackground>);
@@ -3112,6 +3131,34 @@ mod tests {
                 this.empty = false;
                 assert!(!this.visible());
             })
+        });
+    }
+    #[gpui::test]
+    fn opening_never_publishes_an_unmeasured_or_stale_effect_bitmap(cx:&mut gpui::TestAppContext){
+        use gpui::Bounds;
+        use std::{cell::Cell,rc::Rc,time::Instant};
+        let(tx,rx)=mpsc::channel();
+        let(view,cx)=cx.add_window_view(move|_,_|super::ChatBackground{
+            project:PathBuf::from("/project"),generation:1,settings:Settings::default(),image:None,
+            empty:true,active:true,native_active:false,busy:true,quitting:false,error:None,animated:false,tx,
+            empty_bounds:Rc::new(Cell::new(Bounds::default())),session_bounds:Rc::new(Cell::new(Bounds::default())),
+            viewport:Some((1400,800)),prepared_viewport:None,measured_viewport:Rc::new(Cell::new(None)),
+            resized_at:Instant::now(),resize_pending:false,
+        });
+        let settings=Settings{path:Some(PathBuf::from("/managed/image.png")),..Settings::default()};
+        let wrong=super::render_image(RgbaImage::from_pixel(32,64,Rgba([0,0,255,255])),Effect::Dither,true);
+        let correct=super::render_image(RgbaImage::from_pixel(140,80,Rgba([255,0,0,255])),Effect::Dither,true);
+        view.update(cx,|this,cx|{
+            for _ in rx.try_iter(){}
+            this.viewport=Some((1400,800));
+            this.receive(super::Event::Ready{generation:1,settings:settings.clone(),image:Some(wrong.clone()),animated:false,empty:true,viewport:None},cx);
+            assert!(this.image.is_none());assert!(this.native_surface().is_none());
+            assert!(matches!(rx.try_recv().unwrap(),Command::Configure(super::Config{viewport:Some((1400,800)),..})));
+            let generation=this.generation;
+            this.receive(super::Event::Ready{generation,settings:settings.clone(),image:Some(correct.clone()),animated:false,empty:true,viewport:Some((1400,800))},cx);
+            assert!(Arc::ptr_eq(this.image.as_ref().unwrap(),&correct));assert!(this.native_surface().is_some());
+            this.receive(super::Event::Ready{generation,settings,image:Some(wrong),animated:false,empty:true,viewport:Some((800,500))},cx);
+            assert!(Arc::ptr_eq(this.image.as_ref().unwrap(),&correct),"A late crop must not replace the fine-grained frame");
         });
     }
     #[gpui::test]

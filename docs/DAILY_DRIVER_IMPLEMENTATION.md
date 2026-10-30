@@ -99,3 +99,12 @@ Use Command-Q and reopen to load the new executable.
 Installed at `/Users/vishayagarwal/Documents/ChatGPT/notchdex/.build/Kai Unified.app`.
 Previous bundle: `Kai Unified-0.11.3-36-backup-20261029-175245.app` in the same directory.
 Finder/Shortcuts Launch Services registration completed; the running app was not restarted.
+
+
+0.12.1 (38) fixes opening-time wallpaper grain changes: unmeasured/stale effect
+crops cannot replace the current frame, and the first measured canvas prepares
+without the interactive-resize debounce. No morph timing or geometry changed.
+All 25 focused wallpaper regressions pass (one opt-in test ignored), including
+GIF playback, resize, settings and shutdown; the signed packaged dither probe
+also passed startup, native-notch wallpaper and surface transitions. The earlier
+performance measurements above apply to 0.12.0, not this unqualified hotfix.

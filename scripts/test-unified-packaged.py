@@ -5,7 +5,7 @@ from pathlib import Path
 
 def main():
     parser=argparse.ArgumentParser()
-    parser.add_argument('mode',choices=['glass','startup-workspace','startup-extended','startup-compact','performance','latency','background-idle'])
+    parser.add_argument('mode',choices=['wallpaper','glass','startup-workspace','startup-extended','startup-compact','performance','latency','background-idle'])
     args=parser.parse_args();mode=args.mode
     root=Path(__file__).resolve().parent.parent
     source=root/'.build/unified/Kai Unified.app'
@@ -19,7 +19,9 @@ def main():
         # A visible extended chat is foreground UI work. Measure the actual
         # compact native surface with the Code window hidden for this budget.
         flags+=['--unified-startup-probe'];marker='KAI_STARTUP_PROBE_OK';env['KAI_STARTUP_SURFACE']='compact';env['KAI_STARTUP_WAIT_MS']='30000'
-    elif mode=='glass':flags+=['--unified-glass-probe'];marker='Kai unified smoke: continuous morph reversal'
+    elif mode in {'glass','wallpaper'}:
+        flags+=['--unified-glass-probe' if mode=='glass' else '--unified-wallpaper-probe'];marker='Kai unified smoke: continuous morph reversal'
+        if mode=='wallpaper':env['KAI_VALIDATION_BACKGROUND_SOURCE']=str(root/'integrations/Code/assets/wallpapers/bonsai-sakura.png')
     else:
         flags+=['--unified-startup-probe'];marker='KAI_STARTUP_PROBE_OK'
         if mode!='performance':env['KAI_STARTUP_SURFACE']=mode.removeprefix('startup-')
@@ -40,8 +42,16 @@ def main():
         env['KAI_LAUNCH_ORIGIN_UNIX_NS']=str(time.time_ns())
         with log.open('w') as output:
             command=[str(app/'Contents/MacOS'/executable),*flags]
-            if env.get('KAI_VALIDATION_FIXTURE'):
-                prepare="import os,sys,json,tempfile;from pathlib import Path;p=Path(tempfile.gettempdir())/('kai-unified-smoke-'+str(os.getpid()));p.mkdir(exist_ok=True);(p/'workspace.json').write_text(os.environ['KAI_VALIDATION_FIXTURE']);os.execve(sys.argv[1],sys.argv[1:],os.environ)"
+            if env.get('KAI_VALIDATION_FIXTURE') or env.get('KAI_VALIDATION_BACKGROUND_SOURCE'):
+                prepare="""import os,sys,json,tempfile,shutil
+from pathlib import Path
+p=Path(tempfile.gettempdir())/('kai-unified-smoke-'+str(os.getpid()));p.mkdir(exist_ok=True)
+(p/'workspace.json').write_text(os.environ.get('KAI_VALIDATION_FIXTURE','{}'))
+if os.environ.get('KAI_VALIDATION_BACKGROUND_SOURCE'):
+ b=p/'backgrounds';b.mkdir(exist_ok=True);source=b/'probe.png';shutil.copy2(os.environ['KAI_VALIDATION_BACKGROUND_SOURCE'],source)
+ (b/'global.json').write_text(json.dumps({'path':str(source),'effect':'dither','everywhere':True}))
+os.execve(sys.argv[1],sys.argv[1:],os.environ)
+"""
                 command=['/usr/bin/python3','-c',prepare,*command]
             process=subprocess.Popen(command,env=env,stdout=output,stderr=subprocess.STDOUT,start_new_session=True)
             try:
