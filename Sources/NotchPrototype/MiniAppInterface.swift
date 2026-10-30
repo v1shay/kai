@@ -11,7 +11,7 @@ private final class CenteredComposerTextLayer:CATextLayer {
         let face=(font as? NSFont) ?? AppTypography.ui(ofSize:fontSize)
         let attributes:[NSAttributedString.Key:Any]=[.font:face,.foregroundColor:NSColor(cgColor:foregroundColor ?? NSColor.white.cgColor) ?? .white]
         var line=CTLineCreateWithAttributedString(NSAttributedString(string:text,attributes:attributes))
-        if CTLineGetTypographicBounds(line,nil,nil,nil)>Double(bounds.width){let token=CTLineCreateWithAttributedString(NSAttributedString(string:"…",attributes:attributes));line=CTLineCreateTruncatedLine(line,Double(bounds.width),.end,token) ?? line}
+        if CTLineGetTypographicBounds(line,nil,nil,nil)>Double(bounds.width){let token=CTLineCreateWithAttributedString(NSAttributedString(string:"…",attributes:attributes));line=CTLineCreateTruncatedLine(line,Double(bounds.width),truncationMode == .middle ? .middle:truncationMode == .start ? .start:.end,token) ?? line}
         var ascent:CGFloat=0,descent:CGFloat=0,leading:CGFloat=0;_ = CTLineGetTypographicBounds(line,&ascent,&descent,&leading)
         let ink=CTLineGetBoundsWithOptions(line,.useGlyphPathBounds);let baseline=ink.isEmpty ? (bounds.height-ascent-descent)/2+descent:(bounds.height-ink.height)/2-ink.minY
         context.saveGState();context.textMatrix = .identity;context.textPosition=CGPoint(x:0,y:baseline);CTLineDraw(line,context);context.restoreGState()
@@ -254,7 +254,7 @@ private final class AttachmentLayer:CALayer {
     var onOrchestrator:(()->Void)?
     var onUsageRefresh:(()->Void)?
     private let composerPopover=ComposerGlassPopover()
-    private let effortLabel=CATextLayer(),fastBolt=CALayer(),usageLabel=CenteredComposerTextLayer(),usageTrack=CALayer(),usageFill=CALayer()
+    private let effortLabel=CenteredComposerTextLayer(),fastBolt=CALayer(),usageLabel=CenteredComposerTextLayer(),usageTrack=CALayer(),usageFill=CALayer()
     private var fastWasOn:Bool?
     private let effortShimmer=EffortTileLayer(),fastShimmer=EffortTileLayer()
     private let fastTint=CAGradientLayer(),orchestratorChip=CALayer(),orchestratorShimmer=EffortTileLayer(),orchestratorGlyph=CALayer()
@@ -270,8 +270,10 @@ private final class AttachmentLayer:CALayer {
     var onVoice:(()->Void)?
     var onFocusComposer:(()->Void)?
     var onPendingTimeout:((String)->Void)?
-    private let permissionGlyph=CAGradientLayer(),permissionMask=CALayer(),modelChip=CALayer(),modelIcon=CALayer(),modelName=CATextLayer(),effortChip=CALayer(),effortFill=CAGradientLayer(),effortThumb=CALayer()
+    private let permissionGlyph=CAGradientLayer(),permissionMask=CALayer(),modelChip=CALayer(),modelIcon=CALayer(),modelName=CenteredComposerTextLayer(),effortChip=CALayer(),effortFill=CAGradientLayer(),effortThumb=CALayer()
     private var composerControlKey=[String](),composerHits=[(CGRect,String)]()
+    // All visible glyphs and optical text centers share this footer rail.
+    private let composerControlsCenterY:CGFloat=14.5
     private var usesUnifiedComposer:Bool{EmbeddedCodeRuntime.shared.active || modelState?.workspaceAccess != nil}
     private let voiceWaveform=CALayer()
     private let voiceButton=CATextLayer()
@@ -469,7 +471,7 @@ private final class AttachmentLayer:CALayer {
             texts.first?.string="type or hold";texts.first?.frame=CGRect(x:11,y:8,width:55,height:11);command.frame=CGRect(x:68,y:5,width:61,height:18);command.sublayers?.first?.frame=CGRect(x:4,y:4,width:54,height:10)
             if texts.count>1{texts[1].string=composerW>=230 ? "to speak":"";texts[1].frame=CGRect(x:134,y:8,width:43,height:11)}
         }
-        setFrame(send,CGRect(x:composerW-28,y:2,width:25,height:25),animated:animated);voiceButton.frame=CGRect(x:composerW-53,y:3,width:22,height:22);sendShade.frame=send.bounds;sendGlass.frame=send.bounds;let p=CGMutablePath();p.move(to:CGPoint(x:9,y:14.5));p.addLine(to:CGPoint(x:13,y:18.5));p.addLine(to:CGPoint(x:17,y:14.5));p.move(to:CGPoint(x:13,y:18.5));p.addLine(to:CGPoint(x:13,y:7.5));arrow.path=p;arrow.frame=send.bounds
+        setFrame(send,CGRect(x:composerW-28,y:composerControlsCenterY-12.5,width:25,height:25),animated:animated);voiceButton.frame=CGRect(x:composerW-53,y:composerControlsCenterY-11,width:22,height:22);sendShade.frame=send.bounds;sendGlass.frame=send.bounds;let p=CGMutablePath();p.move(to:CGPoint(x:9,y:14.5));p.addLine(to:CGPoint(x:13,y:18.5));p.addLine(to:CGPoint(x:17,y:14.5));p.move(to:CGPoint(x:13,y:18.5));p.addLine(to:CGPoint(x:13,y:7.5));arrow.path=p;arrow.frame=send.bounds
         layoutComposerControls()
         let conversationBottom:CGFloat=(usesUnifiedComposer ? 14:0)+((imageStrip.sublayers?.isEmpty == false) ? (usesUnifiedComposer ? 100:68):(usesUnifiedComposer ? 62:32))
         conversationFrameChanged?(CGRect(x:target.minX+2,y:conversationBottom,width:max(0,target.width-4),height:max(0,h-56-conversationBottom)))
@@ -714,7 +716,7 @@ private final class AttachmentLayer:CALayer {
         guard key != composerControlKey else{return};composerControlKey=key
         input.colors=[NSColor.white.withAlphaComponent(0.085).cgColor,NSColor.white.withAlphaComponent(0.035).cgColor];input.borderColor=NSColor.white.withAlphaComponent(0.16).cgColor
         let width=input.bounds.width,hasEffort = !levels.isEmpty && width>=215
-        permissionGlyph.frame=CGRect(x:9,y:7,width:15,height:15);permissionMask.frame=permissionGlyph.bounds
+        permissionGlyph.frame=CGRect(x:9,y:composerControlsCenterY-7.5,width:15,height:15);permissionMask.frame=permissionGlyph.bounds
         let access=state.workspaceAccess ?? "read-only",symbol=access=="full" ? "lock.open.fill":access=="read-only" ? "lock.fill":"shield.lefthalf.filled"
         permissionMask.contents=NSImage(systemSymbolName:symbol,accessibilityDescription:nil)?.withSymbolConfiguration(.init(paletteColors:[.white]))
         let colors:[NSColor]=access=="full" ? [.white,.systemRed]:access=="workspace" || access=="native" ? [.white,.systemOrange]:[.white,.lightGray]
@@ -723,18 +725,18 @@ private final class AttachmentLayer:CALayer {
         let transition=CABasicAnimation(keyPath:"colors");transition.fromValue=oldColors;transition.toValue=permissionGlyph.colors;transition.duration=NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0:0.25;permissionGlyph.add(transition,forKey:"sandboxLevel")
         let fast=state.fastSupported == true,orchestrator=state.orchestratorAvailable == true;let title=ModelIdentity.title(name),identityWidth:CGFloat=ModelIdentity.image(name)==nil ? 0:18
         let titleWidth=(title as NSString).size(withAttributes:[.font:AppTypography.ui(ofSize:7.8,weight:.medium)]).width
-        let modelWidth=min(identityWidth+ceil(titleWidth)+2,max(16,width-91-(hasEffort ? 52:0)-(fast ? 22:0)-(orchestrator ? 22:0)));modelChip.frame=CGRect(x:30,y:6,width:modelWidth,height:17)
+        let modelWidth=min(identityWidth+ceil(titleWidth)+2,max(16,width-91-(hasEffort ? 52:0)-(fast ? 22:0)-(orchestrator ? 22:0)));modelChip.frame=CGRect(x:30,y:composerControlsCenterY-8.5,width:modelWidth,height:17)
         let image=ModelIdentity.image(name);modelIcon.contentsScale=renderingScale;permissionMask.contentsScale=renderingScale;modelIcon.contents=image;modelIcon.frame=CGRect(x:0,y:2,width:13,height:13);modelIcon.isHidden=image==nil
-        let textX:CGFloat=image==nil ? 0:18;modelName.frame=CGRect(x:textX,y:2,width:max(0,modelWidth-textX),height:12);modelName.string=ModelIdentity.title(name);modelName.contentsScale=renderingScale
-        effortChip.isHidden = !hasEffort;effortChip.backgroundColor=nil;effortChip.frame=CGRect(x:modelChip.frame.maxX+3,y:6,width:50,height:18)
+        let textX:CGFloat=image==nil ? 0:18;modelName.frame=CGRect(x:textX,y:1.5,width:max(0,modelWidth-textX),height:14);modelName.setNeedsDisplay();modelName.string=ModelIdentity.title(name);modelName.contentsScale=renderingScale
+        effortChip.isHidden = !hasEffort;effortChip.backgroundColor=nil;effortChip.frame=CGRect(x:modelChip.frame.maxX+3,y:composerControlsCenterY-9,width:50,height:18)
         let fraction=CGFloat(levels.firstIndex(of:effort) ?? 0)/CGFloat(max(1,levels.count-1)),color=EffortAppearance.color(effort,fraction:fraction)
         effortShimmer.frame=effortChip.bounds;effortShimmer.configure(size:effortChip.bounds.size,tint:color);let shimmerKey=name+"|"+effort
         if shimmerKey != effortShimmerKey{effortShimmerKey=shimmerKey;if layer.opacity>0 && hasEffort{effortShimmer.play(restart:true)}else{effortShimmer.stop()}}
-        effortFill.frame=effortChip.bounds;effortFill.colors=[color.cgColor,EffortAppearance.color(min(1,fraction+0.25)).cgColor];effortLabel.frame=CGRect(x:0,y:3,width:50,height:12);effortLabel.string=effort=="xhigh" ? "Extra high":effort.capitalized;effortLabel.contentsScale=renderingScale
-        fastTint.isHidden = !fast;fastTint.frame=CGRect(x:width-78,y:7,width:17,height:17);fastBolt.frame=fastTint.bounds;fastBolt.contents=NSImage(systemSymbolName:state.fastMode == true ? "bolt.fill":"bolt",accessibilityDescription:"Fast mode")?.withSymbolConfiguration(.init(paletteColors:[.white]));fastTint.colors=(state.fastMode == true ? [NSColor(calibratedRed:1,green:0.94,blue:0.60,alpha:1),NSColor(calibratedRed:1,green:0.74,blue:0.21,alpha:1)]:[NSColor.secondaryLabelColor,NSColor.secondaryLabelColor]).map(\.cgColor)
+        effortFill.frame=effortChip.bounds;effortFill.colors=[color.cgColor,EffortAppearance.color(min(1,fraction+0.25)).cgColor];effortLabel.frame=CGRect(x:0,y:2,width:50,height:14);effortLabel.setNeedsDisplay();effortLabel.string=effort=="xhigh" ? "Extra high":effort.capitalized;effortLabel.contentsScale=renderingScale
+        fastTint.isHidden = !fast;fastTint.frame=CGRect(x:width-78,y:composerControlsCenterY-8.5,width:17,height:17);fastBolt.frame=fastTint.bounds;fastBolt.contents=NSImage(systemSymbolName:state.fastMode == true ? "bolt.fill":"bolt",accessibilityDescription:"Fast mode")?.withSymbolConfiguration(.init(paletteColors:[.white]));fastTint.colors=(state.fastMode == true ? [NSColor(calibratedRed:1,green:0.94,blue:0.60,alpha:1),NSColor(calibratedRed:1,green:0.74,blue:0.21,alpha:1)]:[NSColor.secondaryLabelColor,NSColor.secondaryLabelColor]).map(\.cgColor)
         fastShimmer.isHidden = !fast;fastShimmer.frame=fastTint.frame.insetBy(dx:-4,dy:-1);fastShimmer.configure(size:fastShimmer.bounds.size,tint:NSColor(calibratedRed:1,green:0.85,blue:0.41,alpha:1));fastBolt.shadowOpacity=0
         if fastWasOn != state.fastMode{fastWasOn=state.fastMode;if layer.opacity>0 && fast{fastShimmer.play(restart:true)}else{fastShimmer.stop()}}
-        orchestratorChip.isHidden = !orchestrator;orchestratorChip.frame=CGRect(x:width-(fast ? 100:78),y:6,width:20,height:18);orchestratorChip.cornerRadius=4;orchestratorChip.backgroundColor=state.orchestratorMode == true ? NSColor.systemPurple.withAlphaComponent(0.12).cgColor:nil;orchestratorGlyph.frame=CGRect(x:3,y:2,width:14,height:14);orchestratorGlyph.contents=NSImage(systemSymbolName:"point.3.connected.trianglepath.dotted",accessibilityDescription:"Orchestrator")?.withSymbolConfiguration(.init(paletteColors:[state.orchestratorMode == true ? .systemPurple:.secondaryLabelColor]));orchestratorShimmer.frame=orchestratorChip.bounds;orchestratorShimmer.configure(size:orchestratorShimmer.bounds.size,tint:.systemPurple)
+        orchestratorChip.isHidden = !orchestrator;orchestratorChip.frame=CGRect(x:width-(fast ? 100:78),y:composerControlsCenterY-9,width:20,height:18);orchestratorChip.cornerRadius=4;orchestratorChip.backgroundColor=state.orchestratorMode == true ? NSColor.systemPurple.withAlphaComponent(0.12).cgColor:nil;orchestratorGlyph.frame=CGRect(x:3,y:2,width:14,height:14);orchestratorGlyph.contents=NSImage(systemSymbolName:"point.3.connected.trianglepath.dotted",accessibilityDescription:"Orchestrator")?.withSymbolConfiguration(.init(paletteColors:[state.orchestratorMode == true ? .systemPurple:.secondaryLabelColor]));orchestratorShimmer.frame=orchestratorChip.bounds;orchestratorShimmer.configure(size:orchestratorShimmer.bounds.size,tint:.systemPurple)
         if orchestratorWasOn != state.orchestratorMode{orchestratorWasOn=state.orchestratorMode;if state.orchestratorMode == true && layer.opacity>0{orchestratorShimmer.play(restart:true)}else{orchestratorShimmer.stop()}}
         let footerCenter=(input.frame.minY-bottomInset)/2
         usageLabel.string=state.usageSummary ?? "";usageLabel.frame=CGRect(x:input.frame.minX+42,y:footerCenter-7,width:max(0,width-42),height:14);usageLabel.setNeedsDisplay();usageTrack.frame=CGRect(x:input.frame.minX+5,y:footerCenter-1,width:30,height:2);usageFill.frame=CGRect(x:0,y:0,width:30*CGFloat(state.usageWindows?.first?.fraction ?? 0),height:2);usageTrack.isHidden=state.usageWindows?.isEmpty != false
