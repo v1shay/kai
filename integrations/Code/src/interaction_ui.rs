@@ -72,7 +72,7 @@ impl Orbit {
         self.list.scroll_to(ListOffset{item_ix:target,offset_in_item:if target==anchor.item_ix{anchor.offset_in_item}else{px(0.)}});cx.notify();
     }
     pub(super) fn work_summary(&self,ix:usize,cx:&Context<Self>)->AnyElement{
-        let label=self.row_timing(ix).and_then(|t|t.elapsed_ms).map(|ms|format!("Worked for {}",chat_timing::duration(ms))).unwrap_or_else(||"Worked".into());
+        let label=self.row_timing(ix).map(|t|{let mut label=t.elapsed_ms.map(|ms|format!("Worked for {}",chat_timing::duration(ms))).unwrap_or_else(||"Worked".into());if let Some(model)=&t.model{label.push_str(&format!(" · {model}"));}if let Some(effort)=&t.effort{label.push_str(&format!(" · {effort}"));}label}).unwrap_or_else(||"Worked".into());
         div().id(("work-summary",ix)).debug_selector(move||format!("work-summary-{ix}")).flex().items_center().gap_2().py_2().text_size(theme::ui_px(11.)).text_color(rgb(MUTED)).cursor_pointer()
             .child(icon("chevron-right",12.,MUTED).with_transformation(Transformation::rotate(radians(self.work_reveal(ix)*std::f32::consts::FRAC_PI_2)))).child(label)
             .on_click(cx.listener(move|this,_,_,cx|this.toggle_work(ix,cx))).into_any_element()

@@ -4,6 +4,7 @@
 
 #[path = "runtime/adapters.rs"]
 mod adapters;
+#[path="runtime/antigravity_hook.rs"]mod antigravity_hook;
 #[path = "runtime/native_requests.rs"]
 mod native_requests;
 pub use native_requests::{
@@ -432,6 +433,7 @@ fn command_for(request: &RunRequest) -> Result<Command> {
         }
         AgentKind::Antigravity => {
             command.args([
+                "--print=",
                 "--input-format",
                 "stream-json",
                 "--output-format",
@@ -595,7 +597,7 @@ fn prompt_input(agent: AgentKind, prompt: String) -> String {
 pub fn supports_images(agent: AgentKind) -> bool {
     matches!(
         agent,
-        AgentKind::Codex | AgentKind::Claude | AgentKind::OpenCode | AgentKind::Gemini
+        AgentKind::Codex | AgentKind::Claude | AgentKind::OpenCode | AgentKind::Gemini | AgentKind::Cursor | AgentKind::Grok
     )
 }
 
@@ -804,7 +806,7 @@ fn launch_mode_internal(request: RunRequest, cli_command: bool, native: bool) ->
     if native && request.agent == AgentKind::Codex {
         return codex_server::launch(request);
     }
-    if native && matches!(request.agent, AgentKind::Gemini | AgentKind::Cursor) {
+    if native && matches!(request.agent, AgentKind::Gemini | AgentKind::Cursor | AgentKind::Grok) {
         return if cli_command {
             gemini_acp::launch_command(request)
         } else {
@@ -839,9 +841,10 @@ fn launch_mode_internal(request: RunRequest, cli_command: bool, native: bool) ->
             },
         )
     });
-    let mut child = command_for(&request)?
-        .spawn()
-        .context("Could not start the agent CLI")?;
+    let mut command=command_for(&request)?;
+    let mut agy_gate=if request.agent==AgentKind::Antigravity&&native{Some(antigravity_hook::Gate::prepare(&request,&mut command)?)}else{None};
+    let(control_tx,control_rx)=mpsc::sync_channel(32);
+    let mut child=command.spawn().context("Could not start the agent CLI")?;
     let pid = child.id() as i32;
     let group = Arc::new(Mutex::new(Some(pid)));
     let cancelled = Arc::new(AtomicBool::new(false));
@@ -863,7 +866,7 @@ fn launch_mode_internal(request: RunRequest, cli_command: bool, native: bool) ->
         settled,
         events,
         wake,
-        control: None,
+        control: agy_gate.as_ref().map(|_|control_tx),
         history_requests:Some(history_tx),
         deferred_native_stop: false,
         cancelled: cancelled.clone(),
@@ -998,6 +1001,7 @@ fn launch_mode_internal(request: RunRequest, cli_command: bool, native: bool) ->
                     }
                 }
             }
+            if let Some(gate)=agy_gate.as_mut(){if let Err(error)=gate.poll(&control_rx,&mut parser,&tx,&cancelled){failure=Some(error.to_string());break}}
             if let Some(observer) = native_observer.as_mut() {
                 for event in observer.poll(&mut parser, false) {
                     if let Err(error) = send(&tx, event, &cancelled) {
@@ -1551,6 +1555,7 @@ struct StreamParser {
     codex_pending_error: Option<String>,
     child_tasks: std::collections::HashMap<String, String>,
     codex_native_id: Option<String>,
+    agy_native_id:Option<String>,
 }
 
 impl StreamParser {
@@ -2417,15 +2422,19 @@ mod tests {
             }
         }
         let _cleanup = Cleanup(project.clone());
-        let resume_id = std::env::var("CODE_SMOKE_RESUME").ok();
+        let mut resume_id = std::env::var("CODE_SMOKE_RESUME").ok();
+        let rounds=std::env::var("CODE_SMOKE_ROUNDS").ok().and_then(|s|s.parse::<usize>().ok()).unwrap_or(1).clamp(1,2);
+        let secret=uuid::Uuid::new_v4().to_string();
+        let approval_test=std::env::var("CODE_SMOKE_APPROVAL").as_deref()==Ok("1");
+        for round in 0..rounds {
         let fork_session = std::env::var("CODE_SMOKE_FORK").is_ok_and(|value| value == "1");
         let handle = launch(RunRequest { orchestrator:false, service_tier:None, reasoning_effort:std::env::var("CODE_SMOKE_EFFORT").ok(),
-            agent, executable, project,
-            prompt: "Reply exactly CODE_SMOKE_OK. Do not use tools, read files, run commands, or edit anything.".into(),
+            agent, executable:executable.clone(), project:project.clone(),
+            prompt: if approval_test {"Use your shell tool to run exactly: printf CODE_SMOKE_OK > approval-probe.txt . Do not access any other files, directories, services or tools. Then reply CODE_SMOKE_OK.".into()}else if round==0 {format!("Remember this isolated verification token: {secret}. Reply exactly CODE_SMOKE_OK. Do not use tools, read files, run commands, or edit anything.")}else{"Repeat the verification token I gave you in the previous turn, followed by CODE_SMOKE_OK. Do not use tools.".into()},
             resume_id: resume_id.clone(),
             fork_session,
             model: std::env::var("CODE_SMOKE_MODEL").ok(),
-            images: vec![], allow_edits: false,
+            images: vec![], allow_edits: approval_test,
             codex_approvals: crate::runtime::CodexApprovals::default(),
             codex_access: Default::default(),
             trust_workspace: std::env::var("CODE_SMOKE_TRUST").is_ok_and(|value| value == "1"),
@@ -2436,6 +2445,7 @@ mod tests {
         let mut statuses = Vec::new();
         let mut completed = false;
         let mut fork_confirmed = false;
+        let mut approvals=0;
         loop {
             match handle.events.try_recv() {
                 Ok(RuntimeEvent::WorkspaceTool{..})=>panic!("Ordinary runs must not expose workspace orchestration tools"),
@@ -2445,10 +2455,13 @@ mod tests {
                 ) => text = snapshot,
                 Ok(RuntimeEvent::SessionId(id)) => session = Some(id),
                 Ok(RuntimeEvent::Status(status)) => statuses.push(status),
-                Ok(RuntimeEvent::Request(request)) => panic!(
-                    "Unexpected native request in a no-tools smoke: {}",
-                    request.title
-                ),
+                Ok(RuntimeEvent::Request(request)) => {
+                    assert!(approval_test,"Unexpected native request in no-tools test: {}",request.title);
+                    let NativeRequestKind::Approval{choices}=&request.kind else{handle.cancel();panic!("Unexpected question in approval test")};
+                    let choice=choices.iter().find(|c|{let label=c.label.to_lowercase();(label.contains("allow")||label.contains("approve")||label=="yes"||c.id=="allow_once"||c.id=="allow-once")&&!label.contains("always")&&!label.contains("session")&&!label.contains("remember")}).unwrap_or_else(||panic!("Provider has no recognized one-time choice: {choices:?}"));
+                    assert!(!project.join("approval-probe.txt").exists(),"Action executed before approval");
+                    approvals+=1;handle.respond(&request.id,NativeAnswer::Choice(choice.id.clone())).unwrap();
+                },
                 Ok(RuntimeEvent::RequestResolved(_) | RuntimeEvent::RequestRejected { .. }) => {}
                 Ok(
                     RuntimeEvent::Usage(_)
@@ -2488,9 +2501,13 @@ mod tests {
                 "Fork reused the externally owned thread"
             );
         }
+        if approval_test{assert!(approvals>0,"Provider executed without a native approval request");assert_eq!(std::fs::read_to_string(project.join("approval-probe.txt")).unwrap(),"CODE_SMOKE_OK");}
+        if round>0{assert!(text.contains(&secret),"Native resume lost context: {text:?}");}
+        resume_id=session.clone();
         eprintln!(
             "LIVE_SMOKE {name}: completed; session={session:?}; statuses={statuses:?}; text={text:?}"
         );
+        }
     }
     use serde_json::json;
 

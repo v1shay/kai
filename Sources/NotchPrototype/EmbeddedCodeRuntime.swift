@@ -32,10 +32,12 @@ enum UnifiedDraftHandoff {
     private var lastState:Data?
     private var historyOwner:String?
     private var history=[KaiMessage]()
+    private var diagnosticCommands=0
 
     func start(window:NSWindow,command:@escaping Command) {
         guard !active else{return}
         active=true;self.command=command;workspaceWindow=window
+        NativeWorkspaceIntegrations.shared.install()
         let defaults=UserDefaults.standard
         if !defaults.bool(forKey:"unifiedPreferencesSeeded") {
             for (key,value) in defaults.persistentDomain(forName:"com.kai.notchprototype") ?? [:] where defaults.object(forKey:key) == nil && key != "experimentalWebMode"{defaults.set(value,forKey:key)}
@@ -51,12 +53,20 @@ enum UnifiedDraftHandoff {
     }
     func send(_ data:Data) {
         guard let command else{return}
+        if diagnosticCommands<64,ProcessInfo.processInfo.environment["KAI_PERFORMANCE_LOG"] != nil,
+           let value=try? JSONSerialization.jsonObject(with:data) as? [String:Any],let action=value["action"] as? String {
+            diagnosticCommands+=1;fputs("KAI_NATIVE_COMMAND \(action)\n",stderr)
+        }
         let accepted=data.withUnsafeBytes{raw in command(raw.bindMemory(to:UInt8.self).baseAddress,raw.count)}
         if !accepted{onError?("The workspace is busy; your input is preserved. Try again.")}
     }
     func receive(_ data:Data) {
         guard data != lastState else{return}
         guard let packet=try? JSONDecoder().decode(OwnerPacket.self,from:data) else{onError?("Could not read Code’s owner state");fputs("Kai unified state decode failed\n",stderr);return}
+        if let object=try? JSONSerialization.jsonObject(with:data) as? [String:Any]{
+            if object["type"] as? String == "quickLook",let paths=object["paths"] as? [String]{NativeWorkspaceIntegrations.shared.quickLook(paths.map{URL(fileURLWithPath:$0)});return}
+            if object["type"] as? String == "artifactPreview",let artifact=object["artifact"] as? [String:Any]{NativeWorkspaceIntegrations.shared.artifact(artifact);return}
+        }
         switch packet.type {
         case "keyboardCatalog":keyboardCommands=packet.commands ?? [];return
         case "quickPrepare":app?.prepareQuickOpening();return

@@ -266,7 +266,8 @@ fn thread_params(request: &RunRequest) -> Value {
         "sandbox":request.codex_access.sandbox(request.allow_edits),
         "config":{"features.default_mode_request_user_input":true}});
 
-    if request.orchestrator{if request.resume_id.is_none(){params["dynamicTools"]=crate::orchestrator::tools();}params["developerInstructions"]=json!(crate::orchestrator::INSTRUCTIONS);}
+    params["dynamicTools"]=crate::orchestrator::session_tools(request.orchestrator);
+    if request.orchestrator{params["developerInstructions"]=json!(crate::orchestrator::INSTRUCTIONS);}
     if let Some(tier)=&request.service_tier{params["serviceTier"]=json!(tier);params["config"]["features.fast_mode"]=json!(true);}
     if let Some(effort)=&request.reasoning_effort{params["config"]["model_reasoning_effort"]=json!(effort);}
     if let Some(model) = &request.model {
@@ -2303,12 +2304,12 @@ impl Session {
         ctx: &NativeContext,
     ) -> Result<()> {
         if method=="item/tool/call"{
-            if !self.orchestrator || p["threadId"].as_str()!=Some(self.thread.as_str()) || p["tool"]!="code_workspace" || self.workspace_tools.len()>=16{
+            if p["threadId"].as_str()!=Some(self.thread.as_str()) || !(p["tool"]=="code_workspace"&&self.orchestrator || p["tool"]=="code_history" || p["tool"]=="code_artifacts") || self.workspace_tools.len()>=16{
                 return write_message(stdin,&ctx.cancelled,&json!({"id":wire_id,"result":{"success":false,"contentItems":[{"type":"inputText","text":"This Code workspace tool is not enabled for this invocation."}]}}));
             }
-            if serde_json::to_vec(&p["arguments"])?.len()>16*1024{bail!("Workspace tool arguments exceed 16 KB")}
+            if serde_json::to_vec(&p["arguments"])?.len()>if p["tool"]=="code_artifacts"{600*1024}else{16*1024}{bail!("Tool arguments exceed their bounded input budget")}
             let token=uuid::Uuid::new_v4().to_string();self.workspace_tools.insert(token.clone(),wire_id.clone());
-            return send(&ctx.tx,RuntimeEvent::WorkspaceTool{id:token,tool:"code_workspace".into(),arguments:p["arguments"].clone()},&ctx.cancelled);
+            return send(&ctx.tx,RuntimeEvent::WorkspaceTool{id:token,tool:p["tool"].as_str().unwrap_or("").into(),arguments:p["arguments"].clone()},&ctx.cancelled);
         }
         let oversized = p["questions"].as_array().is_some_and(|v| {
             v.len() > 16
@@ -3225,8 +3226,8 @@ send({'method':'item/agentMessage/delta','params':{'threadId':t,'turnId':'turn1'
 send({'method':'turn/completed','params':{'threadId':t,'turn':{'id':'turn1','status':'completed'}}})
 time.sleep(0.1)
 "#);
-        let mut r=request(&path);assert!(thread_params(&r).get("dynamicTools").is_none());r.orchestrator=true;
-        let mut resumed=r.clone();resumed.resume_id=Some(uuid::Uuid::new_v4().to_string());assert!(thread_params(&resumed).get("dynamicTools").is_none(),"Resume uses the persisted registry");
+        let mut r=request(&path);assert_eq!(thread_params(&r)["dynamicTools"].as_array().unwrap().len(),2);r.orchestrator=true;
+        let mut resumed=r.clone();resumed.resume_id=Some(uuid::Uuid::new_v4().to_string());assert_eq!(thread_params(&resumed)["dynamicTools"].as_array().unwrap().len(),3,"Existing conversations get the current scoped registry");
         let handle=launch(r).unwrap();let deadline=Instant::now()+Duration::from_secs(15);let mut calls=0;let mut text=String::new();let mut completed=false;
         while Instant::now()<deadline{match handle.events.recv_timeout(Duration::from_millis(100)){
             Ok(RuntimeEvent::WorkspaceTool{id,tool,arguments})=>{calls+=1;assert_eq!(tool,"code_workspace");assert_eq!(arguments["action"],"list_projects");handle.native_command("code/workspace/result",json!({"id":id,"value":{"projects":[{"name":"Real workspace"}]}})).unwrap();},

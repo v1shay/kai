@@ -497,6 +497,15 @@ pub fn inspect_catalog(
     Ok(items)
 }
 
+/// Create the durable provider branch before exposing it as an editable chat.
+pub(super) fn fork_native_thread(executable:&Path,project:&Path,id:&str)->Result<String>{
+    let records=codex_rpc(executable,project,&[(1,"thread/fork",serde_json::json!({"threadId":id,"cwd":project,"excludeTurns":true,"ephemeral":false}))])?;
+    let record=records.get(&1).context("Codex did not acknowledge the branch")?;
+    if let Some(error)=record.get("error"){bail!("Codex could not branch this chat: {}",error["message"].as_str().unwrap_or("provider rejected the branch"))}
+    let fork=record["result"]["thread"]["id"].as_str().context("Codex returned no branch ID")?;
+    anyhow::ensure!(fork!=id,"Codex returned the source ID instead of a branch");Ok(fork.into())
+}
+
 fn codex_rpc(
     executable: &Path,
     home: &Path,
@@ -1683,7 +1692,7 @@ pub fn inspect_model_project(kind:AgentKind,executable:&Path,home:&Path,project:
    }
   }
  }
- if matches!(kind,AgentKind::Gemini|AgentKind::Cursor){
+ if matches!(kind,AgentKind::Gemini|AgentKind::Cursor|AgentKind::Grok){
   info.defaults.capabilities_model=model.map(str::to_owned);info.defaults.capabilities_checked=true;
   match acp_model_metadata(kind,executable,project,model){
    Ok((models,defaults))=>{
@@ -1700,7 +1709,7 @@ pub fn inspect_model_project(kind:AgentKind,executable:&Path,home:&Path,project:
 }
 fn acp_model_metadata(kind:AgentKind,executable:&Path,project:&Path,selected:Option<&str>)->Result<(Vec<ModelChoice>,ModelDefaults)>{
  let mut command=Command::new(executable);crate::process_env::apply(&mut command);
- if kind==AgentKind::Cursor{command.arg("acp");}else{command.args(["--experimental-acp","--approval-mode","plan"]);}
+ if kind==AgentKind::Cursor{command.arg("acp");}else if kind==AgentKind::Grok{command.env("GROK_NO_AUTO_UPDATE","1").args(["--permission-mode","plan","agent","--no-leader","stdio"]);}else{command.args(["--experimental-acp","--approval-mode","plan"]);}
  let mut child=ProbeChild(command.current_dir(project).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).process_group(0).spawn()?);
  let mut input=child.0.stdin.take().context("Native catalog input unavailable")?;let mut output=child.0.stdout.take().context("Native catalog output unavailable")?;
  let fd=output.as_raw_fd();let flags=unsafe{libc::fcntl(fd,libc::F_GETFL)};if flags<0 || unsafe{libc::fcntl(fd,libc::F_SETFL,flags|libc::O_NONBLOCK)}<0{bail!("Native catalog output unavailable")}
@@ -1722,7 +1731,7 @@ fn acp_model_metadata(kind:AgentKind,executable:&Path,project:&Path,selected:Opt
  let created=rpc(2,"session/new",serde_json::json!({"cwd":project,"mcpServers":[]}))?;
  let mut defaults=crate::provider_defaults::acp_selection(&created);let mut catalog=created.clone();
  if let Some(model)=selected {
-  let available=crate::provider_defaults::acp_models(&created);if !available.iter().any(|choice|choice.id==model){bail!("Selected model is absent from native catalog")}
+  let available=crate::provider_defaults::acp_models(&created);let ids=available.iter().map(|m|m.id.clone()).collect();let resolved=crate::provider_defaults::acp_model_id(model,&ids).context("Selected model is absent from native catalog")?;let model=resolved.as_str();
   let config_id=created["configOptions"].as_array().into_iter().flatten().find(|option|option["category"]=="model" || option["id"]=="model").and_then(|option|option["id"].as_str());
   let updated=if let Some(config_id)=config_id{rpc(3,"session/set_config_option",serde_json::json!({"sessionId":created["sessionId"],"configId":config_id,"value":model}))?}else{rpc(3,"session/set_model",serde_json::json!({"sessionId":created["sessionId"],"modelId":model}))?};
   if updated["configOptions"].is_array(){catalog["configOptions"]=updated["configOptions"].clone();}else if defaults.model.as_deref()!=Some(model){catalog["configOptions"]=Value::Null;}

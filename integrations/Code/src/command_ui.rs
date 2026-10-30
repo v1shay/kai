@@ -332,7 +332,8 @@ impl Orbit {
         if !args.is_empty()
             && !matches!(
                 command.action,
-                Action::Models
+                Action::Workflow
+                    | Action::Models
                     | Action::Handoff
                     | Action::ReadOnly
                     | Action::Delegate
@@ -395,6 +396,9 @@ impl Orbit {
         self.composer.update(cx, |input, cx| input.set_text("", cx));
         self.notice = None;
         match command.action {
+            Action::Workflow=>self.workflow_slash(args,window,cx),
+            Action::Artifacts=>{self.show_modal(Modal::Search,window,cx);self.load_artifact_index(cx);},
+            Action::Fork=>self.fork_conversation(window,cx),
             Action::ChatContext => self.toggle_context_picker(window, cx),
             Action::Orchestrate => self.start_orchestrator(window,cx),
             Action::Team => self.toggle_team_panel(window, cx),

@@ -16,6 +16,7 @@ pub(super) struct LiveRequest {
 }
 impl LiveRequest {
     pub(super) fn request_id(&self)->&str{&self.request.id}
+    pub(super) fn remote_value(&self)->serde_json::Value{serde_json::json!({"threadId":format!("code:{}",self.owner),"approvalRequestId":format!("{}:{}",self.epoch,self.request.id),"request":self.request})}
     pub(super) fn indicator_scene(&self) -> &'static str {
         if matches!(self.request.kind, NativeRequestKind::Questions { .. }) {
             "question"

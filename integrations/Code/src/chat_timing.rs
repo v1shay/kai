@@ -2,6 +2,10 @@ use super::*;
 use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Record {
+    #[serde(default)] pub provider:Option<AgentKind>,
+    #[serde(default)] pub model:Option<String>,
+    #[serde(default)] pub effort:Option<String>,
+    #[serde(default)] pub workspace:Option<PathBuf>,
     pub key: String,
     pub session: String,
     pub checkpoint: Option<String>,
@@ -33,6 +37,7 @@ pub fn duration(ms: u64) -> String {
     }
 }
 impl Orbit {
+    pub(super) fn set_turn_provenance(&mut self,key:&str,request:&runtime::RunRequest){if let Some(record)=self.turn_timings.iter_mut().rev().find(|r|r.key==key){record.provider=Some(request.agent);record.model=request.model.clone();record.effort=request.reasoning_effort.clone();record.workspace=Some(request.project.clone());}}
     pub(super) fn starting_current(&self) -> bool {
         if self.launches.is_empty() {
             self.starting
@@ -58,7 +63,9 @@ impl Orbit {
         if self.turn_timings.len() >= 1024 {
             self.turn_timings.remove(0);
         }
+        let source=self.sessions.iter().find(|s|s.id==id);
         self.turn_timings.push(Record {
+            provider:source.map(|s|s.agent),model:self.session_models.get(id).cloned().flatten(),effort:self.usage.get(id).and_then(|u|u.reasoning_effort.clone()),workspace:source.map(|s|s.execution_path.clone().unwrap_or_else(||s.project_path.clone())),
             key: key.into(),
             session: id.into(),
             checkpoint: None,

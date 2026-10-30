@@ -348,14 +348,14 @@ private final class NotchSurfaceHost:NSView {
     private var sizeLabels=[String:NSTextField]()
     private var expandedWidth:CGFloat { (miniOpen || experimentalWebMode) ? (expandedSize?.width ?? notchWidth+160) : notchWidth+160 }
     private var notchWidth: CGFloat = 210, notchHeight: CGFloat = 39, canvasWidth: CGFloat = 470, canvasHeight: CGFloat = 320
-    private var assetRoot: URL {
+    private lazy var assetRoot: URL = {
         if let resources=Bundle.main.resourceURL {
             let bundled=resources.appendingPathComponent("kai_pets")
             if FileManager.default.fileExists(atPath:bundled.appendingPathComponent("animation_catalog.json").path){return bundled}
         }
         return URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().appendingPathComponent("kai_pets")
-    }
+    }()
 
     private func applyTypography(interface:String,code:String){
         guard AppTypography.apply(interface:interface,code:code) else{return}
@@ -1810,6 +1810,7 @@ private final class NotchSurfaceHost:NSView {
         }
         if !state.standalone,previous?.project != state.project{UserDefaults.standard.set(state.project,forKey:"kaiProject")};miniUI.setState(state);if chatVoice.active || state.workspaceVoiceActive == true || previous?.workspaceVoiceActive == true{speech.synchronize(state)}else{speech.receive(state)};syncTaskPet(state);if miniOpen {renderConversation(state.history,forceBottom:previous?.threadId != state.threadId,preserveViewport:prepending)}
         floatingTasks.setSuppressed(suppressFloatingTasks)
+        petAppIcon.setWorking(!state.activeTasks.isEmpty || state.workspaceVoiceActive == true)
         floatingTasks.update(state.activeTasks,finished:state.finishedTasks ?? [],pets:taskPets)
         if EmbeddedCodeRuntime.shared.active{
             for done in state.finishedTasks ?? []{

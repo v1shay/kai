@@ -272,6 +272,7 @@ impl Orbit {
         let checkpoint_title = member.task.clone();
         let timing_key=uuid::Uuid::new_v4().to_string();let turn_started=Instant::now();let checkpoint_key=timing_key.clone();
         self.begin_turn_clock(&session.id,&timing_key,turn_started,cx);
+        self.set_turn_provenance(&timing_key,&request);
         let job = cx.background_executor().spawn(async move {
             if let Some(durable) = durable {
                 durable

@@ -2,6 +2,7 @@
 set -euo pipefail
 root=${0:A:h:h}
 harness=StateHarness
+[[ "${1:-}" != integrations ]] || harness=IntegrationsHarness
 [[ "${1:-}" != voice ]] || harness=VoiceShortcutHarness
 [[ "${1:-}" != history ]] || harness=SavedHistoryHarness
 [[ "${1:-}" != composer ]] || harness=ComposerHarness

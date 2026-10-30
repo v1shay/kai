@@ -43,8 +43,12 @@ mod startup;
 mod keyboard;
 mod chat_titles;
 mod launch_metrics;
+mod performance;
 mod terminal_dock;
 mod orchestrator;
+mod remote_host;
+mod artifacts;
+mod daily_driver;
 #[cfg(target_os="macos")]
 mod native_backdrop;
 mod native_request_ui;
@@ -554,6 +558,12 @@ impl ListReveal {
     }
 }
 struct Orbit {
+    remote:remote_host::State,
+    performance:performance::Tracker,
+    workflows:Vec<daily_driver::Workflow>,
+    artifact_index:Vec<serde_json::Value>,
+    recent_results:Vec<String>,
+    workflow_dir:PathBuf,
     final_history_load:Option<(String,u64)>,
     unified_history_end:Option<(String,usize)>,
     unified_history_wait:bool,
@@ -779,6 +789,7 @@ struct Orbit {
     finalizing: HashSet<String>,
     generation: u64,
     search_generation: u64,
+    palette_selection:usize,
     loading: bool,
     loading_earlier: bool,
     has_older: bool,
@@ -1025,7 +1036,8 @@ impl Orbit {
         });
         let search = cx.new(|cx| {
             let mut input = TextInput::new(window, cx);
-            input.set_placeholder("Search conversations or saved messages…", cx);
+            input.set_placeholder("Search commands, projects, chats, or results…", cx);
+            input.set_palette_navigation();
             input
         });
         composer.read(cx).focus_handle.focus(window);
@@ -1066,12 +1078,11 @@ impl Orbit {
         });
         let search_change =
             cx.subscribe_in(&search, window, |this, _, event, window, cx| match event {
-                InputEvent::Submit => {
-                    if let Some(session) = this.visible_sessions.first().cloned() {
-                        this.open_session(session, window, cx);
-                    }
-                }
+                InputEvent::Submit|InputEvent::CommandAccept|InputEvent::CommandComplete => this.palette_accept(window,cx),
+                InputEvent::CommandPrevious=>this.palette_move(-1,cx),
+                InputEvent::CommandNext=>this.palette_move(1,cx),
                 InputEvent::Changed => {
+                    this.palette_selection=0;
                     this.search_generation += 1;
                     let generation = this.search_generation;
                     cx.spawn(async move |this, cx| {
@@ -1120,6 +1131,7 @@ impl Orbit {
             });
         }));
         Self {
+            remote:Default::default(),performance:Default::default(),artifact_index:vec![],recent_results:restored.as_ref().map(|s|s.recent_results.clone()).unwrap_or_default(),workflows:restored.as_ref().map(|s|s.workflows.clone()).unwrap_or_default(),workflow_dir:data.clone(),
             unified_text_morph:restored.as_ref().is_none_or(|s|s.text_morph),
             final_history_load:None,
             unified_history_end:None,unified_history_wait:false,
@@ -1342,6 +1354,7 @@ impl Orbit {
             finalizing: HashSet::new(),
             generation: 0,
             search_generation: 0,
+            palette_selection:0,
             loading: false,
             loading_earlier: false,
             has_older: false,
@@ -2504,6 +2517,7 @@ impl Orbit {
         if std::env::args().any(|arg|arg=="--unified-orchestrator-probe") {
             eprintln!("KAI_ORCHESTRATOR_SELECTION from={:?} to={} caller={}",self.active,session.id,std::panic::Location::caller());
         }
+        self.performance.begin(&session.id);
         if !self.unified_navigating && self.active.as_ref()!=Some(&session.id){
             if let Some(old)=self.active.as_ref().and_then(|id|self.sessions.iter().find(|s|&s.id==id)).cloned(){
                 self.unified_back.push(old);if self.unified_back.len()>100{self.unified_back.remove(0);}
@@ -3218,6 +3232,7 @@ impl Orbit {
         let turn_started=Instant::now();
         self.launches.insert(id.clone(),chat_timing::Launch{caption:"Preparing workspace…",preview:self.rows[old..].to_vec(),cancel:checkpoint_cancel.clone(),started:turn_started,key:checkpoint_key.clone()});
         self.begin_turn_clock(&id,&checkpoint_key,turn_started,cx);
+        self.set_turn_provenance(&checkpoint_key,&request);
         let timing_key=checkpoint_key.clone();
         let retry = request.clone();
         let queued_state_saved = queued_prompt_id
@@ -3538,6 +3553,7 @@ impl Orbit {
                     }
                 }
                 Ok(RuntimeEvent::Usage(usage)) => {
+                    if let Some(clock)=run.timing.as_ref().and_then(|live|self.turn_timings.iter_mut().rev().find(|r|r.key==live.key)){if usage.model.is_some(){clock.model=usage.model.clone();}if usage.reasoning_effort.is_some(){clock.effort=usage.reasoning_effort.clone();}}
                     self.usage.entry(id.to_owned()).or_default().merge(*usage);
                     status_changed = true;
                 }
@@ -3618,6 +3634,7 @@ impl Orbit {
                     external = Some(session);
                 }
                 Ok(RuntimeEvent::Finished) => {
+                    self.recent_results.retain(|previous|previous!=id);self.recent_results.push(id.to_string());if self.recent_results.len()>32{self.recent_results.remove(0);}
                     finished = true;
                     break;
                 }
@@ -5325,6 +5342,11 @@ impl Orbit {
 }
 impl Render for Orbit {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _render_span=performance::Span::new("root_render");
+        self.performance_ready(window);
+        self.attach_daily_entry_points(cx);
+        if let Some(value)={self.remote.workflow_result.borrow_mut().take()}{self.notice=Some(value["error"].as_str().map(str::to_owned).unwrap_or_else(||format!("Workflow · {}",value["status"].as_str().unwrap_or("Ready"))));}
+        self.publish_remote();
         self.sync_flow_layout();
         if let Some(at)=self.timestamp_released{if at.elapsed()<Duration::from_millis(180){request_motion_frame(window,cx);}else{self.timestamp_peek=0.;self.timestamp_released=None;}}
         use workspace_motion::Part as WorkspacePart;
@@ -6158,6 +6180,7 @@ fn main() {
     if std::env::args().any(|a|a=="--diagnose-native-voice"){if let Err(error)=voice::transport_diagnostic(){eprintln!("Native voice diagnostic: {error}");std::process::exit(1)}return}
     unified::prepare_environment();
     let application = Application::new().with_assets(Assets);
+    application.on_open_urls(daily_driver::open_urls);
     application.on_reopen(|cx| {
         if unified::active(){unified::reveal();return}
         cx.activate(true);
@@ -6246,6 +6269,7 @@ fn main() {
                 });
             }
         }
+        if std::env::args().any(|a|matches!(a.as_str(),"--unified-latency-probe"|"--unified-background-idle-probe")){performance::start_probe(main_window,cx);}
         cx.activate(true);
     });
 }

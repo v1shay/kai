@@ -451,6 +451,7 @@ impl Orbit {
                 .trusted_workspaces
                 .contains(&(AgentKind::Codex, project)),
         };
+        let provenance=(request.model.clone(),request.reasoning_effort.clone(),request.project.clone());
         let handle = runtime::launch_native_command(request, "thread/realtime/start", params)?;
         if orchestrator{self.orchestrator_chats.insert(id.clone());self.orchestrator_new=false;self.queue_workspace_save(cx);}
         let wake = handle.wake.clone();
@@ -472,6 +473,7 @@ impl Orbit {
         }
         let timing_key=uuid::Uuid::new_v4().to_string();let turn_started=Instant::now();
         self.begin_turn_clock(&id,&timing_key,turn_started,cx);
+        if let Some(record)=self.turn_timings.iter_mut().rev().find(|r|r.key==timing_key){record.provider=Some(AgentKind::Codex);record.model=provenance.0;record.effort=provenance.1;record.workspace=Some(provenance.2);}
         let run_epoch=uuid::Uuid::new_v4();self.voice_runs.insert((id.clone(),run_epoch));
         self.runs.insert(
             id.clone(),

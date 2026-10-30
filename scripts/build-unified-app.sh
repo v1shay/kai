@@ -15,7 +15,7 @@ args=(build --offline --manifest-path "$root/integrations/Code/Cargo.toml" --bin
 cargo "${args[@]}"
 swift_optimization=(-O -whole-module-optimization)
 [[ "$configuration" == release ]] || swift_optimization=(-Onone)
-python3 "$root/scripts/build-native-cached.py" "$root/.build/unified/libKaiNotch.dylib" -parse-as-library -emit-library "${swift_optimization[@]}" -D KAI_UNIFIED -module-cache-path "$swift_cache" "$root"/Sources/NotchPrototype/*.swift
+python3 "$root/scripts/build-native-cached.py" "$root/.build/unified/libKaiNotch.dylib" -parse-as-library -emit-library "${swift_optimization[@]}" -D KAI_UNIFIED -module-name KaiNotch -module-cache-path "$swift_cache" "$root"/Sources/NotchPrototype/*.swift
 python3 - "$root/.build/unified/libKaiNotch.dylib" <<'PYABI'
 import ctypes,sys
 library=ctypes.CDLL(sys.argv[1])
@@ -37,6 +37,9 @@ for provider in codex claude gemini opencode cursor grok antigravity model-moon 
 mkdir -p "$resources/skills"
 cp -R "$root/integrations/Code/skills/"* "$resources/skills/"
 cp "$root/kai_speech.py" "$resources/"
+cp "$root/integrations/Code/native_helpers/kai_remote.py" "$resources/"
+cp "$root/integrations/Code/native_helpers/kai_agy_hook.py" "$resources/"
+cp "$root/integrations/Code/native_helpers/kai_mcp_app.html" "$resources/"
 cp -R "$root/integrations/Code/LICENSES/"* "$resources/Licenses/"
 cp "$root/integrations/Code/native_helpers/KAI-SOURCE.md" "$resources/Licenses/Kai-Voice-Attribution.txt"
 cp "$root/integrations/Code/assets/NOTICE.md" "$resources/Licenses/Code-Assets.txt"
@@ -52,12 +55,16 @@ for pet in catalog['pets']:
  source=root/'kai_pets'/pet['spritesheet'];target=resources/'kai_pets'/pet['spritesheet']
  target.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(source,target)
 info=plistlib.loads((root/'integrations/Code/scripts/Info.plist').read_bytes())
-info.update(CFBundleName='Kai Unified',CFBundleDisplayName='Kai Unified',CFBundleIdentifier='com.kai.unified.experimental',CFBundleExecutable='kai-unified',CFBundleVersion='36',CFBundleShortVersionString='0.11.3')
+info.update(CFBundleName='Kai Unified',CFBundleDisplayName='Kai Unified',CFBundleIdentifier='com.kai.unified.experimental',CFBundleExecutable='kai-unified',CFBundleVersion='37',CFBundleShortVersionString='0.12.0')
 icon=root/'integrations/Code/assets/Code.icns'
 if icon.exists():shutil.copy2(icon,resources/'Code-Bonsai.icns')
+info['CFBundleURLTypes']=[{'CFBundleURLName':'Kai workspace','CFBundleURLSchemes':['kai']}]
+info['CFBundleDocumentTypes']=[{'CFBundleTypeName':'Folders and source files','CFBundleTypeRole':'Viewer','LSHandlerRank':'Alternate','LSItemContentTypes':['public.folder','public.data']}]
+info['NSServices']=[{'NSMenuItem':{'default':'Open in Kai Unified'},'NSMessage':'openInKai','NSPortName':'Kai Unified','NSSendTypes':['public.file-url'],'NSRequiredContext':{}}]
 info['NSAppleEventsUsageDescription']='Kai reads Spotify playback status for its optional idle media display.'
 (product/'Contents/Info.plist').write_bytes(plistlib.dumps(info))
 PY
+python3 "$root/scripts/build-app-intents.py" "$resources/libKaiNotch.dylib" "$resources"
 identity=${KAI_SIGNING_IDENTITY:--}
 for library in "$resources/"*.dylib; do codesign --force --sign "$identity" "$library"; done
 codesign --force --sign "$identity" "$product"

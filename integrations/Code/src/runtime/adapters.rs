@@ -139,6 +139,7 @@ impl StreamParser {
             "init" => {
                 let mut events = vec![RuntimeEvent::Status("Thinking".into())];
                 if let Some(id) = value["conversation_id"].as_str() {
+                    self.agy_native_id=Some(id.into());
                     events.push(RuntimeEvent::SessionId(id.into()));
                 }
                 events
@@ -465,7 +466,7 @@ mod tests {
             request.images = vec![path.clone(); 5];
             assert!(command_for(&request).is_err());
         }
-        for kind in [AgentKind::Antigravity, AgentKind::Cursor, AgentKind::Grok] {
+        for kind in [AgentKind::Antigravity] {
             let request = RunRequest { orchestrator:false, service_tier:None, reasoning_effort:None,
                 agent: kind,
                 executable: "must-not-be-started".into(),

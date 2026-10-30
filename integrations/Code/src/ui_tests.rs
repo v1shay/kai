@@ -2605,10 +2605,10 @@ fn unsupported_image_provider_keeps_draft_and_import_cancellation_is_scoped(
         view.update(cx, |app, cx| {
             app.attachments.push(attachment);
             app.agents.clear();
-            controls_fixture(app, AgentKind::Cursor, 0);
+            controls_fixture(app, AgentKind::Antigravity, 0);
             app.active = Some("fixture-session".into());
-            app.request_handoff(AgentKind::Cursor, window, cx);
-            assert_eq!(app.agent, AgentKind::Cursor);
+            app.request_handoff(AgentKind::Antigravity, window, cx);
+            assert_eq!(app.agent, AgentKind::Antigravity);
             assert_eq!(app.sessions[0].agent, AgentKind::Codex);
             assert!(app.handoff_pending.is_none());
             app.send(window, cx);
@@ -2745,7 +2745,7 @@ fn glass_panels_are_anchored_clamped_and_preserve_workspace_geometry(cx: &mut Te
     let workspace = cx.debug_bounds("workspace-pane").unwrap();
     let chat = cx.debug_bounds("chat-pane").unwrap();
     for (kind, selector, width) in [
-        (Modal::Search, "search-popover", 360.),
+        (Modal::Search, "search-popover", 420.),
         (Modal::Projects, "workspace-popover", 320.),
         (Modal::Background, "wallpaper-popover", 340.),
     ] {
@@ -5058,7 +5058,7 @@ fn timestamp_swipe_reveals_real_turn_time_and_preserves_completed_duration(cx:&m
     view.update(cx,|app,cx|{
         let now=chrono::Utc::now().timestamp_millis();app.active=Some("fixture-session".into());app.loading=false;
         app.rows=vec![Row{role:Some("user".into()),block:MessageBlock::Paragraph("Work on this".into())},Row{role:None,block:MessageBlock::Activity{label:"Prompt changes".into(),details:checkpoint.clone()}},Row{role:Some("assistant:codex".into()),block:MessageBlock::Paragraph("Ready".into())}];
-        app.turn_timings=vec![chat_timing::Record{key:uuid::Uuid::new_v4().to_string(),session:"fixture-session".into(),checkpoint:Some(checkpoint.clone()),submitted_ms:now-10_000,first_output_ms:Some(now-5000),finished_ms:Some(now-1000),elapsed_ms:Some(9000),outcome:Some("completed".into())}];
+        app.turn_timings=vec![chat_timing::Record{provider:None,model:None,effort:None,workspace:None,key:uuid::Uuid::new_v4().to_string(),session:"fixture-session".into(),checkpoint:Some(checkpoint.clone()),submitted_ms:now-10_000,first_output_ms:Some(now-5000),finished_ms:Some(now-1000),elapsed_ms:Some(9000),outcome:Some("completed".into())}];
         app.list.reset(app.rows.len());cx.notify();
     });draw_frame(&view,cx);
     assert!(cx.debug_bounds("turn-duration-2").is_some(),"Completed response lost its small duration footer");

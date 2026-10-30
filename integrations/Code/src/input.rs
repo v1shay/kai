@@ -64,6 +64,7 @@ pub struct TextInput {
     dictation_decode:crate::text_decode::TextDecode,
     reveal_text:Option<SharedString>,
     command_navigation: bool,
+    palette_navigation: bool,
     scroll: ScrollHandle,
     secret: Option<SecretLayout>,
     image_paste: bool,
@@ -204,6 +205,7 @@ impl TextInput {
             mirrored_dictation: false,
             reveal_enabled:false,dictation_decode:Default::default(),reveal_text:None,
             command_navigation: false,
+            palette_navigation: false,
             scroll: ScrollHandle::new(),
             secret: None,
             image_paste: false,
@@ -341,6 +343,7 @@ impl TextInput {
         let range=self.offset_to_utf16(span.start)..self.offset_to_utf16(span.end);
         self.replace_text_in_range(Some(range),&format!("/{name}{}",if append_space{" "}else{""}),window,cx);
     }
+    pub fn set_palette_navigation(&mut self){self.palette_navigation=true;}
     pub fn set_command_navigation(&mut self, active: bool) {
         self.command_navigation = active;
     }
@@ -475,7 +478,7 @@ impl TextInput {
         }
         if self.marked_range.is_none() {
             cx.emit(
-                if self.command_navigation && self.command_query().is_some() {
+                if self.palette_navigation || (self.command_navigation && self.command_query().is_some()) {
                     InputEvent::CommandAccept
                 } else {
                     InputEvent::Submit
@@ -493,7 +496,7 @@ impl TextInput {
             self.replace_text_in_range(None, "\t", window, cx);
             return;
         }
-        if self.command_navigation && self.command_query().is_some() {
+        if self.palette_navigation || (self.command_navigation && self.command_query().is_some()) {
             cx.emit(InputEvent::CommandComplete);
         } else {
             cx.propagate();
@@ -540,14 +543,14 @@ impl TextInput {
         }
     }
     fn up(&mut self, _: &Up, _: &mut Window, cx: &mut Context<Self>) {
-        if self.command_navigation && self.command_query().is_some() {
+        if self.palette_navigation || (self.command_navigation && self.command_query().is_some()) {
             cx.emit(InputEvent::CommandPrevious);
             return;
         }
         self.vertical(-1., false, cx);
     }
     fn down(&mut self, _: &Down, _: &mut Window, cx: &mut Context<Self>) {
-        if self.command_navigation && self.command_query().is_some() {
+        if self.palette_navigation || (self.command_navigation && self.command_query().is_some()) {
             cx.emit(InputEvent::CommandNext);
             return;
         }

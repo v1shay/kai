@@ -114,7 +114,12 @@ import AppKit
         revision += 1;let token=revision;clearVisuals();self.window=window;expanded=true;transitioning=true
         let screen=NSScreen.screens.first{$0.frame.contains(CGPoint(x:source.midX,y:source.maxY-1))} ?? window.screen ?? NSScreen.main
         let target=destination ?? Self.destination(saved:nil,screen:screen?.visibleFrame ?? window.frame)
-        surfaceRadius=destinationRadius;window.setFrame(target,display:true);onPresentation?(replay ? "reopen":"expand")
+        // A parked workspace retains its working-area frame. Reapplying that
+        // identical frame forces AppKit/GPUI through a synchronous resize on
+        // every reveal, although only the contour needs to move.
+        surfaceRadius=destinationRadius
+        if window.frame != target{window.setFrame(target,display:true)}
+        onPresentation?(replay ? "reopen":"expand")
         let reduce = !motionEnabled || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         window.alphaValue=1
         if !reduce{

@@ -3,6 +3,14 @@
 use crate::{agent_controls::{ControlInfo,ModelDefaults},discovery::AgentKind,runtime::valid_model_id};
 use serde_json::Value;
 use std::{path::{Path,PathBuf},fs,io::Read};
+/// CLI model menus use base IDs; ACP advertises their fully parameterized IDs.
+/// Resolve only an unambiguous advertised variant; explicit overrides stay exact.
+pub fn acp_model_id(requested:&str,models:&std::collections::HashSet<String>)->Option<String>{
+ if models.contains(requested){return Some(requested.into())}
+ if requested.contains('['){return None}
+ let prefix=format!("{requested}[");let mut matches=models.iter().filter(|id|id.starts_with(&prefix));
+ let value=matches.next()?.clone();matches.next().is_none().then_some(value)
+}
 fn text(v:&Value)->Option<String>{v.as_str().filter(|s|valid_model_id(s)).map(str::to_owned)}
 pub fn acp_selection(value:&Value)->ModelDefaults{
  let mut out=ModelDefaults::default();

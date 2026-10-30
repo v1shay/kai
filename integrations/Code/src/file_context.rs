@@ -71,7 +71,7 @@ fn confined(root: &Path, path: &Path) -> Result<PathBuf> {
 }
 /// Open each canonical relative component against an owned directory FD. An
 /// agent replacing a path with a symlink cannot redirect the read outside root.
-fn open_file(root: &Path, path: &Path) -> Result<File> {
+pub(super) fn open_file(root: &Path, path: &Path) -> Result<File> {
     let relative = path.strip_prefix(root)?;
     let parts: Vec<_> = relative
         .components()

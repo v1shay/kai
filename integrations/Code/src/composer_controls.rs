@@ -657,6 +657,7 @@ impl Orbit {
                                     .text_ellipsis()
                                     .child(attachment.name.clone()),
                             )
+                            .child({let path=attachment.path.clone();div().id("native-quick-look").p_1().rounded_md().cursor_pointer().child("Quick Look").on_click(move|_,_,_|unified::emit(&serde_json::json!({"type":"quickLook","paths":[path]})))})
                             .child(
                                 div()
                                     .id("close-image-preview")

@@ -48,6 +48,7 @@ impl Orbit {
             .or_else(|| self.new_execution_path.clone())
     }
     pub(super) fn open_citation(&mut self, url: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(id)=url.strip_prefix("kai://artifact/"){self.open_saved_artifact(id,window,cx);return}
         match citations::classify(url) {
             Ok(citations::Citation::File(citation)) => {
                 self.files_visible = true;

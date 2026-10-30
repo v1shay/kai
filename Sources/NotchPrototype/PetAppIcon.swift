@@ -32,6 +32,8 @@ struct PetIconPlayback {
     private var timer:Timer?,persistWork:DispatchWorkItem?,completionWork:DispatchWorkItem?
     private var observers=[NSObjectProtocol](),pauses=Set<String>()
     private var still:NSImage?
+    private var working=false
+    func setWorking(_ value:Bool){guard value != working else{return};working=value;refreshTimer()}
 
     init(){
         view.imageScaling = .scaleProportionallyUpOrDown
@@ -81,7 +83,7 @@ struct PetIconPlayback {
         guard let playback else{return}
         let reduceMotion=NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         display(column:reduceMotion ? playback.columns[0]:playback.column(at:CACurrentMediaTime()-started))
-        guard pauses.isEmpty,!reduceMotion,Set(playback.columns).count>1,
+        guard pauses.isEmpty,!reduceMotion,(working || !playback.loops),Set(playback.columns).count>1,
               playback.loops || CACurrentMediaTime()-started<playback.duration else{return}
         let timer=Timer(timeInterval:0.1,repeats:true){[weak self] _ in
             MainActor.assumeIsolated{self?.tick()}

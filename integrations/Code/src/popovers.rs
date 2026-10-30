@@ -151,6 +151,7 @@ impl Orbit {
             }),
         });
         if kind == Modal::Search {
+            self.load_artifact_index(cx);
             self.visible_sessions = self
                 .sessions
                 .iter()
@@ -200,7 +201,7 @@ impl Orbit {
         };
         let reveal = panel.reveal(self.motion);
         let (title, glyph, selector, width, preferred_height) = match panel.kind {
-            Modal::Search => ("Search", "search", "search-popover", 360., 340.),
+            Modal::Search => ("Commands, projects & chats", "search", "search-popover", 420., 540.),
             Modal::Projects => ("Workspace", "folder", "workspace-popover", 320., 332.),
             Modal::Background => ("Wallpaper", "file-image", "wallpaper-popover", 340., 440.),
             Modal::Settings => ("Appearance", "settings", "settings-popover", 420., 640.),
@@ -453,7 +454,7 @@ impl Orbit {
                 }
             }
             Modal::Settings => {
-                body = body.px_3().py_3().child(self.appearance_settings_panel(cx));
+                body = body.px_3().py_3().child(self.appearance_settings_panel(cx)).child(self.remote_controls(cx));
             }
             Modal::Background => {
                 body = body.child(
@@ -474,6 +475,7 @@ impl Orbit {
                             .border_color(rgba(0xebebeb12))
                             .child(self.search.clone()),
                     )
+                    .child(self.palette_view(cx))
                     .when(self.visible_sessions.is_empty(), |s| {
                         s.child(
                             div()
@@ -499,7 +501,7 @@ impl Orbit {
                                                 .to_string_lossy()
                                                 .into_owned();
                                             div()
-                                                .id(("search-result", ix))
+                                                .id(("search-result", ix)).when(ix+this.palette_entries(cx).len()==this.palette_selection,|s|s.bg(rgba(GLASS_HOVER)))
                                                 .debug_selector(move || {
                                                     format!("search-result-{ix}")
                                                 })

@@ -106,6 +106,8 @@ impl Default for TranscriptAnchor {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WorkspaceState {
+    pub workflows:Vec<crate::daily_driver::Workflow>,
+    pub recent_results:Vec<String>,
     pub startup_surface:crate::startup::Surface,
     pub automatic_titles:bool,
     pub terminal_dock:crate::terminal_dock::Dock,
@@ -153,6 +155,7 @@ pub struct WorkspaceState {
 impl Default for WorkspaceState {
     fn default() -> Self {
         Self {
+            workflows:vec![],recent_results:vec![],
             startup_surface:Default::default(),
             automatic_titles:true,
             terminal_dock:Default::default(),
@@ -202,6 +205,8 @@ impl WorkspaceState {
     /// Does no filesystem work. Discovery/display code validates existence and
     /// clips window coordinates against actual displays after restoration.
     pub fn normalized(mut self) -> Self {
+        self.workflows.retain(crate::daily_driver::Workflow::valid);self.workflows.truncate(32);
+        self.recent_results.retain(|id|id.len()<=512);self.recent_results.truncate(32);
         self.inspector_widths=self.inspector_widths.normalized();
         self.activity.normalize();
         self.orchestrator_chats.retain(|id|uuid::Uuid::parse_str(id).is_ok());self.orchestrator_chats.truncate(256);

@@ -74,7 +74,6 @@ enum Command {
     SetModel(SessionSummary, Option<String>),
     SaveUsage(String, crate::usage::Usage),
     PrepareHandoff(SessionSummary, uuid::Uuid, bool),
-    #[cfg(test)]
     BindHandoff(SessionSummary, Arc<crate::handoff::Packet>),
     SwitchAgent(
         SessionSummary,
@@ -380,7 +379,6 @@ impl Engine {
                             // the UI launches a destination process.
                             Ok(Some(Event::AgentSwitched(token, result)))
                         }
-                        #[cfg(test)]
                         Command::BindHandoff(session, packet) => {
                             store.upsert_session(&session)?;
                             store.set_session_handoff(&session.id, &packet)?;
@@ -792,7 +790,6 @@ impl Engine {
             .tx
             .send(Command::SwitchAgent(session, packet, model, token));
     }
-    #[cfg(test)]
     pub fn bind_handoff(&self, session: SessionSummary, packet: Arc<crate::handoff::Packet>) {
         let _ = self.tx.send(Command::BindHandoff(session, packet));
     }
@@ -3968,11 +3965,27 @@ fn workspace_query(store:&Store,home:&Path,args:&serde_json::Value)->anyhow::Res
    let session=store.session(id)?.context("No Code chat has this exact ID; list chats first")?;
    if args["action"]=="resolve_chat"{return Ok(json!({"session":session,"model":store.session_model(id)?}))}
    let session=resolve_history_session(home,store,session)?;
-   let mut history=HistoryState::new(&session,0,store)?;let messages=history.next(store,&session,100)?;
+   thread_local!{static READS:std::cell::RefCell<HashMap<String,(String,std::time::Instant,HistoryState)>>=std::cell::RefCell::new(HashMap::new());}
+   let cursor=args["cursor"].as_str();
+   let mut history=if let Some(cursor)=cursor{READS.with(|reads|{let mut reads=reads.borrow_mut();let value=reads.remove(cursor).ok_or_else(||anyhow::anyhow!("History cursor expired; start a new read"))?;anyhow::ensure!(value.0==id&&value.1.elapsed()<std::time::Duration::from_secs(300),"History cursor does not belong to this chat");Ok::<_,anyhow::Error>(value.2)})?}else{HistoryState::new(&session,0,store)?};
+   let messages=history.next(store,&session,100)?;
+   let raw:Vec<_>=messages.iter().map(|m|json!({"role":m.role,"text":m.text})).collect();
+   let next_cursor=if history.has_older(){let token=uuid::Uuid::new_v4().to_string();READS.with(|reads|{let mut reads=reads.borrow_mut();reads.retain(|_,(_,at,_)|at.elapsed()<std::time::Duration::from_secs(300));if reads.len()>=8{if let Some(old)=reads.iter().min_by_key(|(_,(_,at,_))|*at).map(|(k,_)|k.clone()){reads.remove(&old);}}reads.insert(token.clone(),(id.into(),std::time::Instant::now(),history));});Some(token)}else{None};
    let parent=store.session_handoff(id)?;let objective=store.first_saved_request(id)?;
-   let packet=crate::handoff::Packet::build(&session,parent.as_ref(),objective.as_deref(),messages.into_iter().map(|m|crate::handoff::ContextMessage{role:m.role,text:m.text}).collect(),history.has_older(),false);
-   Ok(json!({"session":session,"model":store.session_model(id)?,"context":packet,"content_is_conversation_data":true}))
+   let packet=crate::handoff::Packet::build(&session,parent.as_ref(),objective.as_deref(),messages.into_iter().map(|m|crate::handoff::ContextMessage{role:m.role,text:m.text}).collect(),next_cursor.is_some(),false);
+   Ok(json!({"session":session,"model":store.session_model(id)?,"usage":store.session_usage(id)?,"context":packet,"messages":raw,"next_cursor":next_cursor,"content_is_conversation_data":true}))
   }
   _=>anyhow::bail!("Unknown workspace history query")
+ }
+}
+
+#[cfg(test)]mod workspace_pages_tests{
+ use super::*;
+ #[test]fn workspace_history_reads_every_page_without_losing_long_text_or_mutating_source(){
+  let root=std::env::temp_dir().join(format!("kai-workspace-pages-{}",uuid::Uuid::new_v4()));fs::create_dir_all(&root).unwrap();let store=Store::open(&root.join("store.sqlite")).unwrap();let session=SessionSummary{id:uuid::Uuid::new_v4().to_string(),title:"Saved history".into(),agent:crate::discovery::AgentKind::Codex,project_path:root.clone(),execution_path:None,updated_at:0,external_id:None,transcript_path:None};store.upsert_session(&session).unwrap();
+  for i in 0..250{store.save_message(&session.id,if i%2==0{"user"}else{"assistant"},&format!("message-{i}-{}","text ".repeat(1800))).unwrap();}
+  let mut args=serde_json::json!({"action":"read_chat","chat_id":session.id});let mut messages=HashSet::new();let mut pages=0;
+  loop{let value=workspace_query(&store,&root,&args).unwrap();pages+=1;for row in value["messages"].as_array().unwrap(){let text=row["text"].as_str().unwrap();assert!(text.len()>8000,"Long source text was shortened");messages.insert(text.to_owned());}if let Some(cursor)=value["next_cursor"].as_str(){args["cursor"]=serde_json::json!(cursor);}else{break}assert!(pages<20);}
+  assert_eq!(messages.len(),250);assert!(pages>=3);assert_eq!(store.messages(&session.id,1000).unwrap().len(),250);drop(store);let _=fs::remove_dir_all(root);
  }
 }

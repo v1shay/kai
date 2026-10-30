@@ -181,7 +181,7 @@ enum FloatingTaskCorner:String,CaseIterable {
             if !fresh,!NSWorkspace.shared.accessibilityDisplayShouldReduceMotion{NSAnimationContext.runAnimationGroup{context in context.duration=0.28;child.row.animator().frame=frame}}else{child.row.frame=frame}
             child.row.layer?.cornerRadius=frame.width/2;child.row.layer?.borderWidth=0.5;child.row.layer?.borderColor=NSColor.white.withAlphaComponent(0.2).cgColor
             child.row.setAccessibilityLabel(task.name);child.row.toolTip=task.name+"\n"+task.text
-            child.row.onSingle={ [weak self] in self?.onCycle?(task) };child.row.onDouble={ [weak self] in guard let self else{return};self.onOpen?(task,self.preview) };child.row.onScroll={ [weak self] delta in self?.pageFamily(family,delta:delta) }
+            child.row.onSingle={ [weak self] in guard let self else{return};self.onOpen?(task,self.preview) };child.row.onDouble={ [weak self] in guard let self else{return};self.onOpen?(task,self.preview) };child.row.onScroll={ [weak self] delta in self?.pageFamily(family,delta:delta) }
             let pet=self.pets[task.id] ?? specs.first?.id ?? "",motion=["thinking","waiting","permission","question"].contains(task.scene) ? "waiting":"running"
             guard child.pet != pet || child.motion != motion else{continue};child.pet=pet;child.motion=motion
             if let spec=specs.first(where:{$0.id==pet}),let animation=spec.motions[motion] ?? spec.motions["idle"],let timeline=SpriteTimeline(row:animation.row,rows:spec.rows,columns:animation.columns,durationsMs:animation.durationsMs,loops:animation.loop),let root{

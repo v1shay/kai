@@ -41,3 +41,7 @@ gpui = { version = "=0.2.2", features = ["test-support"] }
 lto = "thin"
 codegen-units = 1
 strip = true
+
+# Thin LTO still optimizes across units; avoid one enormous LLVM unit for the UI.
+[profile.release.package.orbit]
+codegen-units = 4

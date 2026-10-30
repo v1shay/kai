@@ -104,8 +104,8 @@ final class FileViewerTests:XCTestCase {
         XCTAssertEqual(copied,[url])
         var revealed=[URL](),feedback=[String]();actions.reveal={revealed=$0};actions.onPerformed={action,file in XCTAssertEqual(file,url);feedback.append(action)}
         let menu=actions.menu(for:url)
-        XCTAssertEqual(menu.items.map(\.title),["Copy file","Show in Finder"])
-        menu.performActionForItem(at:1)
+        XCTAssertEqual(menu.items.map(\.title),["Quick Look","Copy file","Show in Finder"])
+        menu.performActionForItem(at:menu.indexOfItem(withTitle:"Show in Finder"))
         XCTAssertEqual(revealed,[url])
         XCTAssertEqual(feedback,["reveal"])
         XCTAssertTrue(actions.perform("copy",url:url,pasteboard:board))

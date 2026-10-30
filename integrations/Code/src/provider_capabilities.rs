@@ -16,6 +16,7 @@ pub fn for_provider(agent: AgentKind) -> Capabilities {
                 | AgentKind::OpenCode
                 | AgentKind::Gemini
                 | AgentKind::Cursor
+                | AgentKind::Grok
         ),
         native_delegation: matches!(
             agent,
@@ -39,7 +40,9 @@ mod tests {
         }
         assert!(for_provider(AgentKind::Gemini).image_input);
         assert!(!for_provider(AgentKind::Gemini).native_delegation);
-        for agent in [AgentKind::Antigravity, AgentKind::Grok] {
+        assert!(for_provider(AgentKind::Grok).image_input);
+        assert!(!for_provider(AgentKind::Grok).native_delegation);
+        for agent in [AgentKind::Antigravity] {
             assert!(!for_provider(agent).image_input && !for_provider(agent).native_delegation);
         }
     }

@@ -1,0 +1,31 @@
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),path=require('node:path');
+const html=fs.readFileSync(path.join(__dirname,'../integrations/Code/native_helpers/kai_mcp_app.html'),'utf8');
+const script=html.match(/<script>([\s\S]*)<\/script>/)[1];
+class Element{constructor(tag){this.tag=tag;this.textContent='';this.children=[];this.style={};this.disabled=false}append(...nodes){this.children.push(...nodes)}replaceChildren(...nodes){this.children=nodes}}
+const elements=new Map(['connection','content','message','refresh'].map(id=>[id,new Element(id)]));
+const messages=[],timers=new Map();let listener,serial=0;
+const parent={postMessage:value=>messages.push(value)};const window={parent,addEventListener:(type,callback)=>{assert.equal(type,'message');listener=callback}};
+const document={getElementById:id=>elements.get(id),createElement:tag=>new Element(tag),documentElement:new Element('html'),body:{scrollHeight:550,scrollWidth:640}};
+vm.runInNewContext(script,{window,document,crypto:{randomUUID:()=>`operation-${++serial}`},setTimeout:fn=>{const id=++serial;timers.set(id,fn);return id},clearTimeout:id=>timers.delete(id),Map,Promise,Error,JSON,String,Math});
+const tick=()=>new Promise(resolve=>setImmediate(resolve));
+const deliver=(request,result)=>listener({source:parent,data:{jsonrpc:'2.0',id:request.id,result}});
+const reply=value=>({content:[{type:'text',text:JSON.stringify(value)}]});
+const descendants=node=>[node,...node.children.flatMap(descendants)];
+(async()=>{
+ const initialize=messages[0];assert.equal(initialize.method,'ui/initialize');assert.equal(initialize.params.protocolVersion,'2026-01-26');
+ listener({source:{},data:{jsonrpc:'2.0',id:initialize.id,result:{}}});await tick();assert.equal(messages.length,1,'foreign frame must not complete initialization');
+ deliver(initialize,{hostContext:{theme:'dark'}});await tick();assert(messages.some(m=>m.method==='ui/notifications/initialized'));
+ let snapshotRequest=messages.find(m=>m.method==='tools/call');assert.equal(snapshotRequest.params.arguments.action,'snapshot');
+ const state={protocol:'1',connected:true,access:'control',tasks:[{chat_id:'exact-chat',agent:'codex',status:'Working',run_id:'exact-run',terminal:false,title:'<script>untrusted</script>'}],approvals:[]};deliver(snapshotRequest,reply(state));await tick();
+ assert(descendants(elements.get('content')).some(n=>n.textContent==='<script>untrusted</script>'));assert(!script.includes('.innerHTML'),'untrusted data must stay text');
+ const stop=descendants(elements.get('content')).find(n=>n.tag==='button'&&n.textContent==='Stop');assert(stop);stop.onclick();await tick();let mutation=messages.at(-1);assert.equal(mutation.params.arguments.run_id,'exact-run');assert.equal(mutation.params.arguments.chat_id,'exact-chat');
+ const originalId=mutation.params.arguments.request_id;const timer=[...timers.values()].at(-1);timer();await tick();assert(elements.get('message').textContent.includes(originalId));
+ stop.onclick();await tick();mutation=messages.at(-1);assert.equal(mutation.params.arguments.request_id,originalId,'uncertain mutations must retry the same receipt');deliver(mutation,reply({accepted:true}));await tick();deliver(messages.at(-1),reply({...state,access:'read',tasks:[]}));await tick();assert.equal(elements.get('connection').textContent,'Read only');
+ assert(!descendants(elements.get('content')).some(n=>n.textContent==='Stop'));
+ listener({source:parent,data:{jsonrpc:'2.0',method:'ui/notifications/tool-result',params:reply({...state,approvals:[{owner:'exact-chat',approval:{approvalRequestId:'approval-1',request:{title:'Write fixture',request_kind:{Approval:{choices:[{id:'allow-once',label:'Allow once'},{id:'decline',label:'Decline'}]}}}}}]})}});await tick();
+ const allow=descendants(elements.get('content')).find(n=>n.textContent==='Allow once');allow.onclick();await tick();const allowRequest=messages.at(-1);[...timers.values()].at(-1)();await tick();
+ const decline=descendants(elements.get('content')).find(n=>n.textContent==='Decline');decline.onclick();await tick();const declineRequest=messages.at(-1);
+ assert.equal(declineRequest.params.arguments.answer.choice,'decline','changing an uncertain approval must never reuse the old decision');assert.notEqual(declineRequest.params.arguments.request_id,allowRequest.params.arguments.request_id);
+ deliver(declineRequest,reply({accepted:true}));await tick();deliver(messages.at(-1),reply({...state,approvals:[]}));await tick();
+ console.log('MCP Apps: lifecycle, source validation, scoped rendering, exact run controls and durable retry IDs passed');
+})().catch(error=>{console.error(error);process.exitCode=1});

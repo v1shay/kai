@@ -3,6 +3,9 @@ use crate::discovery::AgentKind;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
+    Workflow,
+    Artifacts,
+    Fork,
     New,
     Search,
     Projects,
@@ -101,6 +104,9 @@ pub fn advertised(value: &serde_json::Value) -> Vec<String> {
     names.into_iter().collect()
 }
 const BASE: &[(&str, &str, Action)] = &[
+    ("workflow", "Save or run a named project workflow", Action::Workflow),
+    ("artifacts", "Find saved documents and interactive reports", Action::Artifacts),
+    ("fork", "Branch this conversation without changing its source", Action::Fork),
     (
         "children",
         "Inspect and control native subagents",
@@ -487,8 +493,8 @@ mod tests {
             let commands = catalog(agent);
             let names: std::collections::HashSet<_> = commands.iter().map(|c| c.name).collect();
             assert_eq!(names.len(), commands.len());
-            // Includes the explicit workspace orchestrator command.
-            assert!(commands.len() <= 47);
+            // Includes orchestration plus workflows, artifacts, and safe branching.
+            assert!(commands.len() <= 50);
             assert_eq!(lookup(agent,"orchestrate").unwrap().action,Action::Orchestrate);
             assert_eq!(
                 lookup(agent, "attach-chat").unwrap().action,

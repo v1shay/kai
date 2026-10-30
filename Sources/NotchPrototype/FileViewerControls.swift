@@ -113,7 +113,7 @@ enum FileActionSymbols {
     func menu(for url:URL)->NSMenu {
         let menu=NSMenu();menu.autoenablesItems=false
         let available=url.isFileURL && FileManager.default.fileExists(atPath:url.path)
-        for (title,action) in [("Copy file",#selector(copyFile(_:))),("Show in Finder",#selector(showInFinder(_:)))] {
+        for (title,action) in [("Quick Look",#selector(quickLook(_:))),("Copy file",#selector(copyFile(_:))),("Show in Finder",#selector(showInFinder(_:)))] {
             let item=menu.addItem(withTitle:title,action:action,keyEquivalent:"")
             item.target=self;item.representedObject=url;item.isEnabled=available
         }
@@ -133,6 +133,7 @@ enum FileActionSymbols {
         if succeeded{onPerformed?(action,url)}
         return succeeded
     }
+    @objc private func quickLook(_ item:NSMenuItem){if let url=item.representedObject as? URL{NativeWorkspaceIntegrations.shared.quickLook([url])}}
     @objc private func copyFile(_ item:NSMenuItem){if let url=item.representedObject as? URL{perform("copy",url:url)}}
     @objc private func showInFinder(_ item:NSMenuItem){
         guard let url=item.representedObject as? URL,url.isFileURL,FileManager.default.fileExists(atPath:url.path) else{return}

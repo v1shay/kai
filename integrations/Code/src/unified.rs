@@ -74,7 +74,7 @@ fn publish_wallpaper(background:&background::ChatBackground){
     let callback=HOST.with(|host|{let mut host=host.borrow_mut();let h=host.as_mut()?;if !h.wallpaper_visible || h.last_wallpaper==key{return None}h.last_wallpaper=key;Some(h.wallpaper)});
     if let Some(callback)=callback{if let Some((pixels,opacity,_))=surface{unsafe{callback(pixels.as_ptr(),pixels.len(),pixels.width()as usize,pixels.height()as usize,opacity)}}else{unsafe{callback(std::ptr::null(),0,0,0,0.)}}}
 }
-fn emit(value: &Value) {
+pub(super) fn emit(value: &Value) {
     let Ok(data) = serde_json::to_vec(value) else {
         return;
     };
@@ -183,7 +183,9 @@ pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Resul
             "Kai unified: native layer and owner state ready in process {}",
             std::process::id()
         );
-        if std::env::args().any(|arg|arg=="--unified-startup-probe"){
+        if std::env::args().any(|arg|matches!(arg.as_str(),"--unified-latency-probe"|"--unified-background-idle-probe")){
+            anyhow::ensure!(std::env::args().any(|arg|arg=="--unified-smoke-test"),"Performance probes require isolated data");
+        }else if std::env::args().any(|arg|arg=="--unified-startup-probe"){
             anyhow::ensure!(std::env::args().any(|arg|arg=="--unified-smoke-test"),"Startup probe requires isolated data");
             let diagnostics=unsafe{libc::dlsym(library,c"kai_unified_diagnostics".as_ptr())};anyhow::ensure!(!diagnostics.is_null(),"No native diagnostics");let diagnostics:unsafe extern "C" fn()->u32=unsafe{std::mem::transmute(diagnostics)};
             let surface=entity.read(cx).startup_surface;
@@ -255,7 +257,7 @@ pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Resul
             }).detach();
         }
         emit(&json!({"type":"keyboardCatalog","commands":keyboard::catalog()}));
-        if !std::env::args().any(|arg|arg=="--unified-smoke-test") || std::env::args().any(|arg|arg=="--unified-startup-probe") {
+        if !std::env::args().any(|arg|arg=="--unified-smoke-test") || std::env::args().any(|arg|matches!(arg.as_str(),"--unified-startup-probe"|"--unified-latency-probe"|"--unified-background-idle-probe")) {
             let surface=entity.read(cx).startup_surface;
             // The native owner already has a state packet. Present immediately;
             // discovery and provider catalogs continue independently.
@@ -593,9 +595,11 @@ impl Orbit {
                 let tokens=self.unified_pending_ids();if tokens.len()>1{let current=self.unified_pending().and_then(|(_,token,_)|tokens.iter().position(|id|token.ends_with(&format!(":{id}"))));let next=current.map_or(0,|i|(i+1)%tokens.len());self.native_request_focus=Some(tokens[next].clone());}
             }
             "preferences"=>{if let Some(value)=request["textMorph"].as_bool(){self.unified_text_morph=value}if let Some(value)=request["motion"].as_bool(){self.motion=value}self.queue_workspace_save(cx);}
+            "external_urls"=>{if let Some(urls)=request["urls"].as_array(){daily_driver::open_urls(urls.iter().filter_map(Value::as_str).map(str::to_owned).collect());}}
             "child_open"=>{
                 let id=request["id"].as_str().ok_or("Missing child")?;
                 let child=self.unified_children.iter().find(|c|child_id(c)==id&&c.connected).cloned().ok_or("Child is no longer connected")?;
+                if let Some(owner)=self.child_owner(&child,&self.unified_children).cloned(){if self.active.as_deref()!=Some(&owner.id){self.workspace_open(Some(owner),None,window,cx);}}
                 if self.broker_panel.is_none(){self.toggle_children(window,cx)}
                 self.select_child(child.provider,child.id,cx);reveal();
             }
@@ -862,7 +866,8 @@ impl Orbit {
             if parent.is_none(){continue}
             tasks.push(json!({"id":child_id(child),"name":child.name.clone().unwrap_or_else(||format!("{} · {}",child.provider.name(),short(&child.id,10))),"runId":child.turn_id.clone().unwrap_or_else(||child.id.clone()),"scene":if child.requests.is_empty(){"thinking"}else{"permission"},"text":if child.preview.is_empty(){child.task.as_deref().or(child.scope.as_deref()).unwrap_or("")}else{&child.preview},"agent":child.provider.command(),"parentId":parent}));
         }
-        tasks.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+        let selected=self.active.as_ref().map(|id|format!("code:{id}"));
+        tasks.sort_by_key(|t|{let urgent=matches!(t["scene"].as_str(),Some("permission"|"question"));let current=t["id"].as_str()==selected.as_deref()||t["parentId"].as_str()==selected.as_deref();(!urgent,!current,t["id"].as_str().unwrap_or("").to_owned())});
         let approval = self.unified_pending();
         let activity=approval.as_ref().map(|(owner,token,summary)|json!({"scene":"permission","text":summary,"owner":owner,"request":token})).or_else(||tasks.first().map(|t|json!({"scene":t["scene"],"text":t["text"]}))).unwrap_or(json!({"scene":"off","text":"Ready"}));
         let terminal = self
@@ -955,7 +960,7 @@ impl Orbit {
             if let Some(span)=flow.commands.get(index).and_then(|r|r.as_ref()){
                 if span.start!=index{continue}
                 let working=self.rows[span.clone()].iter().any(|r|chat_flow::command(&r.block).is_some_and(|(_,_,s)|matches!(s,chat_interactions::InteractionStatus::Started|chat_interactions::InteractionStatus::Working)));
-                history.push(json!({"id":format!("row-{index}"),"kind":"activity","lines":[{"text":format!("{} · {}",if working{"Running commands"}else{"Ran commands"},span.len()),"style":"activity"}],"detailId":self.unified_detail_id(index),"agent":self.agent.command(),"speechText":""}));continue
+                history.push(json!({"id":format!("row-{index}"),"kind":"activity","lines":[{"text":format!("{} · {}",if working{"Running commands"}else{"Ran commands"},span.len()),"style":"activity"}],"detailId":self.unified_detail_id(index),"model":self.row_timing(index).and_then(|t|t.model.as_deref()),"effort":self.row_timing(index).and_then(|t|t.effort.as_deref()),"agent":self.agent.command(),"speechText":""}));continue
             }
             if let Some(r) = &row.role {
                 role = r.clone()
@@ -1021,7 +1026,7 @@ impl Orbit {
                 },
             };
             let child=match &row.block{MessageBlock::Interaction(chat_interactions::ChatInteraction::Delegation{agent:Some(id),..})=>self.unified_children.iter().find(|c|c.id==*id).map(child_id),_=>None};
-            history.push(json!({"id":format!("row-{index}"),"kind":if kind.starts_with("user"){"user"}else if kind=="activity"{"activity"}else{"assistant"},"lines":[{"text":bounded(&text,4000),"style":style}],"detailId":self.unified_detail_id(index),"childId":child,"agent":role.split(':').nth(1).unwrap_or(self.agent.command()),"speechText":if kind.starts_with("user") || kind=="activity" || style=="code" {String::new()}else{bounded(&text,4000)}}));
+            history.push(json!({"id":format!("row-{index}"),"kind":if kind.starts_with("user"){"user"}else if kind=="activity"{"activity"}else{"assistant"},"lines":[{"text":bounded(&text,4000),"style":style}],"detailId":self.unified_detail_id(index),"model":self.row_timing(index).and_then(|t|t.model.as_deref()),"effort":self.row_timing(index).and_then(|t|t.effort.as_deref()),"childId":child,"agent":role.split(':').nth(1).unwrap_or(self.agent.command()),"speechText":if kind.starts_with("user") || kind=="activity" || style=="code" {String::new()}else{bounded(&text,4000)}}));
         }
         budget_history(history)
     }
@@ -1445,7 +1450,7 @@ impl Orbit {
     pub(super) fn refresh_unified_models(&mut self,cx:&mut Context<Self>){
         if self.controls_pending.contains(self.agent.command()){return}
         let project=self.model_project();
-        if self.controls.get(self.agent.command()).is_some_and(|(at,info)|at.elapsed()<Duration::from_secs(60)&&info.defaults.project==project && (!matches!(self.agent,AgentKind::Gemini|AgentKind::Cursor|AgentKind::OpenCode) || (info.defaults.capabilities_checked && info.defaults.capabilities_model==self.model))){return}
+        if self.controls.get(self.agent.command()).is_some_and(|(at,info)|at.elapsed()<Duration::from_secs(60)&&info.defaults.project==project && (!matches!(self.agent,AgentKind::Gemini|AgentKind::Cursor|AgentKind::OpenCode|AgentKind::Grok) || (info.defaults.capabilities_checked && info.defaults.capabilities_model==self.model))){return}
         let kind=self.agent;
         let Some(path)=self.agents.iter().find(|a|a.kind==kind&&a.available).and_then(|a|a.executable.clone())else{return};
         self.controls_pending.insert(kind.command());let home=self.controls_home.clone();let selected=self.model.clone();

@@ -42,6 +42,12 @@ fn launch_mode(request: RunRequest, cli_command: bool) -> Result<RunHandle> {
             command.arg("--trust");
         }
         command.arg("acp");
+    } else if request.agent==AgentKind::Grok {
+        command.env("GROK_NO_AUTO_UPDATE","1");
+        command.args(["--permission-mode",if request.allow_edits{"default"}else{"plan"},"agent","--no-leader"]);
+        if let Some(model)=&request.model{command.args(["--model",model]);}
+        if let Some(effort)=&request.reasoning_effort{command.args(["--reasoning-effort",effort]);}
+        command.arg("stdio");
     } else {
         command.args([
             "--experimental-acp",
@@ -379,6 +385,8 @@ struct Session {
     config:Value,
     commands: HashSet<String>,
     cursor_todos: BTreeMap<String, (String, String)>,
+    thought:String,
+    thinking:bool,
     children: HashMap<String, ChildSession>,
 }
 impl Session {
@@ -392,9 +400,14 @@ impl Session {
             modes: HashSet::new(),
             models: HashSet::new(),model_catalog:Vec::new(),model_current:None,config:Value::Null,
             commands: HashSet::new(),
-            cursor_todos: BTreeMap::new(),
+            cursor_todos: BTreeMap::new(),thought:String::new(),thinking:false,
             children: HashMap::new(),
         }
+    }
+    fn settle_thought(&mut self,parser:&mut StreamParser,status:InteractionStatus)->Vec<RuntimeEvent>{
+        if !self.thinking{return vec![]}
+        self.thinking=false;
+        parser.upsert_interaction(ChatInteraction::Status{title:"Thinking".into(),details:self.thought.clone(),status},"acp.thinking")
     }
     fn update_effort_catalog(&mut self)->bool {
         if let Some((_,levels))=crate::provider_defaults::acp_effort_option(&self.config)
@@ -650,9 +663,15 @@ impl Session {
             }
             let events = match kind {
                 "agent_message_chunk" => {
-                    parser.delta(update["content"]["text"].as_str().unwrap_or(""))
+                    let mut events=self.settle_thought(parser,InteractionStatus::Completed);
+                    events.extend(parser.delta(update["content"]["text"].as_str().unwrap_or("")));events
                 }
-                "agent_thought_chunk" => vec![RuntimeEvent::Status("Thinking".into())],
+                "agent_thought_chunk" => {
+                    let text=update["content"]["text"].as_str().unwrap_or("");
+                    if self.thought.len()+text.len()<=256*1024{self.thought.push_str(text);}
+                    self.thinking=true;
+                    parser.upsert_interaction(ChatInteraction::Status{title:"Thinking".into(),details:self.thought.clone(),status:InteractionStatus::Working},"acp.thinking")
+                },
                 "available_commands_update" => vec![RuntimeEvent::Commands(
                     update["availableCommands"]
                         .as_array()
@@ -815,7 +834,7 @@ fn run(
     let mut session = Session::new();
     session.agent = request.agent;
     session.allow_edits = request.allow_edits;
-    let deadline = Some(Instant::now() + Duration::from_secs(90));
+    let deadline = Some(Instant::now() + Duration::from_secs(45));
     send(
         &cx.tx,
         RuntimeEvent::Status(format!("Connecting to {} ACP", request.agent.name())),
@@ -836,7 +855,7 @@ fn run(
     session.loading = request.resume_id.is_some();
     if session.loading {
         ensure!(
-            initialized["agentCapabilities"]["loadSession"] == true,
+            initialized["agentCapabilities"]["loadSession"] == true || (request.agent==AgentKind::Grok && initialized["agentCapabilities"]["sessionCapabilities"]["resume"].is_object()),
             "Installed agent does not advertise native session resume"
         );
     }
@@ -846,7 +865,9 @@ fn run(
     }
     pipes.rpc(
         2,
-        if session.loading {
+        if session.loading && request.agent==AgentKind::Grok && initialized["agentCapabilities"]["sessionCapabilities"]["resume"].is_object(){
+            "session/resume"
+        }else if session.loading {
             "session/load"
         } else {
             "session/new"
@@ -904,7 +925,10 @@ fn run(
         "plan"
     };
     let mode_config=session.config["configOptions"].as_array().into_iter().flatten().find(|option|option["category"]=="mode" || option["id"]=="mode");
-    if let Some(option)=mode_config {
+    if request.agent==AgentKind::Grok {
+        // Grok applies its permission policy at process startup. Its ACP mode
+        // selector represents reasoning intensity, not filesystem permissions.
+    }else if let Some(option)=mode_config {
         let id=option["id"].as_str().context("Native mode selector has no ID")?;
         ensure!(option["options"].as_array().into_iter().flatten().any(|value|value["value"]==desired),"Native agent does not advertise requested {desired} policy");
         pipes.rpc(3,"session/set_config_option",json!({"sessionId":session.id,"configId":id,"value":desired}),cx)?;
@@ -912,13 +936,11 @@ fn run(
         ensure!(session.modes.contains(desired),"The agent does not advertise the requested {desired} policy; update or configure it");
         pipes.rpc(3,"session/set_mode",json!({"sessionId":session.id,"modeId":desired}),cx)?;
     }
-    let updated=wait(3,pipes,&mut session,child,parser,cx,deadline)?;
+    let updated=if request.agent==AgentKind::Grok{Value::Null}else{wait(3,pipes,&mut session,child,parser,cx,deadline)?};
     if updated["configOptions"].is_array(){session.config=updated;}
-    if let Some(model) = &request.model {
-        ensure!(
-            session.models.contains(model),
-            "The agent does not advertise model {model}"
-        );
+    if let Some(requested) = &request.model {
+        let model=crate::provider_defaults::acp_model_id(requested,&session.models).with_context(||format!("The agent does not advertise model {requested}"))?;
+        let model=&model;
         let option=session.config["configOptions"].as_array().into_iter().flatten().find(|option|option["category"]=="model" || option["id"]=="model");
         if let Some(option)=option {
             let id=option["id"].as_str().context("Native model selector has no ID")?;
@@ -984,7 +1006,15 @@ fn run(
         RuntimeEvent::Status("Thinking".into()),
         &cx.cancelled,
     )?;
-    let result = wait(5, pipes, &mut session, child, parser, cx, None)?;
+    let result = wait(5, pipes, &mut session, child, parser, cx, None);
+    let thought_status=match &result{
+        _ if cx.cancelled.load(Ordering::Acquire)=>InteractionStatus::Cancelled,
+        Ok(value) if value["stopReason"]=="refusal"=>InteractionStatus::Failed,
+        Ok(_)=>InteractionStatus::Completed,
+        Err(_)=>InteractionStatus::Failed,
+    };
+    for event in session.settle_thought(parser,thought_status){send(&cx.tx,event,&cx.cancelled)?;}
+    let result=result?;
     for id in session.pending.keys() {
         send(
             &cx.tx,
@@ -1299,6 +1329,18 @@ mod tests {
         std::fs::write(&path, format!("#!/usr/bin/python3\n{source}")).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
         (root, path)
+    }
+    #[test]
+    fn thinking_settles_before_prose_and_at_terminal_without_losing_details(){
+        let mut session=Session::new();let mut parser=StreamParser::default();parser.begin("thought-test");
+        session.thought="Inspect the provider-reported plan".into();session.thinking=true;
+        parser.upsert_interaction(ChatInteraction::Status{title:"Thinking".into(),details:session.thought.clone(),status:InteractionStatus::Working},"acp.thinking");
+        assert!(!session.settle_thought(&mut parser,InteractionStatus::Completed).is_empty());
+        assert!(session.settle_thought(&mut parser,InteractionStatus::Completed).is_empty());
+        parser.delta("Visible answer");session.thought.push_str("; verify the result");session.thinking=true;
+        session.settle_thought(&mut parser,InteractionStatus::Failed);
+        let saved=parser.rendered_output();assert!(saved.contains("Visible answer"));
+        assert!(saved.contains(&crate::chat_interactions::serialize_interaction(&ChatInteraction::Status{title:"Thinking".into(),details:session.thought,status:InteractionStatus::Failed})));
     }
     #[test]
     fn native_acp_waits_for_and_delivers_permission_responses() {

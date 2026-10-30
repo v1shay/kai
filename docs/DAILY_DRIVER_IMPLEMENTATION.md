@@ -1,0 +1,90 @@
+# Daily driver implementation — October 29, 2026
+
+Requested scope: continuous provider conversations; attention-driven notch;
+external command/MCP and remote backend; inspectable activity; review/restore;
+persistent artifacts; Finder, Quick Look, command palette and named workflows;
+repair installed Antigravity/Cursor/Grok; enforce measurable performance gates.
+
+Implementation and verification are tracked here as work proceeds. Existing
+sessions, provider credentials and user drafts must survive. Remote clients use
+the host's session/model/permission authority; they never execute a second agent
+or infer completion from a command receipt. No mobile frontend is requested.
+
+Baseline: `1153d5c`, installed 0.11.3 (36). Latest isolated first frame 262 ms,
+223 MiB process RSS, 1.60% of one core idle. These are measurements, not targets
+already achieved. Release gates must fail on missing evidence or exceeded budgets.
+
+## Work
+
+- [x] Reproduce and repair installed provider startup, model and approval paths.
+- [x] Improve context handoffs and per-turn model/provenance across providers.
+- [x] Attention priority and exact parent/child navigation across surfaces.
+- [x] Shared versioned commands with durable deduplication and scoped clients.
+- [x] Remote session/history/status/model/control/approval/file API and reconnect.
+- [x] Searchable command palette, projects, chats, recent results and workflows.
+- [x] Finder folder/file routing, native previews and App Intents/Shortcuts.
+- [x] Inspectable activity, review scope and coordinated restore checks.
+- [x] Persistent document/HTML artifacts and lazy isolated rendering.
+- [x] Performance instrumentation, strict budgets and packaged verification.
+- [ ] All strict performance budgets achieved on the delivery candidate.
+- [x] Signed experimental build, backup/install and report measured limitations accurately.
+
+## Verification and delivery
+
+The implementation checklist is not a claim of unrestricted provider parity.
+Providers expose their own capabilities: steering currently requires Codex;
+Antigravity command approvals use its documented PreToolUse hook; exact model
+selection requires a provider-advertised catalog entry. Cursor's configured
+model streamed and resumed with retained context. Explicit Composer 2.5 selection
+returned the provider's plan-upgrade requirement; Kai did not substitute a model.
+Cursor, Grok and Antigravity each passed an isolated real command approval with
+the file verified absent before consent and correct after one-time approval.
+
+Native Finder routing, Quick Look, formatted Markdown and an ephemeral interactive
+HTML preview passed an AppKit/WebKit harness. Shortcuts metadata was extracted by
+the real App Intents compiler processor and is included in the signed bundle.
+Remote authentication, scope, revocation, restart/reconnect, durable receipts,
+OAuth/PKCE, bounded replay, MCP discovery and MCP Apps resources passed 19 Python
+checks. The MCP Apps JavaScript harness also covers uncertain approval decisions.
+
+The backend supports session/history/model/task/approval/control, scoped file
+reads, checkpoint review and persistent artifacts. A remote client still needs
+network routing (an existing SSH tunnel or configured HTTPS endpoint), and the
+Mac must remain awake with Kai running. This pass does not provision a cloud
+relay, remote audio/terminal streaming, or an attachment-upload protocol.
+
+Strict performance evidence is written to `.build/validation/` by
+`scripts/collect-release-performance.py`. Budgets never auto-adjust and missing
+measurements fail. First-frame timing is the first GPUI workspace frame, not the
+end of the deliberately longer entrance choreography or a GPU presentation
+measurement. CPU/RSS/thread measurements cover the app process, with CLI agents
+and dev servers excluded. Startup timing includes the launch-to-main interval when invoked by the packaged
+probe. Background idle uses the compact native surface with Code hidden; the
+visible workspace has its own idle budget. Input-interfered samples and
+mixed-binary cohorts cannot certify a release. The delivery gate is **failed / incomplete**;
+passing functional tests alone does not meet the performance release requirement.
+
+Native computer-use inspection is unavailable on this machine (Sky Computer Use
+service startup fails). Native harnesses exercise real windows; they do not
+replace a human visual pass or a macOS 26 Liquid Glass device test.
+
+The final full Rust suite completed 862 tests with zero failures (19 opt-in tests
+ignored). Later focused regressions cover ACP thought completion, remote scope
+spoofing, workflow-name isolation, reserved callback fields, and the actual
+Python HTTP → Unix IPC → native session-owner control round trip. That end-to-end
+test found and now covers macOS socket-path length and accepted-socket blocking
+mode. The native suite completed 208 tests with zero failures and one skip;
+the real native morph matrix passed all surface transitions and reversals.
+
+Delivery-candidate observations: warm chat switching p95 40.91 ms (24 samples),
+warm reveal p95 221.98 ms (20 samples). The visible-idle process exited cleanly
+before its 30-second completion marker; compact idle was not reached. Idle CPU
+is therefore unverified for this candidate. Startup exceeded its 200 ms budget (p95 2,796.65 ms in relocated,
+re-signed isolated app copies, including the pre-main launch interval).
+The signed 0.12.0 (37) bundle is an experimental test build, not a performance-
+qualified release. The installer preserves 0.11.3 and does not restart the user’s
+running copy. Use Command-Q and reopen to load the new executable.
+
+Installed at `/Users/vishayagarwal/Documents/ChatGPT/notchdex/.build/Kai Unified.app`.
+Previous bundle: `Kai Unified-0.11.3-36-backup-20261029-175245.app` in the same directory.
+Finder/Shortcuts Launch Services registration completed; the running app was not restarted.
