@@ -9,3 +9,5 @@ Message controls sit at the end of an authored message, rather than after every 
 Copy feedback switches to a green check with a short fade/slide and resets after 1.5 seconds. Repeated clicks extend confirmation; an older reset cannot cancel a newer click. State is scoped to a visible control and chat, timer tasks retain only weak references, and reduced-motion preferences disable the transition.
 
 Validation: 34 focused native and unit tests passed, covering project/chat ordering, navigation without recency changes, persisted prompt timestamps, Priority toggling, multi-block message grouping, actual clipboard content and check feedback, and existing project-tree/file-editor/review-card behavior. No live provider prompts were sent and no existing chats were modified. Release binary and signed app built successfully; visual review is left to the user.
+
+0.12.9 (46): message copy footers follow the sender edge: right for user prompts, left for assistant responses. The previous footer unconditionally justified both to the right. Clipboard contents and checkmark feedback are unchanged.

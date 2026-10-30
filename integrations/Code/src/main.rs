@@ -5060,7 +5060,7 @@ impl Orbit {
         if let Some(range) = self.flow_index.message_ends.get(ix).cloned().flatten() {
             let owner = cx.entity().downgrade();
             let chat = self.active.clone();
-            content = content.child(div().mt_1().flex().justify_end().child(
+            content = content.child(div().mt_1().flex().when(user, |s| s.justify_end()).when(!user, |s| s.justify_start()).child(
                 copy_control::CopyControl::source(format!("message-copy-{ix}"), move |cx| {
                     owner.upgrade().and_then(|owner| {
                         let app = owner.read(cx);
