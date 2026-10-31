@@ -1,6 +1,6 @@
 # Native GitHub support
 
-Kai's GitHub controls use the selected chat's execution checkout, including linked worktrees and nested project folders. Open the hub with **Control-Shift-G**, `/github`, Settings → GitHub & source control, or the sidebar GitHub widget. The widget automatically discovers your existing `gh` login and loads your open PRs across repositories without opening the hub. The hub defaults to that personal list, with a toggle for the current project. Personal PR reads are coalesced and cached for 60 seconds per GitHub host across project switches. The widget can be disabled in Appearance.
+Kai's GitHub controls use the selected chat's execution checkout, including linked worktrees and nested project folders. Open the hub with **Control-Shift-G**, `/github`, Settings → GitHub & source control, or the sidebar GitHub widget. The widget automatically discovers your existing `gh` login and loads your open PRs across repositories without opening the hub. The hub defaults to that personal list, with a toggle for the current project. Personal PR reads start independently of local repository discovery and initial GPUI focus, so a missing or non-Git project cannot block account PRs. They are coalesced and cached for 60 seconds per GitHub host across project switches. The widget can be disabled in Appearance.
 
 ## Everyday flows
 

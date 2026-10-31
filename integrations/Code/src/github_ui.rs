@@ -35,6 +35,7 @@ pub(super) struct State {
     read_id: u64,
     checked: Option<Instant>,
     widget_motion: Option<(Instant, f32, f32)>,
+    brand_at: Option<Instant>,
     error: Option<String>,
     pub panel: Option<Panel>,
     pub busy: Option<String>,
@@ -58,6 +59,7 @@ impl Default for State {
             read_id: 0,
             checked: None,
             widget_motion: None,
+            brand_at: None,
             error: None,
             panel: None,
             busy: None,
@@ -157,9 +159,13 @@ fn button(
     action: impl Fn(&mut Orbit, &mut Window, &mut Context<Orbit>) + 'static,
 ) -> Stateful<Div> {
     let id = id.into();
+    let selector = id.clone();
+    let glyph_selector = format!("{id}-glyph");
+    let label: SharedString = label.into();
+    let icon_only = label.is_empty();
     div()
         .id(id.clone())
-        .debug_selector(move || id.to_string())
+        .debug_selector(move || selector.to_string())
         .h(px(28.))
         .px_2()
         .rounded_md()
@@ -167,6 +173,8 @@ fn button(
         .items_center()
         .justify_center()
         .gap_2()
+        .flex_none()
+        .when(icon_only, |s| s.w(px(28.)).px_0().gap_0())
         .text_size(theme::ui_px(11.))
         .text_color(rgb(TEXT))
         .bg(rgba(0xffffff09))
@@ -174,8 +182,14 @@ fn button(
         .when(enabled, |s| {
             s.cursor_pointer().hover(|s| s.bg(rgba(GLASS_HOVER)))
         })
-        .when_some(glyph, |s, g| s.child(icon(g, 14., TEXT)))
-        .child(label.into())
+        .when_some(glyph, |s, g| {
+            s.child(
+                icon(g, 14., TEXT)
+                    .flex_none()
+                    .debug_selector(move || glyph_selector.clone()),
+            )
+        })
+        .when(!icon_only, |s| s.child(label))
         .on_click(cx.listener(move |app, _event: &ClickEvent, window, cx| {
             cx.stop_propagation();
             if enabled {
@@ -257,14 +271,6 @@ impl Orbit {
         if self.github.freeze_reads {
             return;
         }
-        if !self
-            .github
-            .snapshot
-            .as_ref()
-            .is_some_and(|s| s.gh_available)
-        {
-            return;
-        }
         let host = self.github.host().to_owned();
         if self.github.mine_host.as_ref() != Some(&host) {
             self.github.mine_job = None;
@@ -272,6 +278,7 @@ impl Orbit {
             self.github.mine_checked = None;
             self.github.mine_error = None;
             self.github.mine_host = Some(host.clone());
+            self.github.brand_at = None;
         }
         if self.github.mine_job.is_some()
             || (!force
@@ -316,6 +323,9 @@ impl Orbit {
                 app.github.mine_checked = Some(Instant::now());
                 match result {
                     Ok(page) => {
+                        if app.github.mine.is_none() {
+                            app.github.brand_at = Some(Instant::now());
+                        }
                         app.github.mine = Some(page);
                         app.github.mine_error = None;
                     }
@@ -354,6 +364,16 @@ impl Orbit {
                 cx.notify();
             }
         }
+        if (self.theme.github_widget || self.github.panel.is_some())
+            && self.motion
+            && !native::reduced_motion()
+            && self
+                .github
+                .brand_at
+                .is_some_and(|at| at.elapsed() < Duration::from_millis(420))
+        {
+            request_motion_frame(window, cx);
+        }
         if self.theme.github_widget
             && self.motion
             && !native::reduced_motion()
@@ -380,7 +400,7 @@ impl Orbit {
             self.github.checked = self.github.cache.get(&root).map(|(at, _)| *at);
             self.github.error = None;
         }
-        if window.is_window_active()
+        if (window.is_window_active() || self.github.checked.is_none())
             && (self.theme.github_widget || self.github.panel.is_some())
             && self.github.busy.is_none()
             && self.github.read_job.is_none()
@@ -391,7 +411,7 @@ impl Orbit {
         {
             self.refresh_github(false, cx);
         }
-        if window.is_window_active()
+        if (window.is_window_active() || self.github.mine_checked.is_none())
             && (self.theme.github_widget
                 || self
                     .github
@@ -487,6 +507,7 @@ impl Orbit {
             self.close_github(window, cx);
             return;
         }
+        self.refresh_personal_pulls(false, cx);
         let root = self.github_root();
         self.agent_picker = None;
         self.panel_popover = None;
@@ -1046,11 +1067,58 @@ impl Orbit {
         })
         .detach();
     }
+    fn github_mark(&self, size_px: f32) -> AnyElement {
+        let connected = self.github.personal().is_some();
+        let t = if !connected {
+            0.
+        } else if !self.motion || native::reduced_motion() {
+            1.
+        } else {
+            self.github.brand_at.map_or(1., |at| {
+                presentation::spring((at.elapsed().as_secs_f32() / 0.42).min(1.)).clamp(0., 1.)
+            })
+        };
+        div()
+            .size(px(size_px))
+            .flex_none()
+            .relative()
+            .child(
+                div().absolute().inset_0().opacity(1. - t).child(
+                    icon(
+                        "branch",
+                        size_px,
+                        if self.github.mine_job.is_some() {
+                            0xe6c36b
+                        } else {
+                            TEXT
+                        },
+                    )
+                    .with_transformation(Transformation::scale(size(1. - t * 0.55, 1. - t * 0.55))),
+                ),
+            )
+            .child(div().absolute().inset_0().opacity(t).child(
+                icon("kai/integrations/github", size_px, TEXT).with_transformation(
+                    Transformation::scale(size(0.65 + t * 0.35, 0.65 + t * 0.35)),
+                ),
+            ))
+            .into_any_element()
+    }
     pub(super) fn github_widget(&self, cx: &Context<Self>) -> AnyElement {
         let snapshot = self.github.snapshot.as_ref();
         let personal = self.github.personal();
         let repo = snapshot.and_then(|s| s.checkout.as_ref());
-        let busy = self.github.read_job.is_some();
+        let has_repo = repo.is_some();
+        let branch_label = if let Some(repo) = repo {
+            repo.branch
+                .clone()
+                .unwrap_or_else(|| "Detached HEAD".into())
+        } else if let Some(page) = personal {
+            format!("{} · {} open PRs", page.login, page.total)
+        } else if self.github.mine_job.is_some() {
+            "Loading your pull requests…".into()
+        } else {
+            "GitHub account".into()
+        };
         let height = self.github.widget_height(self.motion);
         div()
             .id("github-widget-clip")
@@ -1081,7 +1149,7 @@ impl Orbit {
                             .flex()
                             .items_center()
                             .gap_2()
-                            .child(icon("kai/integrations/github", 15., TEXT))
+                            .child(self.github_mark(15.))
                             .child(div().flex_1().text_size(theme::ui_px(11.)).child("GitHub"))
                             .child(button(
                                 "github-open",
@@ -1102,17 +1170,23 @@ impl Orbit {
                             .cursor_pointer()
                             .text_size(theme::ui_px(10.))
                             .text_color(rgb(MUTED))
-                            .child(icon("branch", 12., MUTED))
-                            .child(repo.and_then(|r| r.branch.clone()).unwrap_or_else(|| {
-                                if busy {
-                                    "Reading checkout…".into()
+                            .child(icon(
+                                if has_repo {
+                                    "branch"
                                 } else {
-                                    "Set up repository".into()
-                                }
-                            }))
-                            .on_click(cx.listener(|app, _, w, cx| {
+                                    "git-pull-request"
+                                },
+                                12.,
+                                MUTED,
+                            ))
+                            .child(branch_label)
+                            .on_click(cx.listener(move |app, _, w, cx| {
                                 cx.stop_propagation();
-                                app.open_github(Tab::Branches, w, cx)
+                                app.open_github(
+                                    if has_repo { Tab::Branches } else { Tab::Pulls },
+                                    w,
+                                    cx,
+                                )
                             })),
                     )
                     .children(
@@ -1276,7 +1350,7 @@ impl Orbit {
                             .flex()
                             .items_center()
                             .gap_2()
-                            .child(icon("kai/integrations/github", 18., TEXT))
+                            .child(self.github_mark(18.))
                             .child(div().flex_1().text_size(theme::ui_px(15.)).child(
                                 if p.tab == Tab::Sync {
                                     "Commit & push"
@@ -2151,6 +2225,22 @@ mod tests {
         crate::ui_tests::click_selector(cx, "github-open");
         crate::ui_tests::draw_frame(&view, cx);
         assert!(cx.debug_bounds("github-panel").is_some());
+        for (id, glyph_id) in [
+            ("github-open", "github-open-glyph"),
+            ("github-refresh", "github-refresh-glyph"),
+            ("github-close", "github-close-glyph"),
+        ] {
+            let control = cx.debug_bounds(id).unwrap();
+            let glyph = cx.debug_bounds(glyph_id).unwrap();
+            assert!(
+                (control.center().x - glyph.center().x).abs() < px(0.5),
+                "{id} glyph is horizontally displaced"
+            );
+            assert!(
+                (control.center().y - glyph.center().y).abs() < px(0.5),
+                "{id} glyph is vertically displaced"
+            );
+        }
         crate::ui_tests::click_selector(cx, "github-tab-Branches");
         crate::ui_tests::draw_frame(&view, cx);
         assert!(cx.debug_bounds("github-branch-feature/other").is_some());
@@ -2248,6 +2338,45 @@ mod tests {
             );
             assert_eq!(app.github.natural_widget_height(), 88.);
         });
+    }
+    #[gpui::test]
+    #[ignore = "Explicit read-only startup validation using the installed gh login, with no local repository or hub"]
+    fn github_live_bootstrap_without_repository_snapshot(cx: &mut TestAppContext) {
+        let (view, cx) = crate::ui_tests::fixture(cx);
+        view.update(cx, |app, cx| {
+            app.github = State::default();
+            app.project = PathBuf::from("/private/tmp/kai-nonexistent-github-startup-project");
+            app.active = None;
+            app.refresh_personal_pulls(false, cx);
+            assert!(
+                app.github.mine_job.is_some(),
+                "Account loading must not wait for a local snapshot"
+            );
+        });
+        cx.run_until_parked();
+        view.update(cx, |app, _| {
+            assert!(app.github.panel.is_none(), "The hub should remain closed");
+            assert!(
+                app.github.snapshot.is_none(),
+                "No project snapshot should be required"
+            );
+            assert!(app.github.mine_job.is_none());
+            assert!(
+                app.github.mine_error.is_none(),
+                "{:?}",
+                app.github.mine_error
+            );
+            let page = app
+                .github
+                .personal()
+                .expect("Automatic startup did not populate personal PRs");
+            assert!(!page.login.is_empty());
+            eprintln!(
+                "KAI_GITHUB_NO_REPO_STARTUP_OK {} personal PRs for {}",
+                page.total, page.login
+            );
+        });
+        crate::ui_tests::draw_frame(&view, cx);
     }
     #[gpui::test]
     fn github_widget_is_optional_and_setting_round_trips(cx: &mut TestAppContext) {
