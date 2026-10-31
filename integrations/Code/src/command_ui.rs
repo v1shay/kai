@@ -424,7 +424,8 @@ impl Orbit {
             Action::Models if !args.is_empty() => {
                 self.choose_model((args != "default").then(|| args.into()), cx)
             }
-            Action::Models | Action::Agents => self.toggle_agent_picker(
+            Action::Models | Action::Agents => self.open_scoped_picker(
+                if command.action==Action::Agents{agent_picker::Scope::Providers}else{agent_picker::Scope::Models},
                 point(
                     px(self.sidebar_width
                         + if self.conversations_visible {

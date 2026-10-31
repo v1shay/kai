@@ -254,6 +254,7 @@ private final class AttachmentLayer:CALayer {
     var onOrchestrator:(()->Void)?
     var onUsageRefresh:(()->Void)?
     private let composerPopover=ComposerGlassPopover()
+    private let agentPicker=NativeAgentPicker()
     private let effortLabel=CenteredComposerTextLayer(),fastBolt=CALayer(),usageLabel=CenteredComposerTextLayer(),usageTrack=CALayer(),usageFill=CALayer()
     private var fastWasOn:Bool?
     private let effortShimmer=EffortTileLayer(),fastShimmer=EffortTileLayer()
@@ -643,7 +644,7 @@ private final class AttachmentLayer:CALayer {
         let nextCode=(state.codeChats ?? []).filter{!hiddenChats.contains($0.id) && !activeIDs.contains($0.id)}
         let sidebarChanged=codeChats != nextCode || selectedProject != state.project || selectedThread != state.threadId || projects != nextProjects || chats != nextChats || standaloneChats != nextStandalone || elsewhere != active || modelState?.finishedTasks != state.finishedTasks
         if modelState?.ownerToken != state.ownerToken || modelState?.selectedModel != state.selectedModel{composerPopover.dismiss()}
-        modelState=state
+        modelState=state;agentPicker.update(state)
         selectedProject=state.project;selectedThread=state.threadId;approvalNeeded=state.approval;turnActive=state.activeTurnId != nil
         projects=nextProjects;chats=nextChats;standaloneChats=nextStandalone;codeChats=nextCode
         if elsewhere.isEmpty && !active.isEmpty {projectOffset=0}
@@ -795,7 +796,15 @@ private final class AttachmentLayer:CALayer {
         return menu
     }
     @objc private func selectPermission(_ item:NSMenuItem){guard let values=item.representedObject as? [String],values.count==3,values[2]==(modelState?.ownerToken ?? "") else{return};onPermissions?(values[0]=="access" ? values[1]:nil,values[0]=="approvals" ? values[1]:nil)}
-    private func showSettingsMenu(_ kind:String){if kind=="effort"{showThinkingPopover();return};composerPopover.dismiss();settingsMenu(kind)?.popUp(positioning:nil,at:NSEvent.mouseLocation,in:nil)}
+    func dismissComposerPickers(){agentPicker.dismiss();composerPopover.dismiss()}
+    func showAgentPicker(_ kind:String){
+        guard let state=modelState else{return};composerPopover.dismiss()
+        agentPicker.onAgent={[weak self] id in self?.onAgent?(id)}
+        agentPicker.onModel={[weak self] id in self?.onModel?(id)}
+        agentPicker.onEffort={[weak self] model,effort in self?.onSettings?(model,effort)}
+        agentPicker.show(scope:kind=="agent" ? .providers:kind=="models" ? .models:.all,state:state,at:NSEvent.mouseLocation)
+    }
+    private func showSettingsMenu(_ kind:String){if kind=="model" || kind=="agent"{showAgentPicker(kind);return};if kind=="effort"{showThinkingPopover();return};composerPopover.dismiss();settingsMenu(kind)?.popUp(positioning:nil,at:NSEvent.mouseLocation,in:nil)}
     func settingsMenu(_ kind:String)->NSMenu? {
         guard let state=modelState,let models=state.models else{return nil}
         let menu=NSMenu()

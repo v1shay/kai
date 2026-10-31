@@ -37,18 +37,25 @@ import AppKit
 @MainActor final class EffortTileRow:NSControl {
     let value:String,selected:Bool
     var commit:((String)->Void)?,onPreview:((String,Bool)->Void)?
-    private let tiles=EffortTileLayer()
+    private let tiles=EffortTileLayer(),caption=CATextLayer(),check=CATextLayer()
+    private var rowTint=NSColor.white
     private var tracking:NSTrackingArea?
     init(value:String,title:String,index:Int,count:Int,selected:Bool){
         self.value=value;self.selected=selected
         let tint=EffortAppearance.color(value,fraction:CGFloat(index)/CGFloat(max(1,count-1)))
         super.init(frame:CGRect(x:0,y:0,width:244,height:34));wantsLayer=true;layer?.cornerRadius=7;layer?.masksToBounds=true
         tiles.frame=bounds;tiles.configure(size:bounds.size,tint:tint);layer?.addSublayer(tiles)
-        let label=CATextLayer();label.string=title;label.font=AppTypography.ui(ofSize:12,weight:.medium);label.fontSize=12;label.foregroundColor=tint.cgColor;label.contentsScale=NSScreen.main?.backingScaleFactor ?? 2;label.frame=CGRect(x:12,y:9,width:210,height:17);layer?.addSublayer(label)
-        if selected{let check=CATextLayer();check.string="✓";check.fontSize=12;check.foregroundColor=tint.cgColor;check.contentsScale=label.contentsScale;check.frame=CGRect(x:222,y:9,width:15,height:17);layer?.addSublayer(check);layer?.backgroundColor=NSColor.white.withAlphaComponent(0.06).cgColor}
+        rowTint=tint;let label=caption;label.string=title;label.font=AppTypography.ui(ofSize:12,weight:.medium);label.fontSize=12;label.foregroundColor=tint.cgColor;label.contentsScale=NSScreen.main?.backingScaleFactor ?? 2;label.frame=CGRect(x:12,y:9,width:210,height:17);layer?.addSublayer(label)
+        if selected{check.string="✓";check.fontSize=12;check.foregroundColor=tint.cgColor;check.contentsScale=label.contentsScale;check.frame=CGRect(x:222,y:9,width:15,height:17);layer?.addSublayer(check);layer?.backgroundColor=NSColor.white.withAlphaComponent(0.06).cgColor}
         setAccessibilityLabel(title);setAccessibilityRole(.button)
     }
     required init?(coder:NSCoder){nil}
+    override func layout(){
+        super.layout();CATransaction.begin();CATransaction.setDisableActions(true)
+        tiles.frame=bounds;tiles.configure(size:bounds.size,tint:rowTint)
+        caption.frame=CGRect(x:12,y:9,width:max(0,bounds.width-42),height:17)
+        check.frame=CGRect(x:bounds.width-22,y:9,width:15,height:17);CATransaction.commit()
+    }
     func setPreview(_ active:Bool){if active{tiles.play()}else{tiles.stop()}}
     override func updateTrackingAreas(){super.updateTrackingAreas();if let tracking{removeTrackingArea(tracking)};let area=NSTrackingArea(rect:bounds,options:[.mouseEnteredAndExited,.activeAlways],owner:self);addTrackingArea(area);tracking=area}
     override func mouseEntered(with event:NSEvent){if let onPreview{onPreview(value,true)}else{setPreview(true)}}

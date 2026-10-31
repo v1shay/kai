@@ -2339,7 +2339,7 @@ fn agent_picker_is_compact_aligned_and_virtualizes_models(cx: &mut TestAppContex
     });
     draw_frame(&view, cx);
     let pane = cx.debug_bounds("agent-picker").unwrap();
-    assert_eq!(pane.size.width, px(280.));
+    assert_eq!(pane.size.width, px(444.));
     assert!(pane.size.height < px(360.), "Searchable model picker is too tall: {:?}",pane.size.height);
     assert!(cx.debug_bounds("model-search").is_some(),"Model search was omitted from the compact picker");
     let row = cx.debug_bounds("agent-choice-codex").unwrap();
@@ -2391,6 +2391,7 @@ fn switching_agents_only_selects_composer_destination_without_losing_worktree_or
     cx.update(|window, cx| {
         view.update(cx, |app, cx| {
             assert_eq!(app.active.as_deref(), Some("fixture-session"));
+            app.agent_picker=None;
             app.show_modal(Modal::Agents, window, cx);
         })
     });
@@ -5127,4 +5128,66 @@ fn first_submission_starts_at_the_latest_line_and_keeps_following(cx:&mut TestAp
     let viewport=cx.update(|_,cx|view.read(cx).list.viewport_bounds());
     assert!(prompt.top()<viewport.top(),"A long new conversation must reveal its tail");
     assert!((prompt.bottom()-viewport.bottom()).abs()<px(2.));
+}
+
+#[gpui::test]
+fn scoped_agent_picker_keyboard_preserves_chat_and_models_have_intensity_column(cx:&mut TestAppContext){
+    let (view,cx)=fixture(cx);
+    cx.update(|window,cx|view.update(cx,|app,cx|{
+        app.agents.clear();controls_fixture(app,AgentKind::Codex,3);controls_fixture(app,AgentKind::Claude,2);
+        for(_,info)in app.controls.values_mut(){for m in &mut info.models{m.reasoning_efforts=vec!["low".into(),"high".into()];}}
+        app.composer.update(cx,|input,cx|input.set_text("/agent",cx));assert!(app.handle_command(window,cx));
+        assert_eq!(app.agent_picker.as_ref().unwrap().scope,agent_picker::Scope::Providers);
+    }));
+    draw_frame(&view,cx);
+    assert!(cx.debug_bounds("model-search").is_none(),"/agent must show only providers");
+    cx.simulate_keystrokes("down enter");draw_frame(&view,cx);
+    cx.update(|window,cx|view.update(cx,|app,cx|{
+        assert_eq!(app.agent,AgentKind::Claude);assert!(app.runs.is_empty());assert!(app.agent_picker.as_ref().is_none_or(|p|p.closing));
+        assert!(app.handoff_pending.is_none());
+        app.composer.update(cx,|input,cx|input.set_text("/model",cx));assert!(app.handle_command(window,cx));
+        assert_eq!(app.agent_picker.as_ref().unwrap().scope,agent_picker::Scope::Models);
+    }));
+    draw_frame(&view,cx);
+    let model=cx.debug_bounds("model-search").unwrap();
+    cx.simulate_keystrokes("down right");draw_frame(&view,cx);
+    cx.update(|_,cx|{
+        let app=view.read(cx);assert_eq!(app.model.as_deref(),Some("model-0"));
+        assert_eq!(app.agent_picker.as_ref().unwrap().column,agent_picker::Column::Effort);
+    });
+    let effort=cx.debug_bounds("reasoning-high").unwrap();assert!(effort.left()>model.right(),"Intensity must be to the right of models");
+    cx.simulate_keystrokes("down enter");draw_frame(&view,cx);
+    cx.update(|_,cx|{let app=view.read(cx);assert_eq!(app.unified_effort(),Some("high"));assert!(app.runs.is_empty());assert!(app.agent_picker.as_ref().is_none_or(|p|p.closing));});
+    cx.simulate_input("Draft after picker");
+    assert_eq!(composer_text(&view,cx),"Draft after picker","Closing the picker should return keyboard input to the composer");
+}
+
+#[gpui::test]
+fn horizontal_agent_picker_can_stack_from_settings_and_still_use_arrow_columns(cx:&mut TestAppContext){
+    let(view,cx)=fixture(cx);
+    cx.simulate_input("Keep draft");
+    cx.update(|window,cx|view.update(cx,|app,cx|{app.agents.clear();controls_fixture(app,AgentKind::Codex,128);app.theme.horizontal_agent_picker=false;app.toggle_agent_picker(point(px(300.),px(680.)),window,cx);}));
+    draw_frame(&view,cx);
+    assert_eq!(cx.debug_bounds("agent-picker").unwrap().size.width,px(280.));
+    assert!(cx.debug_bounds("model-search").unwrap().top()>cx.debug_bounds("agent-choice-codex").unwrap().bottom());
+    cx.simulate_input("Model 127");draw_frame(&view,cx);
+    cx.simulate_keystrokes("down enter");draw_frame(&view,cx);
+    cx.update(|_,cx|assert_eq!(view.read(cx).model.as_deref(),Some("model-127")));
+    assert_eq!(composer_text(&view,cx),"Keep draft");
+}
+
+#[gpui::test]
+fn notch_scoped_picker_commands_keep_draft_and_do_not_open_workspace_picker(cx:&mut TestAppContext){
+    let(view,cx)=fixture(cx);
+    cx.update(|window,cx|view.update(cx,|app,cx|{
+        for name in ["agent","model"]{
+            let draft=format!("Keep 🦀 /{name} this draft");
+            let body=serde_json::json!({"action":"composer_command","ownerToken":app.unified_token(),"draftBase":app.composer.read(cx).text(),"draft":draft,"caret":format!("Keep 🦀 /{name}").encode_utf16().count(),"name":name,"pickerSurface":"notch"});
+            app.unified_command(&body,window,cx).unwrap();
+            assert!(app.agent_picker.is_none(),"Notch slash command opened the workspace picker too");
+            assert_eq!(app.composer.read(cx).text(),"Keep 🦀  this draft");assert!(app.runs.is_empty());
+        }
+        app.appearance_action(theme_controls::Action::ToggleHorizontalAgentPicker,window,cx);
+        let snapshot=app.unified_snapshot(cx);assert_eq!(snapshot["horizontalAgentPicker"],false);
+    }));
 }

@@ -24,6 +24,8 @@ pub fn asset(path: &str) -> Option<&'static [u8]> {
         "copy" => include_bytes!("copy.svg"),
         "external" => include_bytes!("external.svg"),
         "file" => include_bytes!("file.svg"),
+        "workspace-folder" => include_bytes!("workspace-folder.svg"),
+        "workspace-folder-open" => include_bytes!("workspace-folder-open.svg"),
         "folder" => include_bytes!("folder.svg"),
         "gemini" => include_bytes!("gemini.svg"),
         "lock-keyhole" => include_bytes!("lock-keyhole.svg"),

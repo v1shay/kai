@@ -2,6 +2,8 @@
 set -euo pipefail
 root=${0:A:h:h}
 harness=StateHarness
+[[ "${1:-}" != picker ]] || harness=AgentPickerHarness
+[[ "${1:-}" != pet-motion ]] || harness=PetMotionHarness
 [[ "${1:-}" != pets ]] || harness=PetLibraryHarness
 [[ "${1:-}" != integrations ]] || harness=IntegrationsHarness
 [[ "${1:-}" != voice ]] || harness=VoiceShortcutHarness

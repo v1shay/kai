@@ -213,6 +213,7 @@ private final class NotchSurfaceHost:NSView {
     private var inlinePetLoading=Set<URL>(),inlinePetVisuals=[String:InlineTaskPet](),lastPetVisualPayload:Data?
     private let slashPicker=NativeSlashPicker()
     private var pendingSlashID:String?
+    private var pendingSlashPicker:String?
     private var pendingSlashDraft:String?
     private let typographyMenu=TypographyMenu()
     private var petLibraryRevision=0
@@ -626,7 +627,7 @@ private final class NotchSurfaceHost:NSView {
         bridge.draftBaseProvider={ [weak self] in self?.unifiedDraftBase ?? "" }
         bridge.draftProvider={ [weak self] in self?.composerField?.stringValue ?? "" }
         bridge.onState={ [weak self] state in self?.receive(state) }
-        bridge.onError={ [weak self] error in guard let self else{return};self.pendingSlashID=nil;self.slashPicker.hide();if self.compactVoiceMode{self.failCompactVoice(error);return};self.chatVoice.stop();self.sounds.playScene("failure");self.earlierHistoryRequest=nil;self.historyControl.update(hasMore:false,loading:false);self.cancelShortcutInput();self.pendingAutoSend=false;self.sendingPrompt=nil;self.pendingFilesRequestID=nil;self.indicator.setFileLoading(false);self.finishExpandedChatLoading();if self.miniOpen{self.pinned=EmbeddedCodeRuntime.shared.active;self.compactWhileWorking=false;self.setOpen(EmbeddedCodeRuntime.shared.active,mini:EmbeddedCodeRuntime.shared.active)};self.miniUI.cancelPending();self.miniUI.setCodexMessage(error);self.syncMotion(force:true) }
+        bridge.onError={ [weak self] error in guard let self else{return};self.pendingSlashID=nil;self.pendingSlashPicker=nil;self.slashPicker.hide();self.miniUI.dismissComposerPickers();if self.compactVoiceMode{self.failCompactVoice(error);return};self.chatVoice.stop();self.sounds.playScene("failure");self.earlierHistoryRequest=nil;self.historyControl.update(hasMore:false,loading:false);self.cancelShortcutInput();self.pendingAutoSend=false;self.sendingPrompt=nil;self.pendingFilesRequestID=nil;self.indicator.setFileLoading(false);self.finishExpandedChatLoading();if self.miniOpen{self.pinned=EmbeddedCodeRuntime.shared.active;self.compactWhileWorking=false;self.setOpen(EmbeddedCodeRuntime.shared.active,mini:EmbeddedCodeRuntime.shared.active)};self.miniUI.cancelPending();self.miniUI.setCodexMessage(error);self.syncMotion(force:true) }
         speech.onModels={ [weak self] models in self?.updateVoiceMenu(models) }
         speech.onStatus={ [weak self] status in self?.featureStatusItem.title=status }
         media.onStatus={ [weak self] status in self?.featureStatusItem.title=status }
@@ -1278,7 +1279,7 @@ private final class NotchSurfaceHost:NSView {
     }
 
     private func setOpen(_ requested: Bool, mini requestedMini: Bool = false,userInitiated:Bool=false,forceReveal:Bool=false) {
-        if !requested || !requestedMini{slashPicker.hide()}
+        if !requested || !requestedMini{slashPicker.hide();miniUI.dismissComposerPickers()}
         if approvalPopout && (!requested || requestedMini){approvalPopout=false;approvalUI.reset()}
         if compactVoiceMode,userInitiated {voiceExpanded=requested && requestedMini}
         let presentation=CompactVoicePresentation.layout(active:compactVoiceMode,open:requested,expanded:requestedMini,manualExpansion:voiceExpanded)
@@ -1314,7 +1315,9 @@ private final class NotchSurfaceHost:NSView {
         animation.fromValue = previousPath; animation.toValue = destination
         animation.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0.1:(desired ? (mini || approvalPopout ? 0.28:0.24):0.22); animation.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 0.85, 0.25, 1)
         for (index,layer) in traveling.enumerated() {
-            let move=CABasicAnimation(keyPath:"position.x");move.fromValue=oldPositions[index].x;move.toValue=layer.position.x;move.duration=animation.duration;move.timingFunction=animation.timingFunction;layer.add(move,forKey:"responsiveTravel")
+            let move=CABasicAnimation(keyPath:layer === sprite ? "position":"position.x")
+            if layer === sprite{move.fromValue=oldPositions[index];move.toValue=layer.position}else{move.fromValue=oldPositions[index].x;move.toValue=layer.position.x}
+            move.duration=animation.duration;move.timingFunction=animation.timingFunction;layer.add(move,forKey:"responsiveTravel")
         }
         animateTopAccessories(forMini:miniOpen,duration:animation.duration)
         animateCornerAccents(toBottom:miniOpen || approvalPopout,duration:animation.duration)
@@ -1574,15 +1577,16 @@ private final class NotchSurfaceHost:NSView {
     private func syncWorkspacePet(){
         guard quickChatVisible || (workspaceMorph.expanded && !workspaceNotchOverlay),let host=(quickChatVisible ? quickWindow:EmbeddedCodeRuntime.shared.workspaceWindow)?.contentView else{return}
         if workspacePet.superview !== host{workspacePet.removeFromSuperview();host.addSubview(workspacePet)}
+        // Notch travel uses notch coordinates; the same layer now belongs to a local header slot.
         let slot=quickChatVisible ? quickPetSlot:workspacePetSlot
         workspacePet.frame=CGRect(x:slot.minX,y:host.bounds.height-slot.maxY,width:slot.width,height:slot.height)
         if sprite.superlayer !== workspacePet.layer{sprite.removeFromSuperlayer();workspacePet.layer?.addSublayer(sprite)}
-        CATransaction.begin();CATransaction.setDisableActions(true);sprite.frame=workspacePet.bounds.insetBy(dx:1,dy:0);sprite.opacity=1;sprite.isHidden=false;CATransaction.commit()
+        CATransaction.begin();CATransaction.setDisableActions(true);sprite.removeAnimation(forKey:"responsiveTravel");sprite.frame=workspacePet.bounds.insetBy(dx:1,dy:0);sprite.opacity=1;sprite.isHidden=false;CATransaction.commit()
         workspacePet.isHidden=false;workspacePet.toolTip=catalog?.pets.first{$0.id == petID}?.displayName ?? "Kai task pet"
     }
     private func restoreWorkspacePet(){
         workspacePet.isHidden=true
-        if sprite.superlayer !== notchContent{sprite.removeFromSuperlayer();notchContent.addSublayer(sprite)}
+        if sprite.superlayer !== notchContent{sprite.removeAnimation(forKey:"responsiveTravel");sprite.removeFromSuperlayer();notchContent.addSublayer(sprite)}
         layoutPet()
     }
     @objc private func workspaceSettings(){bridge.send("workspace_settings");expandWorkspace()}
@@ -1660,7 +1664,8 @@ private final class NotchSurfaceHost:NSView {
     private func acceptNativeSlash(_ name:String){
         guard pendingSlashID == nil,let field=composerField,let editor=field.currentEditor() as? NSTextView,NativeSlashToken.at(field.stringValue,selection:editor.selectedRange()) != nil else{return}
         let id=UUID().uuidString;pendingSlashID=id;pendingSlashDraft=field.stringValue
-        slashPicker.hide();bridge.send("composer_command",["name":name,"draft":field.stringValue,"caret":editor.selectedRange().location,"requestId":id])
+        pendingSlashPicker=["agent","model"].contains(name) ? name:nil
+        slashPicker.hide();bridge.send("composer_command",["name":name,"draft":field.stringValue,"caret":editor.selectedRange().location,"requestId":id,"pickerSurface":"notch"])
     }
     func controlTextDidChange(_ obj:Notification){dictationTextReveal.finish();miniUI.setComposerHasText(!(composerField?.stringValue.isEmpty ?? true));updateSlashPicker();syncMotion(force:true)}
     func control(_ control:NSControl,textView:NSTextView,doCommandBy selector:Selector)->Bool{
@@ -1798,8 +1803,9 @@ private final class NotchSurfaceHost:NSView {
 
     private func receive(_ state:KaiState){
         if let interface=state.interfaceFont,let code=state.codeFont{applyTypography(interface:interface,code:code)}
+        let pickerToOpen=pendingSlashPicker
         let slashAccepted=pendingSlashID != nil && state.completedRequestId == pendingSlashID && state.completedRequestError == nil && composerField?.stringValue == pendingSlashDraft
-        if (pendingSlashID != nil && state.completedRequestId == pendingSlashID) || latestState?.ownerToken != state.ownerToken{pendingSlashID=nil;pendingSlashDraft=nil;slashPicker.hide()}
+        if (pendingSlashID != nil && state.completedRequestId == pendingSlashID) || latestState?.ownerToken != state.ownerToken{pendingSlashID=nil;pendingSlashDraft=nil;pendingSlashPicker=nil;slashPicker.hide()}
         defer{refreshMedia()}
         nativeReview.update(state)
         if EmbeddedCodeRuntime.shared.active {
@@ -1846,7 +1852,7 @@ private final class NotchSurfaceHost:NSView {
             dismissMedia(closeNotch:false)
             if !miniOpen {autoCompact=true;compactWhileWorking=true;compactThreadID=nil;setOpen(true,mini:false)}
         }
-        if !state.standalone,previous?.project != state.project{UserDefaults.standard.set(state.project,forKey:"kaiProject")};miniUI.setState(state);if chatVoice.active || state.workspaceVoiceActive == true || previous?.workspaceVoiceActive == true{speech.synchronize(state)}else{speech.receive(state)};syncTaskPet(state);if miniOpen {renderConversation(state.history,forceBottom:previous?.threadId != state.threadId,preserveViewport:prepending)}
+        if !state.standalone,previous?.project != state.project{UserDefaults.standard.set(state.project,forKey:"kaiProject")};miniUI.setState(state);if slashAccepted,let pickerToOpen{miniUI.showAgentPicker(pickerToOpen=="model" ? "models":pickerToOpen)};if chatVoice.active || state.workspaceVoiceActive == true || previous?.workspaceVoiceActive == true{speech.synchronize(state)}else{speech.receive(state)};syncTaskPet(state);if miniOpen {renderConversation(state.history,forceBottom:previous?.threadId != state.threadId,preserveViewport:prepending)}
         floatingTasks.setSuppressed(suppressFloatingTasks)
         petAppIcon.setWorking(!state.activeTasks.isEmpty || state.workspaceVoiceActive == true)
         floatingTasks.update(state.activeTasks,finished:state.finishedTasks ?? [],pets:taskPets)

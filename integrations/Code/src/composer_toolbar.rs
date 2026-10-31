@@ -204,6 +204,14 @@ impl Orbit {
             }
         }
     }
+    fn workspace_folder_symbol(&self)->AnyElement{
+        let progress=self.panel_popover.as_ref().filter(|p|p.kind==Modal::Projects)
+            .map_or(0.,|p|p.reveal(self.motion&&!native::reduced_motion()).clamp(0.,1.));
+        div().size(px(16.)).relative()
+            .child(icon("workspace-folder",16.,MUTED).absolute().opacity(1.-progress))
+            .child(icon("workspace-folder-open",16.,TEXT).absolute().top(px(-progress)).opacity(progress))
+            .into_any_element()
+    }
     fn toolbar_plan(&self, window: &Window) -> Plan {
         let mut plan = Plan::default();
         let model = composer_design::display_label(
@@ -419,7 +427,7 @@ impl Orbit {
                     .justify_center()
                     .cursor_pointer()
                     .bg(rgba(if self.theme.borderless_composer { 0 } else { 0xffffff14 }))
-                    .child(icon("folder", 14., MUTED))
+                    .child(self.workspace_folder_symbol())
                     .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
                         this.toolbar_action(Action::Project, event.position(), window, cx)
                     }))
@@ -500,11 +508,12 @@ impl Orbit {
                 FAST => self.fast_button(window, cx),
                 PERMISSIONS => {
                     let color = if !self.allow_edits { 0xd5dce5 } else if self.agent == AgentKind::Codex && self.codex_access == runtime::CodexAccess::Full { 0xff7d75 } else { 0xffb86b };
+                    let glyph=if !self.allow_edits {"lock-keyhole"} else if self.agent==AgentKind::Codex && self.codex_access==runtime::CodexAccess::Full {"lock-keyhole-open"} else {"shield"};
                     div().id(if quick { "quick-permissions" } else { "mode" })
                         .debug_selector(move || if quick { "quick-permissions".into() } else { "mode".into() })
                         .w_full().h(px(28.)).flex().items_center().justify_center().rounded_md().cursor_pointer()
                         .hover(|s|s.bg(rgba(GLASS_HOVER)))
-                        .child(icon("shield",16.,color))
+                        .child(icon(glyph,16.,color))
                         .on_click(cx.listener(|this,event:&ClickEvent,window,cx|this.toolbar_action(Action::Permissions,event.position(),window,cx)))
                         .into_any_element()
                 },

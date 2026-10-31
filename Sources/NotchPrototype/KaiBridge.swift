@@ -55,6 +55,7 @@ struct KaiState: Decodable {
     let historyLoading:Bool?
     let nativeReview:KaiNativeReview?
     let approvalCount:Int?
+    let horizontalAgentPicker:Bool?
     let borderlessComposer:Bool?
     let workspaceAccess:String?
     let workspaceApprovalPolicy:String?

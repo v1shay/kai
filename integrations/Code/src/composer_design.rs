@@ -87,14 +87,14 @@ impl Orbit{
         let selected=self.unified_effort().map(str::to_owned).or_else(||self.effective_model_settings().1);
         div().flex().flex_col().gap_1().child(div().px_2().py_1().text_size(theme::ui_px(10.)).text_color(rgb(MUTED)).child("Thinking intensity"))
         .children(levels.into_iter().enumerate().map(|(i,level)|{
-            let color=effort_color(&level,i as f32/count.saturating_sub(1).max(1)as f32);let active=selected.as_ref()==Some(&level);
+            let color=effort_color(&level,i as f32/count.saturating_sub(1).max(1)as f32);let active=selected.as_ref()==Some(&level);let cursor=self.agent_picker.as_ref().is_some_and(|p|p.column==agent_picker::Column::Effort&&p.effort_cursor==i);
             let elapsed=self.agent_picker.as_ref().and_then(|p|p.effort_hover.as_ref()).filter(|(v,_)|v==&level).map(|(_,at)|at.elapsed().as_secs_f32());let motion=self.motion && !native::reduced_motion();
             let hover_level=level.clone();let return_to=selected.clone();let select=level.clone();let text=title(&level);
-            div().id(SharedString::from(format!("reasoning-{level}"))).debug_selector(move||format!("reasoning-{level}")).h(px(34.)).w_full().relative().overflow_hidden().rounded_md().cursor_pointer().bg(rgba(if active{0xffffff14}else{0x00000000}))
+            div().id(SharedString::from(format!("reasoning-{level}"))).debug_selector(move||format!("reasoning-{level}")).h(px(34.)).w_full().relative().overflow_hidden().rounded_md().cursor_pointer().bg(rgba(if active||cursor{0xffffff14}else{0x00000000}))
             .child(shimmer_tiles(elapsed,color,motion))
             .child(div().relative().px_3().h_full().flex().items_center().justify_between().text_size(theme::ui_px(12.)).text_color(rgb(color)).child(text).when(active,|s|s.child("✓")))
             .on_hover(cx.listener(move|this,hover:&bool,_,cx|{if let Some(p)=this.agent_picker.as_mut(){if *hover{p.effort_hover=Some((hover_level.clone(),Instant::now()));}else if p.effort_hover.as_ref().is_some_and(|(v,_)|v==&hover_level){p.effort_hover=return_to.clone().map(|value|(value,Instant::now()));}cx.notify();}}))
-            .on_click(cx.listener(move|this,_,_,cx|{this.select_reasoning_effort(&select,cx);this.dismiss_agent_picker();cx.notify();}))
+            .on_click(cx.listener(move|this,_,window,cx|{this.select_reasoning_effort(&select,cx);this.close_picker_with_focus(window,cx);}))
         })).into_any_element()
     }
 }

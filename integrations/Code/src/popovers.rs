@@ -13,7 +13,7 @@ pub(super) struct PanelPopover {
     trust_summary: Option<(AgentKind, String)>,
 }
 impl PanelPopover {
-    fn reveal(&self, motion: bool) -> f32 {
+    pub(super) fn reveal(&self, motion: bool) -> f32 {
         if !motion {
             return if self.closing { 0. } else { 1. };
         }

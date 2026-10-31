@@ -519,7 +519,8 @@ impl Orbit {
                 self.composer.update(cx,|input,cx|input.set_text(draft,cx));
                 if !self.composer.update(cx,|input,cx|input.set_command_caret_utf16(caret,cx)){return Err("Invalid caret".into());}
                 self.accept_named_slash(name,window,cx)?;
-                if self.modal.is_some() || self.agent_picker.is_some() || self.files_visible{reveal();}
+                if request["pickerSurface"]=="notch" && matches!(name,"agent"|"model") && self.agent_picker.is_some(){self.close_picker_with_focus(window,cx);self.agent_picker=None;}
+                else if self.modal.is_some() || self.agent_picker.is_some() || self.files_visible{reveal();}
             }
             "chat" => {
                 let id = native_id(request, "id").ok_or("Invalid chat")?;
@@ -914,6 +915,7 @@ impl Orbit {
         snapshot["slashCommands"]=self.unified_slash_commands();
         snapshot["interfaceFont"]=json!(self.theme.ui_font);snapshot["codeFont"]=json!(self.theme.mono_font);
         snapshot["borderlessComposer"]=json!(self.theme.borderless_composer);
+        snapshot["horizontalAgentPicker"]=json!(self.theme.horizontal_agent_picker);
         snapshot["workspaceAccess"]=json!(if !self.allow_edits{"read-only"}else if self.agent!=AgentKind::Codex{"native"}else if self.codex_access==runtime::CodexAccess::Full{"full"}else{"workspace"});
         snapshot["workspaceApprovalPolicy"]=json!(match self.codex_approvals{runtime::CodexApprovals::Ask=>"ask",runtime::CodexApprovals::AutoReview=>"auto-review",runtime::CodexApprovals::Never=>"never"});
         snapshot["workspaceExecutionPath"]=json!(self.execution_root().unwrap_or_else(||self.project.clone()));
