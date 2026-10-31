@@ -32,6 +32,7 @@ pub enum Action {
     ToggleBorderlessComposer,
     ToggleHorizontalAgentPicker,
     ToggleGithubWidget,
+    ToggleCompactDiff,
     Contrast(Contrast),
     DiffPalette(DiffPalette),
     Reset,
@@ -299,6 +300,13 @@ pub fn controls<T: 'static>(
         view=view.child(section("Agent picker",div().flex().flex_col().gap_2()
             .child(toggle("Horizontal agent picker",settings.horizontal_agent_picker,Action::ToggleHorizontalAgentPicker,cx,callback.clone()))
             .child(div().text_size(theme::ui_px(10.)).text_color(gpui::rgb(resolved.muted)).child("Providers, models and intensity from left to right. Turn off for a vertical layout. Arrow keys work in both."))
+            .into_any_element()));
+    }
+    if matches(query, "Compact diff changes edited files response footer copy auto push GitHub") {
+        count += 1;
+        view = view.child(section("Response changes", div().flex().flex_col().gap_2()
+            .child(toggle("Compact diff mode", settings.compact_diff, Action::ToggleCompactDiff, cx, callback.clone()))
+            .child(div().text_size(theme::ui_px(10.)).text_color(gpui::rgb(resolved.muted)).child("Show clickable green/red change counts beside Copy and Auto Push instead of the full edited-files card."))
             .into_any_element()));
     }
     if matches(query, "Composer prompt boxes controls borderless invisible frames buttons outlines") {

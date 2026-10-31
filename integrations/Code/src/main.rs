@@ -5068,17 +5068,19 @@ impl Orbit {
         };
         }
         if let Some(range) = self.flow_index.message_ends.get(ix).cloned().flatten() {
-            if !user && self.flow_index.completion_ends.get(ix).is_some_and(Option::is_some){if let (Some(target),Some(summary))=(self.completion_target(ix),self.completion_summary(ix).filter(|s|s.total>0)){content=content.child(self.completion_changes_card(ix,target,summary,cx));}}
+            if !user && !self.theme.compact_diff && self.flow_index.completion_ends.get(ix).is_some_and(Option::is_some){if let (Some(target),Some(summary))=(self.completion_target(ix),self.completion_summary(ix).filter(|s|s.total>0)){content=content.child(self.completion_changes_card(ix,target,summary,cx));}}
             let owner = cx.entity().downgrade();
             let chat = self.active.clone();
-            content = content.child(div().mt_1().flex().when(user, |s| s.justify_end()).when(!user, |s| s.justify_start()).child(
+            content = content.child(div().mt_1().flex().items_center().gap_1().when(user, |s| s.justify_end()).when(!user, |s| s.justify_start()).child(
                 copy_control::CopyControl::source(format!("message-copy-{ix}"), move |cx| {
                     owner.upgrade().and_then(|owner| {
                         let app = owner.read(cx);
                         (app.active == chat).then(|| app.rows.get(range.clone()).map(copy_control::message_text)).flatten()
                     }).unwrap_or_default()
                 }).scope(self.active.clone().unwrap_or_default()).motion(self.motion)
-            ).when(!user,|s|s.child(self.response_sync_button(ix,cx))));
+            ).when(!user,|s|s.child(self.response_sync_button(ix,cx))).when(!user && self.theme.compact_diff && self.flow_index.completion_ends.get(ix).is_some_and(Option::is_some),|s|{
+                if let (Some(target),Some(summary))=(self.completion_target(ix),self.completion_summary(ix).filter(|s|s.total>0)){s.child(self.compact_completion_diff(ix,target,summary,cx))}else{s}
+            }));
         }
         if let Some(stamp)=timestamp.filter(|_|user){content=content.child(div().mt_1().text_size(theme::ui_px(9.)).text_color(rgb(MUTED)).opacity(self.timestamp_opacity()).child(stamp));}
         if let Some(t)=timing.filter(|t|t.elapsed_ms.is_some() && !user && (ix+1==self.rows.len() || self.rows.get(ix+1).is_some_and(|r|r.role.as_deref()==Some("user")))){

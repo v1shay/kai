@@ -313,7 +313,7 @@ impl Orbit {
         if neutral{symbol=activity_icon(title);color=MUTED;label="Details";}
         let reviewable = !neutral && status == InteractionStatus::Completed && title == "Completed";
         let review_target = reviewable.then(|| self.completion_target(ix)).flatten();
-        if let (Some(target),Some(summary))=(review_target.clone(),self.completion_summary(ix)){return self.completion_changes_card(ix,target,summary,cx)}
+        if let (Some(target),Some(summary))=(review_target.clone(),self.completion_summary(ix)){return if self.theme.compact_diff{self.compact_completion_diff(ix,target,summary,cx)}else{self.completion_changes_card(ix,target,summary,cx)}}
         let undo_target = review_target.clone();
         let expanded = self.expanded_tools.contains(&ix);
         let reveal = self.interaction_reveal(ix);

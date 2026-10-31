@@ -165,6 +165,7 @@ pub struct Theme {
     pub borderless_composer: bool,
     pub horizontal_agent_picker: bool,
     pub github_widget: bool,
+    pub compact_diff: bool,
     pub transparency: bool,
     pub glass_material: GlassMaterial,
     pub contrast: Contrast,
@@ -184,6 +185,7 @@ impl Hash for Theme {
         self.borderless_composer.hash(state);
         self.horizontal_agent_picker.hash(state);
         self.github_widget.hash(state);
+        self.compact_diff.hash(state);
         self.transparency.hash(state);
         self.glass_material.hash(state);
         self.contrast.hash(state);
@@ -205,6 +207,7 @@ impl Default for Theme {
             borderless_composer: false,
             horizontal_agent_picker: true,
             github_widget: true,
+            compact_diff: false,
             transparency: true,
             glass_material:GlassMaterial::Automatic,
             contrast: Contrast::Standard,

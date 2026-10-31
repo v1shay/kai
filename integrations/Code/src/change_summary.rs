@@ -79,6 +79,36 @@ impl Orbit {
         let id = self.checkpoint_for_completion(ix)?;
         self.change_summaries.entries.get(&id)?.1.clone()
     }
+    pub(super) fn compact_completion_diff(
+        &self,
+        ix: usize,
+        target: checkpoint_ui::CompletionTarget,
+        summary: Arc<github::Summary>,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        div()
+            .id(("completion-diff-counts", ix))
+            .debug_selector(move || format!("completion-diff-counts-{ix}"))
+            .h(px(26.))
+            .px_2()
+            .flex_none()
+            .flex()
+            .items_center()
+            .rounded_md()
+            .font_family(theme::ui_font())
+            .cursor_pointer()
+            .hover(|s| s.bg(rgba(GLASS_HOVER)))
+            .child(github_ui::counts(&github::Counts {
+                added: summary.added,
+                removed: summary.removed,
+                binary: summary.binaries > 0 && summary.added == 0 && summary.removed == 0,
+            }))
+            .on_click(cx.listener(move |app, _, _, cx| {
+                cx.stop_propagation();
+                app.open_completion_target(target.clone(), false, cx);
+            }))
+            .into_any_element()
+    }
     pub(super) fn completion_changes_card(
         &self,
         ix: usize,
@@ -403,5 +433,40 @@ mod tests {
         let after = cx.debug_bounds("completion-changes-5").unwrap();
         assert!(after.size.height > card.size.height);
         assert!(cx.debug_bounds("response-sync-5").is_some());
+        let expanded_row = cx.debug_bounds("transcript-row-5").unwrap();
+        view.update(cx, |app, cx| {
+            app.theme.compact_diff = true;
+            let saved = serde_json::to_string(&app.theme).unwrap();
+            assert!(
+                serde_json::from_str::<theme::Theme>(&saved)
+                    .unwrap()
+                    .compact_diff
+            );
+            cx.notify();
+        });
+        crate::ui_tests::draw_frame(&view, cx);
+        let compact = cx
+            .debug_bounds("completion-diff-counts-5")
+            .expect("Compact mode lost its change counts");
+        let copy = cx.debug_bounds("message-copy-5").unwrap();
+        let push = cx.debug_bounds("response-sync-5").unwrap();
+        assert!((compact.center().y - copy.center().y).abs() < px(1.));
+        assert!((compact.center().y - push.center().y).abs() < px(1.));
+        assert!(compact.left() >= push.right());
+        assert!(
+            cx.debug_bounds("transcript-row-5").unwrap().size.height < expanded_row.size.height,
+            "Compact mode still reserves the expanded card's height"
+        );
+        crate::ui_tests::click_selector(cx, "completion-diff-counts-5");
+        view.update(cx, |app, _| {
+            assert!(
+                app.diff_view.is_some(),
+                "The compact counts must open the native diff viewer"
+            );
+            assert_eq!(
+                app.checkpoint_for_completion(5).as_deref(),
+                Some(checkpoint.as_str())
+            );
+        });
     }
 }

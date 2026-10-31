@@ -142,6 +142,7 @@ impl Orbit {
             Action::ToggleTransparency => self.theme.transparency = !self.theme.transparency,
             Action::ToggleSidebarGlass => self.theme.sidebar_glass = !self.theme.sidebar_glass,
             Action::ToggleGithubWidget=>self.theme.github_widget=!self.theme.github_widget,
+            Action::ToggleCompactDiff=>self.theme.compact_diff=!self.theme.compact_diff,
             Action::ToggleHorizontalAgentPicker => self.theme.horizontal_agent_picker = !self.theme.horizontal_agent_picker,
             Action::ToggleBorderlessComposer => self.theme.borderless_composer = !self.theme.borderless_composer,
             Action::ToggleMainGlass => self.theme.main_glass = !self.theme.main_glass,
