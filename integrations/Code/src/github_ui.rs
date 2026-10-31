@@ -35,7 +35,7 @@ pub(super) struct State {
     read_id: u64,
     checked: Option<Instant>,
     widget_motion: Option<(Instant, f32, f32)>,
-    brand_at: Option<Instant>,
+    pr_entries: HashMap<String, Instant>,
     error: Option<String>,
     pub panel: Option<Panel>,
     pub busy: Option<String>,
@@ -59,7 +59,7 @@ impl Default for State {
             read_id: 0,
             checked: None,
             widget_motion: None,
-            brand_at: None,
+            pr_entries: HashMap::new(),
             error: None,
             panel: None,
             busy: None,
@@ -278,7 +278,7 @@ impl Orbit {
             self.github.mine_checked = None;
             self.github.mine_error = None;
             self.github.mine_host = Some(host.clone());
-            self.github.brand_at = None;
+            self.github.pr_entries.clear();
         }
         if self.github.mine_job.is_some()
             || (!force
@@ -323,8 +323,25 @@ impl Orbit {
                 app.github.mine_checked = Some(Instant::now());
                 match result {
                     Ok(page) => {
-                        if app.github.mine.is_none() {
-                            app.github.brand_at = Some(Instant::now());
+                        let old: HashSet<_> = app
+                            .github
+                            .mine
+                            .as_ref()
+                            .into_iter()
+                            .flat_map(|p| p.items.iter().take(3))
+                            .map(|p| p.url.clone())
+                            .collect();
+                        let visible: HashSet<_> =
+                            page.items.iter().take(3).map(|p| p.url.clone()).collect();
+                        app.github.pr_entries.retain(|url, _| visible.contains(url));
+                        let now = Instant::now();
+                        for (index, pr) in page.items.iter().take(3).enumerate() {
+                            if !old.contains(&pr.url) {
+                                app.github.pr_entries.insert(
+                                    pr.url.clone(),
+                                    now + Duration::from_millis(index as u64 * 45),
+                                );
+                            }
                         }
                         app.github.mine = Some(page);
                         app.github.mine_error = None;
@@ -364,13 +381,12 @@ impl Orbit {
                 cx.notify();
             }
         }
-        if (self.theme.github_widget || self.github.panel.is_some())
+        if self.theme.github_widget
             && self.motion
             && !native::reduced_motion()
-            && self
-                .github
-                .brand_at
-                .is_some_and(|at| at.elapsed() < Duration::from_millis(420))
+            && self.github.pr_entries.values().any(|at| {
+                Instant::now().saturating_duration_since(*at) < Duration::from_millis(220)
+            })
         {
             request_motion_frame(window, cx);
         }
@@ -1067,42 +1083,6 @@ impl Orbit {
         })
         .detach();
     }
-    fn github_mark(&self, size_px: f32) -> AnyElement {
-        let connected = self.github.personal().is_some();
-        let t = if !connected {
-            0.
-        } else if !self.motion || native::reduced_motion() {
-            1.
-        } else {
-            self.github.brand_at.map_or(1., |at| {
-                presentation::spring((at.elapsed().as_secs_f32() / 0.42).min(1.)).clamp(0., 1.)
-            })
-        };
-        div()
-            .size(px(size_px))
-            .flex_none()
-            .relative()
-            .child(
-                div().absolute().inset_0().opacity(1. - t).child(
-                    icon(
-                        "branch",
-                        size_px,
-                        if self.github.mine_job.is_some() {
-                            0xe6c36b
-                        } else {
-                            TEXT
-                        },
-                    )
-                    .with_transformation(Transformation::scale(size(1. - t * 0.55, 1. - t * 0.55))),
-                ),
-            )
-            .child(div().absolute().inset_0().opacity(t).child(
-                icon("kai/integrations/github", size_px, TEXT).with_transformation(
-                    Transformation::scale(size(0.65 + t * 0.35, 0.65 + t * 0.35)),
-                ),
-            ))
-            .into_any_element()
-    }
     pub(super) fn github_widget(&self, cx: &Context<Self>) -> AnyElement {
         let snapshot = self.github.snapshot.as_ref();
         let personal = self.github.personal();
@@ -1120,6 +1100,7 @@ impl Orbit {
             "GitHub account".into()
         };
         let height = self.github.widget_height(self.motion);
+        let animate = self.motion && !native::reduced_motion();
         div()
             .id("github-widget-clip")
             .debug_selector(|| "github-widget-clip".into())
@@ -1149,7 +1130,7 @@ impl Orbit {
                             .flex()
                             .items_center()
                             .gap_2()
-                            .child(self.github_mark(15.))
+                            .child(icon("kai/integrations/github", 15., TEXT))
                             .child(div().flex_1().text_size(theme::ui_px(11.)).child("GitHub"))
                             .child(button(
                                 "github-open",
@@ -1197,9 +1178,24 @@ impl Orbit {
                                 let (glyph, color) = pr.glyph();
                                 let url = pr.url.clone();
                                 let key = format!("github-widget-pr-{}", pr.url);
+                                let reveal = if animate {
+                                    self.github.pr_entries.get(&pr.url).map_or(1., |at| {
+                                        let t = (Instant::now()
+                                            .saturating_duration_since(*at)
+                                            .as_secs_f32()
+                                            / 0.22)
+                                            .min(1.);
+                                        1. - (1. - t).powi(3)
+                                    })
+                                } else {
+                                    1.
+                                };
                                 div()
                                     .id(SharedString::from(key.clone()))
                                     .debug_selector(move || key.clone())
+                                    .relative()
+                                    .top(px((1. - reveal) * 5.))
+                                    .opacity(reveal)
                                     .h(px(26.))
                                     .px_1()
                                     .rounded_md()
@@ -1350,7 +1346,7 @@ impl Orbit {
                             .flex()
                             .items_center()
                             .gap_2()
-                            .child(self.github_mark(18.))
+                            .child(icon("kai/integrations/github", 18., TEXT))
                             .child(div().flex_1().text_size(theme::ui_px(15.)).child(
                                 if p.tab == Tab::Sync {
                                     "Commit & push"
