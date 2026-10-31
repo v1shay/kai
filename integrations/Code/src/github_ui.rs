@@ -183,7 +183,7 @@ pub(super) fn counts(counts: &github::Counts) -> AnyElement {
         .items_center()
         .gap_2()
         .flex_none()
-        .font_family(theme::mono_font())
+        .font_family(theme::ui_font())
         .text_size(theme::ui_px(10.))
         .when(counts.binary, |s| {
             s.child(div().text_color(rgb(MUTED)).child("Binary"))

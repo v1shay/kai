@@ -102,7 +102,7 @@ impl Orbit {
                     file.path.to_string_lossy()
                 )))
                 .h(px(30.))
-                .px_3()
+                .px_4()
                 .flex()
                 .items_center()
                 .gap_2()
@@ -126,6 +126,10 @@ impl Orbit {
             .id(("completion-changes", ix))
             .debug_selector(move || format!("completion-changes-{ix}"))
             .w_full()
+            .mt_4()
+            .mb_2()
+            .pb_2()
+            .font_family(theme::ui_font())
             .rounded_lg()
             .overflow_hidden()
             .border_1()
@@ -139,20 +143,19 @@ impl Orbit {
             .flex_col()
             .child(
                 div()
-                    .px_3()
+                    .px_4()
                     .py_3()
                     .flex()
                     .items_center()
                     .gap_3()
                     .child(
                         div()
-                            .size(px(32.))
-                            .rounded_md()
+                            .size(px(28.))
+                            .flex_none()
                             .flex()
                             .items_center()
                             .justify_center()
-                            .bg(rgba(0xffffff08))
-                            .child(icon("git-commit", 18., TEXT)),
+                            .child(icon("file-diff", 21., TEXT)),
                     )
                     .child(
                         div()
@@ -183,17 +186,30 @@ impl Orbit {
                             div()
                                 .id(("completion-undo", ix))
                                 .debug_selector(move || format!("completion-undo-{ix}"))
+                                .h(px(28.))
                                 .px_2()
-                                .py_1()
+                                .flex_none()
+                                .flex()
+                                .items_center()
+                                .gap_2()
                                 .rounded_md()
                                 .text_size(theme::ui_px(11.))
-                                .text_color(rgb(MUTED))
+                                .text_color(rgb(TEXT))
                                 .cursor_pointer()
                                 .hover(|s| s.bg(rgba(GLASS_HOVER)))
+                                .child(icon(
+                                    if direction == checkpoints::Direction::Undo {
+                                        "undo"
+                                    } else {
+                                        "redo"
+                                    },
+                                    14.,
+                                    TEXT,
+                                ))
                                 .child(if direction == checkpoints::Direction::Undo {
-                                    "Undo ↶"
+                                    "Undo"
                                 } else {
-                                    "Redo ↷"
+                                    "Redo"
                                 })
                                 .on_click(cx.listener(move |app, _, _, cx| {
                                     app.open_completion_target(undo_target.clone(), true, cx)
@@ -204,8 +220,11 @@ impl Orbit {
                         div()
                             .id(("completion-review", ix))
                             .debug_selector(move || format!("completion-review-{ix}"))
+                            .h(px(28.))
                             .px_3()
-                            .py_1()
+                            .flex_none()
+                            .flex()
+                            .items_center()
                             .rounded_md()
                             .border_1()
                             .border_color(rgba(0xffffff18))
@@ -236,7 +255,7 @@ impl Orbit {
                     div()
                         .id(("completion-more-files", ix))
                         .debug_selector(move || format!("completion-more-files-{ix}"))
-                        .px_3()
+                        .px_4()
                         .py_2()
                         .flex()
                         .items_center()
