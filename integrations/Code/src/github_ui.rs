@@ -41,6 +41,10 @@ pub(super) struct State {
     account: Option<Arc<github::Account>>,
     history: Vec<github::Commit>,
     mine: Option<github::PullPage>,
+    mine_host: Option<String>,
+    mine_checked: Option<Instant>,
+    mine_job: Option<ReadJob>,
+    mine_error: Option<String>,
 }
 impl Default for State {
     fn default() -> Self {
@@ -60,6 +64,10 @@ impl Default for State {
             account: None,
             history: vec![],
             mine: None,
+            mine_host: None,
+            mine_checked: None,
+            mine_job: None,
+            mine_error: None,
         }
     }
 }
@@ -131,7 +139,6 @@ enum Operation {
         destination: PathBuf,
     },
     MorePulls,
-    MinePulls,
 }
 enum Outcome {
     Notice(String),
@@ -140,7 +147,6 @@ enum Outcome {
     History(Vec<github::Commit>),
     Cloned(PathBuf),
     Pulls(github::PullPage),
-    Mine(github::PullPage),
 }
 fn button(
     id: impl Into<SharedString>,
@@ -203,13 +209,22 @@ pub(super) fn counts(counts: &github::Counts) -> AnyElement {
         .into_any_element()
 }
 impl State {
-    fn natural_widget_height(&self) -> f32 {
-        let count = self
-            .snapshot
+    fn host(&self) -> &str {
+        self.snapshot
             .as_ref()
-            .map_or(0, |s| s.pulls.items.len().min(3));
-        88. + count as f32 * 34.
-            + if self.snapshot.as_ref().is_some_and(|s| s.pulls.total > 3) {
+            .and_then(|s| s.checkout.as_ref())
+            .and_then(|r| r.hosted.as_ref())
+            .map_or("github.com", |r| r.host.as_str())
+    }
+    fn personal(&self) -> Option<&github::PullPage> {
+        (self.mine_host.as_deref() == Some(self.host()))
+            .then_some(self.mine.as_ref())
+            .flatten()
+    }
+    fn natural_widget_height(&self) -> f32 {
+        let page = self.personal();
+        88. + page.map_or(0, |p| p.items.len().min(3)) as f32 * 34.
+            + if page.is_some_and(|p| p.total > 3) {
                 36.
             } else {
                 0.
@@ -236,6 +251,83 @@ impl Orbit {
     fn github_root(&self) -> PathBuf {
         self.execution_root()
             .unwrap_or_else(|| self.project.clone())
+    }
+    fn refresh_personal_pulls(&mut self, force: bool, cx: &mut Context<Self>) {
+        #[cfg(test)]
+        if self.github.freeze_reads {
+            return;
+        }
+        if !self
+            .github
+            .snapshot
+            .as_ref()
+            .is_some_and(|s| s.gh_available)
+        {
+            return;
+        }
+        let host = self.github.host().to_owned();
+        if self.github.mine_host.as_ref() != Some(&host) {
+            self.github.mine_job = None;
+            self.github.mine = None;
+            self.github.mine_checked = None;
+            self.github.mine_error = None;
+            self.github.mine_host = Some(host.clone());
+        }
+        if self.github.mine_job.is_some()
+            || (!force
+                && self
+                    .github
+                    .mine_checked
+                    .is_some_and(|at| at.elapsed() < Duration::from_secs(60)))
+        {
+            return;
+        }
+        let login = self
+            .github
+            .snapshot
+            .as_ref()
+            .map(|s| s.pulls.login.clone())
+            .unwrap_or_default();
+        let root = dirs::home_dir().unwrap_or_else(|| self.github_root());
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.github.mine_job = Some(ReadJob(cancel.clone()));
+        self.github.mine_error = None;
+        let work_cancel = cancel.clone();
+        let work_host = host.clone();
+        let job = cx.background_executor().spawn(async move {
+            Client::discover()
+                .mine(&root, &work_host, &login, &work_cancel)
+                .map_err(|e| e.to_string())
+        });
+        cx.spawn(async move |this, cx| {
+            let result = job.await;
+            let _ = this.update(cx, |app, cx| {
+                if app.github.mine_host.as_ref() != Some(&host)
+                    || !app
+                        .github
+                        .mine_job
+                        .as_ref()
+                        .is_some_and(|j| Arc::ptr_eq(&j.0, &cancel))
+                {
+                    return;
+                }
+                let from = app.github.widget_height(app.motion);
+                app.github.mine_job = None;
+                app.github.mine_checked = Some(Instant::now());
+                match result {
+                    Ok(page) => {
+                        app.github.mine = Some(page);
+                        app.github.mine_error = None;
+                    }
+                    Err(error) => app.github.mine_error = Some(error),
+                }
+                let to = app.github.natural_widget_height();
+                app.github.widget_motion =
+                    ((from - to).abs() > 0.5).then(|| (Instant::now(), from, to));
+                cx.notify();
+            });
+        })
+        .detach();
     }
     pub(super) fn github_after_agent_turn(&mut self, cx: &mut Context<Self>) {
         if self
@@ -299,6 +391,16 @@ impl Orbit {
         {
             self.refresh_github(false, cx);
         }
+        if window.is_window_active()
+            && (self.theme.github_widget
+                || self
+                    .github
+                    .panel
+                    .as_ref()
+                    .is_some_and(|p| p.tab == Tab::Pulls && p.mine))
+        {
+            self.refresh_personal_pulls(false, cx);
+        }
     }
     pub(super) fn refresh_github(&mut self, force: bool, cx: &mut Context<Self>) {
         #[cfg(test)]
@@ -350,6 +452,7 @@ impl Orbit {
                             .insert(root.clone(), (Instant::now(), snapshot.clone()));
                         if app.github_root() == root {
                             app.github.set_snapshot(Some(snapshot.clone()), app.motion);
+                            app.refresh_personal_pulls(false, cx);
                             if let Some(p) = app.github.panel.as_mut() {
                                 if p.fields[5].read(cx).text().is_empty()
                                     && !snapshot.pulls.default_branch.is_empty()
@@ -430,7 +533,7 @@ impl Orbit {
             private: true,
             draft: true,
             merge_confirm: None,
-            mine: false,
+            mine: true,
             return_focus: window.focused(cx),
             request: uuid::Uuid::new_v4(),
         });
@@ -590,7 +693,6 @@ impl Orbit {
                 | Operation::Account
                 | Operation::History
                 | Operation::MorePulls
-                | Operation::MinePulls
         );
         if matches!(
             operation,
@@ -625,12 +727,6 @@ impl Orbit {
         if matches!(operation, Operation::History) {
             self.github.history.clear();
         }
-        let login = self
-            .github
-            .snapshot
-            .as_ref()
-            .map(|s| s.pulls.login.clone())
-            .unwrap_or_default();
         let caption = match &operation {
             Operation::Sync { push: true, .. } => "Committing & pushing…",
             Operation::Sync { .. } => "Committing…",
@@ -765,12 +861,6 @@ impl Orbit {
                         client.clone_repo(&url, &destination, &cancel)?;
                         Outcome::Cloned(destination)
                     }
-                    Operation::MinePulls => Outcome::Mine(client.mine(
-                        &work_root,
-                        hosted.as_ref().map_or("github.com", |h| &h.host),
-                        &login,
-                        &cancel,
-                    )?),
                     Operation::MorePulls => Outcome::Pulls(client.pulls(
                         &work_root,
                         hosted.as_ref().context("No GitHub remote")?,
@@ -788,6 +878,8 @@ impl Orbit {
                 if !readonly {
                     app.checkpoint_busy = app.checkpoint_busy.saturating_sub(1);
                     app.github.cache.remove(&root);
+                    app.github.mine_job = None;
+                    app.github.mine_checked = None;
                 }
                 let current = app.github_root() == root;
                 let dialog = app
@@ -819,11 +911,6 @@ impl Orbit {
                     Ok(Outcome::History(commits)) => {
                         if current {
                             app.github.history = commits;
-                        }
-                    }
-                    Ok(Outcome::Mine(page)) => {
-                        if current {
-                            app.github.mine = Some(page);
                         }
                     }
                     Ok(Outcome::Cloned(path)) => {
@@ -961,6 +1048,7 @@ impl Orbit {
     }
     pub(super) fn github_widget(&self, cx: &Context<Self>) -> AnyElement {
         let snapshot = self.github.snapshot.as_ref();
+        let personal = self.github.personal();
         let repo = snapshot.and_then(|s| s.checkout.as_ref());
         let busy = self.github.read_job.is_some();
         let height = self.github.widget_height(self.motion);
@@ -1001,7 +1089,7 @@ impl Orbit {
                                 Some("chevron-right"),
                                 true,
                                 cx,
-                                |app, w, cx| app.open_github(Tab::Repository, w, cx),
+                                |app, w, cx| app.open_github(Tab::Pulls, w, cx),
                             )),
                     )
                     .child(
@@ -1028,16 +1116,16 @@ impl Orbit {
                             })),
                     )
                     .children(
-                        snapshot
+                        personal
                             .into_iter()
-                            .flat_map(|s| s.pulls.items.iter().take(3))
+                            .flat_map(|p| p.items.iter().take(3))
                             .map(|pr| {
                                 let (glyph, color) = pr.glyph();
                                 let url = pr.url.clone();
-                                let number = pr.number;
+                                let key = format!("github-widget-pr-{}", pr.url);
                                 div()
-                                    .id(SharedString::from(format!("github-widget-pr-{number}")))
-                                    .debug_selector(move || format!("github-widget-pr-{number}"))
+                                    .id(SharedString::from(key.clone()))
+                                    .debug_selector(move || key.clone())
                                     .h(px(26.))
                                     .px_1()
                                     .rounded_md()
@@ -1053,7 +1141,15 @@ impl Orbit {
                                             .min_w(px(0.))
                                             .text_size(theme::ui_px(10.))
                                             .text_ellipsis()
-                                            .child(format!("#{} {}", pr.number, pr.title)),
+                                            .child(format!(
+                                                "{} #{} {}",
+                                                pr.repository
+                                                    .as_ref()
+                                                    .map(|r| r.name.as_str())
+                                                    .unwrap_or(""),
+                                                pr.number,
+                                                pr.title
+                                            )),
                                     )
                                     .on_click(cx.listener(move |app, _, _, cx| {
                                         cx.stop_propagation();
@@ -1061,7 +1157,7 @@ impl Orbit {
                                     }))
                             }),
                     )
-                    .when(snapshot.is_some_and(|s| s.pulls.total > 3), |s| {
+                    .when(personal.is_some_and(|p| p.total > 3), |s| {
                         s.child(button(
                             "github-all-pulls",
                             "All pull requests",
@@ -1196,6 +1292,7 @@ impl Orbit {
                                 cx,
                                 |app, _, cx| {
                                     app.refresh_github(true, cx);
+                                    app.refresh_personal_pulls(true, cx);
                                     if app
                                         .github
                                         .panel
@@ -1506,7 +1603,8 @@ impl Orbit {
                     false
                 };
                 if mine {
-                    app.run_github(Operation::MinePulls, cx)
+                    app.refresh_personal_pulls(false, cx);
+                    cx.notify();
                 } else {
                     cx.notify();
                 }
@@ -1514,13 +1612,29 @@ impl Orbit {
         ));
         let items = if p.mine {
             self.github
-                .mine
-                .as_ref()
+                .personal()
                 .map(|p| p.items.as_slice())
                 .unwrap_or(&[])
         } else {
             snapshot.map(|s| s.pulls.items.as_slice()).unwrap_or(&[])
         };
+        if p.mine {
+            if let Some(error) = self.github.mine_error.as_ref() {
+                body = body.child(
+                    div()
+                        .text_size(theme::ui_px(11.))
+                        .text_color(rgb(0xff8e91))
+                        .child(error.clone()),
+                );
+            } else if self.github.mine_job.is_some() && items.is_empty() {
+                body = body.child(
+                    div()
+                        .text_size(theme::ui_px(11.))
+                        .text_color(rgb(MUTED))
+                        .child("Loading your pull requests…"),
+                );
+            }
+        }
         for pr in items {
             let (glyph, color) = pr.glyph();
             let url = pr.url.clone();
@@ -1986,6 +2100,13 @@ mod tests {
             gh_available: true,
             github_error: None,
         }));
+        let mut snapshot = (**app.github.snapshot.as_ref().unwrap()).clone();
+        app.github.mine = Some(snapshot.pulls.clone());
+        app.github.mine_host = Some("github.com".into());
+        app.github.mine_checked = Some(Instant::now());
+        snapshot.pulls.items.clear();
+        snapshot.pulls.total = 0;
+        app.github.snapshot = Some(Arc::new(snapshot));
         cx.notify();
     }
     #[gpui::test]
@@ -1994,7 +2115,18 @@ mod tests {
         view.update(cx, prepare);
         crate::ui_tests::draw_frame(&view, cx);
         assert!(cx.debug_bounds("github-sidebar-widget").is_some());
-        assert!(cx.debug_bounds("github-widget-pr-17").is_some());
+        view.update(cx, |app, _| {
+            assert!(
+                app.github.panel.is_none(),
+                "PRs must appear before the hub is opened"
+            );
+            assert_eq!(app.github.snapshot.as_ref().unwrap().pulls.total, 0);
+            assert_eq!(app.github.personal().unwrap().total, 1);
+        });
+        assert!(
+            cx.debug_bounds("github-widget-pr-https://github.com/demo/project/pull/17")
+                .is_some()
+        );
         let clip = cx.debug_bounds("github-widget-clip").unwrap();
         let widget = cx.debug_bounds("github-sidebar-widget").unwrap();
         assert!(
@@ -2088,6 +2220,33 @@ mod tests {
                 app.open_response_sync(old, app.project.clone(), window, cx);
                 assert!(app.github.panel.is_none());
             })
+        });
+    }
+    #[gpui::test]
+    fn personal_pr_cache_is_shared_across_projects_but_scoped_to_its_github_host(
+        cx: &mut TestAppContext,
+    ) {
+        let (view, cx) = crate::ui_tests::fixture(cx);
+        view.update(cx, |app, cx| {
+            prepare(app, cx);
+            assert_eq!(app.github.personal().unwrap().total, 1);
+            let snapshot = Arc::make_mut(app.github.snapshot.as_mut().unwrap());
+            snapshot.checkout.as_mut().unwrap().root = "/another-project".into();
+            assert_eq!(app.github.personal().unwrap().total, 1);
+            let snapshot = Arc::make_mut(app.github.snapshot.as_mut().unwrap());
+            snapshot
+                .checkout
+                .as_mut()
+                .unwrap()
+                .hosted
+                .as_mut()
+                .unwrap()
+                .host = "github.corp.example".into();
+            assert!(
+                app.github.personal().is_none(),
+                "Another GitHub host must not display cached public-account PRs"
+            );
+            assert_eq!(app.github.natural_widget_height(), 88.);
         });
     }
     #[gpui::test]

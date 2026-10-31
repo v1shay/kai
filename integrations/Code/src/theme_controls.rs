@@ -293,7 +293,7 @@ pub fn controls<T: 'static>(
         view=view.child(section("Native glass",div().flex().flex_col().gap_2().child(row).child(div().text_size(theme::ui_px(10.)).text_color(gpui::rgb(resolved.muted)).child(if available{"Automatic uses Liquid Glass. Classic keeps the Gaussian desktop backdrop."}else{"Liquid Glass becomes available on macOS 26. Automatic uses classic blur on this Mac."})).into_any_element()));
     }
     if matches(query,"GitHub pull requests repository PR widget sidebar source control"){
-        count+=1;view=view.child(section("GitHub",div().flex().flex_col().gap_2().child(toggle("Sidebar pull request widget",settings.github_widget,Action::ToggleGithubWidget,cx,callback.clone())).child(div().text_size(theme::ui_px(10.)).text_color(gpui::rgb(resolved.muted)).child("Show this checkout’s branch and open pull requests. Click a PR to open it in your browser.")).into_any_element()));
+        count+=1;view=view.child(section("GitHub",div().flex().flex_col().gap_2().child(toggle("Sidebar pull request widget",settings.github_widget,Action::ToggleGithubWidget,cx,callback.clone())).child(div().text_size(theme::ui_px(10.)).text_color(gpui::rgb(resolved.muted)).child("Show this checkout’s branch and your open pull requests across repositories. Uses your existing GitHub CLI login automatically.")).into_any_element()));
     }
     if matches(query,"Agent provider model thinking intensity picker horizontal vertical columns layout"){
         count+=1;
