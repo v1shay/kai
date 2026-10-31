@@ -2608,7 +2608,7 @@ impl Orbit {
         self.sync_file_root(window, cx);
         if !self.open_tabs.contains(&session.id) {
             self.open_tabs.push(session.id.clone());
-            if self.open_tabs.len() > 8 {
+            if self.open_tabs.len() > keyboard::MAX_CHAT_TABS {
                 self.open_tabs.remove(0);
             }
         }
@@ -3196,7 +3196,7 @@ impl Orbit {
         self.rebuild_workspace_sessions();
         if !self.open_tabs.contains(&id) {
             self.open_tabs.push(id.clone());
-            if self.open_tabs.len() > 8 {
+            if self.open_tabs.len() > keyboard::MAX_CHAT_TABS {
                 self.open_tabs.remove(0);
             }
         }
@@ -4668,11 +4668,7 @@ impl Orbit {
             }))
     }
     fn tabs(&self, cx: &Context<Self>) -> impl IntoElement {
-        let tabs: Vec<_> = self
-            .open_tabs
-            .iter()
-            .filter_map(|id| self.sessions.iter().find(|s| &s.id == id))
-            .collect();
+        let tabs=self.open_tab_sessions();
         div()
             .h(px(40.))
             .flex_none()

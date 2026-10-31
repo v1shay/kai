@@ -96,3 +96,5 @@ button still controls native Codex voice.
 The expanded editor supports Command-C/V/X/A and Command-Z/Shift-Command-Z.
 Typing or pressing a keyboard shortcut cancels a pending modifier hold, so a
 copy/paste chord cannot later start listening while Command remains held.
+
+⌘1–⌘9 select chat tabs from left to right in the agent tab bar. Empty positions do nothing; selecting the current tab leaves it running untouched. Nine tabs survive restart. These bindings use the shared command catalog in Code, Mini Code and the extended notch.

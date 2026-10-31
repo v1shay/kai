@@ -56,10 +56,10 @@ pub fn workflow_fits<Q: Serialize + ?Sized, T: Serialize + ?Sized, C: Serialize 
 
 const VERSION: u32 = 1;
 const MAX_DRAFTS: usize = 64;
-// Eight open tabs plus a blank composer can each contain 64 KiB. JSON may
+// Nine open tabs plus a blank composer can each contain 64 KiB. JSON may
 // expand control characters sixfold; budget that encoding without deleting
 // valid editor text. Ordinary snapshots remain much smaller than this cap.
-const DRAFT_BYTES: usize = 9 * 6 * 64 * 1024 + MAX_DRAFTS * 512 + 1024;
+const DRAFT_BYTES: usize = (crate::keyboard::MAX_CHAT_TABS+1) * 6 * 64 * 1024 + MAX_DRAFTS * 512 + 1024;
 const SINGLE_DRAFT_BYTES: usize = 64 * 1024;
 const MAX_FLUSHERS: usize = 16;
 
@@ -286,17 +286,17 @@ impl WorkspaceState {
         self.reasoning_efforts.retain(|key,value|valid_text(key,512)&&((key=="codex:service-tier"&&matches!(value.as_str(),"fast"|"default"))||matches!(value.as_str(),"none"|"minimal"|"low"|"medium"|"high"|"xhigh"|"max"|"ultra")));while self.reasoning_efforts.len()>512{self.reasoning_efforts.pop_first();}
         self.model = self.model.filter(|m| valid_text(m, 256));
         self.active_chat = self.active_chat.filter(|id| valid_text(id, 512));
-        let mut seen = HashSet::with_capacity(8);
+        let mut seen = HashSet::with_capacity(crate::keyboard::MAX_CHAT_TABS);
         self.open_tabs = self
             .open_tabs
             .into_iter()
             .filter(|id| valid_text(id, 512) && seen.insert(id.clone()))
-            .take(8)
+            .take(crate::keyboard::MAX_CHAT_TABS)
             .collect();
         if let Some(active) = &self.active_chat
             && !self.open_tabs.contains(active)
         {
-            if self.open_tabs.len() == 8 {
+            if self.open_tabs.len() == crate::keyboard::MAX_CHAT_TABS {
                 self.open_tabs.pop();
             }
             self.open_tabs.push(active.clone());
@@ -709,7 +709,7 @@ mod tests {
         let f = Fixture::new();
         let store = StateStore::new(f.state()).unwrap();
         let mut state = WorkspaceState {
-            open_tabs: (0..8).map(|i| format!("chat:{i}")).collect(),
+            open_tabs: (0..crate::keyboard::MAX_CHAT_TABS).map(|i| format!("chat:{i}")).collect(),
             active_chat: Some("chat:0".into()),
             ..Default::default()
         };
@@ -792,7 +792,7 @@ mod tests {
                 && s.execution_path.is_none()
                 && s.transcript.is_none()
         );
-        assert_eq!(s.open_tabs.len(), 8);
+        assert_eq!(s.open_tabs.len(), crate::keyboard::MAX_CHAT_TABS);
         assert!(s.open_tabs.contains(&"active".into()));
         assert!(s.drafts.contains_key("active"));
         assert!(s.drafts.len() <= MAX_DRAFTS);

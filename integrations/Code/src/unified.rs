@@ -426,7 +426,7 @@ impl Orbit {
         } else {
             None
         };
-        let navigates = (action=="ui_command"&&matches!(request["command"].as_str(),Some("new"|"close_tab"|"next_tab"|"previous_tab"|"next_project"|"previous_project"|"orchestrator"|"open_project"))) || matches!(
+        let navigates = (action=="ui_command"&&request["command"].as_str().and_then(keyboard::tab_index).is_some_and(|index|self.open_tab_sessions().get(index).is_some_and(|session|self.active.as_ref()!=Some(&session.id)))) || (action=="ui_command"&&matches!(request["command"].as_str(),Some("new"|"close_tab"|"next_tab"|"previous_tab"|"next_project"|"previous_project"|"orchestrator"|"open_project"))) || matches!(
             action,
             "chat" | "project" | "new" | "new_project" | "orchestrator" | "workspace_expand" | "navigate"
         );
