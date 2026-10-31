@@ -22,3 +22,9 @@ The path rasterization pipeline already used source-over and is unchanged.
 Other platforms, shader colors, image/glyph atlas formats, buffering counts and
 render scheduling are unchanged. Transparent drawable storage doubles per pixel;
 opaque storage is unchanged. Preserve these two source files when updating the vendored crate.
+
+- `src/window.rs`: optional scoped glyph-color callback for Kai's experimental
+  adaptive text. It runs only in `paint_glyph`; quads, paths, SVGs, images, emoji,
+  background materials, text layout and glyph rasterization remain unchanged.
+  Deferred draws retain their own callback. The disabled path passes colors
+  through unchanged. No Metal shader or blending change accompanies this feature.

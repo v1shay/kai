@@ -378,6 +378,16 @@ impl ChatBackground {
         let frame=self.image.as_ref()?;
         Some((frame.native.as_ref()?,if self.empty{self.settings.empty_opacity}else{self.settings.session_opacity},frame.id))
     }
+    pub(super) fn adaptive_frame_id(&self)->Option<ImageId>{self.image.as_ref().map(|frame|frame.id)}
+    pub(super) fn adaptive_animated(&self)->bool{self.animated && self.visible() && (self.active || self.native_active)}
+    pub(super) fn adaptive_sample(&self,x:f32,y:f32,width:f32,height:f32,empty:bool,mini:bool)->Option<([f32;3],f32)>{
+        if !self.visible(){return None}let image=self.image.as_ref()?;let dimensions=image.image.size(0);let iw=dimensions.width.0 as f32;let ih=dimensions.height.0 as f32;
+        if iw<1.||ih<1.||width<=0.||height<=0.{return None}
+        let art_h=if mini{height}else{f32::from(wallpaper_bounds(Bounds::new(point(px(0.),px(0.)),size(px(width),px(height))),empty).size.height)};if y*height>=art_h{return None}
+        let scale=(width/iw).max(art_h/ih);let sx=((x*width+(iw*scale-width)*0.5)/scale).clamp(0.,iw-1.)as usize;let sy=((y*height+(ih*scale-art_h)*0.5)/scale).clamp(0.,ih-1.)as usize;
+        let pixels=image.image.as_bytes(0)?;let at=(sy*iw as usize+sx)*4;let p=pixels.get(at..at+4)?;let opacity=if empty{self.settings.empty_opacity}else{self.settings.session_opacity};
+        Some(([p[2]as f32/255.,p[1]as f32/255.,p[0]as f32/255.],p[3]as f32/255.*opacity))
+    }
     /// Reuse the prepared frame in a secondary window. Reading this layer never
     /// changes the main wallpaper viewport, starts a decode, or sends a command.
     pub fn snapshot_layer(&self, empty: bool) -> AnyElement {

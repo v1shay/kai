@@ -32,6 +32,7 @@ pub enum Action {
     ToggleBorderlessComposer,
     ToggleHorizontalAgentPicker,
     ToggleGithubWidget,
+    ToggleAdaptiveText,
     ToggleCompactDiff,
     Contrast(Contrast),
     DiffPalette(DiffPalette),
@@ -301,6 +302,9 @@ pub fn controls<T: 'static>(
             .child(toggle("Horizontal agent picker",settings.horizontal_agent_picker,Action::ToggleHorizontalAgentPicker,cx,callback.clone()))
             .child(div().text_size(theme::ui_px(10.)).text_color(gpui::rgb(resolved.muted)).child("Providers, models and intensity from left to right. Turn off for a vertical layout. Arrow keys work in both."))
             .into_any_element()));
+    }
+    if matches(query,"Adaptive text contrast experimental automatic light dark font"){
+        count+=1;view=view.child(section("Adaptive text · Experimental",div().flex().flex_col().gap_2().child(toggle("Adaptive text colors",settings.adaptive_text.enabled,Action::ToggleAdaptiveText,cx,callback.clone())).child(div().text_size(theme::ui_px(10.)).text_color(gpui::rgb(resolved.muted)).child("Text colors only, with eased transitions. Leaves every glass and background setting unchanged.")).into_any_element()));
     }
     if matches(query, "Compact diff changes edited files response footer copy auto push GitHub") {
         count += 1;

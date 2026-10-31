@@ -652,12 +652,16 @@ pub(crate) struct TooltipRequest {
     tooltip: AnyTooltip,
 }
 
+/// A scoped transform applied exclusively to monochrome text glyph colors.
+pub type GlyphColorFilter = Arc<dyn Fn(Hsla) -> Hsla>;
+
 pub(crate) struct DeferredDraw {
     current_view: EntityId,
     priority: usize,
     parent_node: DispatchNodeId,
     element_id_stack: SmallVec<[ElementId; 32]>,
     text_style_stack: Vec<TextStyleRefinement>,
+    glyph_color_filter: Option<GlyphColorFilter>,
     element: Option<AnyElement>,
     absolute_offset: Point<Pixels>,
     prepaint_range: Range<PrepaintStateIndex>,
@@ -835,6 +839,7 @@ pub struct Window {
     pub(crate) root: Option<AnyView>,
     pub(crate) element_id_stack: SmallVec<[ElementId; 32]>,
     pub(crate) text_style_stack: Vec<TextStyleRefinement>,
+    glyph_color_filter: Option<GlyphColorFilter>,
     pub(crate) rendered_entity_stack: Vec<EntityId>,
     pub(crate) element_offset_stack: Vec<Point<Pixels>>,
     pub(crate) element_opacity: f32,
@@ -1219,6 +1224,7 @@ impl Window {
             root: None,
             element_id_stack: SmallVec::default(),
             text_style_stack: Vec::new(),
+            glyph_color_filter: None,
             rendered_entity_stack: Vec::new(),
             element_offset_stack: Vec::new(),
             content_mask_stack: Vec::new(),
@@ -1434,6 +1440,15 @@ impl Window {
     /// Accessor for the text system.
     pub fn text_system(&self) -> &Arc<WindowTextSystem> {
         &self.text_system
+    }
+
+    /// Temporarily transform text glyph colors only. All non-text primitives retain
+    /// their original colors. Deferred draws retain their own callback.
+    pub fn with_glyph_color_filter<R>(&mut self,filter:Option<GlyphColorFilter>,draw:impl FnOnce(&mut Self)->R)->R{
+        let previous=std::mem::replace(&mut self.glyph_color_filter,filter);
+        let result=draw(self);
+        self.glyph_color_filter=previous;
+        result
     }
 
     /// The current text style. Which is composed of all the style refinements provided to `with_text_style`.
@@ -2160,6 +2175,7 @@ impl Window {
         let mut deferred_draws = mem::take(&mut self.next_frame.deferred_draws);
         for deferred_draw_ix in deferred_draw_indices {
             let deferred_draw = &mut deferred_draws[*deferred_draw_ix];
+            self.glyph_color_filter=deferred_draw.glyph_color_filter.clone();
             self.element_id_stack
                 .clone_from(&deferred_draw.element_id_stack);
             self.text_style_stack
@@ -2189,6 +2205,7 @@ impl Window {
         self.next_frame.deferred_draws = deferred_draws;
         self.element_id_stack.clear();
         self.text_style_stack.clear();
+        self.glyph_color_filter=None;
     }
 
     fn paint_deferred_draws(&mut self, deferred_draw_indices: &[usize], cx: &mut App) {
@@ -2197,6 +2214,7 @@ impl Window {
         let mut deferred_draws = mem::take(&mut self.next_frame.deferred_draws);
         for deferred_draw_ix in deferred_draw_indices {
             let mut deferred_draw = &mut deferred_draws[*deferred_draw_ix];
+            self.glyph_color_filter=deferred_draw.glyph_color_filter.clone();
             self.element_id_stack
                 .clone_from(&deferred_draw.element_id_stack);
             self.next_frame
@@ -2216,6 +2234,7 @@ impl Window {
         }
         self.next_frame.deferred_draws = deferred_draws;
         self.element_id_stack.clear();
+        self.glyph_color_filter=None;
     }
 
     pub(crate) fn prepaint_index(&self) -> PrepaintStateIndex {
@@ -2269,6 +2288,7 @@ impl Window {
                     parent_node: reused_subtree.refresh_node_id(deferred_draw.parent_node),
                     element_id_stack: deferred_draw.element_id_stack.clone(),
                     text_style_stack: deferred_draw.text_style_stack.clone(),
+                    glyph_color_filter: deferred_draw.glyph_color_filter.clone(),
                     priority: deferred_draw.priority,
                     element: None,
                     absolute_offset: deferred_draw.absolute_offset,
@@ -2766,6 +2786,7 @@ impl Window {
             parent_node,
             element_id_stack: self.element_id_stack.clone(),
             text_style_stack: self.text_style_stack.clone(),
+            glyph_color_filter: self.glyph_color_filter.clone(),
             priority,
             element: Some(element),
             absolute_offset,
@@ -2954,6 +2975,7 @@ impl Window {
         color: Hsla,
     ) -> Result<()> {
         self.invalidator.debug_assert_paint();
+        let color=self.glyph_color_filter.as_ref().map_or(color,|filter|filter(color));
 
         let element_opacity = self.element_opacity();
         let scale_factor = self.scale_factor();

@@ -166,6 +166,7 @@ pub struct Theme {
     pub horizontal_agent_picker: bool,
     pub github_widget: bool,
     pub compact_diff: bool,
+    pub adaptive_text:crate::adaptive_text::Settings,
     pub transparency: bool,
     pub glass_material: GlassMaterial,
     pub contrast: Contrast,
@@ -186,6 +187,7 @@ impl Hash for Theme {
         self.horizontal_agent_picker.hash(state);
         self.github_widget.hash(state);
         self.compact_diff.hash(state);
+        self.adaptive_text.enabled.hash(state);self.adaptive_text.settle_ms.hash(state);
         self.transparency.hash(state);
         self.glass_material.hash(state);
         self.contrast.hash(state);
@@ -208,6 +210,7 @@ impl Default for Theme {
             horizontal_agent_picker: true,
             github_widget: true,
             compact_diff: false,
+            adaptive_text:Default::default(),
             transparency: true,
             glass_material:GlassMaterial::Automatic,
             contrast: Contrast::Standard,
@@ -218,6 +221,7 @@ impl Default for Theme {
 impl Theme {
     pub fn normalized(&self) -> Self {
         let mut next = self.clone();
+        next.adaptive_text=next.adaptive_text.normalized();
         next.ui_font = normalize_font(&next.ui_font, UI_FONT_DEFAULT);
         next.mono_font = normalize_font(&next.mono_font, MONO_FONT_DEFAULT);
         next.ui_font_size = finite_size(next.ui_font_size, 14., 10., 24.);
