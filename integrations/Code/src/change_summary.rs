@@ -90,7 +90,7 @@ impl Orbit {
             .id(("completion-diff-counts", ix))
             .debug_selector(move || format!("completion-diff-counts-{ix}"))
             .h(px(26.))
-            .px_2()
+            .pr_2()
             .flex_none()
             .flex()
             .items_center()
@@ -452,7 +452,8 @@ mod tests {
         let push = cx.debug_bounds("response-sync-5").unwrap();
         assert!((compact.center().y - copy.center().y).abs() < px(1.));
         assert!((compact.center().y - push.center().y).abs() < px(1.));
-        assert!(compact.left() >= push.right());
+        assert!(compact.right() <= copy.left());
+        assert!(copy.right() <= push.left());
         assert!(
             cx.debug_bounds("transcript-row-5").unwrap().size.height < expanded_row.size.height,
             "Compact mode still reserves the expanded card's height"
