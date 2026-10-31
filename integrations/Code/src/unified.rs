@@ -151,7 +151,7 @@ pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Resul
                 workspace_motion:Default::default(),publish_pending:false,
             })
         });
-        let entity = window.update(cx, |_, window, cx| {
+        let entity = window.update(cx, |app, window, cx| {
             let RawWindowHandle::AppKit(handle) =
                 HasWindowHandle::window_handle(window).unwrap().as_raw()
             else {
@@ -160,6 +160,9 @@ pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Resul
             let native: *mut AnyObject =
                 unsafe { msg_send![handle.ns_view.as_ptr().cast::<AnyObject>(), window] };
             unsafe { start(native.cast(), command) };
+            // Native-only startup may never paint Code again until it is opened.
+            // Deliver persisted contrast preferences once the bridge is live.
+            app.tick_adaptive(window,false,cx);
             cx.entity()
         })?;
         // Entity notifications include background run, approval and transcript events.
@@ -350,8 +353,8 @@ impl Orbit {
     fn dispatch_unified(&mut self, request: Value, window: &mut Window, cx: &mut Context<Self>) {
         // Presentation updates must never replace the acknowledgement of a
         // prompt or decision that the native controls are still waiting for.
-        if request["action"]=="pet_visuals"{
-            if let Err(error)=self.unified_command(&request,window,cx){eprintln!("Kai pet presentation: {error}")}
+        if matches!(request["action"].as_str(),Some("pet_visuals"|"adaptive_contrast_samples")){
+            if let Err(error)=self.unified_command(&request,window,cx){eprintln!("Kai local presentation: {error}")}
             return;
         }
         if request["action"] == "workspace_presentation"{
@@ -441,6 +444,7 @@ impl Orbit {
                 | "refresh"
                 | "workspace_settings"
                 | "workspace_wallpaper_visibility"
+                | "adaptive_contrast_samples"
                 | "typography"
         ) {
             if request["ownerToken"].as_str() != Some(self.unified_token().as_str()) {
@@ -548,6 +552,10 @@ impl Orbit {
                 if back{self.unified_back=source}else{self.unified_forward=source};
                 if let Some(current)=self.active.as_ref().and_then(|id|self.sessions.iter().find(|s|&s.id==id)).cloned(){if back{self.unified_forward.push(current)}else{self.unified_back.push(current)}}
                 self.unified_navigating=true;self.open_session(target,window,cx);self.unified_navigating=false;
+            }
+            "adaptive_contrast_samples"=>{
+                let profiles=request["profiles"].as_array().filter(|v|v.len()<=32).map(|v|v.iter().filter_map(|p|serde_json::from_value::<adaptive_contrast::Profile>(p.clone()).ok()).collect()).unwrap_or_default();
+                self.accept_adaptive(profiles,request["status"].as_str().map(str::to_owned),cx);
             }
             "ui_command"=>{let id=request["command"].as_str().filter(|id|keyboard::COMMANDS.iter().any(|(_,known,_)|id==known)).ok_or("Unknown keyboard command")?;self.execute_shortcut(id,window,cx);if id=="github"{reveal();}},
             "new" => self.new_unprojected_conversation(window, cx),
@@ -1709,7 +1717,8 @@ impl Orbit{
   REENTERED.set(false);assert!(super::voice_host().is_none());assert!(REENTERED.get(),"Media host lookup held the owner borrow across AppKit reentry");
   HOST.with(|h|{let mut h=h.borrow_mut();h.as_mut().unwrap().completed=Some("approval-response".into());h.as_mut().unwrap().error=Some("original-result".into());});
   cx.update(|window,cx|view.update(cx,|app,cx|app.dispatch_unified(json!({"action":"pet_visuals","ownerToken":app.unified_token(),"pets":{}}),window,cx)));
-  HOST.with(|h|{let h=h.borrow();let h=h.as_ref().unwrap();assert_eq!(h.completed.as_deref(),Some("approval-response"),"Pet presentation consumed the native decision acknowledgement");assert_eq!(h.error.as_deref(),Some("original-result"));});
+  cx.update(|window,cx|view.update(cx,|app,cx|app.dispatch_unified(json!({"action":"adaptive_contrast_samples","status":"active","profiles":[]}),window,cx)));
+  HOST.with(|h|{let h=h.borrow();let h=h.as_ref().unwrap();assert_eq!(h.completed.as_deref(),Some("approval-response"),"Local presentation consumed the native decision acknowledgement");assert_eq!(h.error.as_deref(),Some("original-result"));});
  }
 }
 

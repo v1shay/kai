@@ -133,8 +133,9 @@ impl Orbit {
             .flex_col()
             .rounded(px(20.))
             .overflow_hidden()
-            .bg(rgba(self.appearance.tint(0x17171788)))
+            .bg(if self.theme.adaptive_contrast.enabled {gpui::rgba(self.resolved_theme.main_rgba())} else {rgba(self.appearance.tint(0x17171788))})
             .child(div().absolute().inset_0().child(artwork))
+            .when(self.theme.adaptive_contrast.enabled,|s|s.child(self.adaptive_guard("mini",window)))
             .child(
                 div()
                     .h(px(46.))

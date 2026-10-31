@@ -64,6 +64,7 @@ enum UnifiedDraftHandoff {
         guard data != lastState else{return}
         guard let packet=try? JSONDecoder().decode(OwnerPacket.self,from:data) else{onError?("Could not read Code’s owner state");fputs("Kai unified state decode failed\n",stderr);return}
         if let object=try? JSONSerialization.jsonObject(with:data) as? [String:Any]{
+            if (object["type"] as? String)?.hasPrefix("adaptiveContrast") == true{AdaptiveBackdrop.shared.receive(object);return}
             if object["type"] as? String == "quickLook",let paths=object["paths"] as? [String]{NativeWorkspaceIntegrations.shared.quickLook(paths.map{URL(fileURLWithPath:$0)});return}
             if object["type"] as? String == "artifactPreview",let artifact=object["artifact"] as? [String:Any]{NativeWorkspaceIntegrations.shared.artifact(artifact);return}
         }

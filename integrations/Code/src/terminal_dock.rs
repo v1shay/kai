@@ -136,7 +136,7 @@ impl Orbit {
         let extent = self.pane_extent(pane_layout::Pane::Terminal).min(dock.extent(window.viewport_size()));
         let body_extent = self.pane_body_extent(pane_layout::Pane::Terminal).min(dock.extent(window.viewport_size()));
         let terminal = |this: &Self| {
-            div()
+            adaptive_ui::panel!(this,"terminal",window,div()
                 .debug_selector(|| "terminal-dock".into())
                 .flex_none()
                 .relative()
@@ -179,6 +179,7 @@ impl Orbit {
                         .on_mouse_down(MouseButton::Left,|_,window,cx|{native::panel_drag_guard(window,true);cx.stop_propagation();})
                         .on_drag(ResizeTerminal, |_, _, _, cx| cx.new(|_| ResizeTerminal)),
                 )
+            )
         };
         let highlighted = self.terminal_dock_hover.filter(|_| cx.has_active_drag());
         div()

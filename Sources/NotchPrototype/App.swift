@@ -2540,7 +2540,7 @@ private final class NotchSurfaceHost:NSView {
     @objc private func resetGlass(){GlassPreferences.reset(.standard);for control in GlassPreferences.controls{glassSliders[control.key]?.doubleValue=control.initial};for item in glassChoiceItems{item.state=item.tag == ((item.representedObject as? String) == "blur" ? 1:0) ? .on:.off};refreshGlassLabels();placePanel()}
     @objc private func toggleBottomGlass(){if codeWallpaperEnabled{codeWallpaperEnabled=false;UserDefaults.standard.set(false,forKey:"notchCodeWallpaper");glassEnabled=true}else{glassEnabled.toggle()};UserDefaults.standard.set(glassEnabled,forKey:"notchBottomGlass");placePanel();refreshChecks()}
     @objc private func toggleCodeWallpaper(){codeWallpaperEnabled.toggle();UserDefaults.standard.set(codeWallpaperEnabled,forKey:"notchCodeWallpaper");placePanel();refreshChecks()}
-    func setWorkspaceWallpaper(_ image:CGImage?,opacity:Float){workspaceBackground.setImage(image,opacity:opacity)}
+    func setWorkspaceWallpaper(_ image:CGImage?,opacity:Float){workspaceBackground.setImage(image,opacity:opacity);AdaptiveBackdrop.shared.nativeBackgroundChanged()}
     private func updateGlassBackground(){
         guard let root=panel?.contentView?.layer else{return}
         let wallpaper=codeWallpaperEnabled && EmbeddedCodeRuntime.shared.active
@@ -2550,6 +2550,16 @@ private final class NotchSurfaceHost:NSView {
         glassBackground.update(canvas:CGSize(width:canvasWidth,height:canvasHeight),width:expandedWidth,enabled:enabled,color:assistantPalette.first ?? .systemBlue,preferences:GlassPreferences(defaults:.standard))
         workspaceBackground.update(canvas:CGSize(width:canvasWidth,height:canvasHeight),width:expandedWidth,enabled:wallpaper&&visible,height:GlassPreferences(defaults:.standard).height)
         EmbeddedCodeRuntime.shared.setWallpaperVisible(wallpaper&&visible)
+        if let panel {
+            AdaptiveBackdrop.shared.registerNotch(window:panel,host:scalableUI,area:miniUI.layer.frame,active:visible&&showsNotchSurface,frozen:workspaceMorph.transitioning||quickMorph.transitioning){[weak self,weak panel] point,external in
+                guard let self,let panel else{return external}
+                let rootPoint=self.scalableUI.convert(point,to:panel.contentView)
+                var base=enabled ? external:[0.0,0.0,0.0]
+                base=self.glassBackground.adaptiveComposite(rootPoint,base:base)
+                return self.workspaceBackground.adaptiveComposite(rootPoint,base:base)
+            }
+        }
+        AdaptiveBackdrop.shared.nativeBackgroundChanged()
     }
     private func refreshChecks() {
         codeConnectionItem?.state=(UserDefaults.standard.object(forKey:"connectCode") as? Bool ?? true) ? .on:.off

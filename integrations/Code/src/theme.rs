@@ -166,6 +166,7 @@ pub struct Theme {
     pub horizontal_agent_picker: bool,
     pub github_widget: bool,
     pub compact_diff: bool,
+    pub adaptive_contrast: crate::adaptive_contrast::Settings,
     pub transparency: bool,
     pub glass_material: GlassMaterial,
     pub contrast: Contrast,
@@ -186,6 +187,9 @@ impl Hash for Theme {
         self.horizontal_agent_picker.hash(state);
         self.github_widget.hash(state);
         self.compact_diff.hash(state);
+        self.adaptive_contrast.enabled.hash(state);
+        self.adaptive_contrast.target.to_bits().hash(state);
+        self.adaptive_contrast.settle_ms.hash(state);
         self.transparency.hash(state);
         self.glass_material.hash(state);
         self.contrast.hash(state);
@@ -208,6 +212,7 @@ impl Default for Theme {
             horizontal_agent_picker: true,
             github_widget: true,
             compact_diff: false,
+            adaptive_contrast: Default::default(),
             transparency: true,
             glass_material:GlassMaterial::Automatic,
             contrast: Contrast::Standard,
@@ -218,6 +223,7 @@ impl Default for Theme {
 impl Theme {
     pub fn normalized(&self) -> Self {
         let mut next = self.clone();
+        next.adaptive_contrast = next.adaptive_contrast.normalized();
         next.ui_font = normalize_font(&next.ui_font, UI_FONT_DEFAULT);
         next.mono_font = normalize_font(&next.mono_font, MONO_FONT_DEFAULT);
         next.ui_font_size = finite_size(next.ui_font_size, 14., 10., 24.);
@@ -356,6 +362,7 @@ impl Theme {
             glass_material:next.glass_material,
             sidebar_glass: native_transparency && next.sidebar_glass,
             main_glass: native_transparency && next.main_glass,
+            adaptive_range:None,
             backdrop_rgba:with_alpha(background,native_alpha),
             sidebar_rgba,
             main_rgba,
@@ -541,6 +548,7 @@ pub struct ResolvedTheme {
     pub glass_material:GlassMaterial,
     pub sidebar_glass: bool,
     pub main_glass: bool,
+    adaptive_range:Option<(f32,f32)>,
     backdrop_rgba:u32,
     sidebar_rgba: u32,
     main_rgba: u32,
@@ -549,6 +557,27 @@ pub struct ResolvedTheme {
     hover_rgba: u32,
 }
 impl ResolvedTheme {
+    pub fn adaptive_tokens(&self,settings:&Theme,appearance:Appearance,decision:&crate::adaptive_contrast::Decision,pixels:&[[f32;3]])->Self {
+        use crate::adaptive_contrast::{channels,composite,luminance};
+        let mut local=settings.clone();local.scheme=if decision.ink.dark(){Scheme::Dark}else{Scheme::Light};
+        local.colors.foreground=None;local.colors.background=None;local.colors.sidebar=None;local.colors.surface=None;
+        let mut next=local.resolve(decision.ink.dark(),appearance);
+        let (mut low,mut high)=(1f32,0f32);
+        for p in pixels{let l=luminance(composite(channels(decision.tint),decision.alpha,*p));low=low.min(l);high=high.max(l);}
+        next.adaptive_range=Some((low,high));next.foreground=decision.ink.rgb();
+        let ink=next.foreground;
+        let adjust=|rgb:u32|contrast_over_range(rgb,low,high,settings.adaptive_contrast.target,ink);
+        next.muted=adjust(next.muted);next.accent=adjust(next.accent);next.link=adjust(next.link);next.heading=adjust(next.heading);
+        next.success=adjust(next.success);next.error=adjust(next.error);next.warning=adjust(next.warning);next.add=adjust(next.add);next.remove=adjust(next.remove);
+        next.syntax_keyword=adjust(next.syntax_keyword);next.syntax_callable=adjust(next.syntax_callable);next.syntax_string=adjust(next.syntax_string);next.syntax_type=adjust(next.syntax_type);next.syntax_tag=adjust(next.syntax_tag);next.syntax_number=adjust(next.syntax_number);next.syntax_comment=adjust(next.syntax_comment);next.syntax_property=adjust(next.syntax_property);next.syntax_meta=adjust(next.syntax_meta);next.syntax_invalid=adjust(next.syntax_invalid);
+        next.on_accent=if contrast_ratio(next.accent,0)>contrast_ratio(next.accent,0xffffff){0}else{0xffffff};
+        next.add_bg=with_alpha(next.add,0.10);next.remove_bg=with_alpha(next.remove,0.10);
+        // Native material remains shared; local protection changes only this panel.
+        next.backdrop_rgba=self.backdrop_rgba;
+        next.sidebar_rgba=over_rgba(self.sidebar_rgba,with_alpha(decision.tint,decision.alpha));
+        next.main_rgba=over_rgba(self.main_rgba,with_alpha(decision.tint,decision.alpha));
+        next
+    }
     pub fn backdrop_rgba(&self)->u32{self.backdrop_rgba}
     pub fn sidebar_rgba(&self) -> u32 {
         self.sidebar_rgba
@@ -577,6 +606,7 @@ impl ResolvedTheme {
     /// Exact legacy semantic colors only. Provider identity and arbitrary media
     /// colors intentionally pass through; do not quantize/remap image pixels.
     pub fn map_rgb(&self, color: u32) -> u32 {
+        if self.adaptive_range.is_some(){match color{0x8ad9a0=>return self.add,0xff8e91=>return self.remove,0xecc87a=>return self.warning,_=>{}}}
         match color {
             0xebebeb | 0xffffff | 0xd4d4d4 | 0xe5e7eb | 0xe8e8e8 | 0xeeeeee | 0xd6d9df
             | 0xd5d6d8 | 0xd6d6d6 => self.foreground,
@@ -608,11 +638,30 @@ impl ResolvedTheme {
             0xebebeb0a => return self.surface_rgba(),
             _ => {}
         }
-        (self.map_rgb(color >> 8) << 8) | (color & 255)
+        let alpha=if self.adaptive_range.is_some() && (color&255)>=96 && matches!(color>>8,0xebebeb|0xffffff|0x929292|0x999999){255}else{color&255};
+        (self.map_rgb(color >> 8) << 8) | alpha
     }
 }
 thread_local! { static CURRENT:RefCell<ResolvedTheme>=RefCell::new(Theme::default().resolve(true,Appearance::default())); }
 thread_local! { static MONO_WIDTH:Cell<Option<f32>>=const {Cell::new(None)}; }
+/// A render-phase-local palette. Nested views and other windows cannot leak ink.
+pub struct PaletteScope(Option<ResolvedTheme>);
+impl PaletteScope {pub fn new(next:Option<&ResolvedTheme>)->Self{Self(next.map(|next|CURRENT.with(|current|current.replace(next.clone()))))}}
+impl Drop for PaletteScope{fn drop(&mut self){if let Some(old)=self.0.take(){CURRENT.with(|current|{current.replace(old);});}}}
+pub fn adaptive_sidebar_rgba(base:u32)->u32{CURRENT.with(|t|{let t=t.borrow();if t.adaptive_range.is_some(){t.sidebar_rgba}else{base}})}
+pub fn adaptive_rgb_or_identity(color:u32)->Rgba{CURRENT.with(|t|{let t=t.borrow();gpui::rgb(if t.adaptive_range.is_some(){t.map_rgb(color)}else{color})})}
+fn contrast_over_range(color:u32,low:f32,high:f32,target:f32,ink:u32)->u32{
+    let good=|rgb:u32|{let l=crate::adaptive_contrast::luminance(crate::adaptive_contrast::channels(rgb));let r=if l>=low&&l<=high{1.}else{contrast_ratio_luminances(l,low).min(contrast_ratio_luminances(l,high))};r>=target};
+    if good(color){return color}let(mut a,mut b)=(0f32,1f32);for _ in 0..18{let t=(a+b)*0.5;if good(blend(ink,color,t)){b=t}else{a=t}}blend(ink,color,b)
+}
+fn contrast_ratio_luminances(a:f32,b:f32)->f32{(a.max(b)+0.05)/(a.min(b)+0.05)}
+fn over_rgba(back:u32,front:u32)->u32{
+    let ba=(back&255)as f32/255.;let fa=(front&255)as f32/255.;let a=fa+ba*(1.-fa);if a<=0.{return 0}
+    let b=crate::adaptive_contrast::channels(back>>8);let f=crate::adaptive_contrast::channels(front>>8);
+    let c:[u32;3]=std::array::from_fn(|i|((f[i]*fa+b[i]*ba*(1.-fa))/a*255.).round()as u32);
+    (c[0]<<24)|(c[1]<<16)|(c[2]<<8)|(a*255.).round()as u32
+}
+
 pub fn install_resolved(theme: ResolvedTheme) {
     let font_changed = CURRENT.with(|current| {
         let mut current = current.borrow_mut();
@@ -850,5 +899,37 @@ mod tests {
             assert!(parse_hex(invalid).is_err());
         }
         assert_eq!(format_hex(0xabcdef), "#ABCDEF");
+    }
+}
+
+#[cfg(test)]
+mod adaptive_tests {
+    use super::*;
+    use crate::adaptive_contrast::{self as ac,Ink};
+    #[test]
+    fn panel_ink_tokens_preserve_fonts_identity_and_protect_semantics(){
+        for target in [4.5,7.]{for value in [0.,0.5,1.]{
+            let settings=Theme{adaptive_contrast:ac::Settings{enabled:true,target,..Default::default()},..Default::default()};
+            let base=settings.resolve(true,Appearance::default());let pixels=[[value;3],[value*0.4;3]];let d=ac::solve(&pixels,target+1.,None);
+            let panel=base.adaptive_tokens(&settings,Appearance::default(),&d,&pixels);
+            assert_eq!(panel.ui_font,base.ui_font);assert_eq!(panel.mono_font,base.mono_font);assert_eq!(panel.ui_font_size,base.ui_font_size);assert_eq!(panel.backdrop_rgba(),base.backdrop_rgba());
+            assert_eq!(panel.map_rgb(0xa39cfa),0xa39cfa,"pet/provider identity changed");
+            let (low,high)=panel.adaptive_range.unwrap();
+            for c in [panel.foreground,panel.muted,panel.link,panel.warning,panel.add,panel.remove,panel.syntax_comment]{let l=ac::luminance(ac::channels(c));assert!(contrast_ratio_luminances(l,low).min(contrast_ratio_luminances(l,high))>=target-0.02,"{c:x} {low} {high}");}
+        }}
+    }
+    #[test]
+    fn nested_palette_scopes_restore_exact_original_and_disabled_is_identity(){
+        let settings=Theme::default();let base=settings.resolve(true,Appearance::default());install_resolved(base.clone());
+        let make=|ink|{let p=if ink==Ink::Light{[[0.;3]]}else{[[1.;3]]};let d=ac::solve_for(ink,&p,5.5);base.adaptive_tokens(&settings,Appearance::default(),&d,&p)};
+        let a=make(Ink::Dark);let b=make(Ink::Light);
+        {let _a=PaletteScope::new(Some(&a));assert_eq!(rgb(0xebebeb),gpui::rgb(a.foreground));{let _b=PaletteScope::new(Some(&b));assert_eq!(rgb(0xebebeb),gpui::rgb(b.foreground));}assert_eq!(rgb(0xebebeb),gpui::rgb(a.foreground));}
+        assert_eq!(CURRENT.with(|v|v.borrow().clone()),base);assert_eq!(adaptive_rgb_or_identity(0xffffff),gpui::rgb(0xffffff));
+    }
+    #[test]
+    fn experimental_preferences_round_trip_and_old_preferences_stay_off(){
+        assert!(!Theme::from_json("{}").unwrap().adaptive_contrast.enabled);
+        let mut theme=Theme::default();theme.adaptive_contrast=ac::Settings{enabled:true,target:7.,settle_ms:900};
+        let encoded=theme.to_json_with_appearance(Appearance::default()).unwrap();let(decoded,_)=Theme::from_json_with_appearance(&encoded).unwrap();assert_eq!(decoded.adaptive_contrast,theme.adaptive_contrast);
     }
 }
