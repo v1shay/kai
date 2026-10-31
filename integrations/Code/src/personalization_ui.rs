@@ -69,7 +69,6 @@ impl Orbit {
             cx,
             |this, action, window, cx| this.appearance_action(action, window, cx),
         ));
-        if theme_controls::matches(&query,"Adaptive contrast experimental local panels mixed background black white text readability") {panel=panel.child(self.adaptive_settings(cx));}
         if theme_controls::matches(&query, "Glass transparency opacity blur frosted") {
             panel = panel.child(appearance::controls(
                 self.appearance,
@@ -143,9 +142,6 @@ impl Orbit {
             Action::ToggleTransparency => self.theme.transparency = !self.theme.transparency,
             Action::ToggleSidebarGlass => self.theme.sidebar_glass = !self.theme.sidebar_glass,
             Action::ToggleGithubWidget=>self.theme.github_widget=!self.theme.github_widget,
-            Action::ToggleAdaptiveContrast=>self.theme.adaptive_contrast.enabled=!self.theme.adaptive_contrast.enabled,
-            Action::AdaptiveTarget(value)=>self.theme.adaptive_contrast.target=value,
-            Action::AdaptiveSettle(value)=>self.theme.adaptive_contrast.settle_ms=value,
             Action::ToggleCompactDiff=>self.theme.compact_diff=!self.theme.compact_diff,
             Action::ToggleHorizontalAgentPicker => self.theme.horizontal_agent_picker = !self.theme.horizontal_agent_picker,
             Action::ToggleBorderlessComposer => self.theme.borderless_composer = !self.theme.borderless_composer,

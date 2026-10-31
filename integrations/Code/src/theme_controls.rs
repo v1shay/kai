@@ -33,9 +33,6 @@ pub enum Action {
     ToggleHorizontalAgentPicker,
     ToggleGithubWidget,
     ToggleCompactDiff,
-    ToggleAdaptiveContrast,
-    AdaptiveTarget(f32),
-    AdaptiveSettle(u32),
     Contrast(Contrast),
     DiffPalette(DiffPalette),
     Reset,
@@ -303,17 +300,6 @@ pub fn controls<T: 'static>(
         view=view.child(section("Agent picker",div().flex().flex_col().gap_2()
             .child(toggle("Horizontal agent picker",settings.horizontal_agent_picker,Action::ToggleHorizontalAgentPicker,cx,callback.clone()))
             .child(div().text_size(theme::ui_px(10.)).text_color(gpui::rgb(resolved.muted)).child("Providers, models and intensity from left to right. Turn off for a vertical layout. Arrow keys work in both."))
-            .into_any_element()));
-    }
-    if matches(query,"Adaptive contrast experimental local panels mixed background black white text readability") {
-        count+=1;
-        let mut choices=div().flex().gap_2();
-        for (target,label) in [(4.5,"Balanced"),(7.,"Stronger contrast")] {choices=choices.child(button(format!("adaptive-target-{target}"),label,Action::AdaptiveTarget(target),(settings.adaptive_contrast.target-target).abs()<0.01,cx,callback.clone()));}
-        view=view.child(section("Adaptive contrast · Experimental",div().flex().flex_col().gap_2()
-            .child(toggle("Adaptive panel contrast",settings.adaptive_contrast.enabled,Action::ToggleAdaptiveContrast,cx,callback.clone()))
-            .child(choices)
-            .child(div().flex().gap_2().children([(300,"Responsive"),(500,"Balanced settling"),(900,"Steadier")].into_iter().map(|(ms,label)|button(format!("adaptive-settle-{ms}"),label,Action::AdaptiveSettle(ms),settings.adaptive_contrast.settle_ms==ms,cx,callback.clone()))))
-            .child(div().text_size(theme::ui_px(10.)).text_color(gpui::rgb(resolved.muted)).child("Choose black or white ink separately for each panel. Mixed backgrounds gain protective tint. Live background sampling requires macOS Screen Recording access; pixels stay local."))
             .into_any_element()));
     }
     if matches(query, "Compact diff changes edited files response footer copy auto push GitHub") {

@@ -8,8 +8,6 @@ mod broker_ui;
 mod task_pets;
 mod chat_interactions;
 mod chat_navigation;
-mod adaptive_contrast;
-mod adaptive_ui;
 mod github;
 mod github_ui;
 mod change_summary;
@@ -742,7 +740,6 @@ struct Orbit {
     files_visible: bool,
     diff_view: Option<Entity<diff_view::DiffView>>,
     diff_started: Option<Instant>,
-    adaptive: adaptive_ui::State,
     github: github_ui::State,
     change_summaries:change_summary::State,
     agents: Vec<Agent>,
@@ -1312,7 +1309,6 @@ impl Orbit {
             files_visible: false,
             diff_view: None,
             diff_started: None,
-            adaptive: Default::default(),
             github: Default::default(),
             change_summaries:Default::default(),
             agents: vec![],
@@ -3975,7 +3971,7 @@ impl Orbit {
             .flex_none()
             .flex()
             .flex_col()
-            .bg(gpui::rgba(theme::adaptive_sidebar_rgba(self.resolved_theme.sidebar_rgba())))
+            .bg(gpui::rgba(self.resolved_theme.sidebar_rgba()))
             .border_r_1()
             .border_color(rgba(0xebebeb12))
             .child(
@@ -4277,7 +4273,7 @@ impl Orbit {
             .flex_none()
             .flex()
             .flex_col()
-            .bg(gpui::rgba(theme::adaptive_sidebar_rgba(self.resolved_theme.sidebar_rgba())))
+            .bg(gpui::rgba(self.resolved_theme.sidebar_rgba()))
             .border_r_1()
             .border_color(rgba(0xebebeb12))
             .child(
@@ -5378,7 +5374,6 @@ impl Render for Orbit {
         if let Some(at)=self.timestamp_released{if at.elapsed()<Duration::from_millis(180){request_motion_frame(window,cx);}else{self.timestamp_peek=0.;self.timestamp_released=None;}}
         use workspace_motion::Part as WorkspacePart;
         let entrance=unified::workspace_frame(self.motion);
-        self.tick_adaptive(window,entrance.animating(),cx);
         if entrance.animating(){request_motion_frame(window,cx);}
         let broker_project = self
             .broker_panel
@@ -5719,7 +5714,7 @@ impl Render for Orbit {
                         .h_full()
                         .overflow_hidden()
                         .flex_none()
-                        .child(adaptive_ui::panel!(self,"sidebar",window,self.sidebar(cx))),
+                        .child(self.sidebar(cx)),
                 )
             })
             .when(
@@ -5734,11 +5729,11 @@ impl Render for Orbit {
                             .h_full()
                             .flex_none()
                             .overflow_hidden()
-                            .child(div().w(px(260.)).h_full().child(adaptive_ui::panel!(self,"projects",window,self.workspace(cx)))),
+                            .child(div().w(px(260.)).h_full().child(self.workspace(cx))),
                     )
                 },
             )
-            .child(self.docked_conversation(adaptive_ui::panel!(self,"chat",window,
+            .child(self.docked_conversation(
                 div()
                     .flex_1()
                     .min_w(px(0.))
@@ -5750,7 +5745,6 @@ impl Render for Orbit {
                     .relative()
                     .overflow_hidden()
                     .child(div().absolute().inset_0().child(self.background.clone()))
-                    .when(self.theme.adaptive_contrast.enabled,|s|s.child(self.adaptive_guard("chat",window)))
                     .child(entrance.container(WorkspacePart::Header).flex_none().child(self.tabs(cx)))
                     .child(
                         entrance.container(WorkspacePart::Header)
@@ -5771,7 +5765,7 @@ impl Render for Orbit {
                                 |s| {
                                     s.child(
                                         context_ui::header_control("expand", false)
-                                            .child(icon("sidebar", 16., TEXT).text_color(theme::adaptive_rgb_or_identity(0xffffff)))
+                                            .child(icon("sidebar", 16., TEXT).text_color(gpui::rgb(0xffffff)))
                                             .on_click(cx.listener(|this, _, _, cx| {
                                                 this.toggle_sidebar();
                                                 cx.notify();
@@ -5817,7 +5811,7 @@ impl Render for Orbit {
                                 s.child(
                                     context_ui::header_control("return-to-notch", false)
                                         .text_size(theme::ui_px(11.))
-                                        .text_color(theme::adaptive_rgb_or_identity(0xffffff))
+                                        .text_color(gpui::rgb(0xffffff))
                                         .child("↗ Notch")
                                         .on_click(|_, _, _| unified::collapse()),
                                 )
@@ -5832,7 +5826,7 @@ impl Render for Orbit {
                             )
                             .child(
                                 context_ui::header_control("chat-background", self.modal == Some(Modal::Background))
-                                    .child(icon("file-image", 14., TEXT).text_color(theme::adaptive_rgb_or_identity(0xffffff)))
+                                    .child(icon("file-image", 14., TEXT).text_color(gpui::rgb(0xffffff)))
                                     .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
                                         this.toggle_panel_from_click(
                                             Modal::Background,
@@ -6003,11 +5997,11 @@ impl Render for Orbit {
                         )
                     })
                     .child(entrance.container(WorkspacePart::Composer).flex_none().child(self.composer(window, cx)))
-                    .into_any_element()),window,cx)
+                    .into_any_element(),window,cx)
             )
             .when(self.files_visible, |s| {
                 s.when_some(self.file_browser.clone(), |s, browser| {
-                    s.child(adaptive_ui::panel!(self,"files",window,self.inspector_shell(pane_layout::Pane::Files, entrance.container(WorkspacePart::Inspector)
+                    s.child(self.inspector_shell(pane_layout::Pane::Files, entrance.container(WorkspacePart::Inspector)
                             .debug_selector(|| "files-inspector".into())
                             .w_full()
                             .h_full()
@@ -6039,14 +6033,14 @@ impl Render for Orbit {
                                             })),
                                     ),
                             )
-                            .child(div().flex_1().min_h(px(0.)).w_full().child(browser)).into_any_element(),window,cx)))
+                            .child(div().flex_1().min_h(px(0.)).w_full().child(browser)).into_any_element(),window,cx))
                 })
             })
             .when(self.broker_panel.is_some(), |s| {
-                s.child(adaptive_ui::panel!(self,"agents",window,self.inspector_shell(pane_layout::Pane::Children,self.children_panel(cx),window,cx)))
+                s.child(self.inspector_shell(pane_layout::Pane::Children,self.children_panel(cx),window,cx))
             })
             .when_some(self.diff_view.clone(), |s, review| {
-                s.child(adaptive_ui::panel!(self,"changes",window,self.inspector_shell(pane_layout::Pane::Changes, entrance.container(WorkspacePart::Inspector)
+                s.child(self.inspector_shell(pane_layout::Pane::Changes, entrance.container(WorkspacePart::Inspector)
                         .debug_selector(|| "changes-inspector".into())
                         .w_full()
                         .h_full()
@@ -6089,7 +6083,7 @@ impl Render for Orbit {
                                         ),
                                 )
                                 .child(div().flex_1().min_h(px(0.)).child(review)),
-                        ).into_any_element(),window,cx)))
+                        ).into_any_element(),window,cx))
             })
             .when(self.github.panel.is_some() && self.owns_overlays(window),|s|s.child(self.github_panel_view(window,cx)))
             .when(self.attachment_preview.is_some(), |s| {

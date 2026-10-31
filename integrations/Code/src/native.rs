@@ -31,10 +31,6 @@ mod mac {
         (!native.is_null()).then_some(native)
     }
     #[cfg(not(test))]
-    pub fn window_number(window:&Window)->i64{unsafe{ns_window(window).map_or(0,|native|msg_send![native,windowNumber])}}
-    #[cfg(test)]
-    pub fn window_number(_:&Window)->i64{0}
-    #[cfg(not(test))]
     pub fn reduced_motion() -> bool {
         // UI-thread read of the system accessibility preference; no polling task.
         unsafe {
@@ -367,6 +363,3 @@ pub fn liquid_available()->bool{false}
 pub use mac::panel_drag_guard;
 #[cfg(any(not(target_os="macos"),test))]
 pub fn panel_drag_guard(_:&gpui::Window,_:bool){}
-
-#[cfg(target_os="macos")]pub use mac::window_number;
-#[cfg(not(target_os="macos"))]pub fn window_number(_:&gpui::Window)->i64{0}

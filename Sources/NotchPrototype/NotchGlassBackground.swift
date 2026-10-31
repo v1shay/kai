@@ -28,11 +28,6 @@ import AppKit
     }
     required init?(coder:NSCoder){fatalError("init(coder:) has not been implemented")}
     override func hitTest(_ point:NSPoint)->NSView?{nil}
-    func adaptiveComposite(_ point:CGPoint,base:[Double])->[Double]{
-        guard !isHidden else{return base};var result=base
-        for gradient in [ink,haze,tint,rim]{if let colour=AdaptiveColorMath.gradient(gradient,at:point){result=AdaptiveColorMath.over(colour,result)}}
-        return result
-    }
     static func depth(for height:CGFloat)->CGFloat{height*CGFloat(GlassPreferences().height)}
     func update(canvas:CGSize,width:CGFloat,enabled:Bool,color:NSColor,preferences:GlassPreferences=GlassPreferences()){
         CATransaction.begin();CATransaction.setDisableActions(true);defer{CATransaction.commit()}

@@ -377,8 +377,7 @@ impl Render for QuickChat {
         native::apply_appearance(window, &self.orbit.read(cx).effective_appearance());
         native::apply_theme(window, &self.orbit.read(cx).resolved_theme);
         let surface = self.orbit.update(cx, |app, cx| {
-            app.tick_adaptive(window,false,cx);
-            adaptive_ui::panel!(app,"mini",window,app.quick_chat_surface(&self.composer, &self.transcript_scroll, window, cx))
+            app.quick_chat_surface(&self.composer, &self.transcript_scroll, window, cx)
         });
         let view = div()
             .key_context("QuickChat")

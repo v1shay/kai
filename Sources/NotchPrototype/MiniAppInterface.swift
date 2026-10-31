@@ -391,7 +391,6 @@ private final class AttachmentLayer:CALayer {
     }
 
     private func layoutProjects(animated:Bool) {
-        defer{AdaptiveBackdrop.shared.refreshNativeInk()}
         CATransaction.begin();CATransaction.setDisableActions(true);defer{CATransaction.commit()}
         sidebarContentHeight=21+CGFloat(codeChats.isEmpty ? 0:21+codeChats.count*16)+CGFloat(standaloneChats.isEmpty ? 0:21+standaloneChats.count*16)+CGFloat(elsewhere.isEmpty ? 0:21+elsewhere.count*16)+CGFloat(projects.count)*21+(projects.contains(where:{$0.path == selectedProject}) ? CGFloat(chats.count)*16+19:0)
         projectOffset=min(projectOffset,max(0,sidebarContentHeight-left.bounds.height+8))
@@ -454,7 +453,6 @@ private final class AttachmentLayer:CALayer {
     }
 
     private func layoutMain(animated:Bool) {
-        defer{AdaptiveBackdrop.shared.refreshNativeInk()}
         defer{notifyPreviewContent()}
         let paired=previewOpen && previewFromFiles && filesOpen
         let previewWidth:CGFloat=paired ? max(94,min(126,layer.bounds.width*0.35)):leftWidth
