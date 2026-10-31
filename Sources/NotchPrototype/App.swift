@@ -4,9 +4,9 @@ import WebKit
 import UniformTypeIdentifiers
 
 struct Catalog: Decodable { let pets: [Pet]; let stateAnimations: [String: Motion] }
-struct Pet: Decodable { let id, displayName, spritesheet: String; let grid: Grid; let animationOverrides:[String:Motion]?;var sourceURL:URL?=nil;var kind:String?=nil }
+struct Pet: Decodable { let id, displayName, spritesheet: String; let grid: Grid; let animationOverrides:[String:Motion]?;var sourceURL:URL?=nil;var kind:String?=nil;var category:String?=nil }
 struct Grid: Decodable { let rows: Int }
-struct Motion: Decodable { let row: Int; let columns, durationsMs: [Int]; let loop: Bool }
+struct Motion: Codable { let row: Int; let columns, durationsMs: [Int]; let loop: Bool }
 struct FileCitation { let range:NSRange;let url:URL;let purpose:String }
 private let citationPattern=try! NSRegularExpression(pattern:#":?codex-file-citation\{[^}\n]*\}"#)
 private let citationPathPattern=try! NSRegularExpression(pattern:#"\bpath="([^"]+)""#)
@@ -216,6 +216,10 @@ private final class NotchSurfaceHost:NSView {
     private var pendingSlashDraft:String?
     private let typographyMenu=TypographyMenu()
     private var petLibraryRevision=0
+    private let petLibraryQueue=DispatchQueue(label:"kai.pet-library",qos:.utility)
+    private let petLibraryMonitor=LocalPetMonitor()
+    private var petLibraryFingerprint=""
+
     private let quickMorph=WorkspaceMorph()
     private weak var quickWindow:NSWindow?
     private var quickPetSlot=CGRect(x:12,y:8,width:30,height:30)
@@ -363,6 +367,30 @@ private final class NotchSurfaceHost:NSView {
         textReveal.finish();AppTypography.update(miniUI.layer);conversationRenderer.invalidateAll()
         if let state=latestState,miniOpen{renderConversation(state.history,forceBottom:false,preserveViewport:true)}
     }
+    private func populatePetMenu(_ menu:NSMenu,pets:[Pet]){
+        for item in menu.items where item.identifier?.rawValue=="pet-category"{menu.removeItem(item)}
+        petMenuRows.removeAll()
+        var position=menu.items.firstIndex(where:{$0.title=="done"}).map{max(0,$0-1)} ?? menu.items.count
+        for category in PetCategory.allCases {
+            let group=pets.filter{PetCategory.of($0)==category}.sorted{$0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending}
+            guard !group.isEmpty else{continue}
+            let parent=NSMenuItem(title:"\(category.rawValue) (\(group.count))",action:nil,keyEquivalent:"");parent.identifier=NSUserInterfaceItemIdentifier("pet-category");let child=NSMenu(title:category.rawValue);parent.submenu=child
+            for pet in group {let item=NSMenuItem(title:pet.displayName,action:nil,keyEquivalent:"");let row=PetMenuRow(title:pet.displayName);row.selected=pet.id==petID;row.onSelect={[weak self] in self?.usePet(pet.id);self?.workspacePetMenu?.cancelTracking();self?.status.menu?.cancelTracking()};item.view=row;child.addItem(item);petMenuRows[pet.id]=row}
+            menu.insertItem(parent,at:position);position+=1
+        }
+    }
+    @objc private func importPetPack(){
+        let picker=NSOpenPanel();picker.title="Import a pet pack";picker.canChooseDirectories=true;picker.canChooseFiles=true;picker.allowsMultipleSelection=true
+        picker.allowedContentTypes=[.zip,.png,UTType(filenameExtension:"webp") ?? .image]
+        picker.begin{[weak self] result in guard let self,result == .OK else{return};let urls=picker.urls
+            self.petLibraryQueue.async{[weak self] in
+                var failures=[String]()
+                for url in urls {do{try PetPackImporter.install(url,to:PetPackImporter.storage())}catch{failures.append(url.lastPathComponent+": "+error.localizedDescription)}}
+                let messages=failures
+                DispatchQueue.main.async{[weak self] in self?.rescanLocalPets();if !messages.isEmpty{let alert=NSAlert();alert.messageText="Some pet packs could not be imported";alert.informativeText=messages.joined(separator:"\n");alert.runModal()}}
+            }
+        }
+    }
     @objc private func choosePetFolder(){
         let picker=NSOpenPanel();picker.title="Choose a local pet library";picker.canChooseDirectories=true;picker.canChooseFiles=false;picker.allowsMultipleSelection=false
         picker.begin{[weak self] result in guard result == .OK,let url=picker.url else{return};UserDefaults.standard.set(url.path,forKey:"localPetFolder");self?.rescanLocalPets()}
@@ -370,12 +398,18 @@ private final class NotchSurfaceHost:NSView {
     @objc private func rescanLocalPets(){
         guard let catalog else{return};petLibraryRevision+=1;let revision=petLibraryRevision,roots=LocalPetLibrary.roots(),priorPet=petID
         let bundled=assetRoot
-        DispatchQueue.global(qos:.utility).async{[weak self] in
-            let local=LocalPetLibrary.discover(in:roots),profiles=LocalPetLibrary.profiles(local)
+        let automatic = !CommandLine.arguments.contains("--unified-smoke-test")
+        let downloads=FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads")
+        petLibraryQueue.async{[weak self] in
+            if automatic{PetPackImporter.importDownloads(downloads,to:PetPackImporter.storage())}
+            let local=LocalPetLibrary.discover(in:roots),profiles=LocalPetLibrary.profiles(local,cache:automatic)
+            let fingerprint=LocalPetLibrary.fingerprint(local)
             let base=(try? JSONDecoder().decode(Catalog.self,from:Data(contentsOf:bundled.appendingPathComponent("animation_catalog.json")))) ?? catalog
             let updated=LocalPetLibrary.merge(local,into:base)
             DispatchQueue.main.async{[weak self] in
                 guard let self,self.petLibraryRevision == revision else{return}
+                if automatic{self.petLibraryMonitor.watch(roots)}
+                guard self.petLibraryFingerprint != fingerprint else{return};self.petLibraryFingerprint=fingerprint
                 let unchanged=self.petID == priorPet
                 // Status can change the displayed pet during disk discovery.
                 // Migrate the preference and assignments independently of it.
@@ -384,25 +418,22 @@ private final class NotchSurfaceHost:NSView {
                 if let selected=self.petSelection.selectedID{self.petSelection.selectedID=LocalPetLibrary.migratedID(selected,in:base,local:local)}
                 self.taskPets=self.taskPets.mapValues{LocalPetLibrary.migratedID($0,in:base,local:local)}
                 self.catalog=updated;self.gradientCatalog.profileByPetID.merge(profiles){_,new in new}
+                let available=Set(updated.pets.map(\.id));self.taskPets=self.taskPets.filter{available.contains($0.value)};self.explicitTaskPets.formIntersection(self.taskPets.keys)
                 let specs=updated.pets.map{pet -> PetGallerySpec in
                     var motions=updated.stateAnimations;pet.animationOverrides?.forEach{motions[$0.key]=$0.value}
                     let stops=self.gradientCatalog.profileByPetID[pet.id]?.gradients.ambient.stops ?? []
                     let colors=stops.map{stop -> CGColor in let n=UInt64(stop.color.dropFirst(),radix:16) ?? 0;return NSColor(srgbRed:CGFloat((n>>16)&255)/255,green:CGFloat((n>>8)&255)/255,blue:CGFloat(n&255)/255,alpha:0.9).cgColor}
-                    return PetGallerySpec(id:pet.id,spritesheet:pet.spritesheet,rows:pet.grid.rows,motions:motions.mapValues{PetGalleryMotion(row:$0.row,columns:$0.columns,durationsMs:$0.durationsMs,loop:$0.loop)},colors:colors,sourceURL:pet.sourceURL)
+                    return PetGallerySpec(id:pet.id,spritesheet:pet.spritesheet,rows:pet.grid.rows,motions:motions.mapValues{PetGalleryMotion(row:$0.row,columns:$0.columns,durationsMs:$0.durationsMs,loop:$0.loop)},colors:colors,sourceURL:pet.sourceURL,category:PetCategory.of(pet).rawValue,displayName:pet.displayName)
                 }
                 self.petGallery.configure(specs,at:self.assetRoot);self.floatingTasks.configure(specs,profiles:self.gradientCatalog.profileByPetID,root:self.assetRoot)
-                if let menu=self.workspacePetMenu{
-                    let old=Set(self.petMenuRows.values.map(ObjectIdentifier.init));for item in menu.items{if let view=item.view,old.contains(ObjectIdentifier(view)){menu.removeItem(item)}};self.petMenuRows.removeAll()
-                    var index=max(0,menu.items.count-2)
-                    for pet in updated.pets.sorted(by:{$0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending}){
-                        let item=NSMenuItem(title:pet.displayName,action:nil,keyEquivalent:""),row=PetMenuRow(title:pet.displayName);row.onSelect={[weak self] in self?.usePet(pet.id)};item.view=row;menu.insertItem(item,at:index);index+=1;self.petMenuRows[pet.id]=row
-                    }
-                }
+                if let menu=self.workspacePetMenu{self.populatePetMenu(menu,pets:updated.pets)}
                 if self.petGalleryVisible{self.petGallery.layout(in:self.petGallery.layer.bounds,selected:self.petID);self.petGallery.show(selected:self.petID,motion:self.motionID)}
                 self.spriteAssets.invalidate();self.loadingSpritePetID=nil;self.loadedSpritePetID=nil;self.loadedSprite=nil
                 if unchanged,let selected=self.petSelection.selectedID,updated.pets.contains(where:{$0.id == selected}){self.petID=selected;self.userPetID=selected}
                 if !updated.pets.contains(where:{$0.id == self.petID}),let initial=self.petSelection.initialID(updated.pets.map(\.id)){self.petID=initial;self.userPetID=initial}
-                self.conversationPetID="";self.refreshChecks();self.play()
+                self.inlinePetImages.invalidate();self.inlinePetLoading.removeAll();self.inlinePetVisuals.removeAll();self.lastPetVisualPayload=nil
+                self.reconcileTaskPets(priority:self.focusedTaskID ?? self.latestState?.threadId ?? "")
+                self.conversationPetID="";self.syncConversationTheme();self.refreshChecks();self.play();self.syncInlinePets();self.floatingTasks.refresh(pets:self.taskPets)
             }
         }
     }
@@ -428,13 +459,18 @@ private final class NotchSurfaceHost:NSView {
         } catch {
             let alert=NSAlert();alert.messageText="Kai could not load its assets";alert.informativeText=error.localizedDescription;alert.runModal();NSApp.terminate(nil);return
         }
+        // Prime only remembered local choices from their validated metadata/cache;
+        // the full scan and any new archive conversion stay on the worker queue.
+        let remembered=[petSelection.lastUsedID,petSelection.selectedID].compactMap{$0}.filter{id in !catalog.pets.contains{$0.id==id}}
+        let preferred=LocalPetLibrary.preferred(remembered)
+        if !preferred.isEmpty{catalog=LocalPetLibrary.merge(preferred,into:catalog);gradientCatalog.profileByPetID.merge(LocalPetLibrary.cachedProfiles(preferred)){_,new in new}}
         if let initial=petSelection.initialID(catalog.pets.map(\.id)){petID=initial;userPetID=initial}
         let gallerySpecs=catalog.pets.map{pet in
             var motions=catalog.stateAnimations;pet.animationOverrides?.forEach{motions[$0.key]=$0.value}
             let galleryMotions=motions.mapValues{PetGalleryMotion(row:$0.row,columns:$0.columns,durationsMs:$0.durationsMs,loop:$0.loop)}
             let stops=gradientCatalog.profileByPetID[pet.id]?.gradients.ambient.stops ?? []
             let colors=stops.map{stop -> CGColor in let value=UInt64(stop.color.dropFirst(),radix:16) ?? 0;return NSColor(srgbRed:CGFloat((value>>16)&255)/255,green:CGFloat((value>>8)&255)/255,blue:CGFloat(value&255)/255,alpha:0.9).cgColor}
-            return PetGallerySpec(id:pet.id,spritesheet:pet.spritesheet,rows:pet.grid.rows,motions:galleryMotions,colors:colors,sourceURL:pet.sourceURL)
+            return PetGallerySpec(id:pet.id,spritesheet:pet.spritesheet,rows:pet.grid.rows,motions:galleryMotions,colors:colors,sourceURL:pet.sourceURL,category:PetCategory.of(pet).rawValue,displayName:pet.displayName)
         }
         petGallery.configure(gallerySpecs,at:assetRoot)
         shortcutPreparation.supportsOwnedVoice=EmbeddedCodeRuntime.shared.active
@@ -448,6 +484,7 @@ private final class NotchSurfaceHost:NSView {
             if EmbeddedCodeRuntime.shared.active{self.bridge.send("typography",["interfaceFont":interface,"codeFont":code])}
             else{self.applyTypography(interface:interface,code:code);UserDefaults.standard.set(interface,forKey:"interfaceFont");UserDefaults.standard.set(code,forKey:"codeFont")}
         }
+        petLibraryMonitor.changed={[weak self] in self?.rescanLocalPets()}
         DispatchQueue.main.async{[weak self] in self?.rescanLocalPets()}
         floatingTasks.onCycle={ [weak self] in self?.cycleFloatingPet($0) }
         floatingTasks.onOpen={ [weak self] task,preview in self?.openFloatingTask(task,preview:preview) }
@@ -648,7 +685,7 @@ private final class NotchSurfaceHost:NSView {
         return true
     }
 
-    func applicationWillTerminate(_ notification:Notification){NSWorkspace.shared.notificationCenter.removeObserver(self);NotificationCenter.default.removeObserver(self);hangDiagnostics.stop();compactPetCycle?.cancel();cancelWorkspaceHold();quickMorph.cancel();workspaceMorph.cancel();workspaceStatusMorph.cancel();workspaceStatusRetire?.cancel();passiveRetire?.cancel();textReveal.finish();petAppIcon.stop();floatingTasks.stop();imageEncodingWork?.cancel();voicePrompt.cancel();voiceLaunchTimeout?.cancel();shortcutPreparation.cancel();cancelShortcutHold();mediaReleaseWork?.cancel();chatVoice.stop();dictation.cancel();speech.stop();media.stop();artworkTask?.cancel();bridge.stop();attachmentFiles.forEach{try? FileManager.default.removeItem(at:$0)}}
+    func applicationWillTerminate(_ notification:Notification){petLibraryMonitor.stop();NSWorkspace.shared.notificationCenter.removeObserver(self);NotificationCenter.default.removeObserver(self);hangDiagnostics.stop();compactPetCycle?.cancel();cancelWorkspaceHold();quickMorph.cancel();workspaceMorph.cancel();workspaceStatusMorph.cancel();workspaceStatusRetire?.cancel();passiveRetire?.cancel();textReveal.finish();petAppIcon.stop();floatingTasks.stop();imageEncodingWork?.cancel();voicePrompt.cancel();voiceLaunchTimeout?.cancel();shortcutPreparation.cancel();cancelShortcutHold();mediaReleaseWork?.cancel();chatVoice.stop();dictation.cancel();speech.stop();media.stop();artworkTask?.cancel();bridge.stop();attachmentFiles.forEach{try? FileManager.default.removeItem(at:$0)}}
     @objc private func codexPreview(_ note:Notification){guard let path=note.userInfo?["path"] as? String else{return};pinned=true;setOpen(true,mini:true,userInitiated:true);miniUI.previewFile(URL(fileURLWithPath:(path as NSString).expandingTildeInPath))}
 
     private func buildMenu() {
@@ -725,12 +762,8 @@ private final class NotchSurfaceHost:NSView {
         petMenu.addItem(.separator())
         let scanPets=petMenu.addItem(withTitle:"Rescan local pets",action:#selector(rescanLocalPets),keyEquivalent:"");scanPets.target=self
         let localPets=petMenu.addItem(withTitle:"Add pet folder…",action:#selector(choosePetFolder),keyEquivalent:"");localPets.target=self
-        for pet in catalog.pets.sorted(by: { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }) {
-            let item = petMenu.addItem(withTitle: pet.displayName, action: nil, keyEquivalent: "")
-            let row=PetMenuRow(title:pet.displayName)
-            row.onSelect={ [weak self] in self?.usePet(pet.id) }
-            item.view=row;petMenuRows[pet.id]=row
-        }
+        let importPets=petMenu.addItem(withTitle:"Import pet pack…",action:#selector(importPetPack),keyEquivalent:"");importPets.target=self
+        populatePetMenu(petMenu,pets:catalog.pets)
         petMenu.addItem(.separator())
         let done=petMenu.addItem(withTitle:"done",action:#selector(closePetPicker),keyEquivalent:"")
         done.target=self
@@ -1571,7 +1604,7 @@ private final class NotchSurfaceHost:NSView {
         }
         if petGalleryVisible {
             let frame=petGallery.layer.frame,uiPoint=scalableUI.convert(point,from:panel.contentView),local=CGPoint(x:uiPoint.x-frame.minX,y:uiPoint.y-frame.minY)
-            if frame.contains(uiPoint),let id=petGallery.pet(at:local){usePet(id);hidePetGallery()}
+            if frame.contains(uiPoint){if petGallery.handleNavigation(at:local,selected:petID){return};if let id=petGallery.pet(at:local){usePet(id);hidePetGallery()}}
             return
         }
         if topTarget == 1 { miniUI.toggleFiles();if miniUI.isFilesOpen{let requestID=UUID().uuidString;pendingFilesRequestID=requestID;indicator.setFileLoading(true);bridge.send("files",["requestId":requestID])}else{pendingFilesRequestID=nil;indicator.setFileLoading(false)};return }

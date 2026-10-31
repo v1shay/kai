@@ -27,11 +27,11 @@ final class FileGlyphLayer: CAShapeLayer {
 }
 
 struct GradientCatalog: Decodable { var profileByPetID: [String: PetGradientProfile] }
-struct PetGradientProfile: Decodable { let palette: PetPalette; let gradients: PetGradients }
-struct PetPalette: Decodable { let shadow, primary, secondary, accent, highlight, foreground: String }
-struct PetGradients: Decodable { let ambient, thinking, working, success, warning, error: GradientRecipe }
-struct GradientRecipe: Decodable { let angleDegrees: Double, cycleDurationMs: Int, stops: [GradientStop] }
-struct GradientStop: Decodable { let location: Double, color: String }
+struct PetGradientProfile: Codable { let palette: PetPalette; let gradients: PetGradients }
+struct PetPalette: Codable { let shadow, primary, secondary, accent, highlight, foreground: String }
+struct PetGradients: Codable { let ambient, thinking, working, success, warning, error: GradientRecipe }
+struct GradientRecipe: Codable { let angleDegrees: Double, cycleDurationMs: Int, stops: [GradientStop] }
+struct GradientStop: Codable { let location: Double, color: String }
 
 @MainActor final class NotchIndicatorEngine: NSObject {
     enum Mode: String { case off, listening, thinking, demo, scene, transitioning }

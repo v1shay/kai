@@ -55,12 +55,13 @@ for pet in catalog['pets']:
  source=root/'kai_pets'/pet['spritesheet'];target=resources/'kai_pets'/pet['spritesheet']
  target.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(source,target)
 info=plistlib.loads((root/'integrations/Code/scripts/Info.plist').read_bytes())
-info.update(CFBundleName='Kai Unified',CFBundleDisplayName='Kai Unified',CFBundleIdentifier='com.kai.unified.experimental',CFBundleExecutable='kai-unified',CFBundleVersion='49',CFBundleShortVersionString='0.12.12')
+info.update(CFBundleName='Kai Unified',CFBundleDisplayName='Kai Unified',CFBundleIdentifier='com.kai.unified.experimental',CFBundleExecutable='kai-unified',CFBundleVersion='50',CFBundleShortVersionString='0.12.13')
 icon=root/'integrations/Code/assets/Code.icns'
 if icon.exists():shutil.copy2(icon,resources/'Code-Bonsai.icns')
 info['CFBundleURLTypes']=[{'CFBundleURLName':'Kai workspace','CFBundleURLSchemes':['kai']}]
 info['CFBundleDocumentTypes']=[{'CFBundleTypeName':'Folders and source files','CFBundleTypeRole':'Viewer','LSHandlerRank':'Alternate','LSItemContentTypes':['public.folder','public.data']}]
 info['NSServices']=[{'NSMenuItem':{'default':'Open in Kai Unified'},'NSMessage':'openInKai','NSPortName':'Kai Unified','NSSendTypes':['public.file-url'],'NSRequiredContext':{}}]
+info['NSDownloadsFolderUsageDescription']='Kai discovers and imports the local pet packs you download.'
 info['NSAppleEventsUsageDescription']='Kai reads Spotify playback status for its optional idle media display.'
 (product/'Contents/Info.plist').write_bytes(plistlib.dumps(info))
 PY
