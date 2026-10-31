@@ -4,6 +4,7 @@ use super::*;
 pub(super) enum Control {
     Panel(Modal),
     Model(bool),
+    Github(github_ui::Tab),
     Context,
     FileContext,
     Prompts,
@@ -17,6 +18,11 @@ mod tests {
     use std::prelude::v1::test;
     fn open(app: &Orbit, control: Control) -> bool {
         match control {
+            Control::Github(tab) => app
+                .github
+                .panel
+                .as_ref()
+                .is_some_and(|p| !p.closing && p.tab == tab),
             Control::Context => app.context_picker.is_some(),
             Control::FileContext => app.file_context_picker.is_some(),
             Control::Prompts => app.prompt_library_picker.is_some(),

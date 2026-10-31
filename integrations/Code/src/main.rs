@@ -8,6 +8,9 @@ mod broker_ui;
 mod task_pets;
 mod chat_interactions;
 mod chat_navigation;
+mod github;
+mod github_ui;
+mod change_summary;
 mod checkpoint_diff;
 mod checkpoint_ui;
 mod checkpoints;
@@ -737,6 +740,8 @@ struct Orbit {
     files_visible: bool,
     diff_view: Option<Entity<diff_view::DiffView>>,
     diff_started: Option<Instant>,
+    github: github_ui::State,
+    change_summaries:change_summary::State,
     agents: Vec<Agent>,
     projects: Vec<Project>,
     sessions: Vec<SessionSummary>,
@@ -1304,6 +1309,8 @@ impl Orbit {
             files_visible: false,
             diff_view: None,
             diff_started: None,
+            github: Default::default(),
+            change_summaries:Default::default(),
             agents: vec![],
             projects: vec![],
             sessions: vec![],
@@ -1808,7 +1815,7 @@ impl Orbit {
             browser.update(cx, |browser, cx| browser.set_visible(false, cx));
         }
         let review = cx.new(|cx| diff_view::DiffView::new(root, cx));
-        review.update(cx, |review, cx| review.set_appearance(self.appearance, cx));
+        review.update(cx, |review, cx| {review.set_appearance(self.appearance, cx);review.set_motion(self.motion)});
         self.diff_observer = Some(cx.observe(&review, |this, _, cx| this.queue_workspace_save(cx)));
         self.diff_view = Some(review);
         self.diff_started = Some(Instant::now());
@@ -3995,6 +4002,7 @@ impl Orbit {
                             })),
                     ),
             )
+            .when(self.theme.github_widget,|s|s.child(self.github_widget(cx)))
             .child(
                 div()
                     .px_2()
@@ -4804,7 +4812,9 @@ impl Orbit {
         if matches!(self.rows.get(ix).map(|row|&row.block),Some(MessageBlock::Interaction(chat_interactions::ChatInteraction::Status {title,status:chat_interactions::InteractionStatus::Completed,..})) if title=="Completed")
         {
             self.prefetch_completion_action(ix, cx);
+            self.prefetch_change_summary(ix,cx);
         }
+        if self.flow_index.completion_ends.get(ix).is_some_and(Option::is_some){self.prefetch_completion_action(ix,cx);self.prefetch_change_summary(ix,cx);}
         let work=self.flow_index.work.get(ix).cloned().flatten();
         let work_reveal=work.as_ref().map(|span|self.work_reveal(span.start)).unwrap_or(1.);
         if self.flow_index.hidden.get(ix)==Some(&true){return div().h(px(0.)).into_any_element()}
@@ -5058,6 +5068,7 @@ impl Orbit {
         };
         }
         if let Some(range) = self.flow_index.message_ends.get(ix).cloned().flatten() {
+            if !user && self.flow_index.completion_ends.get(ix).is_some_and(Option::is_some){if let (Some(target),Some(summary))=(self.completion_target(ix),self.completion_summary(ix).filter(|s|s.total>0)){content=content.child(self.completion_changes_card(ix,target,summary,cx));}}
             let owner = cx.entity().downgrade();
             let chat = self.active.clone();
             content = content.child(div().mt_1().flex().when(user, |s| s.justify_end()).when(!user, |s| s.justify_start()).child(
@@ -5067,7 +5078,7 @@ impl Orbit {
                         (app.active == chat).then(|| app.rows.get(range.clone()).map(copy_control::message_text)).flatten()
                     }).unwrap_or_default()
                 }).scope(self.active.clone().unwrap_or_default()).motion(self.motion)
-            ));
+            ).when(!user,|s|s.child(self.response_sync_button(ix,cx))));
         }
         if let Some(stamp)=timestamp.filter(|_|user){content=content.child(div().mt_1().text_size(theme::ui_px(9.)).text_color(rgb(MUTED)).opacity(self.timestamp_opacity()).child(stamp));}
         if let Some(t)=timing.filter(|t|t.elapsed_ms.is_some() && !user && (ix+1==self.rows.len() || self.rows.get(ix+1).is_some_and(|r|r.role.as_deref()==Some("user")))){
@@ -5378,6 +5389,7 @@ impl Render for Orbit {
             self.advance_chat_surface(window, cx);
         }
         self.track_workspace(cx);
+        self.tick_github(window,cx);
         self.tick_panes(window, cx);
         self.tick_list_reveals(window, cx);
         let project = self.project.clone();
@@ -5657,6 +5669,7 @@ impl Render for Orbit {
                 cx.listener(|this, _: &ToggleFiles, window, cx| this.toggle_files(window, cx)),
             )
             .on_action(cx.listener(|this, _: &Escape, window, cx| {
+                if this.github.panel.is_some(){this.close_github(window,cx);return}
                 if this.context_picker.take().is_some() || this.team_panel.take().is_some() {
                     this.composer.read(cx).focus_handle.focus(window);
                     cx.notify();
@@ -6070,6 +6083,7 @@ impl Render for Orbit {
                                 .child(div().flex_1().min_h(px(0.)).child(review)),
                         ).into_any_element(),window,cx))
             })
+            .when(self.github.panel.is_some() && self.owns_overlays(window),|s|s.child(self.github_panel_view(window,cx)))
             .when(self.attachment_preview.is_some(), |s| {
                 s.child(self.attachment_preview_view(window, cx))
             })

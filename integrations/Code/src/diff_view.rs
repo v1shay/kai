@@ -27,6 +27,7 @@ struct ChangedFile {
     label: String,
     status: &'static str,
     untracked: bool,
+    counts: Option<crate::github::Counts>,
 }
 struct Changes {
     repo: PathBuf,
@@ -108,7 +109,10 @@ pub enum ReviewEvent {
         direction: crate::checkpoints::Direction,
     },
 }
+#[derive(Clone)]enum TreeRow{Directory{path:PathBuf,depth:usize},File{index:usize,depth:usize}}
 pub struct DiffView {
+    source_label:Option<String>,
+    tree:Vec<TreeRow>,collapsed:std::collections::HashSet<PathBuf>,tree_at:Option<Instant>,motion:bool,
     appearance: crate::appearance::Appearance,
     source: ReviewSource,
     preview: Option<crate::checkpoints::Preview>,
@@ -162,6 +166,7 @@ impl DiffView {
     }
     fn with_source(root: PathBuf, source: ReviewSource, cx: &mut Context<Self>) -> Self {
         let mut this = Self {
+            source_label:None,tree:vec![],collapsed:Default::default(),tree_at:None,motion:true,
             appearance: Default::default(),
             source,
             preview: None,
@@ -186,6 +191,21 @@ impl DiffView {
         this.refresh(cx);
         this
     }
+    pub fn set_motion(&mut self,motion:bool){self.motion=motion;}
+    pub fn set_source_label(&mut self,label:String){self.source_label=Some(label);}
+    fn rebuild_tree(&mut self){
+        self.tree.clear();let Some(changes)=self.changes.as_ref()else{return};
+        let mut indices:Vec<_>=(0..changes.files.len()).collect();indices.sort_by_key(|ix|&changes.files[*ix].path);
+        let mut emitted=std::collections::HashSet::new();
+        for index in indices{let path=&changes.files[index].path;let parents:Vec<_>=path.ancestors().skip(1).filter(|p|!p.as_os_str().is_empty()).collect::<Vec<_>>().into_iter().rev().collect();let mut hidden=false;
+            for(depth,parent)in parents.iter().enumerate(){if emitted.insert(parent.to_path_buf()){self.tree.push(TreeRow::Directory{path:parent.to_path_buf(),depth});}if self.collapsed.contains(*parent){hidden=true;break}}
+            if !hidden{self.tree.push(TreeRow::File{index,depth:parents.len()});}
+        }
+    }
+    fn tree_row(&self,ix:usize,cx:&Context<Self>)->AnyElement{match &self.tree[ix]{
+        TreeRow::File{index,depth}=>div().pl(px(*depth as f32*12.)).child(self.file_row(*index,cx)).into_any_element(),
+        TreeRow::Directory{path,depth}=>{let path=path.clone();let closed=self.collapsed.contains(&path);let name=path.file_name().unwrap_or_default().to_string_lossy().into_owned();div().id(SharedString::from(format!("diff-directory-{}",path.to_string_lossy()))).debug_selector({let path=path.clone();move||format!("diff-directory-{}",path.to_string_lossy())}).h(px(30.)).pl(px(10.+*depth as f32*12.)).flex().items_center().gap_2().text_size(crate::theme::ui_px(10.)).text_color(rgb(0xa7adb9)).cursor_pointer().hover(|s|s.bg(rgba(0xffffff09))).child(crate::icon(if closed{"chevron-right"}else{"chevron-down"},10.,0xa7adb9)).child(crate::icon(if closed{"workspace-folder"}else{"workspace-folder-open"},13.,0xa7adb9)).child(name).on_click(cx.listener(move|view,_,_,cx|{if !view.collapsed.remove(&path){view.collapsed.insert(path.clone());}view.rebuild_tree();view.tree_at=Some(Instant::now());cx.notify();})).into_any_element()}
+    }}
     pub fn set_appearance(
         &mut self,
         appearance: crate::appearance::Appearance,
@@ -319,6 +339,7 @@ impl DiffView {
                             })
                             .unwrap_or(0);
                         this.changes = Some(changes);
+                        this.rebuild_tree();
                         this.preview = preview;
                         if first {
                             this.select(selected, cx);
@@ -477,9 +498,10 @@ impl DiffView {
                     .min_w(px(0.))
                     .text_ellipsis()
                     .text_size(crate::theme::ui_px(11.))
-                    .child(file.label.clone()),
+                    .child(file.path.file_name().unwrap_or_default().to_string_lossy().into_owned()),
             )
-            .child(
+            .when_some(file.counts.as_ref(),|s,counts|s.child(crate::github_ui::counts(counts)))
+            .when(file.counts.is_none(),|s|s.child(
                 div()
                     .text_size(crate::theme::ui_px(10.))
                     .text_color(rgb(if file.status == "Deleted" {
@@ -488,7 +510,7 @@ impl DiffView {
                         0x8fc89a
                     }))
                     .child(file.status),
-            )
+            ))
             .on_click(cx.listener(move |this, _, _, cx| this.select(ix, cx)))
             .into_any_element()
     }
@@ -553,27 +575,29 @@ impl DiffView {
     }
 }
 impl Render for DiffView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let files = self.changes.as_ref().map_or(0, |c| c.files.len());
+        let tree_count=self.tree.len();let tree_reveal=if self.motion&&!crate::native::reduced_motion(){self.tree_at.map_or(1.,|at|crate::presentation::spring((at.elapsed().as_secs_f32()/0.18).min(1.)).clamp(0.,1.))}else{1.};
+        if self.tree_at.is_some_and(|at|at.elapsed()<Duration::from_millis(180))&&tree_reveal<1.{let owner=cx.entity().downgrade();window.on_next_frame(move|_,cx|{if let Some(owner)=owner.upgrade(){cx.notify(owner.entity_id());}});}
         let lines = self.patch.as_ref().map_or(0, |p| p.lines.len());
         let width = self.patch.as_ref().map_or(440., |p| p.width);
         div().debug_selector(|| "native-diff-view".into()).size_full().min_h(px(0.))
             .flex().flex_col().text_color(rgb(0xebebeb)).bg(rgba(self.appearance.tint(0xffffff04)))
             .child(div().h(px(32.)).flex_none().px_3().flex().items_center().justify_between()
-                .debug_selector(||"diff-source-label".into()).text_size(crate::theme::ui_px(10.)).text_color(rgb(0x929292)).child(match &self.source {
+                .debug_selector(||"diff-source-label".into()).text_size(crate::theme::ui_px(10.)).text_color(rgb(0x929292)).child(self.source_label.clone().unwrap_or_else(||match &self.source {
                     ReviewSource::Checkpoint { .. } => "This prompt · saved before / after",
                     ReviewSource::Provider(_) => "Agent-reported diff · recorded response",
                     ReviewSource::Workspace(Some(_)) => "Current workspace · not an exact prompt diff",
                     ReviewSource::Workspace(None) => "Working tree · current changes",
-                })
+                }.to_owned()))
                 .child(div().id("refresh-changes").cursor_pointer().rounded_md().px_2().py_1()
                     .hover(|s| s.bg(rgba(0xffffff12))).child("Refresh")
                     .on_click(cx.listener(|this, _, _, cx| this.refresh(cx)))))
             .when_some(match &self.source { ReviewSource::Workspace(reason) => reason.as_ref(), _ => None }, |s,reason|s.child(div().px_3().py_2().text_size(crate::theme::ui_px(10.)).text_color(rgb(0x929292)).child(reason.clone())))
             .when_some(self.preview.as_ref(), |s,preview|s.child(div().flex_none().px_3().py_1().text_size(crate::theme::ui_px(11.)).text_color(rgb(0xa7adb4)).child(preview.checkpoint.title.clone())))
             .child(self.restore_button(cx))
-            .when(files > 0, |s| s.child(uniform_list("changed-files", files, cx.processor(|this, range: std::ops::Range<usize>, _, cx| range.map(|ix| this.file_row(ix, cx)).collect()))
-                .track_scroll(self.file_scroll.clone()).h(px((files.min(6) * 30) as f32)).flex_none().w_full()))
+            .when(files > 0, |s| s.child(uniform_list("changed-files", tree_count, cx.processor(|this, range: std::ops::Range<usize>, _, cx| range.map(|ix| this.tree_row(ix, cx)).collect()))
+                .track_scroll(self.file_scroll.clone()).h(px((tree_count.min(8) * 30) as f32)).opacity(tree_reveal).flex_none().w_full()))
             .when(self.preview.as_ref().is_some_and(|p|self.file_offset>0 || self.file_offset+p.changes.len()<p.total), |s|s.child(div().flex_none().flex().items_center().justify_between().px_3().py_1().text_size(crate::theme::ui_px(10.))
                 .child(div().id("previous-prompt-files").cursor_pointer().child("‹ Previous files").on_click(cx.listener(|this,_,_,cx| {this.file_offset=this.file_offset.saturating_sub(64);this.refresh(cx);})))
                 .child(format!("{}–{} / {}",self.file_offset+1,self.file_offset+files,self.preview.as_ref().map_or(0,|p|p.total)))
@@ -586,8 +610,7 @@ impl Render for DiffView {
                 div().h(px(28.)).flex_none().flex().items_center().gap_2().px_3()
                     .border_b_1().border_color(rgba(0xffffff12)).text_size(crate::theme::ui_px(10.))
                     .child(div().flex_1().min_w(px(0.)).text_ellipsis().child(self.selected.and_then(|ix| self.changes.as_ref()?.files.get(ix)).map_or("Changes".to_owned(), |file| file.label.clone())))
-                    .child(div().text_color(rgb(0x8fc89a)).child(format!("+{}", patch.added)))
-                    .child(div().text_color(rgb(0xe58c8c)).child(format!("−{}", patch.removed)))
+                    .child(crate::github_ui::counts(&self.selected.and_then(|ix|self.changes.as_ref()?.files.get(ix)?.counts.clone()).unwrap_or(crate::github::Counts{added:patch.added as u64,removed:patch.removed as u64,binary:false})))
             ))
             .when(lines > 0, |s| s.child(div().id("diff-scroll-x").flex_1().min_h(px(0.)).overflow_x_scroll()
                 .child(uniform_list("diff-lines", lines, cx.processor(|this, range: std::ops::Range<usize>, _, _| range.map(|ix| this.line(ix)).collect()))
@@ -641,19 +664,21 @@ fn review_changes(
                     )
                     .map_err(|e| e.to_string())?
             };
+            let totals=if preview.total>0{Some(repository.change_summary(id,cancel).map_err(|e|e.to_string())?)}else{None};
             let changes = Changes {
                 repo: root.to_owned(),
                 head: false,
                 filters: vec![],
                 files: preview
                     .changes
-                    .iter()
+                    .iter().filter(|change|!change.directory)
                     .map(|change| ChangedFile {
                         path: change.path.clone(),
                         old_path: None,
                         label: change.path.to_string_lossy().into_owned(),
                         status: change.kind,
                         untracked: false,
+                        counts: totals.as_ref().and_then(|s|s.files.iter().find(|f|f.path==change.path)).map(|f|f.counts.clone()),
                     })
                     .collect(),
                 limited: false,
@@ -677,6 +702,7 @@ fn review_changes(
                         old_path: None,
                         status: "Reported",
                         untracked: false,
+                        counts:Some(crate::github::patch_counts(section)),
                     }
                 })
                 .collect();
@@ -895,7 +921,9 @@ fn read_changes(root: &Path, cancel: &AtomicBool) -> Result<Changes, String> {
         cancel,
         false,
     )?;
-    let (files, limited) = parse_files(&bytes, scope, truncated);
+    let (mut files, limited) = parse_files(&bytes, scope, truncated);
+    let totals=crate::github::workspace_counts(&repo,&filters,head,cancel).map_err(|e|e.to_string())?;
+    for file in &mut files{file.counts=if file.untracked{crate::github::untracked_counts(&repo.join(&file.path),cancel).ok()}else{totals.get(&file.path).cloned()};}
     Ok(Changes {
         repo,
         head,
@@ -904,7 +932,7 @@ fn read_changes(root: &Path, cancel: &AtomicBool) -> Result<Changes, String> {
         limited,
     })
 }
-fn filter_overrides(repo: &Path, cancel: &AtomicBool) -> Result<Vec<String>, String> {
+pub(crate) fn filter_overrides(repo: &Path, cancel: &AtomicBool) -> Result<Vec<String>, String> {
     let (keys, limited) = output(
         git(repo).args([
             "config",
@@ -1008,6 +1036,7 @@ fn parse_files(bytes: &[u8], scope: &Path, truncated: bool) -> (Vec<ChangedFile>
             old_path,
             status,
             untracked,
+            counts:None,
         });
     }
     (files, limited)
@@ -1804,4 +1833,17 @@ mod tests {
         );
         assert!(long.width >= 2000. * 14. + 110.);
     }
+}
+
+#[cfg(test)]mod native_tree_tests{
+ use super::*;use crate::{ui_tests,MessageBlock,Row};use std::prelude::v1::test;
+ #[gpui::test]fn native_change_tree_has_directory_controls_and_per_file_counts(cx:&mut gpui::TestAppContext){
+  let(view,cx)=ui_tests::fixture(cx);let patch="diff --git a/src/a.rs b/src/a.rs\n--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1 +1,2 @@\n-old\n+new\n+extra\ndiff --git a/src/nested/b.rs b/src/nested/b.rs\n--- a/src/nested/b.rs\n+++ b/src/nested/b.rs\n@@ -1 +1 @@\n-before\n+after\n";
+  view.update(cx,|app,cx|{let review=cx.new(|cx|DiffView::provider(app.project.clone(),Arc::from(patch),cx));review.update(cx,|r,_|r.set_motion(false));app.diff_view=Some(review);app.diff_started=Some(Instant::now()-Duration::from_secs(1));app.rows=vec![Row{role:Some("assistant:codex".into()),block:MessageBlock::Paragraph("Reviewed changes".into())}];app.list.reset(1);cx.notify();});
+  cx.run_until_parked();ui_tests::draw_frame(&view,cx);
+  assert!(cx.debug_bounds("diff-directory-src").is_some());assert!(cx.debug_bounds("diff-directory-src/nested").is_some());assert!(cx.debug_bounds("changed-file-0").is_some());
+  view.update(cx,|app,cx|{let review=app.diff_view.as_ref().unwrap().read(cx);assert_eq!(review.changes.as_ref().unwrap().files[0].counts.as_ref().unwrap().added,2);assert_eq!(review.tree.len(),4);});
+  ui_tests::click_selector(cx,"diff-directory-src");ui_tests::draw_frame(&view,cx);view.update(cx,|app,cx|assert_eq!(app.diff_view.as_ref().unwrap().read(cx).tree.len(),1));
+  ui_tests::click_selector(cx,"diff-directory-src");ui_tests::draw_frame(&view,cx);view.update(cx,|app,cx|assert_eq!(app.diff_view.as_ref().unwrap().read(cx).tree.len(),4));
+ }
 }

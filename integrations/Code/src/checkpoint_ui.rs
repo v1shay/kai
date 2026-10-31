@@ -85,7 +85,7 @@ pub(super) fn row_checkpoint(row: &Row) -> Option<&str> {
 #[derive(Clone)]
 pub(super) struct CompletionTarget {
     session: String,
-    root: PathBuf,
+    pub(super) root: PathBuf,
     checkpoint: Option<String>,
     reported: Option<Arc<str>>,
 }
@@ -176,6 +176,7 @@ impl Orbit {
         });
         review.update(cx, |review, cx| {
             review.set_appearance(self.appearance, cx);
+            review.set_motion(self.motion);
             if confirm {
                 review.request_restore_confirmation(cx);
             }
@@ -554,6 +555,8 @@ impl Orbit {
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.checkpoint_busy = this.checkpoint_busy.saturating_sub(1);
+                this.change_summaries.invalidate(&sealed_id);
+                this.github_after_agent_turn(cx);
                 let succeeded = result.is_ok();
                 match result {
                     Ok(direction) => {
@@ -658,7 +661,7 @@ impl Orbit {
         .detach();
         cx.notify();
     }
-    fn checkpoint_scope(&self, session: &str) -> Option<PathBuf> {
+    pub(super) fn checkpoint_scope(&self, session: &str) -> Option<PathBuf> {
         self.sessions.iter().find(|s| s.id == session).map(|s| {
             s.execution_path
                 .clone()

@@ -102,7 +102,7 @@ impl Orbit {
     pub(super) fn dismiss_controls_for_window(&mut self,id:gpui::WindowId) {
         if self.overlay_window!=Some(id){return}
         // Deactivation must not focus/resign native views inside AppKit's callback.
-        self.agent_picker=None;self.panel_popover=None;self.action_menu=None;self.modal=None;
+        self.agent_picker=None;self.panel_popover=None;self.action_menu=None;self.modal=None;self.github.panel=None;
         self.picker_at_pointer_down=None;self.panel_at_pointer_down=None;
     }
     pub(super) fn remember_picker_press(&mut self) {

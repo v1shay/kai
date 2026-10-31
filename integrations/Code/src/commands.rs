@@ -11,6 +11,9 @@ pub enum Action {
     Projects,
     Files,
     Diffs,
+    Github,
+    Commit,
+    PullRequest,
     Undo,
     Redo,
     Children,
@@ -104,6 +107,9 @@ pub fn advertised(value: &serde_json::Value) -> Vec<String> {
     names.into_iter().collect()
 }
 const BASE: &[(&str, &str, Action)] = &[
+    ("github","Repositories, branches, pull requests and contributions",Action::Github),
+    ("commit","Review workspace changes, commit and push",Action::Commit),
+    ("pr","Review or create a GitHub pull request",Action::PullRequest),
     ("workflow", "Save or run a named project workflow", Action::Workflow),
     ("artifacts", "Find saved documents and interactive reports", Action::Artifacts),
     ("fork", "Branch this conversation without changing its source", Action::Fork),
@@ -493,8 +499,11 @@ mod tests {
             let commands = catalog(agent);
             let names: std::collections::HashSet<_> = commands.iter().map(|c| c.name).collect();
             assert_eq!(names.len(), commands.len());
-            // Includes orchestration plus workflows, artifacts, and safe branching.
-            assert!(commands.len() <= 50);
+            // Existing catalog plus the three native GitHub actions.
+            assert!(commands.len() <= 53);
+            for (name, action) in [("github",Action::Github),("commit",Action::Commit),("pr",Action::PullRequest)] {
+                assert_eq!(lookup(agent,name).unwrap().action,action);
+            }
             assert_eq!(lookup(agent,"orchestrate").unwrap().action,Action::Orchestrate);
             assert_eq!(
                 lookup(agent, "attach-chat").unwrap().action,

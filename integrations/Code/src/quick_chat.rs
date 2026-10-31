@@ -320,6 +320,7 @@ impl QuickChat {
         self.sync_from_main(cx);
     }
     fn escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.orbit.read(cx).github.panel.is_some(){self.orbit.update(cx,|app,cx|app.close_github(window,cx));return}
         let overlay = {
             let app = self.orbit.read(cx);
             app.modal.is_some() || app.agent_picker.is_some() || app.action_menu.is_some()

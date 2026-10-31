@@ -20,6 +20,7 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ("ctrl-shift-b", "conversations", "Conversation sidebar"),
     ("ctrl-e", "files", "Files"),
     ("ctrl-g", "changes", "Source control"),
+    ("ctrl-shift-g", "github", "GitHub repositories and pull requests"),
     ("ctrl-j", "terminal", "Terminal"),
     (
         "ctrl-shift-j",
@@ -185,6 +186,7 @@ impl Orbit {
                     input.update(cx, |i, cx| i.set_text("Keyboard", cx));
                 }
             }
+            "github"=>self.open_github(github_ui::Tab::Repository,window,cx),
             "open_project" => self.open_folder(window, cx),
             "notch" => unified::collapse(),
             _ => return,

@@ -71,6 +71,7 @@ impl Orbit {
         ) {
             request_motion_frame(window, cx);
         }
+        self.tick_github(window,cx);
         self.tick_composer_controls(window, cx);
         let enabled=unified::decode_enabled(self.motion&&self.unified_text_morph);
         composer.update(cx,|input,_|input.set_reveal_enabled(enabled));
@@ -349,6 +350,7 @@ impl Orbit {
                             })),
                     ),
             )
+            .when(self.github.panel.is_some()&&self.owns_overlays(window),|surface|surface.child(self.github_panel_view(window,cx)))
             .when(
                 self.agent_picker.is_some() && self.owns_overlays(window),
                 |surface| surface.child(self.agent_picker_view(cx)),

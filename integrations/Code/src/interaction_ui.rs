@@ -79,7 +79,7 @@ impl Orbit {
             .child(icon("chevron-right",12.,MUTED).with_transformation(Transformation::rotate(radians(self.work_reveal(ix)*std::f32::consts::FRAC_PI_2)))).child(label)
             .on_click(cx.listener(move|this,_,_,cx|this.toggle_work(ix,cx))).into_any_element()
     }
-    fn interaction_reveal(&self, ix: usize) -> f32 {
+    pub(super) fn interaction_reveal(&self, ix: usize) -> f32 {
         let expanded = self.expanded_tools.contains(&ix);
         self.interaction_animations
             .get(&ix)
@@ -313,6 +313,7 @@ impl Orbit {
         if neutral{symbol=activity_icon(title);color=MUTED;label="Details";}
         let reviewable = !neutral && status == InteractionStatus::Completed && title == "Completed";
         let review_target = reviewable.then(|| self.completion_target(ix)).flatten();
+        if let (Some(target),Some(summary))=(review_target.clone(),self.completion_summary(ix)){return self.completion_changes_card(ix,target,summary,cx)}
         let undo_target = review_target.clone();
         let expanded = self.expanded_tools.contains(&ix);
         let reveal = self.interaction_reveal(ix);

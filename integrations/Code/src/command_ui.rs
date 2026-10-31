@@ -409,6 +409,9 @@ impl Orbit {
             Action::Settings => self.show_modal(Modal::Settings, window, cx),
             Action::Wallpaper => self.show_modal(Modal::Background, window, cx),
             Action::Files => self.toggle_files(window, cx),
+            Action::Github=>self.open_github(github_ui::Tab::Repository,window,cx),
+            Action::Commit=>self.open_github(github_ui::Tab::Sync,window,cx),
+            Action::PullRequest=>self.open_github(github_ui::Tab::Pulls,window,cx),
             Action::Diffs => self.toggle_diffs(cx),
             Action::Children => self.toggle_children(window, cx),
             Action::Undo => self.preview_latest_checkpoint(

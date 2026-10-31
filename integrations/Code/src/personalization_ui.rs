@@ -58,6 +58,9 @@ impl Orbit {
         if let Some(editor) = &self.appearance_editor {
             panel = panel.child(self.appearance_editor_panel(editor, cx));
         }
+        if theme_controls::matches(&query,"GitHub repository branches pull requests credentials source control"){
+            panel=panel.child(div().id("github-settings").p_3().rounded_lg().border_1().border_color(rgba(0xffffff16)).cursor_pointer().flex().items_center().gap_2().child(icon("kai/integrations/github",16.,TEXT)).child("GitHub & source control").child(div().flex_1()).child(icon("chevron-right",12.,MUTED)).on_click(cx.listener(|app,_,w,cx|app.open_github(github_ui::Tab::Repository,w,cx))));
+        }
         if theme_controls::matches(&query,"Startup launch window notch workspace automatic chat titles"){panel=panel.child(self.startup_controls(cx));}
         panel = panel.child(theme_controls::controls(
             &self.theme,
@@ -138,6 +141,7 @@ impl Orbit {
             Action::GlassMaterial(value)=>self.theme.glass_material=value,
             Action::ToggleTransparency => self.theme.transparency = !self.theme.transparency,
             Action::ToggleSidebarGlass => self.theme.sidebar_glass = !self.theme.sidebar_glass,
+            Action::ToggleGithubWidget=>self.theme.github_widget=!self.theme.github_widget,
             Action::ToggleHorizontalAgentPicker => self.theme.horizontal_agent_picker = !self.theme.horizontal_agent_picker,
             Action::ToggleBorderlessComposer => self.theme.borderless_composer = !self.theme.borderless_composer,
             Action::ToggleMainGlass => self.theme.main_glass = !self.theme.main_glass,

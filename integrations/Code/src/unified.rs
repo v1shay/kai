@@ -520,7 +520,7 @@ impl Orbit {
                 if !self.composer.update(cx,|input,cx|input.set_command_caret_utf16(caret,cx)){return Err("Invalid caret".into());}
                 self.accept_named_slash(name,window,cx)?;
                 if request["pickerSurface"]=="notch" && matches!(name,"agent"|"model") && self.agent_picker.is_some(){self.close_picker_with_focus(window,cx);self.agent_picker=None;}
-                else if self.modal.is_some() || self.agent_picker.is_some() || self.files_visible{reveal();}
+                else if self.modal.is_some() || self.agent_picker.is_some() || self.github.panel.is_some() || self.files_visible{reveal();}
             }
             "chat" => {
                 let id = native_id(request, "id").ok_or("Invalid chat")?;
@@ -549,7 +549,7 @@ impl Orbit {
                 if let Some(current)=self.active.as_ref().and_then(|id|self.sessions.iter().find(|s|&s.id==id)).cloned(){if back{self.unified_forward.push(current)}else{self.unified_back.push(current)}}
                 self.unified_navigating=true;self.open_session(target,window,cx);self.unified_navigating=false;
             }
-            "ui_command"=>{let id=request["command"].as_str().filter(|id|keyboard::COMMANDS.iter().any(|(_,known,_)|id==known)).ok_or("Unknown keyboard command")?;self.execute_shortcut(id,window,cx);},
+            "ui_command"=>{let id=request["command"].as_str().filter(|id|keyboard::COMMANDS.iter().any(|(_,known,_)|id==known)).ok_or("Unknown keyboard command")?;self.execute_shortcut(id,window,cx);if id=="github"{reveal();}},
             "new" => self.new_unprojected_conversation(window, cx),
             "new_project" => self.new_conversation(window, cx),
             "send" => {

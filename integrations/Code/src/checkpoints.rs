@@ -78,6 +78,7 @@ pub enum Direction {
 pub struct Change {
     pub path: PathBuf,
     pub kind: &'static str,
+    pub directory:bool,
 }
 #[derive(Clone, Debug)]
 pub struct Preview {
@@ -1074,6 +1075,7 @@ impl Repository {
         each_change(&db, None, |path, before, after| {
             if total >= offset && changes.len() < PAGE {
                 changes.push(Change {
+                    directory:before.as_ref().is_none_or(|e|e.kind==2)&&after.as_ref().is_none_or(|e|e.kind==2),
                     path: path.to_owned(),
                     kind: match (before.is_some(), after.is_some()) {
                         (false, true) => "Added",
@@ -1118,6 +1120,38 @@ impl Repository {
         Ok(None)
     }
     /// Read the immutable before/after versions for one path in this prompt.
+    /// Cached immutable before/after counts. This runs only on a worker and
+    /// uses the same bounded alignment as the native diff, never today's HEAD.
+    pub fn change_summary(&self,id:&str,cancel:&AtomicBool)->Result<crate::github::Summary>{
+        let _lock=self.lock(id)?;let checkpoint=self.get(id)?;
+        ensure!(checkpoint.phase=="ready" || checkpoint.phase.starts_with("applying-"),"This prompt's files are still being finalized");
+        let mut db=self.manifest(id)?;
+        db.execute_batch("CREATE TABLE IF NOT EXISTS change_stats(path BLOB PRIMARY KEY,status TEXT NOT NULL,added INTEGER NOT NULL,removed INTEGER NOT NULL,binary INTEGER NOT NULL);CREATE TABLE IF NOT EXISTS change_stats_meta(id INTEGER PRIMARY KEY,total INTEGER NOT NULL,added INTEGER NOT NULL,removed INTEGER NOT NULL,binaries INTEGER NOT NULL);")?;
+        if db.query_row("SELECT 1 FROM change_stats_meta WHERE id=1",[],|r|r.get::<_,i64>(0)).optional()?.is_none(){
+            let tx=db.transaction()?;tx.execute("DELETE FROM change_stats",[])?;
+            let mut total=0usize;let mut added=0u64;let mut removed=0u64;let mut binaries=0usize;let deadline=std::time::Instant::now()+Duration::from_secs(45);
+            each_change(&tx,None,|path,before,after|{
+                cancelled(cancel)?;ensure!(std::time::Instant::now()<deadline,"Change counts exceeded their background review budget");
+                if before.as_ref().is_none_or(|e|e.kind==2)&&after.as_ref().is_none_or(|e|e.kind==2){return Ok(())}
+                let status=match(before.is_some(),after.is_some()){(false,true)=>"Added",(true,false)=>"Deleted",_=>"Modified"};
+                let a=self.diff_version(before.clone())?;let b=self.diff_version(after.clone())?;
+                let mut position=crate::checkpoint_diff::Position::default();let mut counts=crate::github::Counts::default();
+                loop{let page=crate::checkpoint_diff::page(&a,&b,position,cancel)?;for line in page.lines{match line.kind{crate::checkpoint_diff::Kind::Added=>counts.added+=1,crate::checkpoint_diff::Kind::Removed=>counts.removed+=1,crate::checkpoint_diff::Kind::Note if line.text.starts_with("Binary or long-line")=>counts.binary=true,_=>{}}}if let Some(next)=page.next{position=next}else{break}ensure!(std::time::Instant::now()<deadline,"Change counts exceeded their background review budget");}
+                total+=1;added+=counts.added;removed+=counts.removed;binaries+=usize::from(counts.binary);
+                if total<=4096{tx.execute("INSERT INTO change_stats(path,status,added,removed,binary) VALUES(?1,?2,?3,?4,?5)",params![bytes(path),status,counts.added,counts.removed,counts.binary])?;}
+                Ok(())
+            })?;
+            tx.execute("INSERT INTO change_stats_meta(id,total,added,removed,binaries) VALUES(1,?1,?2,?3,?4)",params![total as i64,added,removed,binaries as i64])?;tx.commit()?;
+        }
+        let mut result=db.query_row("SELECT total,added,removed,binaries FROM change_stats_meta WHERE id=1",[],|r|Ok(crate::github::Summary{total:r.get::<_,i64>(0)? as usize,added:r.get(1)?,removed:r.get(2)?,binaries:r.get::<_,i64>(3)? as usize,files:vec![]}))?;
+        let mut query=db.prepare("SELECT path,status,added,removed,binary FROM change_stats ORDER BY path LIMIT 4096")?;
+        result.files=query.query_map([],|r|Ok(crate::github::FileChange{path:PathBuf::from(OsString::from_vec(r.get::<_,Vec<u8>>(0)?)),old_path:None,status:r.get(1)?,counts:crate::github::Counts{added:r.get(2)?,removed:r.get(3)?,binary:r.get(4)?}}))?.collect::<rusqlite::Result<Vec<_>>>()?;Ok(result)
+    }
+    fn diff_version(&self,entry:Option<Entry>)->Result<crate::checkpoint_diff::Version>{
+        let Some(entry)=entry else{return Ok(crate::checkpoint_diff::Version::absent())};
+        if entry.kind==0{ensure!(entry.blob.len()==64 && entry.blob.bytes().all(|b|b.is_ascii_hexdigit()),"Invalid checkpoint content key");}
+        Ok(crate::checkpoint_diff::Version{file:(entry.kind==0).then(||self.path.join("blobs").join(entry.blob)),inline:entry.target,size:entry.size,mode:entry.mode,kind:match entry.kind{0=>"file",1=>"symlink",_=>"directory"}})
+    }
     pub fn diff_page(
         &self,
         id: &str,
@@ -1136,29 +1170,7 @@ impl Repository {
         let before = table_entry(&manifest, "before", bytes(path))?;
         let after = table_entry(&manifest, "after", bytes(path))?;
         ensure!(before != after, "This path has no changes in this prompt");
-        let version = |entry: Option<Entry>| -> Result<crate::checkpoint_diff::Version> {
-            let Some(entry) = entry else {
-                return Ok(crate::checkpoint_diff::Version::absent());
-            };
-            if entry.kind == 0 {
-                ensure!(
-                    entry.blob.len() == 64 && entry.blob.bytes().all(|b| b.is_ascii_hexdigit()),
-                    "Invalid checkpoint content key"
-                );
-            }
-            Ok(crate::checkpoint_diff::Version {
-                file: (entry.kind == 0).then(|| self.path.join("blobs").join(entry.blob)),
-                inline: entry.target,
-                size: entry.size,
-                mode: entry.mode,
-                kind: match entry.kind {
-                    0 => "file",
-                    1 => "symlink",
-                    _ => "directory",
-                },
-            })
-        };
-        crate::checkpoint_diff::page(&version(before)?, &version(after)?, position, cancel)
+        crate::checkpoint_diff::page(&self.diff_version(before)?, &self.diff_version(after)?, position, cancel)
     }
     pub fn apply(&self, id: &str, direction: Direction, cancel: &AtomicBool) -> Result<()> {
         let _lock = self.lock(id)?;
@@ -1542,6 +1554,14 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.path);
         }
+    }
+    #[test]
+    fn immutable_change_counts_match_the_saved_prompt_and_survive_later_edits(){
+        let f=Fixture::new();fs::write(f.root.join("old.rs"),"alpha\nbeta\n").unwrap();fs::write(f.root.join("delete.txt"),"old\n").unwrap();
+        let id=f.start("summary");fs::write(f.root.join("old.rs"),"alpha\ngamma\n").unwrap();fs::remove_file(f.root.join("delete.txt")).unwrap();fs::create_dir_all(f.root.join("src/nested")).unwrap();fs::write(f.root.join("src/nested/new.rs"),"one\ntwo\n").unwrap();fs::write(f.root.join("image.bin"),[0,255,12]).unwrap();f.seal(&id);
+        let first=f.repo.change_summary(&id,&AtomicBool::new(false)).unwrap();assert_eq!((first.total,first.added,first.removed,first.binaries),(4,3,2,1));
+        assert!(first.files.iter().any(|v|v.path==Path::new("src/nested/new.rs")&&v.counts.added==2));
+        fs::write(f.root.join("old.rs"),"later\nindependent\nedits\n").unwrap();let reopened=Repository::at(f.repo.path.clone());let cached=reopened.change_summary(&id,&AtomicBool::new(false)).unwrap();assert_eq!((cached.total,cached.added,cached.removed),(4,3,2));
     }
     #[test]
     fn prompt_undo_redo_preserves_modified_deleted_new_binary_files_and_modes_after_restart() {

@@ -2,11 +2,11 @@
 use super::{Row,MessageBlock,chat_interactions::{ChatInteraction,Speaker,InteractionStatus}};
 use std::ops::Range;
 #[derive(Default,Clone,Debug,PartialEq,Eq)]
-pub(super) struct Index {pub message_ends:Vec<Option<Range<usize>>>,pub work:Vec<Option<Range<usize>>>,pub commands:Vec<Option<Range<usize>>>,pub hidden:Vec<bool>,pub has_subagents:bool}
+pub(super) struct Index {pub message_ends:Vec<Option<Range<usize>>>,pub completion_ends:Vec<Option<usize>>,pub work:Vec<Option<Range<usize>>>,pub commands:Vec<Option<Range<usize>>>,pub hidden:Vec<bool>,pub has_subagents:bool}
 impl Index {
  pub fn new(rows:&[Row])->Self{Self::for_transcript(rows,false,None)}
  pub fn for_transcript(rows:&[Row],settled:bool,live_start:Option<usize>)->Self{
-  let mut out=Self{message_ends:vec![None;rows.len()],work:vec![None;rows.len()],commands:vec![None;rows.len()],hidden:vec![false;rows.len()],has_subagents:false};
+  let mut out=Self{message_ends:vec![None;rows.len()],completion_ends:vec![None;rows.len()],work:vec![None;rows.len()],commands:vec![None;rows.len()],hidden:vec![false;rows.len()],has_subagents:false};
   let mut at=0;while at<rows.len(){if let Some(span)=command_span(rows,at){for i in span.clone(){out.commands[i]=Some(span.clone())}at=span.end}else{at+=1}}
   let mut starts=vec![0];for i in 0..rows.len(){if matches!(&rows[i].block,MessageBlock::Interaction(ChatInteraction::Delegation{agent:Some(_),..})){out.has_subagents=true;}if starts_turn(&rows[i])&&i>0{starts.push(i)}}starts.push(rows.len());
   for bounds in starts.windows(2){
@@ -18,12 +18,13 @@ impl Index {
    let anchored=starts_turn(&rows[begin])||boundary.is_some();
    let complete=!failed&&(succeeded||end<rows.len()||live_start.is_some_and(|start|end<=start)||settled&&end==rows.len()&&anchored);
    for i in body..end{if is_boundary(&rows[i].block)||is_checkpoint(&rows[i].block){out.hidden[i]=true}}
-   if !complete{continue}
+   if !complete{if terminal.is_some(){if let Some(last)=(body..end).rev().find(|i|body_content(&rows[*i].block)){out.completion_ends[last]=terminal;}}continue}
    let final_start=boundary.map(|i|i+1).or_else(||(body..end).rev().find(|i|body_content(&rows[*i].block)).map(|last|{
     let message=(body..=last).rev().find(|i|assistant_start(&rows[*i])).unwrap_or(body);
     (message..last).rev().find(|i|work_item(&rows[*i].block)).map_or(message,|i|i+1)
    }));
    let Some(final_start)=final_start.filter(|start|(*start..end).any(|i|body_content(&rows[i].block)))else{continue};
+   if let Some(last)=(final_start..end).rev().find(|i|body_content(&rows[*i].block)){out.completion_ends[last]=Some(terminal.unwrap_or(last));}
    for i in body..end{if is_success(&rows[i].block){out.hidden[i]=true}}
    if let Some(first)=(body..final_start).find(|i|!out.hidden[*i]&&!user(&rows[*i])&&!attention(&rows[*i].block)){for i in first..final_start{if !user(&rows[i])&&!attention(&rows[i].block){out.work[i]=Some(first..final_start)}}}
    for i in final_start..end{if work_item(&rows[i].block)&&!attention(&rows[i].block){out.hidden[i]=true}}
