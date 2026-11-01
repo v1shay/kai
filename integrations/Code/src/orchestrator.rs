@@ -329,6 +329,7 @@ impl Orbit {
         let model=args.get("model").map(|v|v.as_str().filter(|s|runtime::valid_model_id(s)).map(str::to_owned).ok_or("Use an exact model ID")).transpose()?;
         let effort=args.get("effort").map(|v|v.as_str().filter(|s|!s.is_empty()&&s.len()<=64).map(str::to_owned).ok_or("Use an exact thinking level")).transpose()?;
         let chosen=model.or(inherited);
+        if agent==AgentKind::Ninja{let selection=self.ninja.draft.clone();let id=chosen.unwrap_or(selection.model);let entry=self.ninja_models().into_iter().find(|m|m.id==id&&m.installed).ok_or("Choose an installed Ninja model from list_models; download new models in the native picker first")?;if effort.as_ref().is_some_and(|e|!entry.thinking.contains(e)){return Err("This model does not advertise that thinking level".into())}return Ok((Some(id),effort))}
         if args.get("model").is_some()||effort.is_some(){
             let info=self.orchestration_models.get(&(agent,project.into())).filter(|(at,_)|at.elapsed()<Duration::from_secs(300)).map(|(_,c)|c).or_else(||self.controls.get(agent.command()).filter(|(at,c)|at.elapsed()<Duration::from_secs(300)&&c.defaults.project==project).map(|(_,c)|c)).ok_or("Call list_models for this provider and project before choosing a model or thinking level")?;
             let selected=chosen.as_deref().or(info.defaults.model.as_deref()).ok_or("Choose a model returned by list_models")?;
@@ -426,6 +427,7 @@ impl Orbit {
         if !workspace_state::workflow_fits(&self.prompt_queue, &planned, &self.chat_context) {
             return Err("The saved workflow metadata budget is full; no task was queued".into());
         }
+        if session.agent==AgentKind::Ninja{let mut route=self.ninja.chats.get(&session.id).unwrap_or(&self.ninja.draft).clone();if let Some(model)=&model{route.model=model.clone();}route.thinking=effort.clone().or(route.thinking);self.ninja.chats.insert(session.id.clone(),route);}
         self.session_models.insert(session.id.clone(),model.clone());
         self.engine.set_model(session.clone(),model);
         self.teams = planned;
@@ -508,6 +510,10 @@ impl Orbit {
                     let project=PathBuf::from(required(&args,"project")?);
                     if !self.projects.iter().any(|p|p.path==project){return Err("Choose an exact known project path".into())}
                     let agent=self.agents.iter().find(|a|a.available&&a.kind.command()==args["agent"].as_str().unwrap_or("codex")).cloned().ok_or("Choose an installed provider")?;
+                    if agent.kind==AgentKind::Ninja{
+                        let mut selection=self.ninja.draft.clone();if let Some(model)=args["model"].as_str(){selection.model=model.into();}let source=selection.clone();let owner=owner.to_owned();let token=token.to_owned();
+                        cx.spawn(async move|this,cx|{let result=cx.background_executor().spawn(async move{let mut models=ninja::installed(&selection)?;if !selection.model.is_empty(){let detail=ninja::inspect(&selection)?;if let Some(m)=models.iter_mut().find(|m|m.id==detail.id){*m=detail}}Ok::<_,anyhow::Error>(models)}).await;let _=this.update(cx,|app,_|{let value=match result{Ok(models)=>{let value=json!({"agent":"ninja","project":project,"machine":source.machine,"engine":source.engine,"harness":source.harness,"models":models.iter().map(|m|json!({"id":m.id,"name":m.label,"lab":m.lab,"efforts":m.thinking,"installed":true})).collect::<Vec<_>>()});app.ninja.inventories.insert(format!("{}:{:?}",source.endpoint,source.engine),models);value},Err(e)=>json!({"error":e.to_string()})};app.workspace_reply(&owner,&token,value);});}).detach();return Ok(None)
+                    }
                     let key=(agent.kind,project.clone());
                     let selected=args["model"].as_str().map(str::to_owned);
                     if selected.as_ref().is_some_and(|id|!runtime::valid_model_id(id)){return Err("Use an exact model ID from list_models".into())}
@@ -735,7 +741,7 @@ mod tests {
     fn parent(app: &mut Orbit) -> String {
         let id = uuid::Uuid::new_v4().to_string();
         let mut run = crate::ui_tests::idle_run(String::new());
-        run.retry = Some(RunRequest {
+        run.retry = Some(RunRequest { ninja:None,
             orchestrator: true,
             agent: AgentKind::Codex,
             executable: "/usr/bin/true".into(),

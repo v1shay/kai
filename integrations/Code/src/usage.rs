@@ -253,6 +253,7 @@ impl Usage {
                 .map(str::to_owned)
         };
         match agent {
+            AgentKind::Ninja => return Self::observed(if matches!(kind,"stream_event"|"result"|"assistant"|"system"){AgentKind::Claude}else{AgentKind::Codex},value),
             AgentKind::Codex => {
                 let usage = if kind == "turn_context" {
                     out.model=model(&value["payload"]["model"]);

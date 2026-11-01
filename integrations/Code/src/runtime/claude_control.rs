@@ -67,6 +67,7 @@ pub(super) fn launch(request: RunRequest) -> Result<RunHandle> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .process_group(0);
+    let ninja_lease=request.ninja.as_ref().map(|selection|crate::ninja::configure_claude(&mut command,selection)).transpose()?;
     let mut child = command.spawn().context("Could not start Claude Code")?;
     let (handle, ctx) = native_handle(child.id() as i32);
     let stdout = child.stdout.take().context("Claude output unavailable")?;
@@ -90,7 +91,7 @@ pub(super) fn launch(request: RunRequest) -> Result<RunHandle> {
             bail!("Could not configure Claude transport");
         }
     }
-    thread::spawn(move || run(request, child, stdin, stdout, stderr, ctx));
+    thread::spawn(move || {let _ninja_lease=ninja_lease;run(request, child, stdin, stdout, stderr, ctx)});
     Ok(handle)
 }
 fn write(
@@ -835,7 +836,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"A
 read -r wait
 "#).unwrap();
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
-        let handle = launch(RunRequest { orchestrator:false, service_tier:None, reasoning_effort:None,
+        let handle = launch(RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
             agent: AgentKind::Claude,
             executable,
             project: root.clone(),
@@ -902,7 +903,7 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"result":"
 read -r wait
 "#)).unwrap();
             fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
-            let handle = launch(RunRequest { orchestrator:false, service_tier:None, reasoning_effort:None,
+            let handle = launch(RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
                 agent: AgentKind::Claude,
                 executable,
                 project: root.clone(),
@@ -1048,7 +1049,7 @@ for line in sys.stdin:
         break
 "#).unwrap();
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
-        let handle = launch(RunRequest { orchestrator:false, service_tier:None, reasoning_effort:None,
+        let handle = launch(RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
             agent: AgentKind::Claude,
             executable,
             project: root.clone(),
@@ -1109,7 +1110,7 @@ printf '%s' ready > ready
 sleep 30
 "#).unwrap();
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
-        let handle = launch(RunRequest { orchestrator:false, service_tier:None, reasoning_effort:None,
+        let handle = launch(RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
             agent: AgentKind::Claude,
             executable,
             project: root.clone(),
@@ -1166,7 +1167,7 @@ for line in sys.stdin:
         time.sleep(30)
 "#).unwrap();
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
-        let handle = launch(RunRequest { orchestrator:false, service_tier:None, reasoning_effort:None,
+        let handle = launch(RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
             agent: AgentKind::Claude,
             executable,
             project: root.clone(),

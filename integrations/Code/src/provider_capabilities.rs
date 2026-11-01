@@ -11,7 +11,7 @@ pub fn for_provider(agent: AgentKind) -> Capabilities {
     Capabilities {
         image_input: matches!(
             agent,
-            AgentKind::Codex
+            AgentKind::Ninja | AgentKind::Codex
                 | AgentKind::Claude
                 | AgentKind::OpenCode
                 | AgentKind::Gemini
@@ -20,7 +20,7 @@ pub fn for_provider(agent: AgentKind) -> Capabilities {
         ),
         native_delegation: matches!(
             agent,
-            AgentKind::Codex | AgentKind::Claude | AgentKind::OpenCode | AgentKind::Cursor
+            AgentKind::Ninja | AgentKind::Codex | AgentKind::Claude | AgentKind::OpenCode | AgentKind::Cursor
         ),
     }
 }

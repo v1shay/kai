@@ -267,6 +267,7 @@ private final class AttachmentLayer:CALayer {
     var onPermissions:((String?,String?)->Void)?
     var onNavigate: ((String)->Void)?
     var onContextMode: ((Bool)->Void)?
+    var onNinja:((String,String)->Void)?
     var onAgent:((String)->Void)?
     var onVoice:(()->Void)?
     var onFocusComposer:(()->Void)?
@@ -801,6 +802,7 @@ private final class AttachmentLayer:CALayer {
     func dismissComposerPickers(){agentPicker.dismiss();composerPopover.dismiss()}
     func showAgentPicker(_ kind:String){
         guard let state=modelState else{return};composerPopover.dismiss()
+        agentPicker.onNinja={[weak self] field,value in self?.onNinja?(field,value)}
         agentPicker.onAgent={[weak self] id in self?.onAgent?(id)}
         agentPicker.onModel={[weak self] id in self?.onModel?(id)}
         agentPicker.onEffort={[weak self] model,effort in self?.onSettings?(model,effort)}

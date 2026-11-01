@@ -12,6 +12,7 @@ pub(super) struct Seed {
     pub id: String,
     pub expected: String,
     pub prompt: String,
+    pub ninja:Option<ninja::Selection>,
 }
 pub fn prompt(message: &str) -> String {
     format!(
@@ -37,6 +38,7 @@ impl Orbit {
     pub(super) fn queue_chat_title(&mut self, session: &SessionSummary, message: &str) {
         if self.title_queue.len() < 16 && !self.title_queue.iter().any(|s| s.id == session.id) {
             self.title_queue.push_back(Seed {
+                ninja:(session.agent==AgentKind::Ninja).then(||self.ninja.chats.get(&session.id).cloned().unwrap_or_else(||self.ninja_selection())),
                 id: session.id.clone(),
                 expected: session.title.clone(),
                 prompt: message.chars().take(8000).collect(),
@@ -47,14 +49,11 @@ impl Orbit {
         if self.title_busy || !self.automatic_titles {
             return;
         }
-        let Some(executable) = self
+        let executable = self
             .agents
             .iter()
             .find(|a| a.kind == AgentKind::Codex && a.available)
-            .and_then(|a| a.executable.clone())
-        else {
-            return;
-        };
+            .and_then(|a| a.executable.clone());
         let Some(seed) = self.title_queue.pop_front() else {
             return;
         };
@@ -80,6 +79,8 @@ impl Orbit {
             let title = cx
                 .background_executor()
                 .spawn(async move {
+                    if let Some(selection)=&seed.ninja{return ninja::generate_title(selection,&seed.prompt,&cancel)}
+                    let executable=executable?;
                     let models = if known.is_empty() {
                         agent_controls::inspect_project(AgentKind::Codex, &executable, &home, &home)
                             .models

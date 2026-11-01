@@ -336,7 +336,7 @@ fn scene(status: &str) -> &'static str {
 }
 impl Orbit {
     pub(super) fn effort_key(&self)->String{format!("{}:{}:{}",self.agent.command(),self.active.as_deref().unwrap_or("draft"),self.model.as_deref().unwrap_or(""))}
-    pub(super) fn unified_effort(&self)->Option<&str>{self.reasoning_efforts.get(&self.effort_key()).or_else(||self.active.is_none().then(||self.reasoning_efforts.get(&format!("{}:{}",self.agent.command(),self.model.as_deref().unwrap_or("")))).flatten()).map(String::as_str)}
+    pub(super) fn unified_effort(&self)->Option<&str>{if self.agent==AgentKind::Ninja{return self.active.as_ref().and_then(|id|self.ninja.chats.get(id)).unwrap_or(&self.ninja.draft).thinking.as_deref()}self.reasoning_efforts.get(&self.effort_key()).or_else(||self.active.is_none().then(||self.reasoning_efforts.get(&format!("{}:{}",self.agent.command(),self.model.as_deref().unwrap_or("")))).flatten()).map(String::as_str)}
     pub(super) fn unified_token(&self) -> String {
         // Composer edits have their own exact draft-base check. They must not
         // invalidate navigation/model commands before the parent observes input.
@@ -622,6 +622,7 @@ impl Orbit {
                 }
                 if self.loading||self.starting_current()||self.handoff_pending.is_some(){return Err("Finish the current handoff before changing the model".into())}
                 self.choose_model((!model.is_empty()).then(||model.into()), cx);
+                if self.agent==AgentKind::Ninja{if let Some(effort)=request["effort"].as_str().filter(|s|!s.is_empty()){self.ninja_set("thinking",effort,cx)?;}}
                 if let Some(effort)=request["effort"].as_str(){let key=self.effort_key();if effort.is_empty(){self.reasoning_efforts.remove(&key);}else{self.reasoning_efforts.insert(key,effort.into());}}
                 self.queue_workspace_save(cx);
             }
@@ -634,6 +635,7 @@ impl Orbit {
                     .map(|a| a.kind)
                     .ok_or("Agent is unavailable")?;
                 self.request_handoff(agent, window, cx);
+                if agent==AgentKind::Ninja{self.ninja.native_query.clear();self.ninja_refresh(false,cx);}
             }
             "context" => {
                 if !self.unified_send_ready() {
@@ -790,6 +792,7 @@ impl Orbit {
             "orchestrator"=>self.toggle_orchestrator(window,cx),
             "fast_mode"=>{self.toggle_fast(cx);}
             "usage_refresh"=>{self.controls.remove(self.agent.command());self.refresh_unified_models(cx);}
+            "ninja_select"=>{self.ninja_set(request["field"].as_str().ok_or("Missing option")?,request["value"].as_str().ok_or("Missing value")?,cx)?;}
             "refresh" | "models" => {self.refresh_unified_models(cx);}
             // Settings stay explicit: unsupported actions cannot launch another runtime.
             _ => return Err(format!("Open the Code workspace to use {action}")),
@@ -901,7 +904,7 @@ impl Orbit {
         let row=|s:&SessionSummary|json!({"id":format!("code:{}",s.id),"name":s.title,"agent":s.agent.command(),"status":if self.runs.contains_key(&s.id){"active"}else{"idle"}});
         let chats:Vec<_>=self.sessions.iter().filter(|s|!self.hidden_sessions.contains(&s.id)&&s.project_path==self.project).take(100).map(row).collect();
         let standalone:Vec<_>=self.sessions.iter().filter(|s|!self.hidden_sessions.contains(&s.id)&&s.project_path==self.unprojected_root()&&s.project_path!=self.project).take(60).map(row).collect();
-        let models=self.unified_models();
+        let models=if self.agent==AgentKind::Ninja{self.ninja_snapshot_choices()}else{self.unified_models()};
         let (effective_model,effective_effort)=self.effective_model_settings();
         let history=if self.loading{vec![]}else{self.unified_history()};
         let local_older=history.first().and_then(|v|v["id"].as_str()).is_some_and(|v|v!="row-0");
@@ -927,6 +930,7 @@ impl Orbit {
         snapshot["usageResets"]=json!(self.controls.get(self.agent.command()).and_then(|(_,c)|c.defaults.reset_credits.as_ref()));
         snapshot["orchestratorMode"]=json!(self.orchestrator_active());snapshot["orchestratorAvailable"]=json!(self.active.is_none()||self.orchestrator_active());
         snapshot["contextWindow"]=json!(self.context_usage().map(|(used,limit)|json!({"used":used,"limit":limit,"fraction":(used as f64/limit as f64).clamp(0.,1.)})));
+        if self.agent==AgentKind::Ninja{let selection=self.ninja_selection();snapshot["selectedModel"]=json!(selection.model);snapshot["ninja"]=json!({"selection":selection,"machines":self.ninja.machines,"progress":self.ninja.progress,"error":self.ninja.error,"loading":!self.ninja.pending.is_empty(),"canCancel":self.ninja.download_cancel.is_some()});}
         snapshot["fastMode"]=json!(self.fast_enabled());snapshot["fastSupported"]=json!(self.fast_supported());snapshot["usageSummary"]=json!(self.usage_summary());snapshot["usageWindows"]=json!(self.usage_windows().iter().map(|w|json!({"label":w.window_title().unwrap_or_else(||w.label.clone()),"remaining":w.remaining_text(),"fraction":((100.-w.used_percent)/100.).clamp(0.,1.),"reset":w.resets_at.and_then(|t|chrono::DateTime::from_timestamp(t,0)).map(|t|format!("Resets {}",t.with_timezone(&chrono::Local).format("%b %-d at %-I:%M %p")))})).collect::<Vec<_>>());snapshot["usageAccount"]=json!(self.controls.get(self.agent.command()).and_then(|(_,c)|c.account.clone()));snapshot["usageUpdated"]=json!(self.controls.get(self.agent.command()).map(|(at,_)|format!("Updated {}s ago",at.elapsed().as_secs())));
         snapshot["workspaceVoiceError"]=json!(self.voice_error);snapshot["historyEarlier"]=json!(self.unified_history_end.as_ref().is_some_and(|(owner,_)|owner==&self.unified_token()) || self.history_offset>0 || self.navigation_history);snapshot["approvalCount"]=json!(self.unified_pending_ids().len());snapshot["workspaceMotion"]=json!(self.motion);snapshot["workspaceTextMorph"]=json!(self.unified_text_morph);snapshot
 
@@ -1447,6 +1451,7 @@ mod final_regressions {
 
 impl Orbit {
     pub(super) fn unified_models(&self)->Vec<agent_controls::ModelChoice>{
+        if self.agent==AgentKind::Ninja{return self.ninja_choices()}
         let mut models=self.native_models.get(&self.agent).cloned().unwrap_or_default();
         if let Some((_,info))=self.controls.get(self.agent.command()){
             for model in &info.models{if let Some(existing)=models.iter_mut().find(|m|m.id==model.id){if existing.reasoning_efforts.is_empty(){existing.reasoning_efforts=model.reasoning_efforts.clone();}}else{models.push(model.clone());}}
@@ -1454,6 +1459,7 @@ impl Orbit {
         models
     }
     pub(super) fn refresh_unified_models(&mut self,cx:&mut Context<Self>){
+        if self.agent==AgentKind::Ninja{self.ninja_refresh(false,cx);return}
         if self.controls_pending.contains(self.agent.command()){return}
         let project=self.model_project();
         if self.controls.get(self.agent.command()).is_some_and(|(at,info)|at.elapsed()<Duration::from_secs(60)&&info.defaults.project==project && (!matches!(self.agent,AgentKind::Gemini|AgentKind::Cursor|AgentKind::OpenCode|AgentKind::Grok) || (info.defaults.capabilities_checked && info.defaults.capabilities_model==self.model))){return}
@@ -1660,13 +1666,14 @@ pub(super) fn voice_host()->Option<*mut c_void>{
 }
 
 impl Orbit{
-    pub(super) fn request_model(&self)->Option<String>{self.model.clone().or_else(||self.active.as_ref().filter(|id|self.sessions.iter().any(|s|s.id==**id&&s.agent==self.agent&&s.external_id.is_some())).and_then(|id|self.usage.get(id)).and_then(|u|u.model.clone())).or_else(||self.unified_effort().and_then(|_|self.effort_model_choice()).map(|model|model.id))}
+    pub(super) fn request_model(&self)->Option<String>{if self.agent==AgentKind::Ninja{let m=self.ninja_selection().model;return (!m.is_empty()).then_some(m)}self.model.clone().or_else(||self.active.as_ref().filter(|id|self.sessions.iter().any(|s|s.id==**id&&s.agent==self.agent&&s.external_id.is_some())).and_then(|id|self.usage.get(id)).and_then(|u|u.model.clone())).or_else(||self.unified_effort().and_then(|_|self.effort_model_choice()).map(|model|model.id))}
     pub(super) fn request_effort(&self)->Option<String>{self.unified_effort().map(str::to_owned).or_else(||self.active.as_ref().filter(|id|self.sessions.iter().any(|s|s.id==**id&&s.agent==self.agent&&s.external_id.is_some())).and_then(|id|self.usage.get(id)).and_then(|u|u.reasoning_effort.clone()))}
 
     pub(super) fn model_project(&self)->PathBuf{
         self.active.as_ref().and_then(|id|self.sessions.iter().find(|s|s.id==*id)).map(|s|s.execution_path.as_ref().unwrap_or(&s.project_path).clone()).filter(|p|p.is_dir()).unwrap_or_else(||if self.project.is_dir(){self.project.clone()}else{self.controls_home.clone()})
     }
     pub(super) fn effective_model_settings(&self)->(Option<String>,Option<String>){
+        if self.agent==AgentKind::Ninja{let s=self.active.as_ref().and_then(|id|self.runs.get(id)).and_then(|r|r.retry.as_ref()).and_then(|r|r.ninja.clone()).unwrap_or_else(||self.ninja_selection());return ((!s.model.is_empty()).then_some(s.model),s.thinking)}
         let controls=self.controls.get(self.agent.command()).map(|(_,v)|&v.defaults);
         let run=self.active.as_ref().and_then(|id|self.runs.get(id)).filter(|r|r.agent==self.agent);
         let usage=self.active.as_ref().filter(|id|self.sessions.iter().any(|s|s.id==**id&&s.agent==self.agent)).and_then(|id|self.usage.get(id));

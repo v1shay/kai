@@ -304,7 +304,7 @@ mod tests {
             (AgentKind::Cursor, "plan", "", "--resume"),
             (AgentKind::Grok, "plan", "acceptEdits", "--resume"),
         ] {
-            let mut request = RunRequest { orchestrator:false, service_tier:None, reasoning_effort:None,
+            let mut request = RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
                 agent: kind,
                 executable: kind.command().into(),
                 project: "/tmp".into(),
@@ -373,7 +373,7 @@ mod tests {
             AgentKind::Cursor,
             AgentKind::Grok,
         ] {
-            let mut request = RunRequest { orchestrator:false, service_tier:None, reasoning_effort:None,
+            let mut request = RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
                 agent: kind,
                 executable: kind.command().into(),
                 project: "/tmp".into(),
@@ -433,7 +433,7 @@ mod tests {
             (AgentKind::OpenCode, "--file"),
             (AgentKind::Claude, "--input-format"),
         ] {
-            let mut request = RunRequest { orchestrator:false, service_tier:None, reasoning_effort:None,
+            let mut request = RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
                 agent: kind,
                 executable: kind.command().into(),
                 project: std::env::temp_dir(),
@@ -467,7 +467,7 @@ mod tests {
             assert!(command_for(&request).is_err());
         }
         for kind in [AgentKind::Antigravity] {
-            let request = RunRequest { orchestrator:false, service_tier:None, reasoning_effort:None,
+            let request = RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
                 agent: kind,
                 executable: "must-not-be-started".into(),
                 project: std::env::temp_dir(),
@@ -495,7 +495,7 @@ mod tests {
             (AgentKind::Gemini, "--skip-trust"),
             (AgentKind::Cursor, "--trust"),
         ] {
-            let mut request = RunRequest { orchestrator:false, service_tier:None, reasoning_effort:None,
+            let mut request = RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
                 agent,
                 executable: agent.command().into(),
                 project: "/tmp".into(),

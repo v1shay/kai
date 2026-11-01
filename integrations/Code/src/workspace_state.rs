@@ -106,6 +106,9 @@ impl Default for TranscriptAnchor {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WorkspaceState {
+    pub ninja:crate::ninja::Selection,
+    pub ninja_chats:BTreeMap<String,crate::ninja::Selection>,
+    pub ninja_bound:BTreeMap<String,crate::ninja::Selection>,
     pub workflows:Vec<crate::daily_driver::Workflow>,
     pub recent_results:Vec<String>,
     pub startup_surface:crate::startup::Surface,
@@ -155,6 +158,7 @@ pub struct WorkspaceState {
 impl Default for WorkspaceState {
     fn default() -> Self {
         Self {
+            ninja:Default::default(),ninja_chats:Default::default(),ninja_bound:Default::default(),
             workflows:vec![],recent_results:vec![],
             startup_surface:Default::default(),
             automatic_titles:true,
@@ -205,6 +209,10 @@ impl WorkspaceState {
     /// Does no filesystem work. Discovery/display code validates existence and
     /// clips window coordinates against actual displays after restoration.
     pub fn normalized(mut self) -> Self {
+        self.ninja_bound.retain(|id,s|id.len()<=256 && s.validate().is_ok());while self.ninja_bound.len()>2400{self.ninja_bound.pop_first();}
+        self.ninja_chats.retain(|id,s|id.len()<=256 && s.validate().is_ok());
+        while self.ninja_chats.len()>2400{self.ninja_chats.pop_first();}
+        if !self.ninja.model.is_empty()&&self.ninja.validate().is_err(){self.ninja=Default::default();}
         self.workflows.retain(crate::daily_driver::Workflow::valid);self.workflows.truncate(32);
         self.recent_results.retain(|id|id.len()<=512);self.recent_results.truncate(32);
         self.inspector_widths=self.inspector_widths.normalized();

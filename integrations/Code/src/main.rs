@@ -1,3 +1,5 @@
+mod ninja;
+mod ninja_ui;
 mod agent_controls;
 mod provider_defaults;
 mod agent_picker;
@@ -235,6 +237,7 @@ fn provider_asset(agent: AgentKind) -> &'static str {
         AgentKind::Antigravity => "assets/providers/antigravity.svg",
         AgentKind::Cursor => "assets/providers/cursor.svg",
         AgentKind::Grok => "assets/providers/grok.svg",
+        AgentKind::Ninja => "assets/providers/ninja.svg",
     }
 }
 fn activity_caption(status: &str) -> String {
@@ -309,6 +312,7 @@ fn agent_color(agent: AgentKind) -> u32 {
     match agent {
         AgentKind::Claude => 0xd7ac91,
         AgentKind::Codex => 0xa39cfa,
+        AgentKind::Ninja => 0x67dab0,
         _ => 0xa7b8de,
     }
 }
@@ -321,6 +325,7 @@ fn agent_icon(agent: AgentKind) -> &'static str {
         AgentKind::Antigravity => "antigravity",
         AgentKind::Cursor => "cursor",
         AgentKind::Grok => "grok",
+        AgentKind::Ninja => "ninja",
     }
 }
 fn agent_name(agent: AgentKind) -> &'static str {
@@ -343,6 +348,7 @@ fn agent_for_role(role: Option<&str>, fallback: AgentKind) -> AgentKind {
         AgentKind::Antigravity,
         AgentKind::Cursor,
         AgentKind::Grok,
+        AgentKind::Ninja,
     ]
     .into_iter()
     .find(|kind| kind.command() == command)
@@ -564,6 +570,7 @@ impl ListReveal {
     }
 }
 struct Orbit {
+    ninja:ninja_ui::State,
     remote:remote_host::State,
     performance:performance::Tracker,
     workflows:Vec<daily_driver::Workflow>,
@@ -1152,6 +1159,7 @@ impl Orbit {
             orchestration_models:HashMap::new(),orchestration_probes:HashSet::new(),
             orchestrator_chats:restored.as_ref().map(|s|s.orchestrator_chats.iter().cloned().collect()).unwrap_or_default(),
             orchestrator_window:window.window_handle().downcast::<Orbit>().expect("Orbit window"),
+            ninja:ninja_ui::State::restore(restored.as_ref()),
             reasoning_efforts:restored.as_ref().map(|s|s.reasoning_efforts.clone()).unwrap_or_default(),
             unified_children:vec![],
             task_pet_visuals:HashMap::new(),
@@ -3087,7 +3095,7 @@ impl Orbit {
             }
         };
         let context_scope = self.context_scope();
-        let request = RunRequest { orchestrator:self.orchestrator_active(), service_tier:self.request_service_tier(), reasoning_effort:self.request_effort(),
+        let request = RunRequest { ninja:(self.agent==AgentKind::Ninja).then(||self.ninja_selection()), orchestrator:self.orchestrator_active(), service_tier:self.request_service_tier(), reasoning_effort:self.request_effort(),
             agent: self.agent,
             executable,
             project: execution_path.clone(),
@@ -3119,7 +3127,7 @@ impl Orbit {
             ));
         }
         let submission = handoff_ui::Submission {
-            selected_model:self.model.clone(),
+            selected_model:if self.agent==AgentKind::Ninja{self.request_model()}else{self.model.clone()},
             session,
             request,
             prompt,
@@ -3152,7 +3160,8 @@ impl Orbit {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if submission.session.agent != submission.request.agent {
+        let ninja_handoff=submission.request.ninja.as_ref().is_some_and(|next|submission.session.external_id.is_some() && self.ninja.bound.get(&submission.session.id).is_some_and(|last|last.harness!=next.harness));
+        if submission.session.agent != submission.request.agent || ninja_handoff {
             self.begin_send_handoff(submission, window, cx);
         } else {
             self.submit_captured(submission, window, cx);
@@ -3178,6 +3187,7 @@ impl Orbit {
             queued_prompt_id,
         } = submission;
         let id = session.id.clone();
+        if let Some(selection)=&request.ninja{self.ninja.chats.insert(id.clone(),selection.clone());}
         if request.orchestrator{self.orchestrator_chats.insert(id.clone());self.orchestrator_new=false;}
         if self.active.is_none() && self.automatic_titles && !self.lifecycle.chat_names.contains_key(&id){self.queue_chat_title(&session,&original_prompt);}
         self.fork_next = None;
@@ -3247,7 +3257,7 @@ impl Orbit {
         self.notice = Some(format!("Connecting to {}…", agent_name(request.agent)));
         self.starting = true;
         let turn_started=Instant::now();
-        self.launches.insert(id.clone(),chat_timing::Launch{caption:"Preparing workspace…",preview:self.rows[old..].to_vec(),cancel:checkpoint_cancel.clone(),started:turn_started,key:checkpoint_key.clone()});
+        self.launches.insert(id.clone(),chat_timing::Launch{caption:if request.ninja.is_some(){"Connecting to inference host…"}else{"Preparing workspace…"},preview:self.rows[old..].to_vec(),cancel:checkpoint_cancel.clone(),started:turn_started,key:checkpoint_key.clone()});
         self.begin_turn_clock(&id,&checkpoint_key,turn_started,cx);
         self.set_turn_provenance(&checkpoint_key,&request);
         let timing_key=checkpoint_key.clone();
@@ -3307,6 +3317,7 @@ impl Orbit {
                         if this.active.as_deref() == Some(&id) {
                             this.notice = None;
                         }
+                        if let Some(selection)=&retry.ninja{this.ninja.bound.insert(id.clone(),selection.clone());}
                         this.launches.remove(&id);this.starting = !this.launches.is_empty();
                         if let Some(t)=this.turn_timings.iter_mut().rev().find(|t|t.key==timing_key){t.checkpoint=Some(checkpoint_id.clone());}
                         if let Some(current) = this.chat_context.get_mut(&context_scope) {
@@ -3569,7 +3580,8 @@ impl Orbit {
                         status_changed = true;
                     }
                 }
-                Ok(RuntimeEvent::Usage(usage)) => {
+                Ok(RuntimeEvent::Usage(mut usage)) => {
+                    if let Some(selection)=run.retry.as_ref().and_then(|r|r.ninja.as_ref()){usage.model=Some(selection.model.clone());usage.reasoning_effort=selection.thinking.clone();}
                     if let Some(clock)=run.timing.as_ref().and_then(|live|self.turn_timings.iter_mut().rev().find(|r|r.key==live.key)){if usage.model.is_some(){clock.model=usage.model.clone();}if usage.reasoning_effort.is_some(){clock.effort=usage.reasoning_effort.clone();}}
                     self.usage.entry(id.to_owned()).or_default().merge(*usage);
                     status_changed = true;
@@ -3720,6 +3732,9 @@ impl Orbit {
         {
             session.external_id = Some(external);
             self.engine.update_session(session.clone());
+            if let Some(selection) = self.runs.get(id).and_then(|run| run.retry.as_ref()).and_then(|request| request.ninja.as_ref()) {
+                self.ninja.bound.insert(id.to_owned(), selection.clone());
+            }
             // The service may announce child ownership before the UI has stored
             // its parent's native ID. Reconcile once when that association lands.
             self.refresh_broker(cx);

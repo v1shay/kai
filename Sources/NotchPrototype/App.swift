@@ -610,6 +610,7 @@ private final class NotchSurfaceHost:NSView {
         miniUI.onApprovalStop={ [weak self] in self?.answerApproval("approval_stop") }
         miniUI.onReview={ [weak self] in guard let self,let state=self.latestState,let request=CompactApprovalRequest(state:state) else{return};self.presentCompactApproval(request);self.approvalUI.setReviewExpanded(true,pinned:true) }
         miniUI.onInterrupt={ [weak self] in guard let self else{return};self.chatVoice.stopSpeaking();self.speech.cancelAudio();self.bridge.send("interrupt",["requestId":self.miniUI.pendingRequestID ?? ""]) }
+        miniUI.onNinja={ [weak self] field,value in self?.bridge.send("ninja_select",["field":field,"value":value]) }
         miniUI.onAgent={ [weak self] in self?.bridge.send("agent",["agent":$0]) }
         miniUI.onClose={ [weak self] in self?.dismissNotchView() }
         miniUI.onFilesVisibleChanged={ [weak self] visible in self?.indicator.setFileOpen(visible) }

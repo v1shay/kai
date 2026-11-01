@@ -410,7 +410,7 @@ impl Orbit {
         expanded_projects.sort_unstable();
         expanded_projects.truncate(workspace_state::MAX_EXPANDED_PROJECTS);
         WorkspaceState {
-            workflows:self.workflows.clone(),recent_results:self.recent_results.iter().rev().take(32).cloned().collect::<Vec<_>>().into_iter().rev().collect(),
+            ninja:self.ninja.draft.clone(),ninja_chats:self.ninja.chats.clone(),ninja_bound:self.ninja.bound.clone(),            workflows:self.workflows.clone(),recent_results:self.recent_results.iter().rev().take(32).cloned().collect::<Vec<_>>().into_iter().rev().collect(),
             startup_surface:self.startup_surface,
             automatic_titles:self.automatic_titles,
             terminal_dock:self.terminal_dock.normalized(),
@@ -593,6 +593,7 @@ impl Orbit {
                 AgentKind::Antigravity,
                 AgentKind::Cursor,
                 AgentKind::Grok,
+                AgentKind::Ninja,
             ]
             .into_iter()
             .find(|agent| agent.command() == saved.agent)

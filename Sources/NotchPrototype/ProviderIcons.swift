@@ -1,7 +1,7 @@
 import AppKit
 
 @MainActor enum ProviderIcons {
-    static let names=["codex","claude","gemini","opencode","cursor","grok","antigravity"]
+    static let names=["codex","claude","gemini","opencode","cursor","grok","antigravity","ninja"]
     static func identifier(_ value:String?)->String? {
         guard let text=value?.lowercased() else{return nil}
         return names.first{ text == $0 || text.hasPrefix($0+" ·") || text.hasSuffix(":"+$0) }

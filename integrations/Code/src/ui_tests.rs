@@ -2092,6 +2092,7 @@ fn all_agent_svg_marks_fit_the_strip_with_equal_spacing(cx: &mut TestAppContext)
             AgentKind::Antigravity => "agent-strip-antigravity",
             AgentKind::Cursor => "agent-strip-cursor",
             AgentKind::Grok => "agent-strip-grok",
+            AgentKind::Ninja => "agent-strip-ninja",
         };
         let bounds = cx.debug_bounds(selector).unwrap();
         assert_eq!(bounds.size, size(px(14.), px(14.)));
@@ -2898,7 +2899,7 @@ fn failed_run(agent: AgentKind, project: PathBuf, error: &str) -> Running {
     run.handle = RunHandle::test_events(vec![RuntimeEvent::Failed(error.into())]);
     run.agent = agent;
     run.submitted_prompt = "Original submitted prompt".into();
-    run.retry = Some(RunRequest { orchestrator:false, service_tier:None, reasoning_effort:None,
+    run.retry = Some(RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
         agent,
         executable: agent.command().into(),
         project,

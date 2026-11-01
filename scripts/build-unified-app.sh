@@ -33,15 +33,20 @@ cp "$CARGO_TARGET_DIR/$configuration/orbit" "$product/Contents/MacOS/kai-unified
 cp "$root/.build/unified/"*.dylib "$resources/"
 cp -R "$root/Sources/NotchPrototype/Resources/"* "$resources/"
 mkdir -p "$resources/kai_pets" "$resources/providers"
-for provider in codex claude gemini opencode cursor grok antigravity model-moon model-earth model-sun model-star; do cp "$root/integrations/Code/assets/$provider.svg" "$resources/providers/$provider.svg"; done
+for provider in codex claude gemini opencode cursor grok antigravity ninja tailscale model-moon model-earth model-sun model-star; do cp "$root/integrations/Code/assets/$provider.svg" "$resources/providers/$provider.svg"; done
+for mark in "$root"/integrations/Code/assets/lab-*.svg; do cp "$mark" "$resources/providers/"; done
 mkdir -p "$resources/skills"
 cp -R "$root/integrations/Code/skills/"* "$resources/skills/"
 cp "$root/kai_speech.py" "$resources/"
+cp "$root/integrations/Code/native_helpers/kai_ninja.py" "$resources/"
+cp "$root/integrations/Code/native_helpers/kai_ninja_host.py" "$resources/"
 cp "$root/integrations/Code/native_helpers/kai_remote.py" "$resources/"
 cp "$root/integrations/Code/native_helpers/kai_agy_hook.py" "$resources/"
 cp "$root/integrations/Code/native_helpers/kai_mcp_app.html" "$resources/"
 cp -R "$root/integrations/Code/LICENSES/"* "$resources/Licenses/"
 cp "$root/integrations/Code/native_helpers/KAI-SOURCE.md" "$resources/Licenses/Kai-Voice-Attribution.txt"
+cp "$root/integrations/Code/assets/LICENSES/Lobe-Icons-MIT.txt" "$resources/Licenses/"
+cp "$root/integrations/Code/assets/NINJA-LOGOS.md" "$resources/Licenses/"
 cp "$root/integrations/Code/assets/NOTICE.md" "$resources/Licenses/Code-Assets.txt"
 cp "$root/integrations/Code/UPSTREAM.json" "$resources/Code-Upstream.json"
 python3 - "$root" "$product" <<'PY'
@@ -55,12 +60,13 @@ for pet in catalog['pets']:
  source=root/'kai_pets'/pet['spritesheet'];target=resources/'kai_pets'/pet['spritesheet']
  target.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(source,target)
 info=plistlib.loads((root/'integrations/Code/scripts/Info.plist').read_bytes())
-info.update(CFBundleName='Kai Unified',CFBundleDisplayName='Kai Unified',CFBundleIdentifier='com.kai.unified.experimental',CFBundleExecutable='kai-unified',CFBundleVersion='60',CFBundleShortVersionString='0.12.23')
+info.update(CFBundleName='Kai Unified',CFBundleDisplayName='Kai Unified',CFBundleIdentifier='com.kai.unified.experimental',CFBundleExecutable='kai-unified',CFBundleVersion='61',CFBundleShortVersionString='0.12.24')
 icon=root/'integrations/Code/assets/Code.icns'
 if icon.exists():shutil.copy2(icon,resources/'Code-Bonsai.icns')
 info['CFBundleURLTypes']=[{'CFBundleURLName':'Kai workspace','CFBundleURLSchemes':['kai']}]
 info['CFBundleDocumentTypes']=[{'CFBundleTypeName':'Folders and source files','CFBundleTypeRole':'Viewer','LSHandlerRank':'Alternate','LSItemContentTypes':['public.folder','public.data']}]
 info['NSServices']=[{'NSMenuItem':{'default':'Open in Kai Unified'},'NSMessage':'openInKai','NSPortName':'Kai Unified','NSSendTypes':['public.file-url'],'NSRequiredContext':{}}]
+info['NSLocalNetworkUsageDescription']='Kai connects to your selected Tailscale or local inference machines. Workspace files and coding tools stay on this Mac.'
 info['NSDownloadsFolderUsageDescription']='Kai discovers and imports the local pet packs you download.'
 info['NSAppleEventsUsageDescription']='Kai reads Spotify playback status for its optional idle media display.'
 (product/'Contents/Info.plist').write_bytes(plistlib.dumps(info))

@@ -3,12 +3,12 @@ use super::*;
 
 pub fn model_glyph(model:&str)->Option<&'static str>{
     let lower=model.to_lowercase();let tokens=lower.split(|c:char|!c.is_alphanumeric()).collect::<Vec<_>>();
-    if !tokens.contains(&"gpt") && !tokens.contains(&"openai"){return None}
-    [("luna","model-moon"),("terra","model-earth"),("sol","model-sun"),("astra","model-star")].into_iter().find_map(|(family,glyph)|tokens.contains(&family).then_some(glyph))
+    if !tokens.contains(&"gpt") && !tokens.contains(&"openai"){return ninja::lab_glyph(model)}
+    [("luna","model-moon"),("terra","model-earth"),("sol","model-sun"),("astra","model-star")].into_iter().find_map(|(family,glyph)|tokens.contains(&family).then_some(glyph)).or_else(||ninja::lab_glyph(model))
 }
 pub fn display_label(value:&str)->String{
     let (model,effort)=value.split_once(" · ").map_or((value,None),|(model,effort)|(model,Some(effort)));
-    if !model.starts_with("gpt-") || model_glyph(model).is_none(){return value.into()}
+    if !model.starts_with("gpt-") || !model_glyph(model).is_some_and(|g|g.starts_with("model-")){return value.into()}
     let parts=model.splitn(3,'-').collect::<Vec<_>>();if parts.len()!=3{return value.into()}
     let name=format!("GPT-{} {}",parts[1],parts[2].split('-').map(title).collect::<Vec<_>>().join(" "));
     effort.map_or_else(||name.clone(),|effort|format!("{name} · {}",title(effort)))
@@ -18,7 +18,7 @@ pub fn intensity(value:f32)->u32{
     let channel=|shift|{let a=((stops[index]>>shift)&255)as f32;let b=((stops[index+1]>>shift)&255)as f32;(a+(b-a)*t).round()as u32};
     (channel(16)<<16)|(channel(8)<<8)|channel(0)
 }
-pub fn title(value:&str)->String{if value=="xhigh"{"Extra high".into()}else{let mut chars=value.chars();chars.next().map_or_else(String::new,|c|c.to_uppercase().collect::<String>()+chars.as_str())}}
+pub fn title(value:&str)->String{if value=="true"{"On".into()}else if value=="false"{"Off".into()}else if value=="xhigh"{"Extra high".into()}else{let mut chars=value.chars();chars.next().map_or_else(String::new,|c|c.to_uppercase().collect::<String>()+chars.as_str())}}
 pub fn effort_color(value:&str,fraction:f32)->u32{match value{"none"=>0xa8b4c4,"minimal"=>0x83d6ff,"low"=>0x51d9bd,"medium"=>0x8996ff,"high"=>0xff9870,"xhigh"=>0xf079cd,"max"=>0xf4b942,"ultra"=>0xa855f7,_=>intensity(fraction)}}
 #[cfg(test)]
 fn index_at(bounds:Bounds<Pixels>,position:Point<Pixels>,count:usize)->Option<usize>{
@@ -80,6 +80,7 @@ impl Orbit{
         let old=model.reasoning_efforts.iter().position(|e|Some(e)==current.as_ref()).unwrap_or(0);
         let from=self.effort_fraction(model.reasoning_efforts.len(),old);
         if let Some(picker)=self.agent_picker.as_mut(){picker.effort_motion=Some((Instant::now(),from,index as f32/model.reasoning_efforts.len().saturating_sub(1).max(1)as f32));}
+        if self.agent==AgentKind::Ninja && self.ninja_set("thinking",effort,cx).is_err(){return false}
         let key=self.effort_key();self.reasoning_efforts.insert(key,effort.into());self.queue_workspace_save(cx);cx.notify();true
     }
     pub(super) fn reasoning_slider(&self,model:agent_controls::ModelChoice,cx:&Context<Self>)->AnyElement{

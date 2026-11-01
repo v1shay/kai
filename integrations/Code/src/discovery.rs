@@ -25,6 +25,7 @@ const MAX_PROJECT_ENTRIES: usize = 2_000;
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum AgentKind {
+    Ninja,
     Codex,
     Claude,
     Gemini,
@@ -37,6 +38,7 @@ pub enum AgentKind {
 impl AgentKind {
     pub fn name(self) -> &'static str {
         match self {
+            Self::Ninja => "Ninja",
             Self::Codex => "Codex",
             Self::Claude => "Claude Code",
             Self::Gemini => "Gemini CLI",
@@ -49,6 +51,7 @@ impl AgentKind {
 
     pub fn command(self) -> &'static str {
         match self {
+            Self::Ninja => "ninja",
             Self::Codex => "codex",
             Self::Claude => "claude",
             Self::Gemini => "gemini",
@@ -97,12 +100,13 @@ pub struct Discovery {
 
 /// Resolve a provider without waiting for saved-history/project discovery.
 pub fn discover_agent(kind: AgentKind, home: &Path) -> Agent {
-    let executable = find_executable(kind, home);
+    let executable = if kind==AgentKind::Ninja {crate::ninja::executable(crate::ninja::Harness::Codex,home).or_else(||crate::ninja::executable(crate::ninja::Harness::Claude,home))} else {find_executable(kind, home)};
     Agent { kind, name:kind.name().to_owned(), available:executable.is_some(), executable }
 }
 
 pub fn discover(home: &Path, extra_root: &Path) -> Discovery {
     let agents = [
+        AgentKind::Ninja,
         AgentKind::Codex,
         AgentKind::Claude,
         AgentKind::Gemini,

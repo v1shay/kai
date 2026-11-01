@@ -73,6 +73,8 @@ struct ActiveTurn {
     group: Arc<Mutex<Option<i32>>>,
 }
 pub(super) struct Service {
+    ninja_route:Option<String>,
+    ninja_model:Option<(String,Option<String>)>,
     pub agent: AgentKind,
     pub executable: PathBuf,
     pub project: PathBuf,
@@ -402,6 +404,7 @@ impl Service {
         if let Some(task)=p["task"].as_str().or_else(||thread["preview"].as_str()).filter(|s|!s.is_empty()){if child.snapshot.task.is_none(){child.snapshot.task=Some(bound(task,4096));}}
         if let Some(model)=p["model"].as_str().or_else(||thread["model"].as_str()).filter(|s|super::valid_model_id(s)){child.snapshot.model=Some(model.into());}
         if let Some(effort)=p["reasoningEffort"].as_str().or_else(||thread["reasoningEffort"].as_str()).filter(|s|s.len()<=64){child.snapshot.effort=Some(effort.into());}
+        if let Some((model,effort))=&self.ninja_model{child.snapshot.model=Some(model.clone());child.snapshot.effort=effort.clone();}
         if let Some(cwd)=thread["cwd"].as_str().filter(|s|s.len()<=4096&&Path::new(s).is_absolute()){child.snapshot.workspace=Some(cwd.into());}
         if let Some(turn) = p["turn"]["id"].as_str().or_else(|| p["turnId"].as_str()) {
             child.snapshot.turn_id = Some(turn.into());
@@ -552,6 +555,7 @@ pub(super) fn checkout(request: &RunRequest) -> Result<Option<Arc<Service>>> {
     if let Some(entry) = entries.iter().find(|entry| {
         entry.alive.load(Ordering::Acquire)
             && !entry.shutdown.load(Ordering::Acquire)
+            && entry.ninja_route == request.ninja.as_ref().map(|v|v.fingerprint())
             && entry.agent == request.agent
             && entry.executable == request.executable
             && entry.project == request.project
@@ -593,6 +597,8 @@ pub(super) fn register(
     wake.set_nonblocking(true)?;
     read.set_nonblocking(true)?;
     let service = Arc::new(Service {
+        ninja_route:request.ninja.as_ref().map(|v|v.fingerprint()),
+        ninja_model:request.ninja.as_ref().map(|v|(v.model.clone(),v.thinking.clone())),
         agent: request.agent,
         executable: request.executable.clone(),
         project: request.project.clone(),
@@ -849,6 +855,7 @@ mod tests {
         let (wake, _) = UnixStream::pair().unwrap();
         let (cleanup, finished) = async_channel::bounded(1);
         Service {
+            ninja_route:None,ninja_model:None,
             agent: AgentKind::Codex,
             executable: PathBuf::from("fixture"),
             project: PathBuf::from("/fixture"),

@@ -110,6 +110,7 @@ pub fn inspect_project(kind:AgentKind,executable:&Path,home:&Path,project:&Path)
         info.note = Some("This CLI does not expose a safe account-status command. Your existing CLI sign-in is used.".into());
     }
     match kind {
+        AgentKind::Ninja => {info.note=Some("Local inference · no cloud login required".into());return info},
         AgentKind::Codex => {
             if let Some(cache) = metadata(&home.join(".codex/models_cache.json"))
                 && let Some(models) = cache.get("models").and_then(Value::as_array)
@@ -1208,6 +1209,7 @@ pub fn login_script(
         AgentKind::Claude => &["auth", "login"],
         AgentKind::OpenCode => &["auth", "login"],
         // Native interactive startup owns their browser authentication flow.
+        AgentKind::Ninja => return Ok(None),
         AgentKind::Gemini | AgentKind::Antigravity => &[],
     };
     let executable = executable

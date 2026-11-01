@@ -5,12 +5,17 @@ import AppKit
 enum ModelIdentity {
     static func glyph(_ model:String)->String? {
         let tokens=Set(model.lowercased().split{!$0.isLetter && !$0.isNumber}.map(String.init))
-        guard tokens.contains("gpt") || tokens.contains("openai") else{return nil}
+        guard tokens.contains("gpt") || tokens.contains("openai") else{return labGlyph(model)}
         for (family,glyph) in [("luna","model-moon"),("terra","model-earth"),("sol","model-sun"),("astra","model-star")] where tokens.contains(family){return glyph}
-        return nil
+        return labGlyph(model)
+    }
+    private static let labNames:[([String],String)]=[( ["deepseek"],"deepseek"),(["qwen","qwq"],"qwen"),(["llama","codellama"],"meta"),(["gemma"],"google"),(["gpt-oss"],"openai"),(["phi","wizardlm"],"microsoft"),(["mistral","mixtral","devstral","codestral","ministral","magistral"],"mistral"),(["glm","codegeex"],"zai"),(["kimi","moonshot"],"moonshot"),(["minimax"],"minimax"),(["granite"],"ibm"),(["nemotron"],"nvidia"),(["olmo"],"ai2"),(["smollm","starcoder"],"huggingface"),(["command-r","command-a"],"cohere"),(["hermes"],"nousresearch")]
+    private static func labGlyph(_ model:String)->String?{
+        let name=model.lowercased()
+        return labNames.first{pair in pair.0.contains{key in key=="phi" ? name.split{!$0.isLetter && !$0.isNumber}.contains{$0.hasPrefix("phi")}:name.contains(key)}}.map{"lab-"+$0.1}
     }
     static func title(_ model:String)->String {
-        guard glyph(model) != nil,model.lowercased().hasPrefix("gpt-") else{return model}
+        guard glyph(model)?.hasPrefix("model-")==true,model.lowercased().hasPrefix("gpt-") else{return model}
         let parts=model.split(separator:"-",maxSplits:2).map(String.init)
         guard parts.count==3 else{return model}
         return "GPT-"+parts[1]+" "+parts[2].replacingOccurrences(of:"-",with:" ").capitalized
@@ -23,7 +28,7 @@ enum ModelIdentity {
         let local=URL(fileURLWithPath:#filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("integrations/Code/assets/\(name).svg")
         guard let source=(bundled.flatMap{NSImage(contentsOf:$0)} ?? NSImage(contentsOf:local)) else{return nil}
         let image=NSImage(size:CGSize(width:24,height:24),flipped:false){rect in source.draw(in:rect);NSColor.white.setFill();rect.fill(using:.sourceIn);return true}
-        image.isTemplate=true;images.countLimit=4;images.setObject(image,forKey:name as NSString);return image
+        image.isTemplate=true;images.countLimit=32;images.setObject(image,forKey:name as NSString);return image
     }
 }
 
@@ -36,7 +41,7 @@ enum EffortAppearance {
         let a=stops[index],b=stops[index+1]
         return NSColor(srgbRed:channel(a,16)+(channel(b,16)-channel(a,16))*t,green:channel(a,8)+(channel(b,8)-channel(a,8))*t,blue:channel(a,0)+(channel(b,0)-channel(a,0))*t,alpha:1)
     }
-    static func title(_ value:String)->String{switch value{case "xhigh":return "Extra high";default:return value.replacingOccurrences(of:"_",with:" ").capitalized}}
+    static func title(_ value:String)->String{switch value{case "true":return "On";case "false":return "Off";case "xhigh":return "Extra high";default:return value.replacingOccurrences(of:"_",with:" ").capitalized}}
 }
 
 /// Native tracking and accessibility, with discrete provider-advertised stops.

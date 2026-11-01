@@ -1669,6 +1669,7 @@ fn session_from_row(row: &Row<'_>) -> rusqlite::Result<SessionSummary> {
         "agy" => AgentKind::Antigravity,
         "cursor-agent" => AgentKind::Cursor,
         "grok" => AgentKind::Grok,
+        "ninja" => AgentKind::Ninja,
         _ => {
             return Err(rusqlite::Error::FromSqlConversionFailure(
                 2,

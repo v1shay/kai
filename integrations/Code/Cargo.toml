@@ -6,6 +6,7 @@ description = "A quiet, native home for coding agents"
 
 [dependencies]
 regex = "1"
+toml = "=0.8.23"
 gpui = "=0.2.2"
 anyhow = "1"
 serde = { version = "1", features = ["derive", "rc"] }

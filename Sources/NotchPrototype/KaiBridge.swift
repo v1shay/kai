@@ -37,7 +37,11 @@ struct KaiQuota:Decodable {let label:String;let remaining:String;let reset:Strin
 struct KaiReset:Decodable {let id:String;let title:String?;let description:String?;let status:String;let expiresAt:Double?}
 struct KaiResets:Decodable {let availableCount:Int;let credits:[KaiReset]}
 struct KaiContextWindow:Decodable{let used:UInt64,limit:UInt64,fraction:Double}
+struct KaiNinjaSelection:Decodable,Equatable{let machine:String;let endpoint:String;let engine:String;let harness:String;let model:String;let thinking:String?}
+struct KaiNinjaMachine:Decodable,Equatable{let id:String;let name:String;let online:Bool;let local:Bool}
+struct KaiNinja:Decodable,Equatable{var canCancel:Bool?=nil;let selection:KaiNinjaSelection;let machines:[KaiNinjaMachine];let progress:String?;let error:String?;let loading:Bool}
 struct KaiState: Decodable {
+    var ninja:KaiNinja?=nil
     let contextWindow:KaiContextWindow?
     let usageResets:KaiResets?
     let orchestratorMode:Bool?

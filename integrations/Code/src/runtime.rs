@@ -72,6 +72,7 @@ const QUEUED_BYTES_LIMIT: usize = 2 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct RunRequest {
+    pub ninja:Option<crate::ninja::Selection>,
     pub orchestrator:bool,
     pub agent: AgentKind,
     pub executable: PathBuf,
@@ -348,6 +349,7 @@ fn command_for(request: &RunRequest) -> Result<Command> {
     crate::process_env::apply(&mut command);
     command.current_dir(&request.project);
     match request.agent {
+        AgentKind::Ninja=>bail!("Ninja runs through its selected native harness"),
         AgentKind::Codex => {
             command.args([
                 "exec",
@@ -789,7 +791,7 @@ pub fn launch_cli_command(request: RunRequest) -> Result<RunHandle> {
 fn launch_mode(request: RunRequest, cli_command: bool) -> Result<RunHandle> {
     launch_mode_internal(request, cli_command, true)
 }
-fn launch_mode_internal(request: RunRequest, cli_command: bool, native: bool) -> Result<RunHandle> {
+fn launch_mode_internal(mut request: RunRequest, cli_command: bool, native: bool) -> Result<RunHandle> {
     let (settled_tx, settled) = async_channel::bounded::<()>(1);
     if request.prompt.trim().is_empty() && request.images.is_empty() {
         bail!("Write a message first");
@@ -799,6 +801,18 @@ fn launch_mode_internal(request: RunRequest, cli_command: bool, native: bool) ->
     }
     if !request.project.is_dir() {
         bail!("Project folder is unavailable");
+    }
+    if request.agent==AgentKind::Ninja {
+        let selection=request.ninja.as_ref().context("Choose Ninja machine, model and harness first")?;
+        selection.validate()?;
+        let model=crate::ninja::inspect(selection)?;
+        anyhow::ensure!(model.tools,"This model does not advertise tool calling; choose a tool-capable model for the coding harness");
+        anyhow::ensure!(request.images.is_empty()||model.vision,"This model does not advertise image support");
+        anyhow::ensure!(selection.thinking.as_ref().is_none_or(|v|model.thinking.contains(v)),"The selected thinking level is not advertised by this model");
+        request.executable=crate::ninja::executable(selection.harness,&dirs::home_dir().unwrap_or_default()).context("The selected Ninja harness is not installed on this Mac")?;
+        request.model=Some(selection.model.clone());request.reasoning_effort=None;request.service_tier=None;let harness=selection.harness;
+        if model.context>=2048{if let Some(route)=&mut request.ninja{route.context=route.context.min(model.context);}}
+        return match harness{crate::ninja::Harness::Codex=>codex_server::launch(request),crate::ninja::Harness::Claude=>claude_control::launch(request)};
     }
     if native && request.agent == AgentKind::Claude {
         return claude_control::launch(request);
@@ -1503,6 +1517,7 @@ fn dispatch_value(
         }
     }
     let mut events = match agent {
+        AgentKind::Ninja=>bail!("Ninja protocol must be decoded by its selected native harness"),
         AgentKind::Codex => parser.parse_codex(value),
         AgentKind::Claude => parser.parse_claude(value),
         AgentKind::Grok => parser.parse_grok(value),
@@ -2428,7 +2443,7 @@ mod tests {
         let approval_test=std::env::var("CODE_SMOKE_APPROVAL").as_deref()==Ok("1");
         for round in 0..rounds {
         let fork_session = std::env::var("CODE_SMOKE_FORK").is_ok_and(|value| value == "1");
-        let handle = launch(RunRequest { orchestrator:false, service_tier:None, reasoning_effort:std::env::var("CODE_SMOKE_EFFORT").ok(),
+        let handle = launch(RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:std::env::var("CODE_SMOKE_EFFORT").ok(),
             agent, executable:executable.clone(), project:project.clone(),
             prompt: if approval_test {"Use your shell tool to run exactly: printf CODE_SMOKE_OK > approval-probe.txt . Do not access any other files, directories, services or tools. Then reply CODE_SMOKE_OK.".into()}else if round==0 {format!("Remember this isolated verification token: {secret}. Reply exactly CODE_SMOKE_OK. Do not use tools, read files, run commands, or edit anything.")}else{"Repeat the verification token I gave you in the previous turn, followed by CODE_SMOKE_OK. Do not use tools.".into()},
             resume_id: resume_id.clone(),
@@ -2779,7 +2794,7 @@ mod tests {
             "cat >/dev/null\npython3 - <<'PY'\nimport json\nfor i in range(100):\n print(json.dumps({'type':'item.completed','item':{'id':'message','type':'agent_message','text':str(i)+'x'*60000}}),flush=True)\nPY",
         );
         let handle = launch_mode_internal(
-            RunRequest { orchestrator:false, service_tier:None, reasoning_effort:None,
+            RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
                 agent: AgentKind::Codex,
                 executable: executable.clone(),
                 project: std::env::temp_dir(),
@@ -2819,7 +2834,7 @@ mod tests {
 
     #[test]
     fn command_flags_preserve_permission_boundaries_and_resume() {
-        let mut request = RunRequest { orchestrator:false, service_tier:None, reasoning_effort:None,
+        let mut request = RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
             agent: AgentKind::Codex,
             executable: "codex".into(),
             project: "/tmp".into(),
@@ -2886,7 +2901,7 @@ mod tests {
     fn codex_fork_retains_native_permissions_model_images_and_stdin() {
         let image = std::env::temp_dir().join(format!("code-fork-{}.png", uuid::Uuid::new_v4()));
         std::fs::write(&image, b"\x89PNG\r\n\x1a\nfixture").unwrap();
-        let mut request = RunRequest { orchestrator:false, service_tier:None, reasoning_effort:None,
+        let mut request = RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
             agent: AgentKind::Codex,
             executable: "codex".into(),
             project: std::env::temp_dir(),
@@ -2990,7 +3005,7 @@ mod tests {
         let mut id = "original".to_owned();
         for (fork, prompt) in [(true, "first"), (false, "second")] {
             let handle = launch_mode_internal(
-                RunRequest { orchestrator:false, service_tier:None, reasoning_effort:None,
+                RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
                     agent: AgentKind::Codex,
                     executable: executable.clone(),
                     project: std::env::temp_dir(),
@@ -3035,7 +3050,7 @@ mod tests {
             "cat >/dev/null\nprintf '%s\\n' '{\"type\":\"thread.started\",\"thread_id\":\"owned\"}'",
         );
         let handle = launch_mode_internal(
-            RunRequest { orchestrator:false, service_tier:None, reasoning_effort:None,
+            RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
                 agent: AgentKind::Codex,
                 executable: executable.clone(),
                 project: std::env::temp_dir(),
@@ -3168,7 +3183,7 @@ mod tests {
                 "cat >/dev/null\nprintf '%s\\n' '{{\"type\":\"turn.started\"}}' '{{\"type\":\"item.updated\",\"item\":{{\"id\":\"reply\",\"type\":\"agent_message\",\"text\":\"Partial\"}}}}' '{{\"type\":\"error\",\"message\":\"Reconnecting... 2/5\"}}'\n{tail}"
             ));
             let handle = launch_mode_internal(
-                RunRequest { orchestrator:false, service_tier:None, reasoning_effort:None,
+                RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
                     agent: AgentKind::Codex,
                     executable: executable.clone(),
                     project: std::env::temp_dir(),
@@ -3229,7 +3244,7 @@ mod tests {
             );
             let executable = fixture_script(&body);
             let handle = launch_mode_internal(
-                RunRequest { orchestrator:false, service_tier:None, reasoning_effort:None,
+                RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
                     agent: AgentKind::Claude,
                     executable: executable.clone(),
                     project: std::env::temp_dir(),
@@ -3281,7 +3296,7 @@ mod tests {
             "cat >/dev/null\nsleep 30 &\nhelper=$!\nprintf '{\"type\":\"thread.started\",\"thread_id\":\"%s\"}\\n' \"$helper\"\nprintf '%s\\n' '{\"type\":\"item.completed\",\"item\":{\"id\":\"reply\",\"type\":\"agent_message\",\"text\":\"Ready\"}}'\nexit 0",
         );
         let handle = launch_mode_internal(
-            RunRequest { orchestrator:false, service_tier:None, reasoning_effort:None,
+            RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
                 agent: AgentKind::Codex,
                 executable: executable.clone(),
                 project: std::env::temp_dir(),
@@ -3356,7 +3371,7 @@ mod tests {
                 "cat >/dev/null\n{output}\nprintf 'configuration needs attention' >&2"
             ));
             let handle = launch_mode_internal(
-                RunRequest { orchestrator:false, service_tier:None, reasoning_effort:None,
+                RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
                     agent: AgentKind::Codex,
                     executable: executable.clone(),
                     project: std::env::temp_dir(),
@@ -3398,7 +3413,7 @@ mod tests {
         let executable =
             fixture_script("cat >/dev/null\nprintf '%s\\n' '{\"type\":\"turn.completed\"}'");
         let handle = launch_mode_internal(
-            RunRequest { orchestrator:false, service_tier:None, reasoning_effort:None,
+            RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
                 agent: AgentKind::Codex,
                 executable: executable.clone(),
                 project: std::env::temp_dir(),
@@ -3435,7 +3450,7 @@ mod tests {
             "cat >/dev/null\ni=0\nwhile [ $i -lt 140 ]; do\n printf '%s\\n' '{\"type\":\"turn.started\"}'\n i=$((i+1))\ndone\nsleep 30",
         );
         let handle = launch_mode_internal(
-            RunRequest { orchestrator:false, service_tier:None, reasoning_effort:None,
+            RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
                 agent: AgentKind::Codex,
                 executable: executable.clone(),
                 project: std::env::temp_dir(),
@@ -3489,7 +3504,7 @@ mod tests {
             "printf '%s\\n' '{\"type\":\"thread.started\",\"thread_id\":\"input-blocked\"}'\nsleep 30",
         );
         let handle = launch_mode_internal(
-            RunRequest { orchestrator:false, service_tier:None, reasoning_effort:None,
+            RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
                 agent: AgentKind::Codex,
                 executable: executable.clone(),
                 project: std::env::temp_dir(),
@@ -3545,7 +3560,7 @@ mod tests {
             "cat >/dev/null\nprintf '%s\\n' '{\"type\":\"thread.started\",\"thread_id\":\"fixture\"}'\nsleep 30 &\nwait",
         );
         let handle = launch_mode_internal(
-            RunRequest { orchestrator:false, service_tier:None, reasoning_effort:None,
+            RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
                 agent: AgentKind::Codex,
                 executable: executable.clone(),
                 project: std::env::temp_dir(),
@@ -3616,7 +3631,7 @@ mod tests {
             file.flush().unwrap();
         }
         let handle = launch_mode_internal(
-            RunRequest { orchestrator:false, service_tier:None, reasoning_effort:None,
+            RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
                 agent: AgentKind::Codex,
                 executable: executable.clone(),
                 project: std::env::temp_dir(),
@@ -3746,7 +3761,7 @@ mod tests {
             file.flush().unwrap();
         }
         let handle = launch_mode_internal(
-            RunRequest { orchestrator:false, service_tier:None, reasoning_effort:None,
+            RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
                 agent: AgentKind::Codex,
                 executable: executable.clone(),
                 project: std::env::temp_dir(),
@@ -3801,7 +3816,7 @@ mod tests {
             "cat >/dev/null\ni=0\nwhile [ $i -lt 10000 ]; do printf '%s\\n' 'diagnostics diagnostics diagnostics diagnostics' >&2; i=$((i + 1)); done\nprintf '%s\\n' '{\"type\":\"item.completed\",\"item\":{\"id\":\"1\",\"type\":\"agent_message\",\"text\":\"Ready\"}}'",
         );
         let handle = launch_mode_internal(
-            RunRequest { orchestrator:false, service_tier:None, reasoning_effort:None,
+            RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
                 agent: AgentKind::Codex,
                 executable: executable.clone(),
                 project: std::env::temp_dir(),
@@ -3838,7 +3853,7 @@ mod tests {
             "cat >/dev/null\ni=0\nwhile [ $i -lt 1000 ]; do printf '%s\\n' '{\"type\":\"turn.started\"}'; i=$((i + 1)); done\nsleep 30",
         );
         let handle = launch_mode_internal(
-            RunRequest { orchestrator:false, service_tier:None, reasoning_effort:None,
+            RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
                 agent: AgentKind::Codex,
                 executable: executable.clone(),
                 project: std::env::temp_dir(),

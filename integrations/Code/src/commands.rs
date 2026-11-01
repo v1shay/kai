@@ -269,7 +269,7 @@ fn build_catalog(agent: AgentKind) -> Vec<Command> {
                 }
                 AgentKind::Cursor => matches!(name, "new" | "clear" | "resume" | "model" | "help"),
                 // Headless flags are supported; terminal slash catalogs are not assumed.
-                AgentKind::Antigravity | AgentKind::Grok => false,
+                AgentKind::Ninja | AgentKind::Antigravity | AgentKind::Grok => false,
             },
         })
         .collect();
@@ -430,7 +430,7 @@ pub fn name(text: &str) -> Option<&str> {
     .then_some(word)
 }
 pub fn catalog(agent: AgentKind) -> &'static [Command] {
-    static CATALOG: std::sync::OnceLock<[Vec<Command>; 7]> = std::sync::OnceLock::new();
+    static CATALOG: std::sync::OnceLock<[Vec<Command>; 8]> = std::sync::OnceLock::new();
     let catalogs = CATALOG.get_or_init(|| {
         [
             AgentKind::Codex,
@@ -440,6 +440,7 @@ pub fn catalog(agent: AgentKind) -> &'static [Command] {
             AgentKind::Antigravity,
             AgentKind::Cursor,
             AgentKind::Grok,
+            AgentKind::Ninja,
         ]
         .map(build_catalog)
     });
@@ -451,6 +452,7 @@ pub fn catalog(agent: AgentKind) -> &'static [Command] {
         AgentKind::Antigravity => 4,
         AgentKind::Cursor => 5,
         AgentKind::Grok => 6,
+        AgentKind::Ninja => 7,
     }]
 }
 pub fn ascii_contains(name: &str, query: &str) -> bool {

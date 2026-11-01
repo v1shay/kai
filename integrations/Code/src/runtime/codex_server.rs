@@ -163,6 +163,7 @@ fn launch_mode(request: RunRequest, maintenance: Option<(String, Value)>) -> Res
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .process_group(0);
+    let ninja_lease=request.ninja.as_ref().map(|selection|crate::ninja::configure_codex(&mut command,selection)).transpose()?;
     let mut child = command
         .spawn()
         .context("Could not start Codex App Server")?;
@@ -203,6 +204,7 @@ fn launch_mode(request: RunRequest, maintenance: Option<(String, Value)>) -> Res
         return Err(error);
     }
     thread::spawn(move || {
+        let _ninja_lease=ninja_lease;
         service_loop(
             request,
             child,
@@ -288,7 +290,10 @@ fn thread_params(request: &RunRequest) -> Value {
 // first-party HTTPS profile. No user configuration or credentials are changed.
 fn routed_thread_params(request:&RunRequest,config:&Value)->Value{
     let mut params=thread_params(request);
-    if config["model_provider"].as_str().is_none_or(|p|p=="openai"){
+    if request.ninja.is_some(){
+        params["modelProvider"]=json!("kai-ninja");
+        params["config"]["model_reasoning_summary"]=json!("detailed");
+    }else if config["model_provider"].as_str().is_none_or(|p|p=="openai"){
         params["modelProvider"]=json!("kai-openai-https");
         params["config"]["model_reasoning_summary"]=json!("detailed");
     }
@@ -1231,7 +1236,7 @@ impl Session {
             }
             Some(0) => {
                 let config=value["result"].get("config").context("Codex returned no effective configuration")?;
-                self.request_reasoning=config["model_provider"].as_str().is_none_or(|p|p=="openai" || p=="kai-openai-https");
+                self.request_reasoning=request.ninja.is_some() || config["model_provider"].as_str().is_none_or(|p|p=="openai" || p=="kai-openai-https");
                 rpc(stdin,&ctx.cancelled,2,
                     if request.resume_id.is_none(){"thread/start"}else if request.fork_session{"thread/fork"}else{"thread/resume"},
                     routed_thread_params(request,config))?;
@@ -3192,7 +3197,7 @@ mod tests {
         path
     }
     fn request(path: &std::path::Path) -> RunRequest {
-        RunRequest { orchestrator:false, service_tier:None, reasoning_effort:None,
+        RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
             agent: AgentKind::Codex,
             executable: path.into(),
             project: std::env::temp_dir(),
@@ -4624,7 +4629,7 @@ time.sleep(30)
    for edits in [false,true] {
     for approvals in [CodexApprovals::Ask,CodexApprovals::AutoReview,CodexApprovals::Never] {
      for resume in [false,true] {
-      let req=RunRequest{orchestrator:false, service_tier:None,agent:AgentKind::Codex,executable:"/fixture/codex".into(),project:"/fixture/workspace".into(),prompt:"Continue".into(),resume_id:resume.then(||"native".into()),fork_session:false,model:None,reasoning_effort:None,images:vec![],allow_edits:edits,trust_workspace:false,codex_access:access,codex_approvals:approvals};
+      let req=RunRequest{ ninja:None,orchestrator:false, service_tier:None,agent:AgentKind::Codex,executable:"/fixture/codex".into(),project:"/fixture/workspace".into(),prompt:"Continue".into(),resume_id:resume.then(||"native".into()),fork_session:false,model:None,reasoning_effort:None,images:vec![],allow_edits:edits,trust_workspace:false,codex_access:access,codex_approvals:approvals};
       let thread=thread_params(&req);let turn=turn_params("native",&req);
       assert_eq!(thread["sandbox"],access.sandbox(edits));assert_eq!(turn["sandboxPolicy"],access.policy(edits,&req.project));
       assert_eq!(turn["approvalPolicy"],approvals.policy());assert_eq!(thread["approvalPolicy"],approvals.policy());
@@ -4646,7 +4651,7 @@ time.sleep(30)
   for (edits,access,inside_ok,outside_ok) in [(false,CodexAccess::Workspace,false,false),(true,CodexAccess::Workspace,true,false),(true,CodexAccess::Full,true,true)] {
    let inside=project.join("inside.txt");let outside=root.join("outside.txt");let _=std::fs::remove_file(&inside);let _=std::fs::remove_file(&outside);
    let prompt=format!("/usr/bin/printf inside > '{}'; /usr/bin/printf outside > '{}'; /usr/bin/printf ACCESS_PROBE_DONE",inside.display(),outside.display());
-   let request=RunRequest{orchestrator:false, service_tier:None,agent:AgentKind::Codex,executable:std::env::var("KAI_NATIVE_TEST_EXECUTABLE").unwrap_or_else(|_|"/opt/homebrew/bin/codex".into()).into(),project:project.clone(),prompt,resume_id:None,fork_session:false,model:None,reasoning_effort:None,images:vec![],allow_edits:edits,trust_workspace:false,codex_access:access,codex_approvals:CodexApprovals::Never};
+   let request=RunRequest{ ninja:None,orchestrator:false, service_tier:None,agent:AgentKind::Codex,executable:std::env::var("KAI_NATIVE_TEST_EXECUTABLE").unwrap_or_else(|_|"/opt/homebrew/bin/codex".into()).into(),project:project.clone(),prompt,resume_id:None,fork_session:false,model:None,reasoning_effort:None,images:vec![],allow_edits:edits,trust_workspace:false,codex_access:access,codex_approvals:CodexApprovals::Never};
    let handle=maintenance(request,"command/exec",json!({})).unwrap();let mut finished=false;
    while let Ok(event)=handle.events.recv_timeout(Duration::from_secs(20)) {
     match event {RuntimeEvent::Failed(e)=>panic!("{e}"),RuntimeEvent::Request(_)=>panic!("Never ask unexpectedly raised an approval"),RuntimeEvent::Finished=>{finished=true;break},_=>{}}

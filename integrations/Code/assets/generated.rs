@@ -3,6 +3,27 @@ pub fn asset(path: &str) -> Option<&'static [u8]> {
     let path = path.strip_prefix("assets/").unwrap_or(path);
     let key = path.strip_suffix(".svg").unwrap_or(path);
     Some(match key {
+        "lab-ai2" => include_bytes!("lab-ai2.svg"),
+        "lab-ai21" => include_bytes!("lab-ai21.svg"),
+        "lab-cohere" => include_bytes!("lab-cohere.svg"),
+        "lab-deepseek" => include_bytes!("lab-deepseek.svg"),
+        "lab-google" => include_bytes!("lab-google.svg"),
+        "lab-huggingface" => include_bytes!("lab-huggingface.svg"),
+        "lab-ibm" => include_bytes!("lab-ibm.svg"),
+        "lab-meta" => include_bytes!("lab-meta.svg"),
+        "lab-microsoft" => include_bytes!("lab-microsoft.svg"),
+        "lab-minimax" => include_bytes!("lab-minimax.svg"),
+        "lab-mistral" => include_bytes!("lab-mistral.svg"),
+        "lab-moonshot" => include_bytes!("lab-moonshot.svg"),
+        "lab-nousresearch" => include_bytes!("lab-nousresearch.svg"),
+        "lab-nvidia" => include_bytes!("lab-nvidia.svg"),
+        "lab-ollama" => include_bytes!("lab-ollama.svg"),
+        "lab-openai" => include_bytes!("lab-openai.svg"),
+        "lab-qwen" => include_bytes!("lab-qwen.svg"),
+        "lab-zai" => include_bytes!("lab-zai.svg"),
+
+        "ninja" | "providers/ninja" => include_bytes!("ninja.svg"),
+        "tailscale" => include_bytes!("tailscale.svg"),
         "bolt" => include_bytes!("bolt.svg"),
         "model-moon" => include_bytes!("model-moon.svg"),
         "model-earth" => include_bytes!("model-earth.svg"),

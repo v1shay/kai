@@ -18,7 +18,7 @@ const TRACKED_CLAUDE_CHILDREN: usize = 64;
 pub fn supports_native_delegation(agent: AgentKind) -> bool {
     matches!(
         agent,
-        AgentKind::Codex | AgentKind::Claude | AgentKind::OpenCode | AgentKind::Cursor
+        AgentKind::Ninja | AgentKind::Codex | AgentKind::Claude | AgentKind::OpenCode | AgentKind::Cursor
     )
 }
 
@@ -33,6 +33,7 @@ pub fn delegation_prompt(agent: AgentKind, task: &str) -> Result<String> {
         bail!("The delegated task must be at most 32 KB and contain no null characters.");
     }
     let instruction = match agent {
+        AgentKind::Ninja => "Delegate the task below through the native subagent tool exposed by your current coding harness. Wait for the child result, then report it in this conversation.",
         AgentKind::Codex => {
             "Use your native spawn_agent tool to delegate the task below to one subagent. Wait for that child with your native collaboration tools, then report its result in this conversation."
         }
@@ -410,7 +411,7 @@ mod tests {
         }
         let _cleanup = Cleanup(project.clone());
         let prompt = delegation_prompt(AgentKind::Codex,"The child must reply exactly CODE_CHILD_SMOKE_OK. Neither parent nor child may read files, run commands, edit files, or use tools other than the parent's native spawn_agent and wait tools. After the child completes, the parent must reply exactly CODE_PARENT_SMOKE_OK. This is a minimal integration test, so spawn exactly one child.").unwrap();
-        let handle = launch(RunRequest { orchestrator:false, service_tier:None, reasoning_effort:None,
+        let handle = launch(RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
             agent: AgentKind::Codex,
             executable,
             project,

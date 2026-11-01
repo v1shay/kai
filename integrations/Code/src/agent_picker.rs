@@ -190,6 +190,7 @@ impl Orbit {
     }
     fn picker_choose_model(&mut self,model:Option<String>,window:&mut Window,cx:&mut Context<Self>){
         if self.loading||self.starting_current()||self.handoff_pending.is_some(){return}
+        if self.agent==AgentKind::Ninja{self.choose_model(model,cx);self.reset_picker_cursors(cx);cx.notify();return}
         let picker=self.agent_picker.take();
         self.choose_model(model,cx);
         self.agent_picker=picker;
@@ -234,10 +235,11 @@ impl Orbit {
         cx.notify();
     }
     pub(super) fn refresh_controls(&mut self, force: bool, cx: &mut Context<Self>) {
+        if self.agent==AgentKind::Ninja{self.ninja_refresh(force,cx);}
         let mut jobs: Vec<_> = self
             .agents
             .iter()
-            .filter(|a| a.available)
+            .filter(|a| a.available && a.kind!=AgentKind::Ninja)
             .filter(|a| self.modal != Some(Modal::Status) || a.kind == self.agent)
             .filter_map(|a| {
                 let key = a.kind.command();
@@ -301,8 +303,10 @@ impl Orbit {
     }
     fn choose_agent(&mut self, kind: AgentKind, window: &mut Window, cx: &mut Context<Self>) {
         self.request_handoff(kind, window, cx);
+        if kind==AgentKind::Ninja{self.ninja_refresh(false,cx);}
     }
     pub(super) fn choose_model(&mut self, model: Option<String>, cx: &mut Context<Self>) {
+        if self.agent==AgentKind::Ninja{if let Some(id)=model{self.ninja_choose_model(id,cx);}return}
         if self.loading || self.starting_current() || self.handoff_pending.is_some() {
             return;
         }
@@ -335,6 +339,7 @@ impl Orbit {
         cx.notify();
     }
     fn account_action(&mut self, kind: AgentKind, open_cli: bool, cx: &mut Context<Self>) {
+        if kind==AgentKind::Ninja{self.ninja_refresh(true,cx);return}
         if self.controls_pending.contains(kind.command()) {
             return;
         }
@@ -390,7 +395,7 @@ impl Orbit {
         label: String,
         cx: &Context<Self>,
     ) -> Stateful<Div> {
-        let selected = self.model == id;
+        let selected = if self.agent==AgentKind::Ninja{id.as_deref()==Some(self.ninja_selection().model.as_str())}else{self.model == id};
         let cursor=self.agent_picker.as_ref().is_some_and(|p|p.column==Column::Models&&p.model_cursor==ix);
         let glyph=composer_design::model_glyph(id.as_deref().unwrap_or(&label));
         div()
@@ -442,11 +447,11 @@ impl Orbit {
                             .map(|(_, c)| c.auth)
                             .unwrap_or(AuthState::Unknown);
                         let pending = self.controls_pending.contains(kind.command());
-                        let (glyph, color) = match auth {
+                        let (glyph, color) = if kind==AgentKind::Ninja{("tailscale",0x67dab0)}else{match auth {
                             AuthState::VerifiedSignedIn => ("lock-keyhole", 0x8fc89a),
                             AuthState::SignedOut => ("lock-keyhole-open", 0xe58c8c),
                             _ => ("lock-keyhole", MUTED),
-                        };
+                        }};
                         let bounce = if self.motion {
                             picker
                                 .auth_pulse
@@ -540,10 +545,12 @@ impl Orbit {
             .capture_action(cx.listener(|this,_:&input::Right,window,cx|this.picker_navigate("right",window,cx)))
             .capture_action(cx.listener(|this,_:&input::Submit,window,cx|this.picker_navigate("enter",window,cx)))
             .on_mouse_down_out(cx.listener(|this,event:&MouseDownEvent,_,cx|{if this.agent_picker.as_ref().is_some_and(|p|!p.closing&&!p.effort_only){this.dismissed_on_press(control_clicks::Control::Model(false),event.position);this.dismiss_agent_picker();cx.notify();}}))
+            .when(self.agent==AgentKind::Ninja,|s|s.child(self.ninja_options(cx)))
             .child(div().flex().gap_1().when(!horizontal,|s|s.flex_col()).when(providers,|s|s.child(provider_column)).when(model_column,|s|s.child(model_view).when_some(effort,|s,m|s.child(div().when(horizontal,|s|s.w(px(170.)).flex_none()).when(!horizontal,|s|s.w_full()).child(self.reasoning_slider(m,cx))))))
         ).into_any_element()
     }
     fn picker_models(&self,cx:&Context<Self>)->Vec<(Option<String>,String)>{
+        if self.agent==AgentKind::Ninja{let query=self.agent_picker.as_ref().map(|p|p.search.read(cx).text().to_lowercase()).unwrap_or_default();return self.ninja_choices().into_iter().filter(|m|query.split_whitespace().all(|w|m.label.to_lowercase().contains(w))).map(|m|(Some(m.id),m.label)).collect()}
         let controls = self
             .controls
             .get(self.agent.command())
