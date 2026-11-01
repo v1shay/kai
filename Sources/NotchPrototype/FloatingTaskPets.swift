@@ -135,10 +135,13 @@ enum FloatingTaskCorner:String,CaseIterable {
             let detail=task.text.split(separator:"\n").last.map(String.init) ?? task.name
             let text=family.children.isEmpty ? detail:"\(detail) · \(family.children.count) agents"
             if entry.label.stringValue != text{entry.label.stringValue=text}
-            let pet=self.pets[task.id] ?? specs.first?.id ?? "",motion=["thinking","waiting","permission","question"].contains(task.scene) ? "waiting":"running"
+            let pet=task.ninjaStyle.map{"ninja:"+$0} ?? self.pets[task.id] ?? specs.first?.id ?? "",motion=["thinking","waiting","permission","question"].contains(task.scene) ? "waiting":"running"
             if entry.pet != pet || entry.motion != motion{
                 entry.pet=pet;entry.motion=motion
-                if let spec=specs.first(where:{$0.id == pet}),let motion=spec.motions[motion] ?? spec.motions["idle"],let timeline=SpriteTimeline(row:motion.row,rows:spec.rows,columns:motion.columns,durationsMs:motion.durationsMs,loops:motion.loop),let root{
+                if let style=task.ninjaStyle,let image=MenuBarIdentityMenu.image(MenuBarMark(kind:"ninja",id:task.id,name:task.name,style:style)),let cg=image.cgImage(forProposedRect:nil,context:nil,hints:nil){
+                    entry.loading=nil;entry.row.sprite.removeAllAnimations();CATransaction.begin();CATransaction.setDisableActions(true);entry.row.sprite.contents=cg;entry.row.sprite.contentsRect=CGRect(x:0,y:0,width:1,height:1);CATransaction.commit()
+                    let fade=CATransition();fade.type = .fade;fade.duration=0.22;entry.row.sprite.add(fade,forKey:"ninjaChange")
+                }else if let spec=specs.first(where:{$0.id == pet}),let motion=spec.motions[motion] ?? spec.motions["idle"],let timeline=SpriteTimeline(row:motion.row,rows:spec.rows,columns:motion.columns,durationsMs:motion.durationsMs,loops:motion.loop),let root{
                     let token=UUID();entry.loading=token
                     images.load(spec.sourceURL ?? root.appendingPathComponent(spec.spritesheet)){[weak entry] image in
                         guard let entry,entry.loading == token,let image else{return}
@@ -182,7 +185,7 @@ enum FloatingTaskCorner:String,CaseIterable {
             child.row.layer?.cornerRadius=frame.width/2;child.row.layer?.borderWidth=0.5;child.row.layer?.borderColor=NSColor.white.withAlphaComponent(0.2).cgColor
             child.row.setAccessibilityLabel(task.name);child.row.toolTip=task.name+"\n"+task.text
             child.row.onSingle={ [weak self] in guard let self else{return};self.onOpen?(task,self.preview) };child.row.onDouble={ [weak self] in guard let self else{return};self.onOpen?(task,self.preview) };child.row.onScroll={ [weak self] delta in self?.pageFamily(family,delta:delta) }
-            let pet=self.pets[task.id] ?? specs.first?.id ?? "",motion=["thinking","waiting","permission","question"].contains(task.scene) ? "waiting":"running"
+            let pet=task.ninjaStyle.map{"ninja:"+$0} ?? self.pets[task.id] ?? specs.first?.id ?? "",motion=["thinking","waiting","permission","question"].contains(task.scene) ? "waiting":"running"
             guard child.pet != pet || child.motion != motion else{continue};child.pet=pet;child.motion=motion
             if let spec=specs.first(where:{$0.id==pet}),let animation=spec.motions[motion] ?? spec.motions["idle"],let timeline=SpriteTimeline(row:animation.row,rows:spec.rows,columns:animation.columns,durationsMs:animation.durationsMs,loops:animation.loop),let root{
                 let token=UUID();child.loading=token

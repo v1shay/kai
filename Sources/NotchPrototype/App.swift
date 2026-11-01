@@ -209,6 +209,7 @@ private final class NotchSurfaceHost:NSView {
 @MainActor final class KaiPetApp: NSObject, NSApplicationDelegate, NSTextFieldDelegate, NSTextViewDelegate {
     private var unifiedMenuItems=[NSMenuItem]()
     private let menuBarIdentity=MenuBarIdentityMenu()
+    private var statusContextMenu:NSMenu?,menuQuickAnchor:CGRect?
     private let nativeReview=NativeRequestReview()
     private let inlinePetImages=SpriteAssetCache(maxPixelSize:960)
     private var inlinePetLoading=Set<URL>(),inlinePetVisuals=[String:InlineTaskPet](),lastPetVisualPayload:Data?
@@ -302,6 +303,7 @@ private final class NotchSurfaceHost:NSView {
     private var petFilterItem:NSMenuItem?,explicitTaskPets=Set<String>()
     private var petID = "codex", userPetID = "codex", renderedPetID = "", motionID = "idle", indicatorID = "demo", frame = 0, playToken = 0
     private var compactPetCycle:DispatchWorkItem?,compactPetCycleID:String?
+    private var ninjaSpriteStyle:String?,ninjaFrames=[String:[CGImage]]()
     private var taskPets=[String:String](),focusedTaskID:String?,autoCompact=false
     private let floatingTasks=FloatingTaskPets()
     private var floatingFocus:String?,floatingReviews=[KaiActiveTask]()
@@ -864,7 +866,20 @@ private final class NotchSurfaceHost:NSView {
             .init(title:"Media",items:items([youtubeItem,spotifyItem,mediaSizeItem,mediaPermissionsItem])),
             .init(title:"Advanced & Connections",items:items([codeConnectionItem,experimentalModeItem,morphItem,approvalPreview]))
         ],footer:items([featureStatusItem,quit]))
-        status.menu = menu; refreshChecks()
+        statusContextMenu=menu;status.menu=nil
+        status.button?.target=self;status.button?.action=#selector(menuBarClicked(_:));status.button?.sendAction(on:[.leftMouseUp,.rightMouseUp])
+        refreshChecks()
+    }
+
+    @objc private func menuBarClicked(_ sender:Any?){
+        guard let button=status?.button else{return}
+        if let event=NSApp.currentEvent,event.type == .rightMouseUp || event.modifierFlags.contains(.option){if let menu=statusContextMenu{NSMenu.popUpContextMenu(menu,with:event,for:button)};return}
+        guard EmbeddedCodeRuntime.shared.active else{toggleFromMenu();return}
+        if quickChatVisible,menuQuickAnchor != nil{EmbeddedCodeRuntime.shared.sendAction("quick_dismiss");return}
+        guard let host=button.window else{return};let anchor=host.convertToScreen(button.convert(button.bounds,to:nil));menuQuickAnchor=anchor
+        quickPrepared=(false,anchor,.hidden)
+        let mark=menuBarIdentity.mark
+        bridge.send("menu_bar_open",["kind":mark.kind,"id":mark.id])
     }
 
     @objc private func placePanel(){layoutPanel(present:true)}
@@ -1439,6 +1454,7 @@ private final class NotchSurfaceHost:NSView {
     }
     @objc func workspaceFocusChanged(){
         guard EmbeddedCodeRuntime.shared.active else{return}
+        if menuQuickAnchor != nil,quickChatVisible,!quickMorph.transitioning,!EmbeddedCodeRuntime.shared.isForeground(quickWindow){EmbeddedCodeRuntime.shared.sendAction("quick_dismiss");return}
         let foreground=workspaceIsForeground,returned=workspaceWasForeground == false && foreground
         workspaceWasForeground=foreground
         if workspaceMorph.expanded,!workspaceMorph.transitioning,!quickChatVisible{
@@ -1501,12 +1517,17 @@ private final class NotchSurfaceHost:NSView {
             if !reversing || fromWorkspace{quickReturn=fromWorkspace ? .workspace:prepared?.returnTo ?? (miniOpen && panel.isVisible ? .extended:open && panel.isVisible ? .compact:.hidden)}
             let notchFrame=CGRect(x:panel.frame.midX-(open ? expandedWidth:notchWidth)/2,y:panel.frame.maxY-(open ? popoutHeight:notchHeight),width:open ? expandedWidth:notchWidth,height:open ? popoutHeight:notchHeight)
             let source=prepared?.source ?? (fromWorkspace ? EmbeddedCodeRuntime.shared.workspaceWindow!.frame:(panel.isVisible ? (mask.presentation()?.path ?? mask.path).map{panel.convertToScreen($0.boundingBoxOfPath)} ?? notchFrame:notchFrame))
+            if let anchor=menuQuickAnchor,let screen=window.screen ?? NSScreen.main {
+                let width:CGFloat=min(520,screen.visibleFrame.width-24),height:CGFloat=min(540,screen.visibleFrame.height-24)
+                let x=max(screen.visibleFrame.minX+8,min(anchor.midX-width/2,screen.visibleFrame.maxX-width-8))
+                window.setFrame(CGRect(x:x,y:anchor.minY-height-6,width:width,height:height),display:false)
+            }
             setQuickChatVisible(true)
             if fromWorkspace,let workspace=EmbeddedCodeRuntime.shared.workspaceWindow{
                 workspaceMorph.collapse(workspace,to:window.frame,targetNotch:false,retireContent:true,targetRadius:20,backdrop:false,completion:{})
             }
             if workspaceMorph.transitioning && !workspaceMorph.expanded{workspaceMorph.retireBackdrop()}
-            quickMorph.expand(window,from:source,replay:true,destination:window.frame,sourceNotch:!fromWorkspace,crossfade:true,destinationRadius:20){[weak self] in self?.syncWorkspacePet()}
+            quickMorph.expand(window,from:source,replay:true,destination:window.frame,sourceNotch:!fromWorkspace && menuQuickAnchor == nil,crossfade:true,destinationRadius:20){[weak self] in self?.syncWorkspacePet()}
             // Retire the existing notch through its own morph, while the shared
             // contour carries the boundary into the live mini workspace.
             setOpen(false);dropPanel?.orderOut(nil);syncWorkspacePet()
@@ -1517,6 +1538,10 @@ private final class NotchSurfaceHost:NSView {
             quickPrepared=nil
             quickChatVisible=false
             let destination=quickReturn
+            if let anchor=menuQuickAnchor,destination != .handoff {
+                menuQuickAnchor=nil;quickMorph.collapse(window,to:anchor,retireContent:true,backdrop:false,completion:{[weak self] in self?.restoreWorkspacePet()});floatingTasks.setSuppressed(suppressFloatingTasks);return true
+            }
+            menuQuickAnchor=nil
             if destination == .workspace{
                 revealWorkspace(from:window.frame,sourceIsNotch:false)
             }
@@ -2129,6 +2154,9 @@ private final class NotchSurfaceHost:NSView {
         } else {
             focusedTaskID=nil
         }
+        let focused=state.activeTasks.first(where:{$0.id == (floatingFocus ?? compactPetCycleID ?? state.focusThreadId)})
+        let style=(miniOpen ? state.personalNinja?.style:nil) ?? focused?.ninjaStyle
+        if ninjaSpriteStyle != style{play()}
         syncConversationTheme()
         syncInlinePets()
     }
@@ -2401,7 +2429,24 @@ private final class NotchSurfaceHost:NSView {
         indicator.moveAccents(toBottom:canvasHeight-(bottom ? popoutHeight:notchHeight),expanded:bottom,duration:duration)
     }
 
+    private func showNinjaSprite(style:String){
+        let mark=MenuBarMark(kind:"ninja",id:style,name:"Ninja",style:style)
+        guard let image=MenuBarIdentityMenu.image(mark),let cg=image.cgImage(forProposedRect:nil,context:nil,hints:nil)else{return}
+        let animate=miniOpen && latestState?.personalNinja != nil && workspaceMorph.motionEnabled && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        if animate,ninjaSpriteStyle==style,sprite.animation(forKey:"ninjaLoop") != nil{return}
+        sprite.removeAnimation(forKey:"spriteFrames");sprite.removeAnimation(forKey:"ninjaLoop")
+        ninjaSpriteStyle=style;playToken += 1;CATransaction.begin();CATransaction.setDisableActions(true);sprite.contents=cg;sprite.contentsRect=CGRect(x:0,y:0,width:1,height:1);sprite.isHidden=false;sprite.opacity=1;CATransaction.commit()
+        if animate {
+            if ninjaFrames[style]==nil,let url=Bundle.main.resourceURL?.appendingPathComponent("providers/ninja-"+style+".gif"),let source=CGImageSourceCreateWithURL(url as CFURL,nil){ninjaFrames[style]=(0..<min(12,CGImageSourceGetCount(source))).compactMap{CGImageSourceCreateImageAtIndex(source,$0,nil)}}
+            if let frames=ninjaFrames[style],frames.count>1{let loop=CAKeyframeAnimation(keyPath:"contents");loop.values=frames;loop.duration=Double(frames.count)*0.08;loop.repeatCount = .infinity;loop.calculationMode = .discrete;sprite.add(loop,forKey:"ninjaLoop")}
+        }
+    }
+
     private func play() {
+        let task=latestState?.activeTasks.first(where:{$0.id == (floatingFocus ?? compactPetCycleID ?? latestState?.focusThreadId)})
+        if let ninja=latestState?.personalNinja,miniOpen {showNinjaSprite(style:ninja.style);return}
+        if let style=task?.ninjaStyle{showNinjaSprite(style:style);return}
+        ninjaSpriteStyle=nil;sprite.removeAnimation(forKey:"ninjaLoop")
         guard let pet = catalog.pets.first(where: { $0.id == petID }), let motion = pet.animationOverrides?[motionID] ?? catalog.stateAnimations[motionID] else{return}
         let image:CGImage
         if loadedSpritePetID == petID,let loadedSprite {image=loadedSprite}

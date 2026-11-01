@@ -13,6 +13,7 @@ struct Pending {
     ui: NativeRequest,
 }
 struct Session {
+    computer_access:bool,
     orchestrator:bool,
     identity:bool,
     workspace_tools:HashMap<String,Value>,
@@ -51,6 +52,7 @@ struct VoiceState {
 impl Default for Session {
     fn default() -> Self {
         Self {
+            computer_access:false,
             identity:false,orchestrator:false,workspace_tools:HashMap::new(),
             thread: String::new(),
             turn: String::new(),
@@ -261,16 +263,40 @@ fn input(request: &RunRequest) -> Value {
     );
     Value::Array(values)
 }
-fn turn_params(thread:&str,request:&RunRequest)->Value{json!({"threadId":thread,"input":input(request),"approvalPolicy":request.codex_approvals.policy(),"approvalsReviewer":request.codex_approvals.reviewer(),"effort":request.reasoning_effort,"summary":"detailed","serviceTier":request.service_tier,"sandboxPolicy":request.codex_access.policy(request.allow_edits,&request.project)})}
+// Literal `never` declines all MCP elicitations inside Codex, including app
+// access and questions. Keep shell escalation disabled while delivering those
+// requests to their actual owner; the sandbox itself remains independent.
+fn native_approval_policy(request:&RunRequest)->Value {
+    if request.allow_edits && request.codex_approvals==CodexApprovals::Never {
+        json!({"granular":{"sandbox_approval":false,"rules":false,"skill_approval":false,"request_permissions":false,"mcp_elicitations":true}})
+    } else { json!(request.codex_approvals.policy()) }
+}
+fn computer_app_approval(p:&Value)->bool {
+    let meta=&p["_meta"];
+    matches!(p["serverName"].as_str(),Some("node_repl"|"cua_repl"))
+        && matches!(p["mode"].as_str(),Some("form"|"openai/form"|"openaiForm"))
+        && meta["connector_id"]=="computer-use" && meta["codex_approval_kind"]=="mcp_tool_call"
+        && meta["tool_name"].as_str().is_some_and(|s|!s.is_empty() && s!="start_audio_recording")
+        && meta["tool_params"].as_object().is_some_and(|o|o.len()==1 && o.get("app").and_then(Value::as_str).is_some_and(|s|!s.is_empty()&&s.len()<=512))
+        && p["requestedSchema"]["properties"].as_object().is_none_or(|o|o.is_empty())
+}
+fn turn_params(thread:&str,request:&RunRequest)->Value{json!({"threadId":thread,"input":input(request),"approvalPolicy":native_approval_policy(request),"approvalsReviewer":request.codex_approvals.reviewer(),"effort":request.reasoning_effort,"summary":"detailed","serviceTier":request.service_tier,"sandboxPolicy":request.codex_access.policy(request.allow_edits,&request.project)})}
 fn thread_params(request: &RunRequest) -> Value {
     let mut params = json!({"cwd":request.project,
-        "approvalPolicy":request.codex_approvals.policy(),
+        "approvalPolicy":native_approval_policy(request),
         "approvalsReviewer":request.codex_approvals.reviewer(),
         "sandbox":request.codex_access.sandbox(request.allow_edits),
         "config":{"features.default_mode_request_user_input":true}});
 
+    if request.allow_edits {
+        params["config"]["features"]["computer_use"] = json!(true);
+        params["config"]["computer_use"]["default_app_access"] = json!("allow");
+        params["config"]["sandbox_workspace_write"] = json!({"network_access":true,"exclude_slash_tmp":false,"exclude_tmpdir_env_var":false});
+        params["config"]["apps"]["_default"] = json!({"enabled":true,"open_world_enabled":true,"destructive_enabled":true,"default_tools_approval_mode":if request.codex_approvals==CodexApprovals::Never {"approve"}else{"auto"}});
+    }
+    params["developerInstructions"] = json!("Use the selected workspace and native tools to complete the user's task. Even when ordinary tool approvals are disabled, ask the user before destructive actions (deleting user files, destructive git operations, erasing data), credential or security changes, purchases, or publishing/sending externally unless that exact action is already authorized. Use request_user_input for that confirmation; never treat Never ask as prior authorization for destructive work.");
     params["dynamicTools"]=crate::orchestrator::tools_for_request(request);
-    if request.orchestrator{params["developerInstructions"]=json!(crate::orchestrator::INSTRUCTIONS);}
+    if request.orchestrator{params["developerInstructions"]=json!(format!("{}\n\n{}",params["developerInstructions"].as_str().unwrap_or(""),crate::orchestrator::INSTRUCTIONS));}
     if let Some(tier)=&request.service_tier{params["serviceTier"]=json!(tier);params["config"]["features.fast_mode"]=json!(true);}
     if let Some(effort)=&request.reasoning_effort{params["config"]["model_reasoning_effort"]=json!(effort);}
     if let Some(model) = &request.model {
@@ -565,6 +591,7 @@ fn run_turn(
     record: &mut wire::Record,
 ) -> (bool, Session) {
     let mut state = Session {
+        computer_access:request.allow_edits && request.codex_approvals==CodexApprovals::Never,
         identity:request.identity.is_some(),orchestrator:request.orchestrator,
         maintenance,
         service: Some(service.clone()),
@@ -2315,6 +2342,13 @@ impl Session {
         stdin: &mut std::process::ChildStdin,
         ctx: &NativeContext,
     ) -> Result<()> {
+        if method=="mcpServer/elicitation/request" && self.computer_access && computer_app_approval(p)
+            && p["threadId"].as_str().is_some_and(|id|id==self.thread || self.service.as_ref().is_some_and(|s|s.child(id))) {
+            // Only the native per-app access gate is covered by the user's
+            // editable/Never ask choice. No persistent grant, audio recording,
+            // generic tool confirmation, or user-input form is auto-answered.
+            return write_message(stdin,&ctx.cancelled,&json!({"id":wire_id,"result":{"action":"accept","content":{}}}));
+        }
         if method=="item/tool/call"{
             if p["threadId"].as_str()!=Some(self.thread.as_str()) || !(p["tool"]=="code_workspace"&&self.orchestrator || p["tool"]=="ninja_memory"&&self.identity || p["tool"]=="code_history" || p["tool"]=="code_artifacts") || self.workspace_tools.len()>=16{
                 return write_message(stdin,&ctx.cancelled,&json!({"id":wire_id,"result":{"success":false,"contentItems":[{"type":"inputText","text":"This Code workspace tool is not enabled for this invocation."}]}}));
@@ -2453,7 +2487,7 @@ impl Session {
                 }
             }
             "mcpServer/elicitation/request" => {
-                if p["mode"] == "url" {
+                if p["mode"] == "url" || (p["_meta"]["codex_approval_kind"]=="mcp_tool_call" && p["requestedSchema"]["properties"].as_object().is_none_or(|o|o.is_empty())) {
                     NativeRequestKind::Approval {
                         choices: vec![
                             option("accept", "Continue"),
@@ -3540,6 +3574,45 @@ while sys.stdin.readline(): pass
     }
 
     #[test]
+    fn editable_sessions_enable_native_computer_access_without_changing_read_only(){
+        let mut req=request(std::path::Path::new("/fixture/codex"));req.allow_edits=true;req.codex_approvals=CodexApprovals::Never;
+        let p=thread_params(&req);assert_eq!(p["config"]["computer_use"]["default_app_access"],"allow");assert_eq!(p["config"]["features"]["computer_use"],true);assert_eq!(p["config"]["apps"]["_default"]["default_tools_approval_mode"],"approve");assert!(p["developerInstructions"].as_str().unwrap().contains("destructive"));
+        req.allow_edits=false;let p=thread_params(&req);assert_eq!(p["sandbox"],"read-only");assert!(p["config"].get("computer_use").is_none());
+    }
+    #[test]
+    fn computer_access_does_not_auto_answer_other_tools_audio_or_user_questions(){
+        let p=json!({"serverName":"cua_repl","mode":"form","_meta":{"connector_id":"computer-use","codex_approval_kind":"mcp_tool_call","tool_name":"get_app_state","tool_params":{"app":"com.apple.finder"}},"requestedSchema":{"type":"object","properties":{}}});
+        assert!(computer_app_approval(&p));
+        for (path,value) in [("/serverName",json!("untrusted")),("/_meta/connector_id",json!("mail")),("/_meta/tool_name",json!("start_audio_recording")),("/_meta/tool_params",json!({})),("/requestedSchema",json!({"properties":{"answer":{"type":"string"}}}))] {
+            let mut other=p.clone();
+            if path=="/requestedSchema" { other["requestedSchema"]=value; } else { *other.pointer_mut(path).unwrap()=value; }
+            assert!(!computer_app_approval(&other),"{path}");
+        }
+        let mut req=request(std::path::Path::new("/fixture/codex"));req.allow_edits=true;req.codex_approvals=CodexApprovals::Never;
+        let policy=native_approval_policy(&req);assert_eq!(policy["granular"]["sandbox_approval"],false);assert_eq!(policy["granular"]["mcp_elicitations"],true);
+        req.allow_edits=false;assert_eq!(native_approval_policy(&req),"never");
+    }
+    #[test]
+    fn native_computer_app_gate_is_accepted_but_destructive_question_waits_for_user(){
+        let start=START.replace("assert v['params']['approvalPolicy']=='on-request'","assert v['params']['approvalPolicy']['granular']['mcp_elicitations'] is True").replace("=='read-only'","=='workspace-write'");
+        let path=fixture(&format!(r#"{start}
+send({{'id':'app','method':'mcpServer/elicitation/request','params':{{'threadId':'12345678-1234-4234-8234-123456789012','turnId':'turn-1','serverName':'cua_repl','mode':'form','_meta':{{'connector_id':'computer-use','codex_approval_kind':'mcp_tool_call','tool_name':'get_app_state','tool_params':{{'app':'com.apple.finder'}}}},'requestedSchema':{{'type':'object','properties':{{}}}}}}}})
+v=recv()
+assert v=={{'id':'app','result':{{'action':'accept','content':{{}}}}}},v
+send({{'id':'danger','method':'item/tool/requestUserInput','params':{{'threadId':'12345678-1234-4234-8234-123456789012','turnId':'turn-1','itemId':'danger','questions':[{{'id':'confirm','question':'Delete user files?','options':[{{'label':'No'}}]}}]}}}})
+v=recv()
+assert v['id']=='danger' and v['result']=={{'answers':{{'confirm':{{'answers':['No']}}}}}},v
+send({{'method':'turn/completed','params':{{'threadId':'12345678-1234-4234-8234-123456789012','turn':{{'id':'turn-1','status':'completed'}}}}}})
+"#));
+        let mut req=request(&path);req.allow_edits=true;req.codex_approvals=CodexApprovals::Never;
+        let handle=launch(req).unwrap();let mut asked=false;
+        loop { match handle.events.recv_timeout(Duration::from_secs(5)).unwrap(){
+            RuntimeEvent::Request(r)=>{assert!(!asked);asked=true;assert_eq!(r.method,"item/tool/requestUserInput");handle.respond(&r.id,NativeAnswer::Answers(BTreeMap::from([("confirm".into(),vec!["No".into()])]))).unwrap();},
+            RuntimeEvent::Finished=>break,RuntimeEvent::Failed(e)=>panic!("{e}"),_=>{}
+        }}
+        assert!(asked);assert!(handle.settled.recv_blocking().is_err());std::fs::remove_file(path).unwrap();
+    }
+    #[test]
     fn approval_modes_preserve_the_sandbox_and_enable_native_questions_for_all_thread_paths() {
         for mode in [
             CodexApprovals::Ask,
@@ -3553,7 +3626,7 @@ while sys.stdin.readline(): pass
                     req.allow_edits = edits;
                     req.resume_id = resume.then(|| "12345678-1234-4234-8234-123456789012".into());
                     let params = thread_params(&req);
-                    assert_eq!(params["approvalPolicy"], mode.policy());
+                    assert_eq!(params["approvalPolicy"], native_approval_policy(&req));
                     assert_eq!(params["approvalsReviewer"], mode.reviewer());
                     assert_eq!(
                         params["sandbox"],
@@ -4656,7 +4729,7 @@ time.sleep(30)
       let req=RunRequest{ identity:None, ninja:None,orchestrator:false, service_tier:None,agent:AgentKind::Codex,executable:"/fixture/codex".into(),project:"/fixture/workspace".into(),prompt:"Continue".into(),resume_id:resume.then(||"native".into()),fork_session:false,model:None,reasoning_effort:None,images:vec![],allow_edits:edits,trust_workspace:false,codex_access:access,codex_approvals:approvals};
       let thread=thread_params(&req);let turn=turn_params("native",&req);
       assert_eq!(thread["sandbox"],access.sandbox(edits));assert_eq!(turn["sandboxPolicy"],access.policy(edits,&req.project));
-      assert_eq!(turn["approvalPolicy"],approvals.policy());assert_eq!(thread["approvalPolicy"],approvals.policy());
+      assert_eq!(turn["approvalPolicy"],native_approval_policy(&req));assert_eq!(thread["approvalPolicy"],native_approval_policy(&req));
       assert_eq!(turn["approvalsReviewer"],approvals.reviewer());
       if !edits { assert_eq!(turn["sandboxPolicy"]["type"],"readOnly"); }
      }
@@ -4671,16 +4744,16 @@ time.sleep(30)
  #[test]
  #[ignore="Runs installed Codex command/exec in an isolated temporary workspace"]
  fn installed_codex_enforces_workspace_and_full_access_without_approval_prompts() {
-  let root=std::env::temp_dir().join(format!("kai-access-proof-{}",uuid::Uuid::new_v4()));let project=root.join("workspace");std::fs::create_dir_all(&project).unwrap();
+  let root=PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.build/validation").join(format!("kai-access-proof-{}",uuid::Uuid::new_v4()));let project=root.join("workspace");std::fs::create_dir_all(&project).unwrap();
   for (edits,access,inside_ok,outside_ok) in [(false,CodexAccess::Workspace,false,false),(true,CodexAccess::Workspace,true,false),(true,CodexAccess::Full,true,true)] {
    let inside=project.join("inside.txt");let outside=root.join("outside.txt");let _=std::fs::remove_file(&inside);let _=std::fs::remove_file(&outside);
-   let prompt=format!("/usr/bin/printf inside > '{}'; /usr/bin/printf outside > '{}'; /usr/bin/printf ACCESS_PROBE_DONE",inside.display(),outside.display());
+   let prompt=format!("/usr/bin/printf inside > '{}'; /usr/bin/printf outside > '{}'; if /usr/bin/curl -fsS --connect-timeout 5 --max-time 10 -o /dev/null https://github.com; then /usr/bin/printf NETWORK_OK; else /usr/bin/printf NETWORK_BLOCKED; fi; /usr/bin/printf ACCESS_PROBE_DONE",inside.display(),outside.display());
    let request=RunRequest{ identity:None, ninja:None,orchestrator:false, service_tier:None,agent:AgentKind::Codex,executable:std::env::var("KAI_NATIVE_TEST_EXECUTABLE").unwrap_or_else(|_|"/opt/homebrew/bin/codex".into()).into(),project:project.clone(),prompt,resume_id:None,fork_session:false,model:None,reasoning_effort:None,images:vec![],allow_edits:edits,trust_workspace:false,codex_access:access,codex_approvals:CodexApprovals::Never};
-   let handle=maintenance(request,"command/exec",json!({})).unwrap();let mut finished=false;
+   let handle=maintenance(request,"command/exec",json!({})).unwrap();let mut finished=false;let mut output=String::new();
    while let Ok(event)=handle.events.recv_timeout(Duration::from_secs(20)) {
-    match event {RuntimeEvent::Failed(e)=>panic!("{e}"),RuntimeEvent::Request(_)=>panic!("Never ask unexpectedly raised an approval"),RuntimeEvent::Finished=>{finished=true;break},_=>{}}
+    match event {RuntimeEvent::Text(text)=>output.push_str(&text),RuntimeEvent::Failed(e)=>panic!("{e}"),RuntimeEvent::Request(_)=>panic!("Never ask unexpectedly raised an approval"),RuntimeEvent::Finished=>{finished=true;break},_=>{}}
    }
-   handle.cancel();assert!(finished,"Native terminal did not finish");assert_eq!(inside.is_file(),inside_ok,"Wrong workspace boundary for {access:?}, edits={edits}");assert_eq!(outside.is_file(),outside_ok,"Wrong external boundary for {access:?}");
+   handle.cancel();assert!(finished,"Native terminal did not finish");assert_eq!(output.contains("NETWORK_OK"),edits,"Wrong network permission for {access:?}: {output}");assert_eq!(inside.is_file(),inside_ok,"Wrong workspace boundary for {access:?}, edits={edits}");assert_eq!(outside.is_file(),outside_ok,"Wrong external boundary for {access:?}");
   }
   std::fs::remove_dir_all(root).unwrap();
  }

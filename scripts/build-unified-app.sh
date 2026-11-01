@@ -34,7 +34,7 @@ cp "$root/.build/unified/"*.dylib "$resources/"
 cp -R "$root/Sources/NotchPrototype/Resources/"* "$resources/"
 mkdir -p "$resources/kai_pets" "$resources/providers"
 for provider in codex claude gemini opencode cursor grok antigravity ninja tailscale model-moon model-earth model-sun model-star; do cp "$root/integrations/Code/assets/$provider.svg" "$resources/providers/$provider.svg"; done
-for style in fire lightning earth ice energy water; do cp "$root/integrations/Code/assets/ninja-$style.svg" "$resources/providers/"; done
+for style in fire lightning earth ice energy water; do cp "$root/integrations/Code/assets/ninja-$style.svg" "$root/integrations/Code/assets/ninja-$style.gif" "$resources/providers/"; done
 for mark in "$root"/integrations/Code/assets/{lab,engine,machine}-*.svg; do cp "$mark" "$resources/providers/"; done
 mkdir -p "$resources/skills"
 cp -R "$root/integrations/Code/skills/"* "$resources/skills/"
@@ -64,15 +64,15 @@ for pet in catalog['pets']:
  source=root/'kai_pets'/pet['spritesheet'];target=resources/'kai_pets'/pet['spritesheet']
  target.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(source,target)
 info=plistlib.loads((root/'integrations/Code/scripts/Info.plist').read_bytes())
-info.update(CFBundleName='Kai Unified',CFBundleDisplayName='Kai Unified',CFBundleIdentifier='com.kai.unified.experimental',CFBundleExecutable='kai-unified',CFBundleVersion='68',CFBundleShortVersionString='0.12.31')
+info.update(CFBundleName='Kai Unified',CFBundleDisplayName='Kai Unified',CFBundleIdentifier='com.kai.unified.experimental',CFBundleExecutable='kai-unified',CFBundleVersion='69',CFBundleShortVersionString='0.12.32')
 icon=root/'integrations/Code/assets/Code.icns'
 if icon.exists():shutil.copy2(icon,resources/'Code-Bonsai.icns')
 info['CFBundleURLTypes']=[{'CFBundleURLName':'Kai workspace','CFBundleURLSchemes':['kai']}]
 info['CFBundleDocumentTypes']=[{'CFBundleTypeName':'Folders and source files','CFBundleTypeRole':'Viewer','LSHandlerRank':'Alternate','LSItemContentTypes':['public.folder','public.data']}]
 info['NSServices']=[{'NSMenuItem':{'default':'Open in Kai Unified'},'NSMessage':'openInKai','NSPortName':'Kai Unified','NSSendTypes':['public.file-url'],'NSRequiredContext':{}}]
-info['NSLocalNetworkUsageDescription']='Kai connects to your selected inference machines and persistent Ninja hosts over Tailscale. Assigned remote tasks and explicit workspace handoffs run on your selected host.'
+info['NSLocalNetworkUsageDescription']='Kai connects to your selected inference machines and persistent Ninja hosts over Tailscale. Assigned remote tasks run on your selected host; reference files may be sent with Taildrop.'
 info['NSDownloadsFolderUsageDescription']='Kai imports local pet packs and the workspace handoffs you explicitly send through Taildrop.'
-info['NSAppleEventsUsageDescription']='Kai reads Spotify playback status for its optional idle media display.'
+info['NSAppleEventsUsageDescription']='Kai uses app automation for tasks you authorize and optional media controls.'
 (product/'Contents/Info.plist').write_bytes(plistlib.dumps(info))
 PY
 python3 "$root/scripts/build-app-intents.py" "$resources/libKaiNotch.dylib" "$resources"

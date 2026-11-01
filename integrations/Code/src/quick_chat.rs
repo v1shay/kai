@@ -245,7 +245,11 @@ impl QuickChat {
     pub(super) fn is_visible(&self) -> bool {
         self.visible
     }
+    fn focus_composer(&self,window:&mut Window,cx:&mut Context<Self>){
+        let app=self.orbit.read(cx);let input=app.ninjas.panel.as_ref().filter(|p|p.profile.revision>0).map(|p|p.fields[3].clone()).unwrap_or_else(||self.composer.clone());input.read(cx).focus_handle.focus(window);
+    }
     fn sync_to_main(&mut self, cx: &mut Context<Self>) {
+        if self.orbit.read(cx).ninjas.panel.as_ref().is_some_and(|p|p.profile.revision>0){return}
         let text = self.composer.read(cx).text();
         let caret=self.composer.read(cx).command_caret();
         let main = self.orbit.read(cx).composer.clone();
@@ -284,7 +288,7 @@ impl QuickChat {
         unified::quick_visibility(true);
         window.activate_window();
         cx.activate(true);
-        self.composer.read(cx).focus_handle.focus(window);
+        self.focus_composer(window,cx);
         cx.notify();
     }
     pub(super) fn hide(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -316,7 +320,7 @@ impl QuickChat {
         self.orbit.update(cx, |app, cx| {
             app.send(window, cx);
         });
-        self.composer.read(cx).focus_handle.focus(window);
+        self.focus_composer(window,cx);
         self.sync_from_main(cx);
     }
     fn escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -332,7 +336,7 @@ impl QuickChat {
                 app.dismiss_action_menu();
                 cx.notify();
             });
-            self.composer.read(cx).focus_handle.focus(window);
+            self.focus_composer(window,cx);
         } else {
             self.hide(window, cx);
         }
@@ -370,9 +374,9 @@ impl Render for QuickChat {
         if !self.orbit.read(cx).work_animations.is_empty()||!self.orbit.read(cx).interaction_animations.is_empty(){let anchor=self.transcript_scroll.logical_scroll_top();self.transcript_scroll.reset(self.orbit.read(cx).rows.len());self.transcript_scroll.scroll_to(anchor);}
         // Legacy workspace helpers focus their own composer after selection.
         // Redirect only that handle; search/model/permission fields keep focus.
-        let main_focus = self.orbit.read(cx).composer.read(cx).focus_handle.clone();
+        let app=self.orbit.read(cx);let source=app.ninjas.panel.as_ref().filter(|p|p.profile.revision>0).map(|p|p.fields[3].clone()).unwrap_or_else(||app.composer.clone());let main_focus=source.read(cx).focus_handle.clone();
         if main_focus.is_focused(window) {
-            self.composer.read(cx).focus_handle.focus(window);
+            self.focus_composer(window,cx);
         }
         native::apply_appearance(window, &self.orbit.read(cx).effective_appearance());
         native::apply_theme(window, &self.orbit.read(cx).resolved_theme);
@@ -398,13 +402,17 @@ impl Render for QuickChat {
             .on_action(cx.listener(|this, _: &CloseWindow, window, cx| this.hide(window, cx)))
             .on_action(cx.listener(|this, _: &Send, window, cx| this.submit(window, cx)))
             .on_action(cx.listener(|this, action: &keyboard::Execute, window, cx| {
-                if action.id=="composer"{this.composer.read(cx).focus_handle.focus(window);}else{this.sync_to_main(cx);this.orbit.update(cx,|app,cx|app.execute_shortcut(&action.id,window,cx));this.sync_from_main(cx);}
+                if action.id=="composer"{this.focus_composer(window,cx);}else{this.sync_to_main(cx);this.orbit.update(cx,|app,cx|app.execute_shortcut(&action.id,window,cx));this.sync_from_main(cx);}
             }))
             .on_action(cx.listener(|this, _: &NewConversation, window, cx| {
                 this.orbit
-                    .update(cx, |app, cx| app.new_conversation(window, cx));
+                    .update(cx, |app, cx| {
+                        if let Some(owner)=app.ninja_surface_owner() {
+                            if let Err(error)=app.ninja_surface_command(&serde_json::json!({"action":"new","ownerToken":owner}),window,cx){app.notice=Some(error);}
+                        } else { app.new_conversation(window, cx); }
+                    });
                 this.sync_from_main(cx);
-                this.composer.read(cx).focus_handle.focus(window);
+                this.focus_composer(window,cx);
             }))
             .on_action(cx.listener(|this, _: &ToggleSearch, window, cx| {
                 this.orbit

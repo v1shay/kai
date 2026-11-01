@@ -36,7 +36,13 @@ objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std
 objc2-quartz-core = { version = "=0.3.2", default-features = false, features = ["std", "CALayer", "objc2-core-graphics"] }
 objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSString", "NSArray", "NSValue", "NSGeometry"] }
 
+# MIT native RFB/ARD transport; pinned, no browser, proxy or host agent.
+rv-session = { git = "https://github.com/madeye/rv", rev = "87055e205fa88803213337846b4d2f59a7a525ee" }
+rv-core = { git = "https://github.com/madeye/rv", rev = "87055e205fa88803213337846b4d2f59a7a525ee" }
+smallvec = "1"
+
 [dev-dependencies]
+rv-session = { git = "https://github.com/madeye/rv", rev = "87055e205fa88803213337846b4d2f59a7a525ee", features = ["test-support"] }
 gpui = { version = "=0.2.2", features = ["test-support"] }
 
 [profile.release]

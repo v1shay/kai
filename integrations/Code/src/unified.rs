@@ -340,6 +340,7 @@ impl Orbit {
     pub(super) fn unified_token(&self) -> String {
         // Composer edits have their own exact draft-base check. They must not
         // invalidate navigation/model commands before the parent observes input.
+        if let Some(owner)=self.ninja_surface_owner(){return owner;}
         format!("{}:{}:{}:{}",self.active.clone().unwrap_or_else(||format!("draft-{}",self.generation)),self.project.display(),self.generation,self.agent.command())
     }
 
@@ -413,6 +414,7 @@ impl Orbit {
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
         let action = request["action"].as_str().ok_or("Missing action")?;
+        if self.ninja_surface_command(request,window,cx)? { return Ok(()); }
         if self.ninja_remote_command(request,window,cx)? { return Ok(()); }
         let default_model = if matches!(action, "new" | "new_project") {
             if let Some(model) = request["defaultModel"].as_str() {
@@ -938,7 +940,7 @@ impl Orbit {
         snapshot["contextWindow"]=json!(self.context_usage().map(|(used,limit)|json!({"used":used,"limit":limit,"fraction":(used as f64/limit as f64).clamp(0.,1.)})));
         if self.agent==AgentKind::Ninja{let selection=self.ninja_selection();snapshot["selectedModel"]=json!(selection.model);snapshot["ninja"]=json!({"selection":selection,"machines":self.ninja.machines,"progress":self.ninja.progress,"error":self.ninja.error,"loading":!self.ninja.pending.is_empty(),"canCancel":self.ninja.download_cancel.is_some()});}
         snapshot["fastMode"]=json!(self.fast_enabled());snapshot["fastSupported"]=json!(self.fast_supported());snapshot["usageSummary"]=json!(self.usage_summary());snapshot["usageWindows"]=json!(self.usage_windows().iter().map(|w|json!({"label":w.window_title().unwrap_or_else(||w.label.clone()),"remaining":w.remaining_text(),"fraction":((100.-w.used_percent)/100.).clamp(0.,1.),"reset":w.resets_at.and_then(|t|chrono::DateTime::from_timestamp(t,0)).map(|t|format!("Resets {}",t.with_timezone(&chrono::Local).format("%b %-d at %-I:%M %p")))})).collect::<Vec<_>>());snapshot["usageAccount"]=json!(self.controls.get(self.agent.command()).and_then(|(_,c)|c.account.clone()));snapshot["usageUpdated"]=json!(self.controls.get(self.agent.command()).map(|(at,_)|format!("Updated {}s ago",at.elapsed().as_secs())));
-        snapshot["workspaceVoiceError"]=json!(self.voice_error);snapshot["historyEarlier"]=json!(self.unified_history_end.as_ref().is_some_and(|(owner,_)|owner==&self.unified_token()) || self.history_offset>0 || self.navigation_history);snapshot["approvalCount"]=json!(self.unified_pending_ids().len()+self.ninjas.snapshots.values().flat_map(|s|s["tasks"].as_array().into_iter().flatten()).map(|t|t["requests"].as_array().map_or(0,Vec::len)).sum::<usize>());snapshot["workspaceMotion"]=json!(self.motion);snapshot["workspaceTextMorph"]=json!(self.unified_text_morph);snapshot
+        snapshot["workspaceVoiceError"]=json!(self.voice_error);snapshot["historyEarlier"]=json!(self.unified_history_end.as_ref().is_some_and(|(owner,_)|owner==&self.unified_token()) || self.history_offset>0 || self.navigation_history);snapshot["approvalCount"]=json!(self.unified_pending_ids().len()+self.ninjas.snapshots.values().flat_map(|s|s["tasks"].as_array().into_iter().flatten()).map(|t|t["requests"].as_array().map_or(0,Vec::len)).sum::<usize>());snapshot["workspaceMotion"]=json!(self.motion);snapshot["workspaceTextMorph"]=json!(self.unified_text_morph);self.ninja_surface_snapshot(&mut snapshot,cx);snapshot
 
     }
     fn unified_detail_id(&self,index:usize)->Option<String>{

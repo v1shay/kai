@@ -11,7 +11,7 @@ Personal Ninjas are durable identities in the sidebar, separate from the Ninja i
 
 The worker reuses the normal native providers, including their shell, editing, MCP and delegation mechanisms. It is not a second chatbot implementation. Native requests retain their task, request ID, and delegated child owner; they can be answered through Kai's existing notch approval/question controls.
 
-**Full access** and **Never ask** are separate controls. Read-only remains read-only. For Codex, Full + Never sends danger-full-access + never. For Claude, explicit editable Full + Never selects bypassPermissions; read-only still removes its mutating built-ins. Other providers keep their native permission protocol.
+**Full access** and **Never ask** are separate controls. Read-only remains read-only. For Codex, Full + Never sends danger-full-access with shell escalation disabled. MCP elicitations remain deliverable: the native Computer Use per-app gate is covered by the editable/Never choice; user questions are not auto-answered. For Claude, explicit editable Full + Never selects bypassPermissions; read-only still removes its mutating built-ins. Other providers keep their native permission protocol.
 
 ## Remote operation
 
@@ -37,13 +37,36 @@ The bounded startup snapshot is supplied through realtime V3 `initialItems`, wit
 
 SDP offers/answers live only in the worker's bounded in-memory signaling buffer, never the persisted UI snapshot or task record. Calls use a cursor-based revision long-poll. A lost client expires its signaling lease after 90 seconds; disconnected calls end without canceling independently assigned background work. Closing the panel does not hang up. End call flushes the native transcript; spoken corrections replace partial segments, with a bounded durable transcript for later context.
 
-**Computer** opens Apple's native Screen Sharing app at the selected host's Tailscale address. Its native video stream and Observe/Control modes are used; video is not embedded in Kai's message card. macOS Screen Sharing must be enabled on the host, with the account authorized there. Tailscale network membership does not replace macOS's screen-sharing authentication.
+**Computer** opens an embedded native RFB/Apple Remote Desktop viewer inside Kai. The client uses the pinned MIT RV session engine and the host's existing Screen Sharing service over Tailscale. There is no browser canvas, WebSocket proxy, separate Screen Sharing app, or additional host streaming daemon. Enter the host macOS account in the in-app login form; passwords are ephemeral secure fields, never saved with a Ninja or its drafts. Tailscale membership does not replace host authentication.
 
-**Take over** first persists a hold for this Ninja, stops its active tasks, and waits for native startup/tools to settle, then opens Screen Sharing. Queued work stays queued. **Resume Ninja** releases the hold. Holds survive worker restarts. Other Ninjas are unaffected.
+The viewer starts in **Watch** mode. It sends no keyboard, mouse, clipboard, or release events in that mode and does not pause the Ninja. **Take over** persists a hold for the selected Ninja, stops its active tasks, waits for native tools to settle, and only then enables input in the existing viewer connection. **Watch** releases held keys/buttons and disables input; it does not silently resume work. Close the viewer and use **Resume Ninja** to release the queue hold. Other Ninjas are unaffected. Closing/changing the owning surface drops the viewer session. Frame events are coalesced, and framebuffer copies happen off the UI thread; no desktop pixels are persisted.
+
+## Shared native surfaces
+
+Saved personal Ninjas supply their own owner token, conversation, model, permission state, draft, and submit/stop path to the extended notch. Their history is distinct from the underlying Code chat. Native menu-bar clicks open the selected identity in the existing mini Code surface, anchored to the menu-bar item; click again or click away to collapse it. Right-click or Option-click retains the settings menu. The selected provider opens its current/recent chat; a pinned personal Ninja opens its own conversation.
+
+Activity uses the Ninja's character rather than the user's selected pet, including the floating task view. Six generated transparent pixel-art GIF loops are reused in Code, mini Code and the extended notch. The native thinking shimmer uses each Ninja's color, and message text uses the existing bounded glyph decode animation. GIF assets total under 200 KiB, are cached, and are replaced with a static character under Reduced Motion. Personal drafts are kept separately from ordinary Code drafts.
+
+## Workspace and app permissions
+
+Editable Workspace mode allows shell tools, network requests, and normal system temporary-directory use, while retaining its selected-directory write root. Read only and Full access remain explicit separate choices. Never ask changes approval policy, not the filesystem scope. Editable native Codex sessions enable app tools; Never ask authorizes ordinary app tools without artificial prompt rejection. The developer instructions still require confirmation for destructive operations, credential/security changes, and external publishing/sending unless the exact action was already authorized. Native questions are never auto-answered by the worker. Literal Codex `never` also declines MCP app approvals internally, so the native adapter uses granular policy with shell escalation off and MCP elicitations on. Only the exact native node_repl/cua_repl Computer Use per-app approval is automatically accepted for editable/Never sessions; audio capture, other tools, and forms with user fields are excluded. This grant is not persisted globally.
+
+macOS privacy grants (Accessibility, Screen Recording, protected folders) and provider authentication remain native OS/account boundaries. These are not overridden by a prompt or sandbox setting.
 
 ## Reference files
 
 **Send reference** uses Taildrop for explicitly selected files. It appends their host Downloads names to the message draft. It does not transfer a local project, change the Ninja's workspace, or make laptop files its execution root. The old workspace-import RPC and handoff button are retired. Protected host folders keep their normal macOS permission requirements.
+
+## Verification for 0.12.32
+
+- Native RFB/ARD login received an actual 2560x1440 Studio framebuffer, view-only, with no input sent and no screen pixels saved.
+- Viewer tests verify letterbox coordinates and that Observe/Watch cannot emit input, including blur/close release paths.
+- Real installed Codex command/exec checks verify Read only, Workspace directory writes plus GitHub HTTPS, and Full access, all with Never ask and no model inference.
+- The updated Studio worker passed a real Codex Workspace/Never task using shell, GitHub HTTPS, file write/read, and native Finder Computer Use inspection with no ordinary approval prompts. A separate native question remained pending for an explicit answer; no deletion was requested or performed.
+- The final signed startup and idle probes passed. Isolated compact idle measured approximately 1.7% CPU by process-time delta, 250 MiB RSS and 13 threads; the desktop viewer allocates its connection runtime only when opened.
+- Ninja bridge tests verify its exact history/draft owner and stale-surface rejection without changing the underlying Code draft.
+- All six generated GIFs decode to twelve transparent frames and remain below 40 KiB each.
+- Native Swift menu identity tests and packaged startup checks are rerun. Manual motion review is not claimed.
 
 ## Verification for 0.12.31
 

@@ -16,8 +16,10 @@ pub(super) struct State {
     pub watching: HashSet<String>,
     pub panel: Option<Panel>,
     pub errors: HashMap<String, String>,
+    pub drafts: HashMap<String,String>,
     pub started: bool,
     pub call: Option<crate::ninja_call_ui::Call>,
+    pub desktop: Option<Entity<crate::remote_desktop::RemoteDesktop>>,
 }
 pub(super) struct Panel {
     pub host: String,
@@ -35,8 +37,10 @@ pub(super) struct Panel {
     pub messages: Vec<Value>,
     pub history_loading: bool,
     pub models_requested: bool,
+    pub models_loading:Option<uuid::Uuid>,
     pub history_owner: Option<String>,
     pub effort_preview: Option<(String, Instant)>,
+    pub decode: std::cell::RefCell<crate::text_decode::TextDecode>,
     pub at: Instant,
     pub token: uuid::Uuid,
 }
@@ -72,10 +76,11 @@ impl State {
         Self {
             hosts,
             snapshots: serde_json::from_value(value["snapshots"].clone()).unwrap_or_default(),
+            drafts:serde_json::from_value::<HashMap<String,String>>(value["drafts"].clone()).unwrap_or_default().into_iter().filter(|(k,v)|k.len()<512 && v.len()<=input::MAX_DRAFT_BYTES).take(24).collect(),
             ..Default::default()
         }
     }
-    fn save(&self) {
+    pub(super) fn save(&self) {
         if cfg!(test) {
             return;
         }
@@ -112,7 +117,7 @@ impl State {
             });
             (pending, tx)
         });
-        *pending.lock().unwrap() = Some(json!({"hosts":self.hosts,"snapshots":self.snapshots}));
+        *pending.lock().unwrap() = Some(json!({"hosts":self.hosts,"snapshots":self.snapshots,"drafts":self.drafts}));
         let _ = wake.try_send(());
     }
     pub fn menu_identities(&self) -> Vec<Value> {
@@ -147,7 +152,7 @@ impl State {
                     .flatten()
                     .find(|p| p["id"] == t["profile"]);
                 let name = p.and_then(|p| p["name"].as_str()).unwrap_or("Ninja");
-                out.push(json!({"id":format!("ninja:{}:{}",h.id,t["id"].as_str().unwrap_or("")),"runId":t["id"],"scene":if reconnecting{"thinking"}else{task_scene(t)},"text":if reconnecting{format!("{name} · Reconnecting to {}",h.name)}else{format!("{name} · {}",t["status"].as_str().unwrap_or("Working"))},"name":name,"agent":"ninja"}));
+                out.push(json!({"id":format!("ninja:{}:{}",h.id,t["id"].as_str().unwrap_or("")),"runId":t["id"],"scene":if reconnecting{"thinking"}else{task_scene(t)},"text":if reconnecting{format!("{name} · Reconnecting to {}",h.name)}else{format!("{name} · {}",t["status"].as_str().unwrap_or("Working"))},"name":name,"agent":"ninja","ninjaStyle":p.and_then(|p|p["style"].as_str()).unwrap_or("fire")}));
             }
         }
         if let Some(call) = &self.call {
@@ -173,7 +178,7 @@ impl State {
                     }
                 ));
             } else {
-                out.push(json!({"id":id.unwrap_or_else(||format!("ninja-call:{}",call.session)),"runId":call.session,"scene":call.scene(),"name":call.name,"text":format!("{} · Calling…",call.name),"agent":"ninja"}));
+                out.push(json!({"id":id.unwrap_or_else(||format!("ninja-call:{}",call.session)),"runId":call.session,"scene":call.scene(),"name":call.name,"text":format!("{} · Calling…",call.name),"agent":"ninja","ninjaStyle":call.style}));
             }
         }
         out
@@ -383,7 +388,7 @@ fn bubble(user: bool, text: String, style: &str) -> Div {
                 .child(text),
         )
 }
-fn task_scene(task: &Value) -> &'static str {
+pub(super) fn task_scene(task: &Value) -> &'static str {
     match task["state"].as_str().unwrap_or("") {
         "approval" => "permission",
         "completed" => "success",
@@ -514,7 +519,7 @@ impl Orbit {
         Ok(true)
     }
 
-    fn ninja_screen(&mut self, take_over: bool, cx: &mut Context<Self>) {
+    fn ninja_screen(&mut self, take_over: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(p) = self.ninjas.panel.as_ref() else {
             return;
         };
@@ -530,13 +535,11 @@ impl Orbit {
         let Some(address) = host_address(&host).map(str::to_owned) else {
             return;
         };
-        if !take_over {
-            if let Err(e) = native::open_screen_sharing(&address) {
-                self.notice = Some(e);
-            }
-            return;
-        }
+        let username=self.ninjas.snapshots.get(&host.id).and_then(|v|v["home"].as_str()).and_then(|s|s.rsplit('/').next()).unwrap_or("").to_owned();
         let id = p.profile.id.clone();
+        let desktop=self.ninjas.desktop.clone().unwrap_or_else(||cx.new(|cx|crate::remote_desktop::RemoteDesktop::new(address,host.name.clone(),username,window,cx)));
+        self.ninjas.desktop=Some(desktop.clone());
+        if !take_over {cx.notify();return;}
         self.ninjas.call.take();
         cx.spawn(async move |this, cx| {
             let result = cx
@@ -546,9 +549,7 @@ impl Orbit {
             let _ = this.update(cx, |app, cx| {
                 match result {
                     Ok(_) => {
-                        if let Err(e) = native::open_screen_sharing(&address) {
-                            app.notice = Some(e);
-                        }
+                        desktop.update(cx,|view,cx|view.controlling(true,cx));
                     }
                     Err(e) => app.notice = Some(e.to_string()),
                 }
@@ -752,6 +753,8 @@ impl Orbit {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.remember_ninja_draft(cx);
+        self.ninjas.desktop=None;
         if self.ninjas.panel.as_ref().is_some_and(|p| {
             (profile.is_none()
                 && p.profile.revision == 0
@@ -759,7 +762,7 @@ impl Orbit {
                 || (host.as_deref() == Some(p.host.as_str())
                     && profile.as_deref() == Some(p.profile.id.as_str()))
         }) {
-            self.ninjas.panel = None;
+            self.ninjas.desktop=None;self.ninjas.panel = None;
             cx.notify();
             return;
         }
@@ -873,11 +876,14 @@ impl Orbit {
             messages: vec![],
             history_loading: false,
             models_requested: false,
+            models_loading:None,
             history_owner: None,
             effort_preview,
+            decode:Default::default(),
             at: Instant::now(),
             token: uuid::Uuid::new_v4(),
         });
+        if let Some(p)=&self.ninjas.panel {let key=format!("{}:{}:{}",p.host,p.profile.id,p.chat.as_deref().unwrap_or("draft"));if let Some(draft)=self.ninjas.drafts.get(&key){p.fields[3].update(cx,|input,cx|input.set_text(draft,cx));}}
         self.modal = None;
         self.agent_picker = None;
         self.overlay_window = Some(window.window_handle().window_id());
@@ -919,7 +925,7 @@ impl Orbit {
         .detach();
         cx.notify();
     }
-    fn ninja_conversation(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn ninja_conversation(&mut self, cx: &mut Context<Self>) {
         let Some(p) = &mut self.ninjas.panel else {
             return;
         };
@@ -993,7 +999,8 @@ impl Orbit {
         let captured_agent = panel.profile.agent;
         let captured_model = panel.profile.ninja.as_ref().map(|n| n.model.clone());
         let action = request["action"].as_str().unwrap_or("").to_owned();
-        panel.busy = true;
+        let model_owner=(action=="models").then(uuid::Uuid::new_v4);
+        if let Some(owner)=model_owner{panel.models_loading=Some(owner);}else{panel.busy=true;}
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
@@ -1003,7 +1010,7 @@ impl Orbit {
                 let Some(panel) = app.ninjas.panel.as_mut().filter(|p| p.token == token) else {
                     return;
                 };
-                panel.busy = false;
+                if let Some(owner)=model_owner{if panel.models_loading!=Some(owner){return}panel.models_loading=None;}else{panel.busy=false;}
                 match result {
                     Ok(value) => {
                         app.ninjas.errors.remove(&panel.host);
@@ -1069,7 +1076,7 @@ impl Orbit {
                                 panel.task = Some(value);
                             }
                             "delete_profile" => {
-                                app.ninjas.panel = None;
+                                app.remember_ninja_draft(cx);app.ninjas.desktop=None;app.ninjas.panel = None;
                             }
                             _ => {}
                         }
@@ -1081,6 +1088,7 @@ impl Orbit {
                 if matches!(action.as_str(), "task" | "submit") {
                     app.ninja_conversation(cx);
                 }
+                if action == "save_profile" && app.ninjas.panel.as_ref().is_some_and(|p|!p.models_requested){app.ninja_load_models(cx);}
                 if action == "memory"
                     && app
                         .ninjas
@@ -1118,7 +1126,7 @@ impl Orbit {
         let p = panel.profile.clone();
         self.ninja_operation(json!({"action":"save_profile","profile":p}), cx);
     }
-    fn ninja_submit_task(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn ninja_submit_task(&mut self, cx: &mut Context<Self>) {
         if self
             .ninjas
             .panel
@@ -1240,14 +1248,7 @@ impl Orbit {
                             .hover(|v| v.bg(rgba(GLASS_HOVER)))
                             .cursor_pointer()
                             .child(avatar(p["style"].as_str().unwrap_or("fire"), 24.))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.))
-                                    .truncate()
-                                    .text_size(theme::ui_px(12.))
-                                    .child(name),
-                            )
+                            .child(crate::ninja_art::nameplate(name,p["style"].as_str().unwrap_or("fire"),active,self.motion && !native::reduced_motion() && cx.active_window().is_some()))
                             .when(active, |v| {
                                 let task = self.ninjas.snapshots[&host]["tasks"]
                                     .as_array()
@@ -1279,9 +1280,18 @@ impl Orbit {
             .into_any_element()
     }
     pub(super) fn ninjas_panel(&self, window: &Window, cx: &Context<Self>) -> AnyElement {
+        let compact = f32::from(window.viewport_size().width) < 640.;
         let Some(p) = &self.ninjas.panel else {
             return div().into_any_element();
         };
+        if let Some(desktop)=&self.ninjas.desktop {
+            return div().absolute().inset_0().p_4().bg(rgba(appearance::MENU_SURFACE)).flex().flex_col().gap_2()
+                .child(div().flex().gap_2()
+                    .child(chip("desktop-observe","Watch",false,cx,|app,_,cx|{if let Some(v)=&app.ninjas.desktop{v.update(cx,|v,cx|v.controlling(false,cx));}}))
+                    .child(chip("desktop-takeover","Take over",false,cx,|app,w,cx|app.ninja_screen(true,w,cx)))
+                    .child(chip("desktop-close","Close viewer",false,cx,|app,_,cx|{app.ninjas.desktop=None;cx.notify();})))
+                .child(desktop.clone()).into_any_element();
+        }
         let progress = if !self.motion || native::reduced_motion() {
             1.
         } else {
@@ -1666,11 +1676,13 @@ impl Orbit {
             .flatten()
             .find(|v| v["id"] == p.profile.id)
             .is_some_and(|v| v["held"] == true);
+        let empty=tasks.is_empty();
         let mut work = div()
             .flex()
             .flex_col()
             .gap_2()
             .min_w(px(0.))
+            .when(empty,|v|v.child(div().flex().justify_center().child(crate::ninja_art::art(&p.profile.style,80.,self.motion && !native::reduced_motion() && window.is_window_active()))))
             .child(
                 div()
                     .flex()
@@ -1682,7 +1694,7 @@ impl Orbit {
                             .flex()
                             .items_center()
                             .gap_2()
-                            .child(avatar(&p.profile.style, 28.))
+                            .child(crate::ninja_art::art(&p.profile.style,28.,self.motion && !native::reduced_motion() && window.is_window_active()))
                             .child(if p.profile.name.is_empty() {
                                 "New Ninja".to_owned()
                             } else {
@@ -1692,7 +1704,7 @@ impl Orbit {
                     .when(p.profile.revision > 0, |s| {
                         s.child(marked_chip(
                             "ninja-call",
-                            if self.ninjas.call.is_some() {
+                            if compact { "" } else if self.ninjas.call.is_some() {
                                 "End call"
                             } else {
                                 "Call"
@@ -1715,15 +1727,15 @@ impl Orbit {
                                 icon("machine-desktop", 16., TEXT),
                                 false,
                                 cx,
-                                |app, _, cx| app.ninja_screen(false, cx),
+                                |app, w, cx| app.ninja_screen(false, w, cx),
                             ))
-                            .child(chip(
+                            .when(!compact, |s| s.child(chip(
                                 "ninja-take-over",
                                 "Take over",
                                 false,
                                 cx,
-                                |app, _, cx| app.ninja_screen(true, cx),
-                            ))
+                                |app, w, cx| app.ninja_screen(true, w, cx),
+                            )))
                         },
                     )
                     .child(chip(
@@ -1811,6 +1823,10 @@ impl Orbit {
                             .or_else(|| t["brief"].as_str())
                             .unwrap_or("")
                             .to_owned();
+                        let brief=if self.motion && self.unified_text_morph && !native::reduced_motion(){
+                            use std::hash::{Hash,Hasher};let mut hash=std::collections::hash_map::DefaultHasher::new();id.hash(&mut hash);
+                            let (frame,active)=p.decode.borrow_mut().frame(hash.finish() as usize,&brief,Instant::now());if active{request_motion_frame(window,cx);}frame
+                        }else{brief};
                         let state = t["state"].as_str().unwrap_or("");
                         let running = ["running", "approval", "queued"].contains(&state);
                         let scene = task_scene(&t);
@@ -2030,8 +2046,8 @@ impl Orbit {
                 cx,
                 |app, _, cx| app.ninja_submit_task(cx),
             ));
-        let width = (f32::from(window.viewport_size().width) - 48.).clamp(520., 1060.);
-        let height = (f32::from(window.viewport_size().height) - 64.).clamp(380., 850.);
+        let width = (f32::from(window.viewport_size().width) - 24.).clamp(280., 1060.);
+        let height = (f32::from(window.viewport_size().height) - 24.).clamp(280., 850.);
         let host_name = self
             .ninjas
             .hosts
@@ -2048,7 +2064,7 @@ impl Orbit {
             .justify_center()
             .bg(rgba(0x00000035))
             .on_click(cx.listener(|app, _, _, cx| {
-                app.ninjas.panel = None;
+                app.remember_ninja_draft(cx);app.ninjas.desktop=None;app.ninjas.panel = None;
                 cx.notify();
             }))
             .child(
@@ -2121,7 +2137,7 @@ impl Orbit {
                                 false,
                                 cx,
                                 |app, _, cx| {
-                                    app.ninjas.panel = None;
+                                    app.remember_ninja_draft(cx);app.ninjas.desktop=None;app.ninjas.panel = None;
                                     cx.notify();
                                 },
                             )),
@@ -2150,7 +2166,7 @@ impl Orbit {
                                     div()
                                         .id("ninja-persona-fields")
                                         .debug_selector(|| "ninja-persona-fields".into())
-                                        .w(px((width - 48.) * 0.45))
+                                        .w(px(if compact { width - 32. } else { (width - 48.) * 0.45 }))
                                         .flex_none()
                                         .min_w(px(0.))
                                         .p_3()
@@ -2163,7 +2179,7 @@ impl Orbit {
                                         .child(setup),
                                 )
                             })
-                            .child(
+                            .when(!p.settings || !compact, |body| body.child(
                                 work.id("ninja-work-card")
                                     .debug_selector(|| "ninja-work-card".into())
                                     .flex_1()
@@ -2173,7 +2189,7 @@ impl Orbit {
                                     .border_1()
                                     .border_color(rgba(0xffffff14))
                                     .bg(rgba(GLASS_SURFACE)),
-                            ),
+                            )),
                     ),
             )
             .into_any_element()

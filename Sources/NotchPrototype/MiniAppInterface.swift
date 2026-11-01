@@ -660,7 +660,7 @@ private final class AttachmentLayer:CALayer {
         let title=state.threadId == nil ? "Choose a chat" : (state.threadName.isEmpty ? "Chat" : state.threadName)
         let focus=state.activeTasks.first(where:{$0.id == state.threadId})
         let percent=(state.threadId?.hasPrefix("code:") == true ? nil:state.rateLimitRemainingPercent).map{" · \($0)%"} ?? ""
-        let name=title
+        let name=state.personalNinja.map{_ in "Ninja · "+title} ?? title
         let selectedApproval=state.approval && (state.approvalThreadId == nil || state.approvalThreadId == state.threadId)
         let activityText=selectedApproval ? "Approval needed" : (state.viewedActivity.scene == "off" ? "" : state.viewedActivity.text)
         let shownReadOnly=state.readOnly && (focus == nil || focus?.id == state.threadId)

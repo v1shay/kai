@@ -1,6 +1,9 @@
 mod ninjas;
 mod ninjas_ui;
 mod ninja_call_ui;
+mod ninja_surfaces;
+mod ninja_art;
+mod remote_desktop;
 mod ninja;
 mod ninja_ui;
 mod agent_controls;
@@ -2848,6 +2851,10 @@ impl Orbit {
         }
     }
     fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.ninja_surface_owner().is_some() {
+            self.ninja_submit_task(cx);
+            return;
+        }
         if self.queue_editing.is_some() {
             self.save_queued_edit(cx);
             return;

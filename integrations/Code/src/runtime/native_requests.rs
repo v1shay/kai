@@ -19,7 +19,7 @@ impl CodexAccess {
     pub fn policy(self, edits: bool, project: &std::path::Path) -> Value {
         if !edits { serde_json::json!({"type":"readOnly","networkAccess":false}) }
         else if self == Self::Full { serde_json::json!({"type":"dangerFullAccess"}) }
-        else { serde_json::json!({"type":"workspaceWrite","writableRoots":[project],"networkAccess":false,"excludeSlashTmp":true,"excludeTmpdirEnvVar":true}) }
+        else { serde_json::json!({"type":"workspaceWrite","writableRoots":[project],"networkAccess":true,"excludeSlashTmp":false,"excludeTmpdirEnvVar":false}) }
     }
 }
 
@@ -99,4 +99,9 @@ pub enum NativeControl {
         method: String,
         params: Value,
     },
+}
+
+#[cfg(test)]mod permission_tests{
+    use super::*;
+    #[test]fn editable_workspace_has_network_and_build_temp_without_losing_its_write_root(){let p=std::path::Path::new("/selected/project");let value=CodexAccess::Workspace.policy(true,p);assert_eq!(value["type"],"workspaceWrite");assert_eq!(value["writableRoots"],serde_json::json!([p]));assert_eq!(value["networkAccess"],true);assert_eq!(value["excludeSlashTmp"],false);assert_eq!(CodexAccess::Workspace.policy(false,p)["networkAccess"],false);assert_eq!(CodexAccess::Full.policy(true,p)["type"],"dangerFullAccess");}
 }
