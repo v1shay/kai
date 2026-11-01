@@ -231,7 +231,7 @@ impl Orbit {
         };
         // A resumed team member must keep the harness that owns its native ID.
         // Explicit composer harness changes use the normal context handoff path.
-        let request = RunRequest { ninja:(member.agent==AgentKind::Ninja).then(||{let bound=session.external_id.as_ref().and_then(|_|self.ninja.bound.get(&session.id));let mut s=bound.or_else(||self.ninja.chats.get(&session.id)).unwrap_or(&self.ninja.draft).clone();if let Some(model)=&member.model{s.model=model.clone()}s.thinking=member.reasoning_effort.clone().or(s.thinking);s}), orchestrator:false, service_tier:None, reasoning_effort:member.reasoning_effort.clone(),
+        let request = RunRequest { identity:None, ninja:(member.agent==AgentKind::Ninja).then(||{let bound=session.external_id.as_ref().and_then(|_|self.ninja.bound.get(&session.id));let mut s=bound.or_else(||self.ninja.chats.get(&session.id)).unwrap_or(&self.ninja.draft).clone();if let Some(model)=&member.model{s.model=model.clone()}s.thinking=member.reasoning_effort.clone().or(s.thinking);s}), orchestrator:false, service_tier:None, reasoning_effort:member.reasoning_effort.clone(),
             agent: member.agent,
             executable,
             project: team.project.clone(),

@@ -167,7 +167,7 @@ impl Orbit {
             .execution_path
             .clone()
             .unwrap_or_else(|| session.project_path.clone());
-        let request = RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
+        let request = RunRequest { identity:None, ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
             agent: AgentKind::Codex,
             executable,
             project,
@@ -292,7 +292,7 @@ impl Orbit {
             .execution_path
             .clone()
             .unwrap_or_else(|| session.project_path.clone());
-        let request = RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
+        let request = RunRequest { identity:None, ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
             agent: AgentKind::Codex,
             executable,
             project,
@@ -361,7 +361,7 @@ impl Orbit {
         else {
             return false;
         };
-        let request = RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
+        let request = RunRequest { identity:None, ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
             agent: AgentKind::Codex,
             executable,
             project: session

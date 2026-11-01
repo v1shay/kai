@@ -38,8 +38,10 @@ for mark in "$root"/integrations/Code/assets/{lab,engine,machine}-*.svg; do cp "
 mkdir -p "$resources/skills"
 cp -R "$root/integrations/Code/skills/"* "$resources/skills/"
 cp "$root/kai_speech.py" "$resources/"
+cp "$root/integrations/Code/native_helpers/kai_inference_stream.py" "$resources/"
 cp "$root/integrations/Code/native_helpers/kai_ninja.py" "$resources/"
 cp "$root/integrations/Code/native_helpers/kai_ninja_host.py" "$resources/"
+cp "$root/integrations/Code/native_helpers/kai_ninja_handoff.py" "$resources/"
 cp "$root/integrations/Code/native_helpers/kai_workspace_mcp.py" "$resources/"
 cp "$root/integrations/Code/native_helpers/kai_remote.py" "$resources/"
 cp "$root/integrations/Code/native_helpers/kai_agy_hook.py" "$resources/"
@@ -61,14 +63,14 @@ for pet in catalog['pets']:
  source=root/'kai_pets'/pet['spritesheet'];target=resources/'kai_pets'/pet['spritesheet']
  target.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(source,target)
 info=plistlib.loads((root/'integrations/Code/scripts/Info.plist').read_bytes())
-info.update(CFBundleName='Kai Unified',CFBundleDisplayName='Kai Unified',CFBundleIdentifier='com.kai.unified.experimental',CFBundleExecutable='kai-unified',CFBundleVersion='64',CFBundleShortVersionString='0.12.27')
+info.update(CFBundleName='Kai Unified',CFBundleDisplayName='Kai Unified',CFBundleIdentifier='com.kai.unified.experimental',CFBundleExecutable='kai-unified',CFBundleVersion='65',CFBundleShortVersionString='0.12.28')
 icon=root/'integrations/Code/assets/Code.icns'
 if icon.exists():shutil.copy2(icon,resources/'Code-Bonsai.icns')
 info['CFBundleURLTypes']=[{'CFBundleURLName':'Kai workspace','CFBundleURLSchemes':['kai']}]
 info['CFBundleDocumentTypes']=[{'CFBundleTypeName':'Folders and source files','CFBundleTypeRole':'Viewer','LSHandlerRank':'Alternate','LSItemContentTypes':['public.folder','public.data']}]
 info['NSServices']=[{'NSMenuItem':{'default':'Open in Kai Unified'},'NSMessage':'openInKai','NSPortName':'Kai Unified','NSSendTypes':['public.file-url'],'NSRequiredContext':{}}]
-info['NSLocalNetworkUsageDescription']='Kai connects to your selected Tailscale or local inference machines. Workspace files and coding tools stay on this Mac.'
-info['NSDownloadsFolderUsageDescription']='Kai discovers and imports the local pet packs you download.'
+info['NSLocalNetworkUsageDescription']='Kai connects to your selected inference machines and persistent Ninja hosts over Tailscale. Assigned remote tasks and explicit workspace handoffs run on your selected host.'
+info['NSDownloadsFolderUsageDescription']='Kai imports local pet packs and the workspace handoffs you explicitly send through Taildrop.'
 info['NSAppleEventsUsageDescription']='Kai reads Spotify playback status for its optional idle media display.'
 (product/'Contents/Info.plist').write_bytes(plistlib.dumps(info))
 PY

@@ -413,6 +413,7 @@ impl Orbit {
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
         let action = request["action"].as_str().ok_or("Missing action")?;
+        if self.ninja_remote_command(request,window,cx)? { return Ok(()); }
         let default_model = if matches!(action, "new" | "new_project") {
             if let Some(model) = request["defaultModel"].as_str() {
                 if !self.unified_models().iter().any(|m|m.id==model)
@@ -706,8 +707,8 @@ impl Orbit {
                 let access=request["access"].as_str();let approvals=request["approvals"].as_str();
                 if access.is_some_and(|value|!["read-only","workspace","full"].contains(&value)){return Err("Unknown workspace access".into())}
                 if approvals.is_some_and(|value|!["ask","auto-review","never"].contains(&value)){return Err("Unknown approval policy".into())}
-                if self.agent!=AgentKind::Codex && (access==Some("full") || approvals.is_some()){return Err("These controls apply to Codex workspace access and approvals".into())}
-                if let Some(access)=access{self.allow_edits=access!="read-only";if self.agent==AgentKind::Codex{self.codex_access=if access=="full"{runtime::CodexAccess::Full}else{runtime::CodexAccess::Workspace};}}
+                if !matches!(self.agent,AgentKind::Codex|AgentKind::Ninja) && (access==Some("full") || approvals.is_some()){return Err("These controls apply to Codex workspace access and approvals".into())}
+                if let Some(access)=access{self.allow_edits=access!="read-only";if matches!(self.agent,AgentKind::Codex|AgentKind::Ninja){self.codex_access=if access=="full"{runtime::CodexAccess::Full}else{runtime::CodexAccess::Workspace};}}
                 if let Some(policy)=approvals{self.codex_approvals=match policy{"ask"=>runtime::CodexApprovals::Ask,"auto-review"=>runtime::CodexApprovals::AutoReview,_=>runtime::CodexApprovals::Never};}
                 self.queue_workspace_save(cx);
             },
@@ -821,7 +822,7 @@ impl Orbit {
             if let Some(host) = host.borrow_mut().as_mut() {
                 let finished:Vec<_>=self.unified_successes.iter().filter(|(id,epoch)|!host.reported_successes.iter().any(|(seen,run)|seen==id&&run==epoch) && !self.finalizing.contains(id) && !self.settling.contains_key(id)).cloned().collect();
                 for event in &finished{if host.reported_successes.len()>=128{host.reported_successes.pop_front();}host.reported_successes.push_back(event.clone());}
-                let finished:Vec<_>=finished.iter().map(|(id,run)|json!({"id":if id.starts_with("child:"){id.clone()}else{format!("code:{id}")},"runId":run,"parentId":self.orchestrator_parent(id)})).collect();
+                let finished:Vec<_>=finished.iter().map(|(id,run)|json!({"id":if id.starts_with("child:")||id.starts_with("ninja:"){id.clone()}else{format!("code:{id}")},"runId":run,"parentId":self.orchestrator_parent(id)})).collect();
                 if !finished.is_empty() {
                     if std::env::args().any(|arg|arg=="--unified-orchestrator-probe"){eprintln!("KAI_ORCHESTRATOR_FINISHED {finished:?}");}
                     host.finished = finished;
@@ -873,6 +874,7 @@ impl Orbit {
             if parent.is_none(){continue}
             tasks.push(json!({"id":child_id(child),"name":child.name.clone().unwrap_or_else(||format!("{} · {}",child.provider.name(),short(&child.id,10))),"runId":child.turn_id.clone().unwrap_or_else(||child.id.clone()),"scene":if child.requests.is_empty(){"thinking"}else{"permission"},"text":if child.preview.is_empty(){child.task.as_deref().or(child.scope.as_deref()).unwrap_or("")}else{&child.preview},"agent":child.provider.command(),"parentId":parent}));
         }
+        tasks.extend(self.ninjas.active());
         let selected=self.active.as_ref().map(|id|format!("code:{id}"));
         tasks.sort_by_key(|t|{let urgent=matches!(t["scene"].as_str(),Some("permission"|"question"));let current=t["id"].as_str()==selected.as_deref()||t["parentId"].as_str()==selected.as_deref();(!urgent,!current,t["id"].as_str().unwrap_or("").to_owned())});
         let approval = self.unified_pending();
@@ -918,11 +920,14 @@ impl Orbit {
             "notice":self.notice.as_deref().unwrap_or("Kai · Code"),"attachments":self.attachments.iter().filter(|a|!self.attachment_removals.contains_key(&a.id)).map(|a|a.path.to_string_lossy().into_owned()).collect::<Vec<_>>(),"modelsLoading":self.controls_pending.contains(self.agent.command()),"models":models.iter().map(|m|json!({"model":m.id,"displayName":m.label,"resolvedModel":self.controls.get(self.agent.command()).and_then(|(_,v)|v.defaults.aliases.get(&m.id)).unwrap_or(&m.id),"supportedReasoningEfforts":m.reasoning_efforts.iter().map(|v|json!({"reasoningEffort":v})).collect::<Vec<_>>()})).collect::<Vec<_>>(),
             "selectedModel":self.model,"reasoningEffort":self.unified_effort().unwrap_or(""),"canGoBack":!self.unified_back.is_empty(),"canGoForward":!self.unified_forward.is_empty(),
             "agents":self.agents.iter().map(|a|json!({"id":a.kind.command(),"name":a.kind.name(),"available":a.available&&a.executable.is_some()})).collect::<Vec<_>>(),"selectedAgent":self.agent.command(),"workspaceVoiceChoice":self.voice_choice,"workspaceVoiceActive":self.voice_call.is_some(),"workspaceVoiceScene":self.voice_call.as_ref().map(|v|v.scene())});
+        if approval.is_none(){let review=self.ninjas.review();if !review.is_null(){
+            snapshot["approval"]=json!(true);snapshot["approvalThreadId"]=review["owner"].clone();snapshot["approvalRequestId"]=review["token"].clone();snapshot["approvalSummary"]=review["title"].clone();snapshot["focusThreadId"]=review["owner"].clone();snapshot["nativeReview"]=review;
+        }}
         snapshot["slashCommands"]=self.unified_slash_commands();
         snapshot["interfaceFont"]=json!(self.theme.ui_font);snapshot["codeFont"]=json!(self.theme.mono_font);
         snapshot["borderlessComposer"]=json!(self.theme.borderless_composer);
         snapshot["horizontalAgentPicker"]=json!(self.theme.horizontal_agent_picker);
-        snapshot["workspaceAccess"]=json!(if !self.allow_edits{"read-only"}else if self.agent!=AgentKind::Codex{"native"}else if self.codex_access==runtime::CodexAccess::Full{"full"}else{"workspace"});
+        snapshot["workspaceAccess"]=json!(if !self.allow_edits{"read-only"}else if !matches!(self.agent,AgentKind::Codex|AgentKind::Ninja){"native"}else if self.codex_access==runtime::CodexAccess::Full{"full"}else{"workspace"});
         snapshot["workspaceApprovalPolicy"]=json!(match self.codex_approvals{runtime::CodexApprovals::Ask=>"ask",runtime::CodexApprovals::AutoReview=>"auto-review",runtime::CodexApprovals::Never=>"never"});
         snapshot["workspaceExecutionPath"]=json!(self.execution_root().unwrap_or_else(||self.project.clone()));
         snapshot["providerDefaultModel"]=json!(self.provider_default_model());snapshot["effectiveModel"]=json!(effective_model);snapshot["effectiveReasoningEffort"]=json!(effective_effort);snapshot["voiceModel"]=json!(self.voice_call.as_ref().map(|_|voice::REALTIME_MODEL));
@@ -932,7 +937,7 @@ impl Orbit {
         snapshot["contextWindow"]=json!(self.context_usage().map(|(used,limit)|json!({"used":used,"limit":limit,"fraction":(used as f64/limit as f64).clamp(0.,1.)})));
         if self.agent==AgentKind::Ninja{let selection=self.ninja_selection();snapshot["selectedModel"]=json!(selection.model);snapshot["ninja"]=json!({"selection":selection,"machines":self.ninja.machines,"progress":self.ninja.progress,"error":self.ninja.error,"loading":!self.ninja.pending.is_empty(),"canCancel":self.ninja.download_cancel.is_some()});}
         snapshot["fastMode"]=json!(self.fast_enabled());snapshot["fastSupported"]=json!(self.fast_supported());snapshot["usageSummary"]=json!(self.usage_summary());snapshot["usageWindows"]=json!(self.usage_windows().iter().map(|w|json!({"label":w.window_title().unwrap_or_else(||w.label.clone()),"remaining":w.remaining_text(),"fraction":((100.-w.used_percent)/100.).clamp(0.,1.),"reset":w.resets_at.and_then(|t|chrono::DateTime::from_timestamp(t,0)).map(|t|format!("Resets {}",t.with_timezone(&chrono::Local).format("%b %-d at %-I:%M %p")))})).collect::<Vec<_>>());snapshot["usageAccount"]=json!(self.controls.get(self.agent.command()).and_then(|(_,c)|c.account.clone()));snapshot["usageUpdated"]=json!(self.controls.get(self.agent.command()).map(|(at,_)|format!("Updated {}s ago",at.elapsed().as_secs())));
-        snapshot["workspaceVoiceError"]=json!(self.voice_error);snapshot["historyEarlier"]=json!(self.unified_history_end.as_ref().is_some_and(|(owner,_)|owner==&self.unified_token()) || self.history_offset>0 || self.navigation_history);snapshot["approvalCount"]=json!(self.unified_pending_ids().len());snapshot["workspaceMotion"]=json!(self.motion);snapshot["workspaceTextMorph"]=json!(self.unified_text_morph);snapshot
+        snapshot["workspaceVoiceError"]=json!(self.voice_error);snapshot["historyEarlier"]=json!(self.unified_history_end.as_ref().is_some_and(|(owner,_)|owner==&self.unified_token()) || self.history_offset>0 || self.navigation_history);snapshot["approvalCount"]=json!(self.unified_pending_ids().len()+self.ninjas.snapshots.values().flat_map(|s|s["tasks"].as_array().into_iter().flatten()).map(|t|t["requests"].as_array().map_or(0,Vec::len)).sum::<usize>());snapshot["workspaceMotion"]=json!(self.motion);snapshot["workspaceTextMorph"]=json!(self.unified_text_morph);snapshot
 
     }
     fn unified_detail_id(&self,index:usize)->Option<String>{
@@ -946,7 +951,7 @@ impl Orbit {
         let mut hash=std::collections::hash_map::DefaultHasher::new();title.hash(&mut hash);details.hash(&mut hash);
         Some(format!("{index}-{:016x}",hash.finish()))
     }
-    fn unified_history(&self) -> Vec<Value> {
+    pub(super) fn unified_history(&self) -> Vec<Value> {
         let mut history = Vec::new();
         let flow=self.transcript_flow();
         let mut role = "assistant".to_owned();

@@ -434,7 +434,7 @@ impl Orbit {
             .ok_or_else(|| anyhow::anyhow!("Codex is unavailable"))?;
         let settings=&self.voice_call.as_ref().unwrap().settings;
         let orchestrator=self.orchestrator_chats.contains(&id)||self.active.is_none()&&self.orchestrator_new;
-        let request = RunRequest { ninja:None, orchestrator, service_tier:self.request_service_tier(), reasoning_effort:settings.effort.clone(),
+        let request = RunRequest { identity:None, ninja:None, orchestrator, service_tier:self.request_service_tier(), reasoning_effort:settings.effort.clone(),
             agent: AgentKind::Codex,
             executable,
             project: project.clone(),

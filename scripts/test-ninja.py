@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Protocol/authorization tests, real loopback HTTP; no credentials or model needed."""
-import contextlib, importlib.util, json, pathlib, tempfile, threading, types, unittest, urllib.request, urllib.error
+import sys, contextlib, importlib.util, json, pathlib, tempfile, threading, types, unittest, urllib.request, urllib.error
 ROOT=pathlib.Path(__file__).resolve().parents[1]
 def load(name):
- spec=importlib.util.spec_from_file_location(name,ROOT/'integrations/Code/native_helpers'/('kai_ninja'+('' if name=='gateway' else '_host')+'.py'));m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m);return m
+ sys.path.insert(0,str(ROOT/'integrations/Code/native_helpers'));spec=importlib.util.spec_from_file_location(name,ROOT/'integrations/Code/native_helpers'/('kai_ninja'+('' if name=='gateway' else '_host')+'.py'));m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m);return m
 G,H=load('gateway'),load('host')
 class Fixture(G.http.server.BaseHTTPRequestHandler):
  def log_message(self,*a):pass

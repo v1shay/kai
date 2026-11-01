@@ -2899,7 +2899,7 @@ fn failed_run(agent: AgentKind, project: PathBuf, error: &str) -> Running {
     run.handle = RunHandle::test_events(vec![RuntimeEvent::Failed(error.into())]);
     run.agent = agent;
     run.submitted_prompt = "Original submitted prompt".into();
-    run.retry = Some(RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
+    run.retry = Some(RunRequest { identity:None, ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
         agent,
         executable: agent.command().into(),
         project,

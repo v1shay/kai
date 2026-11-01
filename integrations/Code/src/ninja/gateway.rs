@@ -49,6 +49,7 @@ impl GatewayLease {
             fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
             let script = root.join("bridge.py");
             private_write(&script, include_bytes!("../../native_helpers/kai_ninja.py"))?;
+            private_write(&root.join("kai_inference_stream.py"),include_bytes!("../../native_helpers/kai_inference_stream.py"))?;
             let ready = root.join("ready");
             let token = format!(
                 "{}{}",

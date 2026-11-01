@@ -270,7 +270,7 @@ impl Orbit {
     fn toolbar_permission_label(&self) -> &'static str {
         if !self.allow_edits {
             "Read only"
-        } else if self.agent == AgentKind::Codex && self.codex_access == runtime::CodexAccess::Full
+        } else if matches!(self.agent,AgentKind::Codex|AgentKind::Ninja) && self.codex_access == runtime::CodexAccess::Full
         {
             "Full access"
         } else {
@@ -507,8 +507,8 @@ impl Orbit {
                 THINKING => self.thinking_chip_adaptive(window, cx, plan.detail[i]),
                 FAST => self.fast_button(window, cx),
                 PERMISSIONS => {
-                    let color = if !self.allow_edits { 0xd5dce5 } else if self.agent == AgentKind::Codex && self.codex_access == runtime::CodexAccess::Full { 0xff7d75 } else { 0xffb86b };
-                    let glyph=if !self.allow_edits {"lock-keyhole"} else if self.agent==AgentKind::Codex && self.codex_access==runtime::CodexAccess::Full {"lock-keyhole-open"} else {"shield"};
+                    let color = if !self.allow_edits { 0xd5dce5 } else if matches!(self.agent,AgentKind::Codex|AgentKind::Ninja) && self.codex_access == runtime::CodexAccess::Full { 0xff7d75 } else { 0xffb86b };
+                    let glyph=if !self.allow_edits {"lock-keyhole"} else if matches!(self.agent,AgentKind::Codex|AgentKind::Ninja) && self.codex_access==runtime::CodexAccess::Full {"lock-keyhole-open"} else {"shield"};
                     div().id(if quick { "quick-permissions" } else { "mode" })
                         .debug_selector(move || if quick { "quick-permissions".into() } else { "mode".into() })
                         .w_full().h(px(28.)).flex().items_center().justify_center().rounded_md().cursor_pointer()

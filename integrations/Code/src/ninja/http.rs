@@ -114,7 +114,7 @@ pub fn command_json(path: &Path, args: &[&str], timeout: Duration) -> Result<Val
     c.args(args);
     serde_json::from_slice(&run(c, None, timeout)?).context("Invalid device inventory")
 }
-fn run(mut command: Command, input: Option<&[u8]>, timeout: Duration) -> Result<Vec<u8>> {
+pub(crate) fn run(mut command: Command, input: Option<&[u8]>, timeout: Duration) -> Result<Vec<u8>> {
     let mut child = command
         .stdin(if input.is_some() {
             Stdio::piped()

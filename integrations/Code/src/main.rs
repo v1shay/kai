@@ -1,3 +1,5 @@
+mod ninjas;
+mod ninjas_ui;
 mod ninja;
 mod ninja_ui;
 mod agent_controls;
@@ -570,6 +572,7 @@ impl ListReveal {
     }
 }
 struct Orbit {
+    ninjas:ninjas_ui::State,
     ninja:ninja_ui::State,
     remote:remote_host::State,
     performance:performance::Tracker,
@@ -1148,6 +1151,7 @@ impl Orbit {
             });
         }));
         Self {
+            ninjas:ninjas_ui::State::restore(),
             remote:Default::default(),performance:Default::default(),artifact_index:vec![],recent_results:restored.as_ref().map(|s|s.recent_results.clone()).unwrap_or_default(),workflows:restored.as_ref().map(|s|s.workflows.clone()).unwrap_or_default(),workflow_dir:data.clone(),
             unified_text_morph:restored.as_ref().is_none_or(|s|s.text_morph),
             final_history_load:None,
@@ -3095,7 +3099,7 @@ impl Orbit {
             }
         };
         let context_scope = self.context_scope();
-        let request = RunRequest { ninja:(self.agent==AgentKind::Ninja).then(||self.ninja_selection()), orchestrator:self.orchestrator_active(), service_tier:self.request_service_tier(), reasoning_effort:self.request_effort(),
+        let request = RunRequest { identity:None, ninja:(self.agent==AgentKind::Ninja).then(||self.ninja_selection()), orchestrator:self.orchestrator_active(), service_tier:self.request_service_tier(), reasoning_effort:self.request_effort(),
             agent: self.agent,
             executable,
             project: execution_path.clone(),
@@ -4022,6 +4026,7 @@ impl Orbit {
                     ),
             )
             .when(self.theme.github_widget,|s|s.child(self.github_widget(cx)))
+            .child(self.ninjas_sidebar(cx))
             .child(
                 div()
                     .px_2()
@@ -5380,6 +5385,7 @@ impl Orbit {
 }
 impl Render for Orbit {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !self.ninjas.started {self.ninjas.started=true;let hosts=self.ninjas.hosts.iter().filter(|h|self.ninjas.snapshots.get(&h.id).is_some_and(|v|v["profiles"].as_array().is_some_and(|p|!p.is_empty()))).cloned().collect::<Vec<_>>();for host in hosts{self.start_ninja_watch(host,cx);}}
         let _render_span=performance::Span::new("root_render");
         self.performance_ready(window);
         self.attach_daily_entry_points(cx);
@@ -6101,6 +6107,7 @@ impl Render for Orbit {
                                 .child(div().flex_1().min_h(px(0.)).child(review)),
                         ).into_any_element(),window,cx)))
             })
+            .when(self.ninjas.panel.is_some() && self.owns_overlays(window),|s|s.child(self.ninjas_panel(window,cx)))
             .when(self.github.panel.is_some() && self.owns_overlays(window),|s|s.child(self.github_panel_view(window,cx)))
             .when(self.attachment_preview.is_some(), |s| {
                 s.child(self.attachment_preview_view(window, cx))
@@ -6176,6 +6183,8 @@ fn bind_app_keys(cx: &mut App) {
 
 mod failure_diagnostics;
 fn main() {
+    if std::env::args().any(|a|a=="--install-ninja-worker") { if let Err(e)=ninjas::install_service(&std::env::current_exe().unwrap(),std::env::args().any(|a|a=="--keep-reachable")){eprintln!("Ninja service: {e:#}");std::process::exit(1)}return }
+    if std::env::args().any(|a|a=="--ninja-worker"){if let Err(e)=ninjas::serve(){eprintln!("Ninja worker: {e:#}");std::process::exit(1)}return}
     launch_metrics::start();
     failure_diagnostics::install();
     if std::env::args().any(|a|a=="--diagnose-native-voice"){if let Err(error)=voice::transport_diagnostic(){eprintln!("Native voice diagnostic: {error}");std::process::exit(1)}return}

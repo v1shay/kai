@@ -5,6 +5,7 @@ No tools execute here. Codex/Claude retain execution, MCP, approvals and history
 Routes are per chat, immutable, private files; upstream credentials are never
 inherited from a cloud harness. No retries after sending a generation request.
 """
+from kai_inference_stream import lines as inference_lines
 import argparse, base64, contextlib, hmac, http.server, json, os, pathlib
 import secrets, socket, threading, time, urllib.request, urllib.error, urllib.parse, uuid, re
 import ssl, subprocess, sys
@@ -239,6 +240,7 @@ def generation(body, route, anthropic=False):
     limit = body.get('max_tokens', body.get('max_output_tokens'))
     if route['engine']=='ollama':
         payload['options']={'num_ctx':route['context'],**sampling}
+        payload['keep_alive']='2m'
         if body.get('stop_sequences'):payload['options']['stop']=body['stop_sequences']
         if limit: payload['options']['num_predict']=int(limit)
         if route.get('thinking') is not None:
@@ -357,67 +359,71 @@ class Handler(http.server.BaseHTTPRequestHandler):
             try:
                 url,payload,custom=generation(body,route,a)
                 req=urllib.request.Request(url,dumps(payload).encode(),{'Content-Type':'application/json'},method='POST')
-                with OPENER.open(req,timeout=300) as upstream:
-                    if streaming:
-                        self.send_response(200);self.send_header('Content-Type','text/event-stream');self.send_header('Cache-Control','no-cache');self.send_header('Connection','close');self.end_headers();self.close_connection=True;begun=True
-                    stream=Stream(self,a)
-                    if not streaming:stream.event=lambda *args,**kwargs:None
-                    stream.start(route['model']);calls={};done=False
-                    tool_text=QwenToolText(route['model'],payload.get('tools',[]),stream.delta)
-                    while True:
-                        line=upstream.readline(MAX_LINE+1)
-                        if not line:break
-                        if len(line)>MAX_LINE:raise ValueError('Inference event exceeds 8 MiB')
-                        if route['engine']=='ollama':
-                            v=json.loads(line);m=v.get('message',{})
-                            if v.get('error'):raise ValueError(str(v['error']))
-                            stream.delta(m.get('thinking',''),True);tool_text.feed(m.get('content',''))
-                            for i,c in enumerate(m.get('tool_calls',[])):
-                                f=c['function'];name=f['name'];args=f.get('arguments',{})
-                                if isinstance(args,str):args=json.loads(args)
-                                stream.tool(len(stream.calls),name,str(args.get('input','')) if name in custom and not a else dumps(args),name in custom and not a,c.get('id'))
-                            if v.get('done'):
-                                stream.usage={'input_tokens':v.get('prompt_eval_count',0),'output_tokens':v.get('eval_count',0)};done=True
-                        else:
-                            if not line.startswith(b'data:'):continue
-                            raw=line[5:].strip()
-                            if raw==b'[DONE]':done=True;break
-                            v=json.loads(raw)
-                            if v.get('error'):raise ValueError(str(v['error']))
-                            if v.get('usage'):stream.usage={'input_tokens':v['usage'].get('prompt_tokens',0),'output_tokens':v['usage'].get('completion_tokens',0)}
-                            for choice in v.get('choices',[]):
-                                d=choice.get('delta',{});stream.delta(d.get('reasoning_content') or d.get('reasoning') or '',True);tool_text.feed(d.get('content') or '')
-                                for c in d.get('tool_calls',[]):
-                                    i=c.get('index',0);old=calls.setdefault(i,{'name':'','args':'','id':None})
-                                    old['name']+=c.get('function',{}).get('name','');old['args']+=c.get('function',{}).get('arguments','');old['id']=c.get('id') or old['id']
-                                if choice.get('finish_reason'):done=True
-                    if not done: raise ValueError('Inference stream ended without a completion event')
-                    for name,args in tool_text.finish(bool(stream.calls or calls)):
-                        is_custom=name in custom and not a
-                        stream.tool(len(stream.calls),name,args.get('input','') if is_custom else dumps(args),is_custom)
-                    for i,c in calls.items():
-                        args=c['args'];is_custom=c['name'] in custom and not a
-                        if is_custom:args=json.loads(args).get('input','')
-                        stream.tool(i,c['name'],args,is_custom,c['id'])
-                    stream.finish()
-                    if not streaming:
-                        if a:
-                            blocks=[]
-                            for ix,item in enumerate(stream.items):
-                                if item['type']=='reasoning':blocks.append({'type':'thinking','thinking':stream.thinking})
-                                elif item['type']=='message':blocks.append({'type':'text','text':stream.text})
-                                else:
-                                    _,_,args=next(v for v in stream.calls.values() if v[0]==ix)
-                                    blocks.append({'type':'tool_use','id':item['call_id'],'name':item['name'],'input':json.loads(args)})
-                            self.json(200,{'id':stream.id,'type':'message','role':'assistant','model':route['model'],'content':blocks,'stop_reason':'tool_use' if stream.calls else 'end_turn','stop_sequence':None,'usage':stream.usage})
-                        else:self.json(200,stream.response('completed'))
+                if streaming:
+                    self.send_response(200);self.send_header('Content-Type','text/event-stream');self.send_header('Cache-Control','no-cache');self.send_header('Connection','close');self.end_headers();self.close_connection=True;begun=True
+                stream=Stream(self,a)
+                if not streaming:stream.event=lambda *args,**kwargs:None
+                stream.start(route['model']);calls={};done=False
+                tool_text=QwenToolText(route['model'],payload.get('tools',[]),stream.delta)
+                for line in inference_lines(OPENER,req):
+                    if not line.strip() or line.startswith(b':'):
+                        if streaming:self.wfile.write(b': inference keepalive\n\n');self.wfile.flush()
+                        continue
+                    if len(line)>MAX_LINE:raise ValueError('Inference event exceeds 8 MiB')
+                    if route['engine']=='ollama':
+                        v=json.loads(line);m=v.get('message',{})
+                        if v.get('error'):raise ValueError(str(v['error']))
+                        stream.delta(m.get('thinking',''),True);tool_text.feed(m.get('content',''))
+                        for i,c in enumerate(m.get('tool_calls',[])):
+                            f=c['function'];name=f['name'];args=f.get('arguments',{})
+                            if isinstance(args,str):args=json.loads(args)
+                            stream.tool(len(stream.calls),name,str(args.get('input','')) if name in custom and not a else dumps(args),name in custom and not a,c.get('id'))
+                        if v.get('done'):
+                            stream.usage={'input_tokens':v.get('prompt_eval_count',0),'output_tokens':v.get('eval_count',0)};done=True
+                    else:
+                        if not line.startswith(b'data:'):continue
+                        raw=line[5:].strip()
+                        if raw==b'[DONE]':done=True;break
+                        v=json.loads(raw)
+                        if v.get('error'):raise ValueError(str(v['error']))
+                        if v.get('usage'):stream.usage={'input_tokens':v['usage'].get('prompt_tokens',0),'output_tokens':v['usage'].get('completion_tokens',0)}
+                        for choice in v.get('choices',[]):
+                            d=choice.get('delta',{});stream.delta(d.get('reasoning_content') or d.get('reasoning') or '',True);tool_text.feed(d.get('content') or '')
+                            for c in d.get('tool_calls',[]):
+                                i=c.get('index',0);old=calls.setdefault(i,{'name':'','args':'','id':None})
+                                old['name']+=c.get('function',{}).get('name','');old['args']+=c.get('function',{}).get('arguments','');old['id']=c.get('id') or old['id']
+                            if choice.get('finish_reason'):done=True
+                if not done: raise ValueError('Inference stream ended without a completion event')
+                for name,args in tool_text.finish(bool(stream.calls or calls)):
+                    is_custom=name in custom and not a
+                    stream.tool(len(stream.calls),name,args.get('input','') if is_custom else dumps(args),is_custom)
+                for i,c in calls.items():
+                    args=c['args'];is_custom=c['name'] in custom and not a
+                    if is_custom:args=json.loads(args).get('input','')
+                    stream.tool(i,c['name'],args,is_custom,c['id'])
+                stream.finish()
+                if not streaming:
+                    if a:
+                        blocks=[]
+                        for ix,item in enumerate(stream.items):
+                            if item['type']=='reasoning':blocks.append({'type':'thinking','thinking':stream.thinking})
+                            elif item['type']=='message':blocks.append({'type':'text','text':stream.text})
+                            else:
+                                _,_,args=next(v for v in stream.calls.values() if v[0]==ix)
+                                blocks.append({'type':'tool_use','id':item['call_id'],'name':item['name'],'input':json.loads(args)})
+                        self.json(200,{'id':stream.id,'type':'message','role':'assistant','model':route['model'],'content':blocks,'stop_reason':'tool_use' if stream.calls else 'end_turn','stop_sequence':None,'usage':stream.usage})
+                    else:self.json(200,stream.response('completed'))
             finally:self.server.slots.release()
         except (BrokenPipeError,ConnectionResetError):pass
         except urllib.error.HTTPError as e:
             try:
                 value=json.loads(e.read(8192));error=value.get('error',value);message=error.get('message',str(error)) if isinstance(error,dict) else str(error)
             except Exception:message='Inference server rejected the request'
-            with contextlib.suppress(Exception):self.json(e.code,{'error':{'type':'api_error','message':message[:2000]}})
+            with contextlib.suppress(Exception):
+                if begun:
+                    if a:stream.event('error',error={'type':'api_error','message':message[:2000]})
+                    else:stream.event('response.failed',response=dict(stream.response('failed'),error={'code':'inference_error','message':message[:2000]}))
+                else:self.json(e.code,{'error':{'type':'api_error','message':message[:2000]}})
         except Exception as e:
             # Safe messages only: never echo a request, token or cloud response.
             message='Ninja inference failed: '+(str(e) if isinstance(e,(ValueError,urllib.error.URLError)) else type(e).__name__)

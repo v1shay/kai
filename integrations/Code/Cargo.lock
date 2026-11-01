@@ -3896,6 +3896,7 @@ dependencies = [
  "block2",
  "chrono",
  "dirs 6.0.0",
+ "futures-lite 2.6.1",
  "globset",
  "gpui",
  "image",

@@ -219,7 +219,7 @@ impl Orbit {
                 "lock",
                 "permissions-popover",
                 400.,
-                if self.agent == AgentKind::Codex {
+                if matches!(self.agent,AgentKind::Codex|AgentKind::Ninja) {
                     600.
                 } else {
                     150.
@@ -272,8 +272,8 @@ impl Orbit {
                     (false,runtime::CodexAccess::Workspace,"Read only / plan","Read files; sandbox blocks edits and network."),
                     (true,runtime::CodexAccess::Workspace,"Workspace edits","Edit this workspace; network and writes outside it require approval."),
                 ];
-                if self.agent==AgentKind::Codex {
-                    modes.push((true,runtime::CodexAccess::Full,"Full access","No Codex filesystem or network sandbox. Can modify files outside this workspace."));
+                if matches!(self.agent,AgentKind::Codex|AgentKind::Ninja) {
+                    modes.push((true,runtime::CodexAccess::Full,"Full access","Allow the native harness to work outside this workspace. Approval policy is chosen separately."));
                     body=body.child(div().mx_3().mb_2().text_size(crate::theme::ui_px(10.)).text_color(rgb(MUTED))
                         .child(div().text_ellipsis().child(format!("Workspace · {}",self.execution_root().as_ref().unwrap_or(&self.project).display())))
                         .child(div().child("Next invocation · running work keeps its permissions")));
@@ -297,7 +297,7 @@ impl Orbit {
                             })),
                     );
                 }
-                if self.agent == AgentKind::Codex {
+                if matches!(self.agent,AgentKind::Codex|AgentKind::Ninja) {
                     body = body.child(
                         div()
                             .mx_3()
@@ -307,7 +307,7 @@ impl Orbit {
                             .border_color(rgba(0xebebeb16))
                             .text_size(crate::theme::ui_px(11.))
                             .text_color(rgb(MUTED))
-                            .child("Command approvals · next Codex turn"),
+                            .child("Command approvals · next native turn"),
                     );
                     for (mode, id, label, detail) in [
                         (
@@ -329,6 +329,7 @@ impl Orbit {
                             "No prompts; the workspace access above stays unchanged.",
                         ),
                     ] {
+                        if mode==runtime::CodexApprovals::AutoReview && self.agent==AgentKind::Ninja && self.ninja_selection().harness==ninja::Harness::Claude {continue}
                         body = body.child(
                             div()
                                 .id(SharedString::from(format!("codex-approval-{id}")))

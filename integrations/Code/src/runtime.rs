@@ -74,6 +74,7 @@ const QUEUED_BYTES_LIMIT: usize = 2 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct RunRequest {
+    pub identity:Option<crate::ninjas::Identity>,
     pub ninja:Option<crate::ninja::Selection>,
     pub orchestrator:bool,
     pub agent: AgentKind,
@@ -122,6 +123,7 @@ pub enum RuntimeEvent {
 
 pub struct RunHandle {
     workspace: Option<workspace_mcp::Bridge>,
+    signal:async_channel::WeakSender<()>,
     /// Turn quiescence: output is finalized and owned child work/requests have
     /// settled. A healthy native broker may retain its idle provider process.
     pub settled: async_channel::Receiver<()>,
@@ -157,6 +159,7 @@ fn native_handle(pid: i32) -> (RunHandle, NativeContext) {
     (
         RunHandle {
             workspace: None,
+            signal:wake_tx.downgrade(),
             settled,
             events: EventReceiver {
                 inner: event_rx,
@@ -197,9 +200,10 @@ impl RunHandle {
     #[cfg(test)]
     pub fn idle_test_handle() -> Self {
         let (_, events) = mpsc::sync_channel(QUEUED_EVENTS_LIMIT);
-        let (_, wake) = async_channel::bounded(1);
+        let (signal, wake) = async_channel::bounded(1);
         Self {
             workspace: None,
+            signal:signal.downgrade(),
             settled: {
                 let (_, receiver) = async_channel::bounded(1);
                 receiver
@@ -224,7 +228,7 @@ impl RunHandle {
         let budget = Arc::new(QueueBudget::default());
         let sender = NotifyingSender {
             events: tx,
-            wake: wake_tx,
+            wake: wake_tx.clone(),
             budget: budget.clone(),
         };
         for event in events {
@@ -232,6 +236,7 @@ impl RunHandle {
         }
         Self {
             workspace: None,
+            signal:wake_tx.downgrade(),
             settled: {
                 let (_, receiver) = async_channel::bounded(1);
                 receiver
@@ -278,6 +283,7 @@ impl RunHandle {
     }
     fn send_control(&self, control: NativeControl) -> Result<()> {
         anyhow::ensure!(!self.is_cancelled(), "This response has stopped");
+        if let Some(signal)=self.signal.upgrade(){let _=signal.try_send(());}
         self.control
             .as_ref()
             .context("This agent does not expose interactive requests")?
@@ -293,6 +299,7 @@ impl RunHandle {
     pub fn cancel(&self) {
         if let Some(bridge) = &self.workspace { bridge.stop(); }
         let first_cancel = !self.cancelled.swap(true, Ordering::AcqRel);
+        if let Some(signal)=self.signal.upgrade(){let _=signal.try_send(());}
         // Synchronize notification with the waiter's mutex so cancellation
         // cannot fall between its predicate check and condition-variable wait.
         drop(
@@ -886,13 +893,14 @@ fn launch_mode_internal(mut request: RunRequest, cli_command: bool, native: bool
     };
     let tx = NotifyingSender {
         events: event_tx,
-        wake: wake_tx,
+        wake: wake_tx.clone(),
         budget,
     };
     let finalized_source = Arc::new(Mutex::new(None));
     let(history_tx,history_rx)=mpsc::sync_channel::<async_channel::Sender<std::result::Result<ResponseSource,String>>>(1);
     let mut handle = RunHandle {
         workspace: None,
+        signal:wake_tx.downgrade(),
         settled,
         events,
         wake,
@@ -2461,7 +2469,7 @@ mod tests {
         let approval_test=std::env::var("CODE_SMOKE_APPROVAL").as_deref()==Ok("1");
         for round in 0..rounds {
         let fork_session = std::env::var("CODE_SMOKE_FORK").is_ok_and(|value| value == "1");
-        let handle = launch(RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:std::env::var("CODE_SMOKE_EFFORT").ok(),
+        let handle = launch(RunRequest { identity:None, ninja:None, orchestrator:false, service_tier:None, reasoning_effort:std::env::var("CODE_SMOKE_EFFORT").ok(),
             agent, executable:executable.clone(), project:project.clone(),
             prompt: if approval_test {"Use your shell tool to run exactly: printf CODE_SMOKE_OK > approval-probe.txt . Do not access any other files, directories, services or tools. Then reply CODE_SMOKE_OK.".into()}else if round==0 {format!("Remember this isolated verification token: {secret}. Reply exactly CODE_SMOKE_OK. Do not use tools, read files, run commands, or edit anything.")}else{"Repeat the verification token I gave you in the previous turn, followed by CODE_SMOKE_OK. Do not use tools.".into()},
             resume_id: resume_id.clone(),
@@ -2812,7 +2820,7 @@ mod tests {
             "cat >/dev/null\npython3 - <<'PY'\nimport json\nfor i in range(100):\n print(json.dumps({'type':'item.completed','item':{'id':'message','type':'agent_message','text':str(i)+'x'*60000}}),flush=True)\nPY",
         );
         let handle = launch_mode_internal(
-            RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
+            RunRequest { identity:None, ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
                 agent: AgentKind::Codex,
                 executable: executable.clone(),
                 project: std::env::temp_dir(),
@@ -2852,7 +2860,7 @@ mod tests {
 
     #[test]
     fn command_flags_preserve_permission_boundaries_and_resume() {
-        let mut request = RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
+        let mut request = RunRequest { identity:None, ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
             agent: AgentKind::Codex,
             executable: "codex".into(),
             project: "/tmp".into(),
@@ -2919,7 +2927,7 @@ mod tests {
     fn codex_fork_retains_native_permissions_model_images_and_stdin() {
         let image = std::env::temp_dir().join(format!("code-fork-{}.png", uuid::Uuid::new_v4()));
         std::fs::write(&image, b"\x89PNG\r\n\x1a\nfixture").unwrap();
-        let mut request = RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
+        let mut request = RunRequest { identity:None, ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
             agent: AgentKind::Codex,
             executable: "codex".into(),
             project: std::env::temp_dir(),
@@ -3023,7 +3031,7 @@ mod tests {
         let mut id = "original".to_owned();
         for (fork, prompt) in [(true, "first"), (false, "second")] {
             let handle = launch_mode_internal(
-                RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
+                RunRequest { identity:None, ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
                     agent: AgentKind::Codex,
                     executable: executable.clone(),
                     project: std::env::temp_dir(),
@@ -3068,7 +3076,7 @@ mod tests {
             "cat >/dev/null\nprintf '%s\\n' '{\"type\":\"thread.started\",\"thread_id\":\"owned\"}'",
         );
         let handle = launch_mode_internal(
-            RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
+            RunRequest { identity:None, ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
                 agent: AgentKind::Codex,
                 executable: executable.clone(),
                 project: std::env::temp_dir(),
@@ -3201,7 +3209,7 @@ mod tests {
                 "cat >/dev/null\nprintf '%s\\n' '{{\"type\":\"turn.started\"}}' '{{\"type\":\"item.updated\",\"item\":{{\"id\":\"reply\",\"type\":\"agent_message\",\"text\":\"Partial\"}}}}' '{{\"type\":\"error\",\"message\":\"Reconnecting... 2/5\"}}'\n{tail}"
             ));
             let handle = launch_mode_internal(
-                RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
+                RunRequest { identity:None, ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
                     agent: AgentKind::Codex,
                     executable: executable.clone(),
                     project: std::env::temp_dir(),
@@ -3262,7 +3270,7 @@ mod tests {
             );
             let executable = fixture_script(&body);
             let handle = launch_mode_internal(
-                RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
+                RunRequest { identity:None, ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
                     agent: AgentKind::Claude,
                     executable: executable.clone(),
                     project: std::env::temp_dir(),
@@ -3314,7 +3322,7 @@ mod tests {
             "cat >/dev/null\nsleep 30 &\nhelper=$!\nprintf '{\"type\":\"thread.started\",\"thread_id\":\"%s\"}\\n' \"$helper\"\nprintf '%s\\n' '{\"type\":\"item.completed\",\"item\":{\"id\":\"reply\",\"type\":\"agent_message\",\"text\":\"Ready\"}}'\nexit 0",
         );
         let handle = launch_mode_internal(
-            RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
+            RunRequest { identity:None, ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
                 agent: AgentKind::Codex,
                 executable: executable.clone(),
                 project: std::env::temp_dir(),
@@ -3389,7 +3397,7 @@ mod tests {
                 "cat >/dev/null\n{output}\nprintf 'configuration needs attention' >&2"
             ));
             let handle = launch_mode_internal(
-                RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
+                RunRequest { identity:None, ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
                     agent: AgentKind::Codex,
                     executable: executable.clone(),
                     project: std::env::temp_dir(),
@@ -3431,7 +3439,7 @@ mod tests {
         let executable =
             fixture_script("cat >/dev/null\nprintf '%s\\n' '{\"type\":\"turn.completed\"}'");
         let handle = launch_mode_internal(
-            RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
+            RunRequest { identity:None, ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
                 agent: AgentKind::Codex,
                 executable: executable.clone(),
                 project: std::env::temp_dir(),
@@ -3468,7 +3476,7 @@ mod tests {
             "cat >/dev/null\ni=0\nwhile [ $i -lt 140 ]; do\n printf '%s\\n' '{\"type\":\"turn.started\"}'\n i=$((i+1))\ndone\nsleep 30",
         );
         let handle = launch_mode_internal(
-            RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
+            RunRequest { identity:None, ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
                 agent: AgentKind::Codex,
                 executable: executable.clone(),
                 project: std::env::temp_dir(),
@@ -3522,7 +3530,7 @@ mod tests {
             "printf '%s\\n' '{\"type\":\"thread.started\",\"thread_id\":\"input-blocked\"}'\nsleep 30",
         );
         let handle = launch_mode_internal(
-            RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
+            RunRequest { identity:None, ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
                 agent: AgentKind::Codex,
                 executable: executable.clone(),
                 project: std::env::temp_dir(),
@@ -3578,7 +3586,7 @@ mod tests {
             "cat >/dev/null\nprintf '%s\\n' '{\"type\":\"thread.started\",\"thread_id\":\"fixture\"}'\nsleep 30 &\nwait",
         );
         let handle = launch_mode_internal(
-            RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
+            RunRequest { identity:None, ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
                 agent: AgentKind::Codex,
                 executable: executable.clone(),
                 project: std::env::temp_dir(),
@@ -3649,7 +3657,7 @@ mod tests {
             file.flush().unwrap();
         }
         let handle = launch_mode_internal(
-            RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
+            RunRequest { identity:None, ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
                 agent: AgentKind::Codex,
                 executable: executable.clone(),
                 project: std::env::temp_dir(),
@@ -3779,7 +3787,7 @@ mod tests {
             file.flush().unwrap();
         }
         let handle = launch_mode_internal(
-            RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
+            RunRequest { identity:None, ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
                 agent: AgentKind::Codex,
                 executable: executable.clone(),
                 project: std::env::temp_dir(),
@@ -3834,7 +3842,7 @@ mod tests {
             "cat >/dev/null\ni=0\nwhile [ $i -lt 10000 ]; do printf '%s\\n' 'diagnostics diagnostics diagnostics diagnostics' >&2; i=$((i + 1)); done\nprintf '%s\\n' '{\"type\":\"item.completed\",\"item\":{\"id\":\"1\",\"type\":\"agent_message\",\"text\":\"Ready\"}}'",
         );
         let handle = launch_mode_internal(
-            RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
+            RunRequest { identity:None, ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
                 agent: AgentKind::Codex,
                 executable: executable.clone(),
                 project: std::env::temp_dir(),
@@ -3871,7 +3879,7 @@ mod tests {
             "cat >/dev/null\ni=0\nwhile [ $i -lt 1000 ]; do printf '%s\\n' '{\"type\":\"turn.started\"}'; i=$((i + 1)); done\nsleep 30",
         );
         let handle = launch_mode_internal(
-            RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
+            RunRequest { identity:None, ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
                 agent: AgentKind::Codex,
                 executable: executable.clone(),
                 project: std::env::temp_dir(),

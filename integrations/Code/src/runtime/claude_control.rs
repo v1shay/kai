@@ -37,11 +37,9 @@ pub(super) fn launch(request: RunRequest) -> Result<RunHandle> {
         "--permission-prompt-tool",
         "stdio",
         "--permission-mode",
-        if request.allow_edits {
-            "default"
-        } else {
-            "plan"
-        },
+        if !request.allow_edits { "plan" }
+        else if request.codex_access==CodexAccess::Full && request.codex_approvals==CodexApprovals::Never { "bypassPermissions" }
+        else { "default" },
     ]);
     if !request.allow_edits {
         // Older installed Claude versions do not gate all shell writes in plan
@@ -839,7 +837,7 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"A
 read -r wait
 "#).unwrap();
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
-        let handle = launch(RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
+        let handle = launch(RunRequest { identity:None, ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
             agent: AgentKind::Claude,
             executable,
             project: root.clone(),
@@ -906,7 +904,7 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"result":"
 read -r wait
 "#)).unwrap();
             fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
-            let handle = launch(RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
+            let handle = launch(RunRequest { identity:None, ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
                 agent: AgentKind::Claude,
                 executable,
                 project: root.clone(),
@@ -1052,7 +1050,7 @@ for line in sys.stdin:
         break
 "#).unwrap();
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
-        let handle = launch(RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
+        let handle = launch(RunRequest { identity:None, ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
             agent: AgentKind::Claude,
             executable,
             project: root.clone(),
@@ -1113,7 +1111,7 @@ printf '%s' ready > ready
 sleep 30
 "#).unwrap();
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
-        let handle = launch(RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
+        let handle = launch(RunRequest { identity:None, ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
             agent: AgentKind::Claude,
             executable,
             project: root.clone(),
@@ -1170,7 +1168,7 @@ for line in sys.stdin:
         time.sleep(30)
 "#).unwrap();
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
-        let handle = launch(RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
+        let handle = launch(RunRequest { identity:None, ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
             agent: AgentKind::Claude,
             executable,
             project: root.clone(),

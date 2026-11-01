@@ -39,6 +39,11 @@ pub fn session_tools(orchestrator:bool)->Value{
     tools.push(json!({"name":"code_artifacts","description":"Create and update persistent documents, diagrams and sandboxed HTML visual replies for this conversation. Use write_artifact with name, kind and content; reuse the returned id to update it. Link open_url in your answer. These tools cannot read or write arbitrary files or control other chats.","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["list_artifacts","read_artifact","write_artifact"]},"id":{"type":"string"},"name":{"type":"string"},"kind":{"type":"string","enum":["markdown","html","text","mermaid"]},"content":{"type":"string"},"offset":{"type":"integer"}},"required":["action"],"additionalProperties":false}}));
     json!(tools)
 }
+pub fn tools_for_request(request:&RunRequest)->Value {
+    let mut tools=if request.identity.is_some()&&!request.orchestrator{vec![]}else{session_tools(request.orchestrator).as_array().cloned().unwrap_or_default()};
+    if request.identity.is_some(){tools.push(json!({"name":"ninja_memory","description":"Read or update this Ninja's persistent personal memory across its chats. Store durable preferences, decisions and useful project facts; never store credentials. Updates replace the memory document and require its current revision.","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["read","write"]},"content":{"type":"string"},"revision":{"type":"integer"}},"required":["action"],"additionalProperties":false}}));}
+    json!(tools)
+}
 pub fn tool_summary(item: &Value) -> (String, String) {
     let action = item["arguments"]["action"].as_str().unwrap_or("workspace");
     let title = match action {
@@ -732,7 +737,7 @@ mod tests {
     fn parent(app: &mut Orbit) -> String {
         let id = uuid::Uuid::new_v4().to_string();
         let mut run = crate::ui_tests::idle_run(String::new());
-        run.retry = Some(RunRequest { ninja:None,
+        run.retry = Some(RunRequest { identity:None, ninja:None,
             orchestrator: true,
             agent: AgentKind::Codex,
             executable: "/usr/bin/true".into(),

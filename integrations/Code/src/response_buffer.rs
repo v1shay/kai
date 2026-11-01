@@ -100,7 +100,6 @@ impl ResponseSource {
             }
         }
     }
-    #[cfg(test)]
     pub(crate) fn copy_range_to(
         &self,
         start: usize,

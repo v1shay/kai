@@ -791,10 +791,10 @@ private final class AttachmentLayer:CALayer {
     func permissionMenu()->NSMenu? {
         guard let state=modelState else{return nil};let menu=NSMenu()
         let path=menu.addItem(withTitle:state.workspaceExecutionPath ?? state.project,action:nil,keyEquivalent:"");path.isEnabled=false
-        for (value,title) in [("read-only","Read only"),("workspace","Workspace edits")]+(state.selectedAgent=="codex" ? [("full","Full access")]:[]) {
+        for (value,title) in [("read-only","Read only"),("workspace","Workspace edits")]+(["codex","ninja"].contains(state.selectedAgent ?? "") ? [("full","Full access")]:[]) {
             let item=menu.addItem(withTitle:title,action:#selector(selectPermission(_:)),keyEquivalent:"");item.target=self;item.representedObject=["access",value,state.ownerToken ?? ""];item.state=(state.workspaceAccess==value || value=="workspace" && state.workspaceAccess=="native") ? .on:.off
         }
-        if state.selectedAgent=="codex" {menu.addItem(.separator());for (value,title) in [("ask","Ask me"),("auto-review","Review for me"),("never","Never ask")] {let item=menu.addItem(withTitle:title,action:#selector(selectPermission(_:)),keyEquivalent:"");item.target=self;item.representedObject=["approvals",value,state.ownerToken ?? ""];item.state=state.workspaceApprovalPolicy==value ? .on:.off}}
+        if ["codex","ninja"].contains(state.selectedAgent ?? "") {menu.addItem(.separator());for (value,title) in [("ask","Ask me"),("auto-review","Review for me"),("never","Never ask")] {if value=="auto-review" && state.selectedAgent=="ninja" && state.ninja?.selection.harness=="claude"{continue};let item=menu.addItem(withTitle:title,action:#selector(selectPermission(_:)),keyEquivalent:"");item.target=self;item.representedObject=["approvals",value,state.ownerToken ?? ""];item.state=state.workspaceApprovalPolicy==value ? .on:.off}}
         menu.addItem(.separator());let hint=menu.addItem(withTitle:"Changes apply to the next turn or voice call",action:nil,keyEquivalent:"");hint.isEnabled=false
         return menu
     }

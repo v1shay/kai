@@ -28,7 +28,7 @@ pub(super) struct Bridge {
 }
 impl Bridge {
     pub(super) fn prepare(request: &RunRequest) -> Result<Option<Self>> {
-        if !request.orchestrator {
+        if !request.orchestrator && request.identity.is_none() {
             return Ok(None);
         }
         let packaged = std::env::current_exe()?
@@ -57,7 +57,7 @@ impl Bridge {
         };
         bridge.listener = Some(UnixListener::bind(bridge.socket())?);
         fs::set_permissions(bridge.socket(), fs::Permissions::from_mode(0o600))?;
-        let config = json!({"socket":bridge.socket(),"token":bridge.token,"tools":crate::orchestrator::session_tools(true),"instructions":crate::orchestrator::INSTRUCTIONS});
+        let config = json!({"socket":bridge.socket(),"token":bridge.token,"tools":crate::orchestrator::tools_for_request(request),"instructions":crate::orchestrator::INSTRUCTIONS});
         let mut file = OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -170,7 +170,7 @@ impl Bridge {
                         );
                         let tool = call["tool"].as_str().context("Missing tool")?;
                         anyhow::ensure!(
-                            ["code_workspace", "code_history", "code_artifacts"].contains(&tool)
+                            ["code_workspace", "code_history", "code_artifacts", "ninja_memory"].contains(&tool)
                                 && call["arguments"].is_object(),
                             "Invalid workspace tool"
                         );
@@ -343,7 +343,7 @@ mod tests {
     use super::*;
     fn request(agent: AgentKind) -> RunRequest {
         RunRequest {
-            ninja: None,
+            identity:None, ninja: None,
             orchestrator: true,
             agent,
             executable: "/fixture/agent".into(),

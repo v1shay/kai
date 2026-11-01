@@ -20,6 +20,7 @@ libc = "0.2"
 pulldown-cmark = "0.13"
 unicode-segmentation = "1"
 async-channel = "2"
+futures-lite = "=2.6.1"
 alacritty_terminal = { version = "=0.26.0", default-features = false }
 sha2 = "=0.10.9"
 globset = "=0.4.20"

@@ -14,6 +14,7 @@ struct Pending {
 }
 struct Session {
     orchestrator:bool,
+    identity:bool,
     workspace_tools:HashMap<String,Value>,
     thread: String,
     turn: String,
@@ -50,7 +51,7 @@ struct VoiceState {
 impl Default for Session {
     fn default() -> Self {
         Self {
-            orchestrator:false,workspace_tools:HashMap::new(),
+            identity:false,orchestrator:false,workspace_tools:HashMap::new(),
             thread: String::new(),
             turn: String::new(),
             next_id: 10,
@@ -268,7 +269,7 @@ fn thread_params(request: &RunRequest) -> Value {
         "sandbox":request.codex_access.sandbox(request.allow_edits),
         "config":{"features.default_mode_request_user_input":true}});
 
-    params["dynamicTools"]=crate::orchestrator::session_tools(request.orchestrator);
+    params["dynamicTools"]=crate::orchestrator::tools_for_request(request);
     if request.orchestrator{params["developerInstructions"]=json!(crate::orchestrator::INSTRUCTIONS);}
     if let Some(tier)=&request.service_tier{params["serviceTier"]=json!(tier);params["config"]["features.fast_mode"]=json!(true);}
     if let Some(effort)=&request.reasoning_effort{params["config"]["model_reasoning_effort"]=json!(effort);}
@@ -564,7 +565,7 @@ fn run_turn(
     record: &mut wire::Record,
 ) -> (bool, Session) {
     let mut state = Session {
-        orchestrator:request.orchestrator,
+        identity:request.identity.is_some(),orchestrator:request.orchestrator,
         maintenance,
         service: Some(service.clone()),
         pending,
@@ -2309,7 +2310,7 @@ impl Session {
         ctx: &NativeContext,
     ) -> Result<()> {
         if method=="item/tool/call"{
-            if p["threadId"].as_str()!=Some(self.thread.as_str()) || !(p["tool"]=="code_workspace"&&self.orchestrator || p["tool"]=="code_history" || p["tool"]=="code_artifacts") || self.workspace_tools.len()>=16{
+            if p["threadId"].as_str()!=Some(self.thread.as_str()) || !(p["tool"]=="code_workspace"&&self.orchestrator || p["tool"]=="ninja_memory"&&self.identity || p["tool"]=="code_history" || p["tool"]=="code_artifacts") || self.workspace_tools.len()>=16{
                 return write_message(stdin,&ctx.cancelled,&json!({"id":wire_id,"result":{"success":false,"contentItems":[{"type":"inputText","text":"This Code workspace tool is not enabled for this invocation."}]}}));
             }
             if serde_json::to_vec(&p["arguments"])?.len()>if p["tool"]=="code_artifacts"{600*1024}else{16*1024}{bail!("Tool arguments exceed their bounded input budget")}
@@ -3197,7 +3198,7 @@ mod tests {
         path
     }
     fn request(path: &std::path::Path) -> RunRequest {
-        RunRequest { ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
+        RunRequest { identity:None, ninja:None, orchestrator:false, service_tier:None, reasoning_effort:None,
             agent: AgentKind::Codex,
             executable: path.into(),
             project: std::env::temp_dir(),
@@ -4629,7 +4630,7 @@ time.sleep(30)
    for edits in [false,true] {
     for approvals in [CodexApprovals::Ask,CodexApprovals::AutoReview,CodexApprovals::Never] {
      for resume in [false,true] {
-      let req=RunRequest{ ninja:None,orchestrator:false, service_tier:None,agent:AgentKind::Codex,executable:"/fixture/codex".into(),project:"/fixture/workspace".into(),prompt:"Continue".into(),resume_id:resume.then(||"native".into()),fork_session:false,model:None,reasoning_effort:None,images:vec![],allow_edits:edits,trust_workspace:false,codex_access:access,codex_approvals:approvals};
+      let req=RunRequest{ identity:None, ninja:None,orchestrator:false, service_tier:None,agent:AgentKind::Codex,executable:"/fixture/codex".into(),project:"/fixture/workspace".into(),prompt:"Continue".into(),resume_id:resume.then(||"native".into()),fork_session:false,model:None,reasoning_effort:None,images:vec![],allow_edits:edits,trust_workspace:false,codex_access:access,codex_approvals:approvals};
       let thread=thread_params(&req);let turn=turn_params("native",&req);
       assert_eq!(thread["sandbox"],access.sandbox(edits));assert_eq!(turn["sandboxPolicy"],access.policy(edits,&req.project));
       assert_eq!(turn["approvalPolicy"],approvals.policy());assert_eq!(thread["approvalPolicy"],approvals.policy());
@@ -4651,7 +4652,7 @@ time.sleep(30)
   for (edits,access,inside_ok,outside_ok) in [(false,CodexAccess::Workspace,false,false),(true,CodexAccess::Workspace,true,false),(true,CodexAccess::Full,true,true)] {
    let inside=project.join("inside.txt");let outside=root.join("outside.txt");let _=std::fs::remove_file(&inside);let _=std::fs::remove_file(&outside);
    let prompt=format!("/usr/bin/printf inside > '{}'; /usr/bin/printf outside > '{}'; /usr/bin/printf ACCESS_PROBE_DONE",inside.display(),outside.display());
-   let request=RunRequest{ ninja:None,orchestrator:false, service_tier:None,agent:AgentKind::Codex,executable:std::env::var("KAI_NATIVE_TEST_EXECUTABLE").unwrap_or_else(|_|"/opt/homebrew/bin/codex".into()).into(),project:project.clone(),prompt,resume_id:None,fork_session:false,model:None,reasoning_effort:None,images:vec![],allow_edits:edits,trust_workspace:false,codex_access:access,codex_approvals:CodexApprovals::Never};
+   let request=RunRequest{ identity:None, ninja:None,orchestrator:false, service_tier:None,agent:AgentKind::Codex,executable:std::env::var("KAI_NATIVE_TEST_EXECUTABLE").unwrap_or_else(|_|"/opt/homebrew/bin/codex".into()).into(),project:project.clone(),prompt,resume_id:None,fork_session:false,model:None,reasoning_effort:None,images:vec![],allow_edits:edits,trust_workspace:false,codex_access:access,codex_approvals:CodexApprovals::Never};
    let handle=maintenance(request,"command/exec",json!({})).unwrap();let mut finished=false;
    while let Ok(event)=handle.events.recv_timeout(Duration::from_secs(20)) {
     match event {RuntimeEvent::Failed(e)=>panic!("{e}"),RuntimeEvent::Request(_)=>panic!("Never ask unexpectedly raised an approval"),RuntimeEvent::Finished=>{finished=true;break},_=>{}}

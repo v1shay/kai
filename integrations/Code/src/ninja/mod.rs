@@ -1,7 +1,7 @@
 //! Local inference selection, remote inventory and harness transport for Ninja.
 mod catalog;
 mod gateway;
-mod http;
+pub(crate) mod http;
 use anyhow::{Result, ensure};
 pub use catalog::*;
 pub use gateway::{configure_claude, configure_codex};
@@ -337,7 +337,7 @@ mod tests {
         std::fs::create_dir(&root).unwrap();
         std::fs::write(root.join("proof.txt"), "NINJA_LOCAL_TOOLS_OK").unwrap();
         let request = RunRequest {
-            ninja: Some(selection),
+            identity:None, ninja: Some(selection),
             orchestrator: false,
             agent: crate::discovery::AgentKind::Ninja,
             executable: executable(harness, &dirs::home_dir().unwrap()).unwrap(),
