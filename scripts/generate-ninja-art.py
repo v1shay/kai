@@ -48,6 +48,17 @@ def make(color):
         for row in range(26,33,2):dot(20+(row%3),y+row,60)
         # Brief eye glint, not a full blink that makes the face disappear.
         if frame==8:dot(18,y+10,2);dot(26,y+10,2)
+        if color==COLORS['fire'] and frame%6==0:
+            runs=[]
+            for yy in range(56):
+                xx=0
+                while xx<48:
+                    def visible(x):return pixels[yy*48+x]>=25 or pixels[yy*48+x]==3
+                    if not visible(xx):xx+=1;continue
+                    start=xx
+                    while xx<48 and visible(xx):xx+=1
+                    runs.append(f'M{start} {yy}h{xx-start}v1H{start}z')
+            (ROOT/f'ninja-walk-{frame//6}.svg').write_text('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 56" shape-rendering="crispEdges"><path fill="white" d="'+''.join(runs)+'"/></svg>')
         data+=b'!\xf9\x04\x09'+struct.pack('<H',8)+b'\0\0'+b','+struct.pack('<HHHHB',0,0,48,56,0)+encode(pixels)
     return data+b';'
 if __name__=='__main__':

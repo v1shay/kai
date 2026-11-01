@@ -812,3 +812,11 @@ mod tests {
         assert!(path.exists());
     }
 }
+
+/// Finder file copies are references, never inserted as raw composer text.
+pub fn clipboard_paths()->Vec<std::path::PathBuf>{
+    #[cfg(all(target_os="macos",not(test)))]
+    {use objc2::{msg_send,runtime::{AnyClass,AnyObject}};use objc2_foundation::NSString;
+    unsafe{let Some(class)=AnyClass::get(c"NSPasteboard") else{return vec![]};let board:*mut AnyObject=msg_send![class,generalPasteboard];if board.is_null(){return vec![]}let kind=NSString::from_str("NSFilenamesPboardType");let list:*mut AnyObject=msg_send![board,propertyListForType:&*kind];if list.is_null(){return vec![]}let Some(array)=AnyClass::get(c"NSArray") else{return vec![]};let valid:bool=msg_send![list,isKindOfClass:array];if !valid{return vec![]}let count:usize=msg_send![list,count];(0..count.min(9)).filter_map(|i|{let item:*mut AnyObject=msg_send![list,objectAtIndex:i];let raw:*const std::ffi::c_char=msg_send![item,UTF8String];if raw.is_null(){None}else{Some(std::path::PathBuf::from(std::ffi::CStr::from_ptr(raw).to_string_lossy().into_owned()))}}).collect()}}
+    #[cfg(any(not(target_os="macos"),test))]{vec![]}
+}

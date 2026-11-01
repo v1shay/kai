@@ -154,6 +154,7 @@ impl Orbit {
         self.attachment_hover.clear();
     }
     pub(super) fn add_attachments(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        if self.ninja_surface_owner().is_some(){self.ninja_reference_paths(paths,cx);return;}
         self.import_attachment_sources(paths.into_iter().map(AttachmentSource::File).collect(), cx);
     }
     pub(super) fn add_saved_attachments(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
@@ -163,6 +164,7 @@ impl Orbit {
         );
     }
     pub(super) fn add_clipboard_image(&mut self, bytes: Arc<[u8]>, cx: &mut Context<Self>) {
+        if self.ninja_surface_owner().is_some(){self.ninja_reference_image(bytes,cx);return;}
         self.import_attachment_sources(vec![AttachmentSource::Clipboard(bytes)], cx);
     }
     fn import_attachment_sources(&mut self, paths: Vec<AttachmentSource>, cx: &mut Context<Self>) {

@@ -196,6 +196,7 @@ pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Resul
                     let _=cx.update(|_|emit(&json!({"type":"probeMenuBarClick"})));
                     Timer::after(Duration::from_millis(700)).await;
                     assert_ne!(unsafe{diagnostics()}&128,0,"The actual status-item handler did not open mini Code");
+                    assert_eq!(unsafe{diagnostics()}&1,0,"The workspace remained live beside menu mini Code");
                     let _=cx.update(|_|emit(&json!({"type":"probeMenuBarClick"})));
                     Timer::after(Duration::from_millis(700)).await;
                     assert_eq!(unsafe{diagnostics()}&128,0,"A repeated status-item click did not close mini Code");

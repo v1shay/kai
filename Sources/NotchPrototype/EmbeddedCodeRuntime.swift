@@ -72,7 +72,7 @@ enum UnifiedDraftHandoff {
         case "keyboardCatalog":keyboardCommands=packet.commands ?? [];return
         case "quickPrepare":app?.prepareQuickOpening();return
         case "workspaceReveal":app?.revealWorkspace();return
-        case "launchWorkspace":app?.revealWorkspace();return
+        case "launchWorkspace":app?.launchUnifiedWorkspace();return
         case "launchExtended":app?.expandToRunningChat();return
         case "launchCompact":app?.showUnifiedNotchOnLaunch();return
         case "workspaceDismiss":app?.dismissUnifiedSurface();return

@@ -155,6 +155,8 @@ impl Orbit {
                 | "settings"
                 | "workspace_expand"
                 | "workspace_permissions"
+                | "orchestrator"
+                | "attachments"
                 | "interrupt"
                 | "history_more"
                 | "history_latest"
@@ -188,6 +190,8 @@ impl Orbit {
                 p.messages.clear();
                 p.fields[3].update(cx, |i, cx| i.set_text("", cx));
             }
+            "attachments"=>{let paths=v["paths"].as_array().ok_or("Missing reference files")?.iter().filter_map(Value::as_str).map(PathBuf::from).collect::<Vec<_>>();if !paths.is_empty(){self.ninja_reference_paths(paths,cx);}},
+            "orchestrator"=>{let p=self.ninjas.panel.as_mut().unwrap();p.profile.orchestrator=!p.profile.orchestrator;},
             "agent" => {
                 let p = self.ninjas.panel.as_ref().unwrap();
                 let requested = v["agent"].as_str().ok_or("Missing provider")?;
@@ -366,7 +370,7 @@ impl Orbit {
             p.chat.as_deref().unwrap_or("draft")
         );
         let models=p.models.iter().map(|m|json!({"model":m["id"],"displayName":m["label"],"supportedReasoningEfforts":m["efforts"].as_array().into_iter().flatten().map(|e|json!({"reasoningEffort":e})).collect::<Vec<_>>()})).collect::<Vec<_>>();
-        let override_ = json!({"personalNinja":{"id":p.profile.id,"name":p.profile.name,"style":p.profile.style,"host":p.host},"threadId":thread,"threadName":p.profile.name,"ownerToken":self.ninja_surface_owner(),"project":p.profile.project,"composerDraft":p.fields[3].read(cx).text(),"history":history,"historyLoading":p.history_loading,"modelsLoading":p.models_loading.is_some(),"historyHasMore":false,"historyEarlier":false,"readOnly":false,"composerBusy":p.busy,"selectedAgent":p.profile.agent.command(),"selectedModel":p.profile.model,"effectiveModel":active.and_then(|t|t["model"].as_str()).or(p.profile.model.as_deref()),"reasoningEffort":p.profile.effort,"models":models,"chats":chats,"activeTurnId":active.and_then(|t|t["id"].as_str()),"sessionActivity":{"scene":active.map(crate::ninjas_ui::task_scene).unwrap_or("off"),"text":active.and_then(|t|t["status"].as_str()).unwrap_or("")},"attachments":[]});
+        let override_ = json!({"orchestratorMode":p.profile.orchestrator,"orchestratorAvailable":true,"personalNinja":{"id":p.profile.id,"name":p.profile.name,"style":p.profile.style,"host":p.host},"threadId":thread,"threadName":p.profile.name,"ownerToken":self.ninja_surface_owner(),"project":p.profile.project,"composerDraft":p.fields[3].read(cx).text(),"history":history,"historyLoading":p.history_loading,"modelsLoading":p.models_loading.is_some(),"historyHasMore":false,"historyEarlier":false,"readOnly":false,"composerBusy":p.busy,"selectedAgent":p.profile.agent.command(),"selectedModel":p.profile.model,"effectiveModel":active.and_then(|t|t["model"].as_str()).or(p.profile.model.as_deref()),"reasoningEffort":p.profile.effort,"models":models,"chats":chats,"activeTurnId":active.and_then(|t|t["id"].as_str()),"sessionActivity":{"scene":active.map(crate::ninjas_ui::task_scene).unwrap_or("off"),"text":active.and_then(|t|t["status"].as_str()).unwrap_or("")},"attachments":[]});
         for (key, value) in override_.as_object().unwrap() {
             s[key] = value.clone();
         }

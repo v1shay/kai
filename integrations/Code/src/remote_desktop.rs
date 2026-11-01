@@ -339,8 +339,8 @@ impl Render for RemoteDesktop {
                         .flex()
                         .gap_2()
                         .items_center()
-                        .child(div().id("remote-username").debug_selector(||"remote-username".into()).w(px(150.)).h(px(38.)).px_3().rounded_lg().bg(rgba(GLASS_HOVER)).child(self.user.clone()))
-                        .child(div().id("remote-password").debug_selector(||"remote-password".into()).w(px(180.)).h(px(38.)).px_3().rounded_lg().bg(rgba(GLASS_HOVER)).child(self.password.clone()))
+                        .child(div().id("remote-username").debug_selector(||"remote-username".into()).w(px(150.)).h(px(38.)).px_3().flex().items_center().rounded_lg().bg(rgba(GLASS_HOVER)).child(self.user.clone()))
+                        .child(div().id("remote-password").debug_selector(||"remote-password".into()).w(px(180.)).h(px(38.)).px_3().flex().items_center().rounded_lg().bg(rgba(GLASS_HOVER)).child(self.password.clone()))
                         .child(
                             div()
                                 .id("desktop-connect")

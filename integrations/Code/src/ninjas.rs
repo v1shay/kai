@@ -53,6 +53,8 @@ pub struct Profile {
     pub approvals: CodexApprovals,
     #[serde(default)]
     pub revision: u64,
+    #[serde(default)]
+    pub orchestrator:bool,
 }
 impl Profile {
     pub fn validate(&self) -> Result<()> {
@@ -1060,7 +1062,7 @@ impl Worker {
                     name: p.name.clone(),
                 }),
                 ninja: p.ninja.clone(),
-                orchestrator: false,
+                orchestrator: p.orchestrator,
                 agent: p.agent,
                 executable: cli,
                 project: p.project.canonicalize()?,
@@ -1588,6 +1590,7 @@ mod tests {
                 access: CodexAccess::Workspace,
                 approvals: CodexApprovals::Ask,
                 revision: 0,
+                orchestrator:false,
             }
         }
     }

@@ -184,6 +184,7 @@ pub enum InputEvent {
     CommandComplete,
     CursorChanged,
     ImagePasted(std::sync::Arc<[u8]>),
+    FilesPasted(Vec<std::path::PathBuf>),
     ClipboardError(String),
 }
 impl gpui::EventEmitter<InputEvent> for TextInput {}
@@ -627,6 +628,7 @@ impl TextInput {
 
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
         if self.image_paste && self.secret.is_none() {
+            let paths=crate::attachments::clipboard_paths();if !paths.is_empty(){cx.emit(InputEvent::FilesPasted(paths));return;}
             match crate::attachments::clipboard_image(cx) {
                 Ok(Some(bytes)) => {
                     cx.emit(InputEvent::ImagePasted(bytes));

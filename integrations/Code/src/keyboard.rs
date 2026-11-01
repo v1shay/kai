@@ -120,6 +120,7 @@ impl Orbit {
         match id {
             "new" => self.new_conversation(window, cx),
             "close_tab" => {
+                if self.ninja_surface_owner().is_some(){self.remember_ninja_draft(cx);self.ninjas.desktop=None;self.ninjas.panel=None;cx.notify();return;}
                 if let Some(id) = self.active.clone() {
                     self.close_tab(&id, window, cx)
                 }

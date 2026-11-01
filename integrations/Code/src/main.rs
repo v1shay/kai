@@ -1088,6 +1088,7 @@ impl Orbit {
             }
             match event {
                 InputEvent::ImagePasted(bytes) => this.add_clipboard_image(bytes.clone(), cx),
+                InputEvent::FilesPasted(paths)=>this.add_attachments(paths.clone(),cx),
                 InputEvent::ClipboardError(error) => {
                     this.notice = Some(error.clone());
                     cx.notify();
@@ -2464,6 +2465,7 @@ impl Orbit {
     }
     fn close_tab(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.open_tabs.retain(|tab| tab != id);
+        if self.ninja_surface_owner().is_some(){if self.active.as_deref()==Some(id){self.reset_conversation(cx);}cx.notify();return;}
         if self.active.as_deref() == Some(id) {
             if let Some(next) = self
                 .open_tabs
@@ -4709,7 +4711,7 @@ impl Orbit {
             .border_b_1()
             .border_color(rgba(0xebebeb12))
             .overflow_hidden()
-            .when(tabs.is_empty(), |s| {
+            .when(tabs.is_empty() && self.ninja_surface_owner().is_none(), |s| {
                 s.child(
                     div()
                         .h(px(30.))
@@ -4783,7 +4785,7 @@ impl Orbit {
                     tab.into_any_element()
                 }
             }))
-            .when_some(self.ninjas.panel.as_ref().filter(|p|p.profile.revision>0),|s,p|s.child(div().h(px(30.)).px_3().flex().items_center().gap_2().rounded_md().bg(rgba((ninja_art::color(&p.profile.style)<<8)|0x24)).child(icon(ninja_art::glyph(&p.profile.style),14.,ninja_art::color(&p.profile.style))).child(p.profile.name.clone())))
+            .when_some(self.ninjas.panel.as_ref().filter(|p|p.profile.revision>0),|s,p|s.child(div().h(px(30.)).px_3().flex().items_center().gap_2().rounded_md().bg(rgba((ninja_art::color(&p.profile.style)<<8)|0x24)).child(icon(ninja_art::glyph(&p.profile.style),14.,ninja_art::color(&p.profile.style))).child(p.profile.name.clone()).child(div().id("ninja-tab-close").child(icon("close",12.,TEXT)).cursor_pointer().on_click(cx.listener(|app,_,_,cx|{app.remember_ninja_draft(cx);app.ninjas.desktop=None;app.ninjas.panel=None;cx.notify();})))))
             .child(div().debug_selector(||"workspace-window-drag-space".into()).flex_1().h_full().min_w(px(12.)).on_mouse_down(MouseButton::Left,|_,window,_|native::drag(window)))
     }
     fn home(&self, _cx: &Context<Self>) -> impl IntoElement {

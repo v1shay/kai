@@ -33,6 +33,8 @@ pub(super) struct Panel {
     pub chat: Option<String>,
     pub memory_revision: u64,
     pub schedule: usize,
+    reference_pending:usize,
+    reference_submit:bool,
     pub settings: bool,
     pub messages: Vec<Value>,
     pub history_loading: bool,
@@ -322,6 +324,7 @@ fn chip_content(
     let label_selector = format!("{id}-label");
     let selector = id.to_string();
     let model_row = id.starts_with("ninja-model-");
+    let icon_only=label.is_empty();
     div()
         .id(id)
         .debug_selector(move || selector.clone())
@@ -333,7 +336,7 @@ fn chip_content(
         .justify_center()
         .gap_2()
         .rounded_md()
-        .bg(rgba(if on { 0x9380ff35 } else { 0xffffff09 }))
+        .bg(rgba(if icon_only {0} else if on { 0x9380ff35 } else { 0xffffff09 }))
         .hover(|s| s.bg(rgba(GLASS_HOVER)))
         .text_size(theme::ui_px(11.))
         .text_color(rgb(TEXT))
@@ -556,31 +559,19 @@ impl Orbit {
         })
         .detach();
     }
-    fn ninja_send_reference(&mut self, cx: &mut Context<Self>) {
-        let Some(p) = self.ninjas.panel.as_ref().filter(|p| !p.busy) else {
-            return;
-        };
-        let Some(host) = self
-            .ninjas
-            .hosts
-            .iter()
-            .find(|h| h.id == p.host && h.endpoint.is_some())
-            .cloned()
-        else {
-            return;
-        };
-        let token = p.token;
-        let paths = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: true,
-            prompt: Some("Send reference files to Ninja host".into()),
-        });
+    pub(super) fn ninja_reference_image(&mut self,bytes:std::sync::Arc<[u8]>,cx:&mut Context<Self>){
+        let Some(p)=self.ninjas.panel.as_mut() else{return};p.reference_pending+=1;let token=p.token;
+        cx.spawn(async move|this,cx|{let result=cx.background_executor().spawn(async move{attachments::import_clipboard(&bytes,&ninjas::root().join("references"),&std::sync::atomic::AtomicBool::new(false))}).await;
+            let _=this.update(cx,|app,cx|{let Some(p)=app.ninjas.panel.as_mut().filter(|p|p.token==token) else{return};p.reference_pending=p.reference_pending.saturating_sub(1);match result{Ok(file)=>{file.mark_submitted();app.ninja_reference_paths(vec![file.path.clone()],cx)},Err(e)=>{p.reference_submit=false;app.notice=Some(e.to_string());}}cx.notify();});}).detach();
+    }
+    pub(super) fn ninja_reference_paths(&mut self,paths:Vec<PathBuf>,cx:&mut Context<Self>){
+        let Some(p)=self.ninjas.panel.as_mut() else{return};p.reference_pending+=1;let token=p.token;
+        let Some(host)=self.ninjas.hosts.iter().find(|h|h.id==p.host).cloned() else{return};
         cx.spawn(async move|this,cx|{
-            let Ok(Ok(Some(paths)))=paths.await else{return};
             let remote=host.clone();
             let result=cx.background_executor().spawn(async move{(||->anyhow::Result<Vec<String>>{
                 anyhow::ensure!(!paths.is_empty()&&paths.len()<=8,"Send up to eight reference files at once");
+                if remote.endpoint.is_none(){return Ok(paths.iter().map(|p|p.to_string_lossy().into_owned()).collect());}
                 let address=host_address(&remote).ok_or_else(||anyhow::anyhow!("Invalid Taildrop host"))?;
                 let cli=crate::process_env::dirs(&dirs::home_dir().unwrap_or_default()).into_iter().map(|p|p.join("tailscale")).chain([PathBuf::from("/Applications/Tailscale.app/Contents/MacOS/Tailscale")]).find(|p|p.is_file()).ok_or_else(||anyhow::anyhow!("Tailscale CLI unavailable"))?;
                 let mut names=vec![];
@@ -591,10 +582,10 @@ impl Orbit {
                 }Ok(names)
             })()}).await;
             let _=this.update(cx,|app,cx|{
-                if let Some(p)=app.ninjas.panel.as_mut().filter(|p|p.token==token){match result{Ok(names)=>{
-                    let note=format!("\nReference files sent via Taildrop to this host's Downloads (reference only; keep working in your configured workspace): {}",names.join(", "));
+                if !app.ninjas.panel.as_ref().is_some_and(|p|p.token==token){return;}if let Some(p)=app.ninjas.panel.as_mut(){p.reference_pending=p.reference_pending.saturating_sub(1);match result{Ok(names)=>{
+                    let note=format!("\nReference files (remote files are in this host's Downloads; keep working in your configured workspace): {}",names.join(", "));
                     let draft=p.fields[3].read(cx).text();p.fields[3].update(cx,|input,cx|input.set_text(&format!("{draft}{note}"),cx));
-                },Err(e)=>app.notice=Some(e.to_string())}}cx.notify();
+                },Err(e)=>{p.reference_submit=false;app.notice=Some(e.to_string());}}}let send=app.ninjas.panel.as_mut().is_some_and(|p|{let send=p.reference_submit && p.reference_pending==0;if send{p.reference_submit=false;}send});if send{app.ninja_submit_task(cx);}cx.notify();
             });
         }).detach();
     }
@@ -816,7 +807,7 @@ impl Orbit {
                     .find(|p| p["id"].as_str() == Some(id))
             })
             .and_then(|v| serde_json::from_value::<Profile>(v.clone()).ok());
-        let mut p=existing.unwrap_or_else(||Profile{id:uuid::Uuid::new_v4().to_string(),name:String::new(),persona:"A resourceful personal partner. Complete tasks, verify results, and remember useful long-term context.".into(),style:"fire".into(),project:if selected=="local"{self.execution_root().unwrap_or_else(||self.project.clone())}else{snapshot.and_then(|v|v["home"].as_str()).map(PathBuf::from).unwrap_or_default()},agent:self.agent,model:self.request_model(),effort:self.request_effort(),ninja:(self.agent==AgentKind::Ninja).then(||self.ninja_selection()),edits:self.allow_edits,access:self.codex_access,approvals:self.codex_approvals,revision:0});
+        let mut p=existing.unwrap_or_else(||Profile{id:uuid::Uuid::new_v4().to_string(),name:String::new(),persona:"A resourceful personal partner. Complete tasks, verify results, and remember useful long-term context.".into(),style:"fire".into(),project:if selected=="local"{self.execution_root().unwrap_or_else(||self.project.clone())}else{snapshot.and_then(|v|v["home"].as_str()).map(PathBuf::from).unwrap_or_default()},agent:self.agent,model:self.request_model(),effort:self.request_effort(),ninja:(self.agent==AgentKind::Ninja).then(||self.ninja_selection()),edits:self.allow_edits,access:self.codex_access,approvals:self.codex_approvals,revision:0,orchestrator:false});
         if p.revision == 0 && selected != "local" {
             p.model = None;
             p.effort = None;
@@ -838,10 +829,16 @@ impl Orbit {
                 let mut input = TextInput::new(window, cx);
                 input.set_placeholder(placeholder, cx);
                 input.set_text(&text, cx);
+                input.set_image_paste(fields.len()==3);
                 input
             });
             let task_input = fields.len() == 3;
             subscriptions.push(cx.subscribe(&field, move |app, _, event, cx| {
+                if task_input {match event {
+                    InputEvent::FilesPasted(paths)=>app.ninja_reference_paths(paths.clone(),cx),
+                    InputEvent::ImagePasted(bytes)=>app.ninja_reference_image(bytes.clone(),cx),
+                    InputEvent::ClipboardError(e)=>app.notice=Some(e.clone()),_=>{}
+                }}
                 if task_input && matches!(event, InputEvent::Submit) {
                     app.ninja_submit_task(cx);
                 }
@@ -870,6 +867,8 @@ impl Orbit {
             task: latest,
             memory_revision: 0,
             schedule: 0,
+            reference_pending:0,
+            reference_submit:false,
             settings,
             messages: vec![],
             history_loading: false,
@@ -1125,6 +1124,7 @@ impl Orbit {
         self.ninja_operation(json!({"action":"save_profile","profile":p}), cx);
     }
     pub(super) fn ninja_submit_task(&mut self, cx: &mut Context<Self>) {
+        if let Some(p)=self.ninjas.panel.as_mut(){if p.reference_pending>0{p.reference_submit=true;cx.notify();return;}}
         if self
             .ninjas
             .panel
@@ -1151,7 +1151,8 @@ impl Orbit {
         } else {
             0
         };
-        let prompt = p.fields[3].read(cx).text();
+        let mut prompt = p.fields[3].read(cx).text();
+        if p.profile.orchestrator {prompt=format!("Orchestrate this task using your available native tools and subagents. Delegate independent work, verify it, and give a concise completion brief.\n\n{prompt}");}
         if prompt.trim().is_empty() {
             return;
         }
@@ -1287,11 +1288,11 @@ impl Orbit {
             return div().into_any_element();
         };
         if let Some(desktop)=&self.ninjas.desktop {
-            return div().id("ninja-desktop-viewer").debug_selector(||"ninja-desktop-viewer".into()).relative().size_full().min_h(px(0.)).p_4().bg(rgba(0x171b20ed)).occlude().flex().flex_col().gap_2().on_mouse_down(MouseButton::Left,|_,_,cx|cx.stop_propagation()).on_click(|_,_,cx|cx.stop_propagation())
-                .child(div().flex().gap_2()
-                    .child(chip("desktop-observe","Watch",!desktop.read(cx).is_controlling(),cx,|app,_,cx|{if let Some(v)=&app.ninjas.desktop{v.update(cx,|v,cx|v.controlling(false,cx));}cx.notify();}))
-                    .child(chip("desktop-takeover","Take over",desktop.read(cx).is_controlling(),cx,|app,w,cx|app.ninja_screen(true,w,cx)))
-                    .child(chip("desktop-close","Close viewer",false,cx,|app,_,cx|{app.ninjas.desktop=None;cx.notify();})))
+            return div().id("ninja-desktop-viewer").debug_selector(||"ninja-desktop-viewer".into()).relative().size_full().min_h(px(0.)).p_3().bg(rgba(GLASS_SURFACE)).occlude().flex().flex_col().gap_2().on_mouse_down(MouseButton::Left,|_,_,cx|cx.stop_propagation()).on_click(|_,_,cx|cx.stop_propagation())
+                .child(div().flex().justify_end().items_center().gap_2()
+                    .child(marked_chip("desktop-observe","",icon("eye",16.,TEXT),!desktop.read(cx).is_controlling(),cx,|app,_,cx|{if let Some(v)=&app.ninjas.desktop{v.update(cx,|v,cx|v.controlling(false,cx));}cx.notify();}))
+                    .child(marked_chip("desktop-takeover","",icon("mouse-pointer",16.,TEXT),desktop.read(cx).is_controlling(),cx,|app,w,cx|app.ninja_screen(true,w,cx)))
+                    .child(marked_chip("desktop-close","",icon("close",16.,TEXT),false,cx,|app,_,cx|{app.ninjas.desktop=None;cx.notify();})))
                 .child(desktop.clone()).into_any_element();
         }
         let progress = if !self.motion || native::reduced_motion() {
@@ -1693,6 +1694,7 @@ impl Orbit {
                     .child(
                         div()
                             .text_size(theme::ui_px(15.))
+                            .flex_1()
                             .flex()
                             .items_center()
                             .gap_2()
@@ -1706,11 +1708,7 @@ impl Orbit {
                     .when(p.profile.revision > 0, |s| {
                         s.child(marked_chip(
                             "ninja-call",
-                            if compact { "" } else if self.ninjas.call.is_some() {
-                                "End call"
-                            } else {
-                                "Call"
-                            },
+                            "",
                             icon("phone", 16., TEXT),
                             self.ninjas.call.is_some(),
                             cx,
@@ -1725,24 +1723,19 @@ impl Orbit {
                         |s| {
                             s.child(marked_chip(
                                 "ninja-screen",
-                                "Computer",
+                                "",
                                 icon("machine-desktop", 16., TEXT),
                                 false,
                                 cx,
                                 |app, w, cx| app.ninja_screen(false, w, cx),
                             ))
-                            .when(!compact, |s| s.child(chip(
-                                "ninja-take-over",
-                                "Take over",
-                                false,
-                                cx,
-                                |app, w, cx| app.ninja_screen(true, w, cx),
-                            )))
+
                         },
                     )
-                    .child(chip(
+                    .child(marked_chip(
                         "ninja-new-chat",
-                        "New chat",
+                        "",
+                        icon("plus",16.,TEXT),
                         false,
                         cx,
                         |app, _, cx| {
@@ -1756,7 +1749,10 @@ impl Orbit {
                             }
                             cx.notify();
                         },
-                    )),
+                    ))
+                    .when(p.profile.revision>0,|s|s
+                        .child(marked_chip("ninja-settings","",icon("settings",16.,TEXT),p.settings,cx,|app,_,cx|{if let Some(p)=&mut app.ninjas.panel{p.settings=!p.settings;}cx.notify();}))
+                        .child(marked_chip("close-personal-ninjas","",icon("close",16.,TEXT),false,cx,|app,_,cx|{app.remember_ninja_draft(cx);app.ninjas.desktop=None;app.ninjas.panel=None;cx.notify();})))
             )
             .child(
                 div()
@@ -1998,56 +1994,19 @@ impl Orbit {
                     )),
             );
         }
-        work = work
-            .child(field(&p.fields[3], "chat").min_h(px(68.)))
-            .when(
-                self.ninjas
-                    .hosts
-                    .iter()
-                    .any(|h| h.id == p.host && h.endpoint.is_some()),
-                |s| {
-                    s.child(marked_chip(
-                        "ninja-send-reference",
-                        "Send reference",
-                        icon("plus", 14., TEXT),
-                        false,
-                        cx,
-                        |app, _, cx| app.ninja_send_reference(cx),
-                    ))
-                },
-            )
-            .child(
-                div().flex().gap_1().children(
-                    ["Now", "Tonight 22:00", "Every 24h"]
-                        .into_iter()
-                        .enumerate()
-                        .map(|(i, label)| {
-                            chip(
-                                SharedString::from(format!("ninja-schedule-{i}")),
-                                label,
-                                p.schedule == i,
-                                cx,
-                                move |app, _, cx| {
-                                    if let Some(p) = &mut app.ninjas.panel {
-                                        p.schedule = i;
-                                    }
-                                    cx.notify();
-                                },
-                            )
-                        }),
-                ),
-            )
-            .child(chip(
-                "ninja-submit-task",
-                if p.chat.is_some() {
-                    "Continue chat"
-                } else {
-                    "Assign task"
-                },
-                true,
-                cx,
-                |app, _, cx| app.ninja_submit_task(cx),
-            ));
+        let toggle_settings=|app:&mut Orbit,_:&mut Window,cx:&mut Context<Orbit>|{if let Some(p)=&mut app.ninjas.panel{p.settings=!p.settings;}cx.notify();};
+        work=work.child(div().id("ninja-composer").debug_selector(||"ninja-composer".into()).relative().p_3().rounded_xl().border_1().border_color(rgba(0xffffff20)).flex().flex_col().gap_3()
+            .drag_over::<ExternalPaths>(|s,_,_,_|s.border_color(rgb(ACCENT)))
+            .on_drop(cx.listener(|app,paths:&ExternalPaths,_,cx|app.ninja_reference_paths(paths.paths().to_vec(),cx)))
+            .child(div().min_h(px(60.)).child(p.fields[3].clone()))
+            .child(div().flex().items_center().gap_2()
+                .child(marked_chip("ninja-composer-workspace","",icon("workspace-folder-open",16.,TEXT),false,cx,toggle_settings))
+                .child(marked_chip("ninja-composer-permissions","",icon(if !p.profile.edits{"lock-keyhole"}else if p.profile.access==runtime::CodexAccess::Full{"lock-keyhole-open"}else{"shield"},16.,if p.profile.access==runtime::CodexAccess::Full{0xf38c82}else{0xf2b66e}),false,cx,toggle_settings))
+                .child(marked_chip("ninja-composer-model",if compact {String::new()}else{composer_design::display_label(p.profile.model.as_deref().unwrap_or(p.profile.agent.name()))},icon(agent_icon(p.profile.agent),16.,TEXT),false,cx,toggle_settings))
+                .child(chip("ninja-composer-effort",if compact {"✦".to_owned()}else{composer_design::title(p.profile.effort.as_deref().unwrap_or("auto"))},false,cx,toggle_settings))
+                .child(marked_chip("ninja-orchestrate","",icon("branch",16.,if p.profile.orchestrator{ACCENT}else{TEXT}),p.profile.orchestrator,cx,|app,_,cx|{if let Some(p)=&mut app.ninjas.panel{p.profile.orchestrator=!p.profile.orchestrator;}cx.notify();}))
+                .child(div().flex_1())
+                .child(marked_chip("ninja-submit-task","",icon("arrow-up",20.,TEXT),false,cx,|app,_,cx|app.ninja_submit_task(cx)))));
         let inline=p.profile.revision>0;
         let width = (f32::from(window.viewport_size().width) - 24.).clamp(280., 1060.);
         let height = (f32::from(window.viewport_size().height) - 24.).clamp(280., 850.);
@@ -2074,14 +2033,13 @@ impl Orbit {
                     .when(inline,|s|s.size_full().min_h(px(0.)).relative().overflow_hidden())
                     .when(!inline,|s|s.w(px(width)).h(px(height)).rounded_xl().border_1().border_color(rgba(0xffffff20)).bg(rgba(appearance::MENU_SURFACE)).shadow_lg())
                     .p_4()
-                    .child(crate::ninja_art::wallpaper(&p.profile.style,self.motion && !native::reduced_motion() && window.is_window_active()))
                     .occlude()
                     .opacity(progress)
                     .flex()
                     .flex_col()
                     .gap_3()
                     .on_click(|_, _, cx| cx.stop_propagation())
-                    .child(
+                    .when(!inline, |s|s.child(
                         div()
                             .flex()
                             .items_center()
@@ -2111,7 +2069,7 @@ impl Orbit {
                                     .child(
                                         div()
                                             .text_size(theme::ui_px(12.))
-                                            .child(host_name.to_owned()),
+                                            .child(host_name.to_owned()).flex_1(),
                                     ),
                             )
                             .child(marked_chip(
@@ -2127,16 +2085,17 @@ impl Orbit {
                                     cx.notify();
                                 },
                             ))
-                            .child(chip(
+                            .child(marked_chip(
                                 "close-personal-ninjas",
-                                "×",
+                                "",
+                                icon("close",16.,TEXT),
                                 false,
                                 cx,
                                 |app, _, cx| {
                                     app.remember_ninja_draft(cx);app.ninjas.desktop=None;app.ninjas.panel = None;
                                     cx.notify();
                                 },
-                            )),
+                            )))
                     )
                     .when_some(
                         p.error
@@ -2185,6 +2144,7 @@ impl Orbit {
                             )),
                     ),
             )
+            .child(crate::ninja_art::wallpaper(&p.profile.style,self.motion && !native::reduced_motion() && window.is_window_active() && summaries.iter().any(|t|["running","approval"].contains(&t["state"].as_str().unwrap_or("")))))
             .into_any_element()
     }
 }
@@ -2193,6 +2153,16 @@ impl Orbit {
 mod tests {
     use super::*;
     use std::prelude::v1::test;
+    #[gpui::test]
+    fn closing_code_tab_preserves_the_independent_ninja_and_compact_composer(cx:&mut TestAppContext){
+        let(view,cx)=crate::ui_tests::fixture(cx);
+        cx.update(|w,cx|view.update(cx,|app,cx|{app.open_ninjas(Some("local".into()),None,w,cx);app.ninjas.panel.as_mut().unwrap().profile.revision=1;let owner=app.ninja_surface_owner();let active=app.active.clone().unwrap_or_else(||"old-code-tab".into());app.active=Some(active.clone());app.open_tabs=vec![active.clone()];app.close_tab(&active,w,cx);assert_eq!(app.ninja_surface_owner(),owner);assert!(app.open_tabs.is_empty());assert!(app.active.is_none(),"Closed Code chat must not reappear beneath the Ninja");}));
+        crate::ui_tests::draw_frame(&view,cx);
+        assert!(cx.debug_bounds("ninja-composer").is_some());
+        assert!(cx.debug_bounds("ninja-submit-task").is_some());
+        assert!(cx.debug_bounds("ninja-schedule-0").is_none());
+        assert!(cx.debug_bounds("ninja-send-reference").is_none());
+    }
     #[gpui::test]
     fn personal_panel_preserves_current_chat_and_draft(cx: &mut TestAppContext) {
         let (view, cx) = crate::ui_tests::fixture(cx);

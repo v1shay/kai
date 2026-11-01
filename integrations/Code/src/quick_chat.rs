@@ -164,6 +164,7 @@ impl QuickChat {
                     this.sync_to_main(cx);
                 }
                 InputEvent::Submit => this.submit(window, cx),
+                InputEvent::FilesPasted(paths)=>this.orbit.update(cx,|app,cx|app.add_attachments(paths.clone(),cx)),
                 InputEvent::ImagePasted(bytes) => this
                     .orbit
                     .update(cx, |app, cx| app.add_clipboard_image(bytes.clone(), cx)),

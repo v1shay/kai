@@ -55,7 +55,15 @@ macOS privacy grants (Accessibility, Screen Recording, protected folders) and pr
 
 ## Reference files
 
-**Send reference** uses Taildrop for explicitly selected files. It appends their host Downloads names to the message draft. It does not transfer a local project, change the Ninja's workspace, or make laptop files its execution root. The old workspace-import RPC and handoff button are retired. Protected host folders keep their normal macOS permission requirements.
+**Attachments** accepts file drops and Finder/image pastes in the Ninja composer, using Taildrop for explicitly selected remote reference files. It appends their host Downloads names to the message draft. It does not transfer a local project, change the Ninja's workspace, or make laptop files its execution root. The old workspace-import RPC and handoff button are retired. Protected host folders keep their normal macOS permission requirements.
+
+## Changes in 0.12.34
+
+Saved Ninjas can be the only open tab. Closing an underlying Code tab no longer starts a new Code conversation or dismisses the selected Ninja. Their corner toolbar uses unboxed action icons; the viewer uses the existing glass surface, centered login fields, and corner Watch/control/close icons. Menu-bar opening retires the visible workspace through the existing morph.
+
+The composer uses workspace, access, model, thinking, orchestration, and icon send controls. These edit the selected host profile; they never submit through the underlying Code chat. The old Continue chat, Send reference, and preset schedule buttons are removed. Drop files or paste Finder files/images into the composer; remote references use the existing Taildrop route, and send waits for file delivery. Orchestration is an explicit profile policy passed to the host harness.
+
+A visible vector companion replaces the faded background runner. Four embedded SVG poses walk the conversation perimeter above the content during activity and perch while idle. The extended notch uses the same vector assets and identity tint, with cached frames and Core Animation motion. Reduced Motion and inactive windows remain static.
 
 ## Verification for 0.12.33
 
