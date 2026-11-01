@@ -214,8 +214,77 @@ fn chip(
     cx: &Context<Orbit>,
     action: impl Fn(&mut Orbit, &mut Window, &mut Context<Orbit>) + 'static,
 ) -> Stateful<Div> {
+    chip_content(
+        id,
+        div()
+            .min_w(px(0.))
+            .text_ellipsis()
+            .child(label.into())
+            .into_any_element(),
+        on,
+        cx,
+        action,
+    )
+}
+fn marked_chip(
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    mark: impl IntoElement,
+    on: bool,
+    cx: &Context<Orbit>,
+    action: impl Fn(&mut Orbit, &mut Window, &mut Context<Orbit>) + 'static,
+) -> Stateful<Div> {
+    chip_content(
+        id,
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .min_w(px(0.))
+            .child(div().flex_none().child(mark))
+            .child(div().min_w(px(0.)).text_ellipsis().child(label.into()))
+            .into_any_element(),
+        on,
+        cx,
+        action,
+    )
+}
+fn host_glyph(host: &Host) -> &'static str {
+    let name = host.name.to_ascii_lowercase();
+    if name.contains("book") || name.contains("laptop") {
+        "machine-laptop"
+    } else if ["server", "linux", "ubuntu", " vm"]
+        .iter()
+        .any(|s| name.contains(s))
+    {
+        "machine-server"
+    } else {
+        "machine-desktop"
+    }
+}
+fn field(input: &Entity<TextInput>, glyph: &'static str) -> Div {
+    div()
+        .min_w(px(0.))
+        .px_2()
+        .py_2()
+        .rounded_md()
+        .border_1()
+        .border_color(rgba(0xffffff14))
+        .bg(rgba(GLASS_SURFACE))
+        .flex()
+        .items_start()
+        .gap_2()
+        .child(div().flex_none().pt_1().child(icon(glyph, 14., MUTED)))
+        .child(div().flex_1().min_w(px(0.)).child(input.clone()))
+}
+fn chip_content(
+    id: impl Into<SharedString>,
+    content: AnyElement,
+    on: bool,
+    cx: &Context<Orbit>,
+    action: impl Fn(&mut Orbit, &mut Window, &mut Context<Orbit>) + 'static,
+) -> Stateful<Div> {
     let id = id.into();
-    let label = label.into();
     div()
         .id(id)
         .h(px(28.))
@@ -229,7 +298,9 @@ fn chip(
         .text_size(theme::ui_px(11.))
         .text_color(rgb(TEXT))
         .cursor_pointer()
-        .child(label)
+        .min_w(px(0.))
+        .max_w_full()
+        .child(content)
         .on_click(cx.listener(move |app, _, w, cx| {
             cx.stop_propagation();
             action(app, w, cx)
@@ -934,8 +1005,8 @@ impl Orbit {
                         },
                     )),
             )
-            .child(p.fields[0].clone())
-            .child(div().h(px(70.)).child(p.fields[1].clone()))
+            .child(field(&p.fields[0], "ninja"))
+            .child(field(&p.fields[1], "chat").min_h(px(76.)))
             .child(
                 div()
                     .text_size(theme::ui_px(10.))
@@ -950,9 +1021,10 @@ impl Orbit {
                     .gap_1()
                     .children(self.ninjas.hosts.iter().map(|host| {
                         let id = host.id.clone();
-                        chip(
+                        marked_chip(
                             SharedString::from(format!("ninja-host-{id}")),
                             host.name.clone(),
+                            icon(host_glyph(host), 16., TEXT),
                             p.host == id,
                             cx,
                             move |app, w, cx| app.open_ninjas(Some(id.clone()), None, w, cx),
@@ -962,11 +1034,13 @@ impl Orbit {
             .child(
                 div()
                     .flex()
+                    .flex_wrap()
                     .gap_1()
                     .children(ninjas::styles().into_iter().map(|(id, name, _)| {
-                        chip(
+                        marked_chip(
                             SharedString::from(format!("ninja-style-{id}")),
                             name,
+                            avatar(id, 20.),
                             p.profile.style == id,
                             cx,
                             move |app, _, cx| {
@@ -978,7 +1052,10 @@ impl Orbit {
                         )
                     })),
             )
-            .child(p.fields[2].clone());
+            .child(
+                field(&p.fields[2], "workspace-folder-open")
+                    .debug_selector(|| "ninja-workspace-field".into()),
+            );
         setup = setup.child(
             div().flex().flex_wrap().gap_1().children(
                 providers
@@ -986,9 +1063,10 @@ impl Orbit {
                     .filter(|v| v["installed"] == true)
                     .filter_map(|v| serde_json::from_value::<AgentKind>(v["agent"].clone()).ok())
                     .map(|agent| {
-                        chip(
+                        marked_chip(
                             SharedString::from(format!("ninja-provider-{}", agent.command())),
                             agent.name(),
+                            icon(agent_icon(agent), 16., agent_color(agent)),
                             p.profile.agent == agent,
                             cx,
                             move |app, _, cx| {
@@ -1012,6 +1090,19 @@ impl Orbit {
                     div()
                         .text_size(theme::ui_px(10.))
                         .text_color(rgb(MUTED))
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .when_some(p.profile.ninja.as_ref(), |v, n| {
+                            v.child(icon(
+                                match n.engine {
+                                    ninja::Engine::Ollama => "lab-ollama",
+                                    ninja::Engine::LlamaCpp => "engine-llamacpp",
+                                },
+                                16.,
+                                TEXT,
+                            ))
+                        })
                         .child(
                             p.profile
                                 .ninja
@@ -1028,9 +1119,18 @@ impl Orbit {
                         ]
                         .into_iter()
                         .map(|(h, label)| {
-                            chip(
+                            marked_chip(
                                 SharedString::from(format!("ninja-harness-{label}")),
                                 label,
+                                icon(
+                                    if h == ninja::Harness::Codex {
+                                        "codex"
+                                    } else {
+                                        "claude"
+                                    },
+                                    16.,
+                                    TEXT,
+                                ),
                                 p.profile.ninja.as_ref().is_some_and(|n| n.harness == h),
                                 cx,
                                 move |app, _, cx| {
@@ -1054,7 +1154,7 @@ impl Orbit {
                 .flex()
                 .items_center()
                 .gap_2()
-                .child(div().flex_1().child(p.fields[5].clone()))
+                .child(field(&p.fields[5], "search").flex_1())
                 .child(chip(
                     "ninja-refresh-models",
                     if p.busy { "Reading…" } else { "Models" },
@@ -1089,9 +1189,19 @@ impl Orbit {
                         .take(128)
                         .map(|model| {
                             let id = model["id"].as_str().unwrap_or("").to_owned();
-                            chip(
+                            marked_chip(
                                 SharedString::from(format!("ninja-model-{id}")),
                                 model["name"].as_str().unwrap_or(&id).to_owned(),
+                                icon(
+                                    composer_design::model_glyph(&id)
+                                        .unwrap_or(agent_icon(p.profile.agent)),
+                                    16.,
+                                    if p.profile.agent == AgentKind::Ninja {
+                                        ninja::lab_color(&id)
+                                    } else {
+                                        TEXT
+                                    },
+                                ),
                                 current_model.as_deref() == Some(id.as_str()),
                                 cx,
                                 move |app, _, cx| {
@@ -1137,7 +1247,7 @@ impl Orbit {
                 )
             }),
         ));
-        setup=setup.child(div().flex().gap_1().children([("Read only",false,runtime::CodexAccess::Workspace),("Workspace",true,runtime::CodexAccess::Workspace),("Full access",true,runtime::CodexAccess::Full)].into_iter().map(|(label,edit,access)|chip(SharedString::from(format!("ninja-access-{label}")),label,p.profile.edits==edit&&p.profile.access==access,cx,move|app,_,cx|{if let Some(p)=&mut app.ninjas.panel{p.profile.edits=edit;p.profile.access=access;}cx.notify();})))).child(div().flex().gap_1().children([("Ask me",runtime::CodexApprovals::Ask),("Never ask",runtime::CodexApprovals::Never)].into_iter().map(|(label,policy)|chip(SharedString::from(format!("ninja-approval-{label}")),label,p.profile.approvals==policy,cx,move|app,_,cx|{if let Some(p)=&mut app.ninjas.panel{p.profile.approvals=policy;}cx.notify();})))).child(div().text_size(theme::ui_px(10.)).text_color(rgb(MUTED)).child("Model and permission changes apply to future tasks. Memory follows this Ninja across chats.")).child(chip("ninja-save-profile",if p.busy{"Saving…"}else{"Save Ninja"},true,cx,|app,_,cx|app.ninja_save_profile(cx)));
+        setup=setup.child(div().flex().gap_1().children([("Read only",false,runtime::CodexAccess::Workspace),("Workspace",true,runtime::CodexAccess::Workspace),("Full access",true,runtime::CodexAccess::Full)].into_iter().map(|(label,edit,access)|marked_chip(SharedString::from(format!("ninja-access-{label}")),label,icon(if !edit{"lock-keyhole"}else if access==runtime::CodexAccess::Full{"lock-keyhole-open"}else{"shield"},14.,if !edit{TEXT}else if access==runtime::CodexAccess::Full{0xf38c82}else{0xf2b66e}),p.profile.edits==edit&&p.profile.access==access,cx,move|app,_,cx|{if let Some(p)=&mut app.ninjas.panel{p.profile.edits=edit;p.profile.access=access;}cx.notify();})))).child(div().flex().gap_1().children([("Ask me",runtime::CodexApprovals::Ask),("Never ask",runtime::CodexApprovals::Never)].into_iter().map(|(label,policy)|chip(SharedString::from(format!("ninja-approval-{label}")),label,p.profile.approvals==policy,cx,move|app,_,cx|{if let Some(p)=&mut app.ninjas.panel{p.profile.approvals=policy;}cx.notify();})))).child(div().text_size(theme::ui_px(10.)).text_color(rgb(MUTED)).child("Model and permission changes apply to future tasks. Memory follows this Ninja across chats.")).child(chip("ninja-save-profile",if p.busy{"Saving…"}else{"Save Ninja"},true,cx,|app,_,cx|app.ninja_save_profile(cx)));
         if p.profile.revision > 0
             && self
                 .ninjas
@@ -1154,7 +1264,7 @@ impl Orbit {
             ));
         }
         if p.profile.revision > 0 {
-            setup=setup.child(div().text_size(theme::ui_px(11.)).child("Personal memory")).child(div().h(px(90.)).child(p.fields[4].clone())).child(chip("ninja-save-memory","Save memory",false,cx,|app,_,cx|{if let Some(p)=&app.ninjas.panel{let v=json!({"action":"memory","id":p.profile.id,"revision":p.memory_revision,"content":p.fields[4].read(cx).text()});app.ninja_operation(v,cx);}}));
+            setup=setup.child(div().text_size(theme::ui_px(11.)).child("Personal memory")).child(field(&p.fields[4],"file").min_h(px(90.))).child(chip("ninja-save-memory","Save memory",false,cx,|app,_,cx|{if let Some(p)=&app.ninjas.panel{let v=json!({"action":"memory","id":p.profile.id,"revision":p.memory_revision,"content":p.fields[4].read(cx).text()});app.ninja_operation(v,cx);}}));
         }
         let tasks = snapshot
             .and_then(|v| v["tasks"].as_array())
@@ -1221,6 +1331,17 @@ impl Orbit {
                                 div()
                                     .text_size(theme::ui_px(11.))
                                     .text_color(rgb(MUTED))
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .when_some(t["model"].as_str(), |v, model| {
+                                        v.child(icon(
+                                            composer_design::model_glyph(model)
+                                                .unwrap_or(agent_icon(p.profile.agent)),
+                                            14.,
+                                            TEXT,
+                                        ))
+                                    })
                                     .child(format!(
                                         "{} · {}",
                                         t["state"].as_str().unwrap_or(""),
@@ -1290,7 +1411,7 @@ impl Orbit {
             }
         }
         work = work
-            .child(div().h(px(90.)).child(p.fields[3].clone()))
+            .child(field(&p.fields[3], "chat").min_h(px(90.)))
             .child(
                 div().flex().gap_1().children(
                     ["Now", "Tonight 22:00", "Every 24h"]
@@ -1347,13 +1468,16 @@ impl Orbit {
             .child(
                 div()
                     .id("personal-ninjas-panel")
+                    .debug_selector(|| "personal-ninjas-panel".into())
                     .w(px(width))
                     .h(px(height))
                     .p_4()
                     .rounded_xl()
                     .border_1()
                     .border_color(rgba(0xffffff20))
-                    .bg(rgba(self.appearance.tint(GLASS_SURFACE)))
+                    .bg(rgba(appearance::MENU_SURFACE))
+                    .shadow_lg()
+                    .occlude()
                     .opacity(progress)
                     .flex()
                     .flex_col()
@@ -1369,7 +1493,23 @@ impl Orbit {
                                     .flex()
                                     .items_center()
                                     .gap_2()
-                                    .child(icon("tailscale", 18., TEXT))
+                                    .child(icon(
+                                        self.ninjas
+                                            .hosts
+                                            .iter()
+                                            .find(|h| h.id == p.host)
+                                            .map(host_glyph)
+                                            .unwrap_or("machine-desktop"),
+                                        18.,
+                                        TEXT,
+                                    ))
+                                    .when(
+                                        self.ninjas
+                                            .hosts
+                                            .iter()
+                                            .any(|h| h.id == p.host && h.endpoint.is_some()),
+                                        |v| v.child(icon("tailscale", 14., MUTED)),
+                                    )
                                     .child(
                                         div()
                                             .text_size(theme::ui_px(12.))
@@ -1404,12 +1544,30 @@ impl Orbit {
                             .child(
                                 div()
                                     .id("ninja-persona-fields")
-                                    .w(px(width * 0.45))
+                                    .debug_selector(|| "ninja-persona-fields".into())
+                                    .w(px((width - 48.) * 0.45))
+                                    .flex_none()
+                                    .min_w(px(0.))
+                                    .p_3()
+                                    .rounded_lg()
+                                    .border_1()
+                                    .border_color(rgba(0xffffff14))
+                                    .bg(rgba(GLASS_SURFACE))
                                     .h_full()
                                     .overflow_y_scroll()
                                     .child(setup),
                             )
-                            .child(work.flex_1().h_full()),
+                            .child(
+                                work.id("ninja-work-card")
+                                    .debug_selector(|| "ninja-work-card".into())
+                                    .flex_1()
+                                    .h_full()
+                                    .p_3()
+                                    .rounded_lg()
+                                    .border_1()
+                                    .border_color(rgba(0xffffff14))
+                                    .bg(rgba(GLASS_SURFACE)),
+                            ),
                     ),
             )
             .into_any_element()
@@ -1436,9 +1594,22 @@ mod tests {
                 assert!(app.ninjas.panel.is_none());
                 app.open_ninjas(Some("local".into()), None, window, cx);
                 assert!(app.ninjas.panel.is_some());
+                app.ninjas.snapshots.insert("local".into(),json!({"providers":[{"agent":"Codex","installed":true},{"agent":"Claude","installed":true},{"agent":"Ninja","installed":true}]}));
+                let panel=app.ninjas.panel.as_mut().unwrap();panel.profile.agent=AgentKind::Ninja;
+                panel.profile.ninja=Some(ninja::Selection{model:"gpt-oss:20b".into(),harness:ninja::Harness::Claude,..Default::default()});
+                panel.profile.model=Some("gpt-oss:20b".into());
+                panel.models=vec![json!({"id":"gpt-oss:20b","name":"gpt-oss:20b","efforts":["low","medium","high"]}),json!({"id":"qwen3-coder:30b","name":"Qwen 3 Coder","efforts":[]})];
+                panel.fields[2].update(cx,|input,cx|input.set_text("/Users/example/Library/Application Support/a-very-long-workspace-name/another-folder",cx));
             })
         });
         crate::ui_tests::draw_frame(&view, cx);
+        let card = cx.debug_bounds("personal-ninjas-panel").unwrap();
+        let fields = cx.debug_bounds("ninja-persona-fields").unwrap();
+        let workspace = cx.debug_bounds("ninja-workspace-field").unwrap();
+        assert!(fields.left() >= card.left() && fields.right() <= card.right());
+        assert!(workspace.left() >= fields.left() && workspace.right() <= fields.right());
+        let work = cx.debug_bounds("ninja-work-card").unwrap();
+        assert!(work.left() >= fields.right() && work.right() <= card.right());
     }
     #[gpui::test]
     fn remote_reviews_keep_exact_owner_token_and_native_questions(cx: &mut TestAppContext) {
