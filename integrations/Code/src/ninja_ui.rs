@@ -410,6 +410,7 @@ impl Orbit {
             return;
         }
         if !id.contains(':') {
+            self.ninja.error = None;
             if !self.ninja.pending.insert(format!("tags:{id}")) {
                 return;
             }

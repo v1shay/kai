@@ -25,7 +25,7 @@ import AppKit
         let id=state.effectiveModel ?? state.providerDefaultModel
         let resolved=catalog.first{($0.resolvedModel ?? $0.model)==id}
         let label=(state.threadId == nil ? "Use ":"Continue · ")+(id ?? state.selectedAgent ?? "Agent")
-        if state.selectedAgent=="ninja"{return catalog.filter{ninjaQuery.isEmpty || $0.displayName.localizedCaseInsensitiveContains(ninjaQuery)}}
+        if state.selectedAgent=="ninja"{return catalog.filter{model in ninjaQuery.split(whereSeparator: { $0.isWhitespace }).allSatisfy{model.displayName.localizedCaseInsensitiveContains(String($0))}}}
         return [KaiModel(resolvedModel:id,model:"",displayName:label,supportedReasoningEfforts:resolved?.supportedReasoningEfforts ?? [])]+catalog
     }
     private var choice:KaiModel?{models.first{$0.model==selectedModel} ?? models.first{($0.resolvedModel ?? $0.model)==(state?.effectiveModel ?? state?.selectedModel)}}
@@ -176,7 +176,7 @@ import AppKit
             if scope == .providers{dismiss(restoreFocus:true)}else{column=1;rebuild()}
         case 1:
             guard pendingAgent==nil,models.indices.contains(cursors[1]) else{return}
-            let model=models[cursors[1]];selectedModel=model.model;if state.selectedAgent=="ninja",!model.model.contains(":"){ninjaQuery=model.model+":";onNinja?("search",ninjaQuery)};onModel?(model.model)
+            let model=models[cursors[1]];selectedModel=model.model;if state.selectedAgent=="ninja",!model.model.contains(":"){cursors[1]=0;ninjaQuery=model.model+":";onNinja?("search",ninjaQuery)};onModel?(model.model)
             if model.supportedReasoningEfforts.isEmpty{if state.selectedAgent != "ninja"{dismiss(restoreFocus:true)}}else{column=2;cursors[2]=min(cursors[2],model.supportedReasoningEfforts.count-1);rebuild()}
         default:guard levels.indices.contains(cursors[2]) else{return};commitEffort(levels[cursors[2]])
         }

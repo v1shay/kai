@@ -625,9 +625,11 @@ impl Repository {
     ) -> Result<String> {
         cancelled(cancel)?;
         let root = fs::canonicalize(root)?;
+        fs::create_dir_all(&self.path)?;
+        let storage = fs::canonicalize(&self.path)?;
         ensure!(
-            !self.path.starts_with(&root),
-            "Checkpoint storage must be outside the workspace"
+            !root.starts_with(&storage),
+            "Checkpoint storage cannot itself be used as the workspace"
         );
         ensure!(
             root.parent().is_some(),
@@ -866,6 +868,10 @@ impl Repository {
         Ok(root)
     }
     fn snapshot(&self, id: &str, root: &Root, table: &str, cancel: &AtomicBool) -> Result<()> {
+        // Broad workspaces can contain Kai's private storage. Never enumerate,
+        // snapshot, diff, or restore that live, self-mutating subtree.
+        let storage = fs::canonicalize(&self.path)?;
+        let excluded_storage = storage.strip_prefix(&root.path).ok().map(Path::to_path_buf);
         let mut db = self.manifest(id)?;
         let tx = db.transaction()?;
         tx.execute(&format!("DELETE FROM {table}"), [])?;
@@ -882,6 +888,9 @@ impl Repository {
         let mut total = 0u64;
         let mut capture = |path: &Path, tracked: bool| -> Result<()> {
             relative(path)?;
+            if excluded_storage.as_ref().is_some_and(|excluded|path.starts_with(excluded)) {
+                return Ok(());
+            }
             if private_path(path) || (!tracked && hidden(path)) {
                 return Ok(());
             }
@@ -1005,6 +1014,11 @@ impl Repository {
             .stdin(Stdio::null())
             .stderr(Stdio::null())
             .stdout(Stdio::piped());
+        if let Some(excluded) = &excluded_storage {
+            let mut spec = b":(exclude,literal)".to_vec();
+            spec.extend_from_slice(bytes(excluded));
+            command.arg(OsString::from_vec(spec));
+        }
         let mut child = command.spawn()?;
         let result = (|| -> Result<()> {
             let mut reader = BufReader::with_capacity(IO_BYTES, child.stdout.take().unwrap());
@@ -1198,9 +1212,12 @@ impl Repository {
         if checkpoint.phase == "ready" {
             db.execute("DELETE FROM applied", [])?;
         }
+        let storage = fs::canonicalize(&self.path)?;
+        let excluded_storage = storage.strip_prefix(&root.path).ok();
         let mut recovery_bytes = 0u64;
         each_change(&db, None, |path, before, after| {
             cancelled(cancel)?;
+            ensure!(!excluded_storage.is_some_and(|excluded|path.starts_with(excluded)), "Private checkpoint storage cannot be restored as a workspace file");
             let applied: bool = db.query_row(
                 "SELECT EXISTS(SELECT 1 FROM applied WHERE path=?1)",
                 [bytes(path)],
@@ -1548,6 +1565,33 @@ mod tests {
             self.repo
                 .apply(id, direction, &AtomicBool::new(false))
                 .unwrap()
+        }
+    }
+    #[test]
+    fn nested_checkpoint_storage_is_excluded_and_survives_undo_and_redo() {
+        for git in [false, true] {
+            let mut fixture = Fixture::new();
+            let private = fixture.root.join("Kai [private]");
+            fixture.repo = Repository::new(private.clone()).unwrap();
+            fs::write(private.join("sentinel.txt"), "private-before").unwrap();
+            fs::write(fixture.root.join("work.txt"), "before").unwrap();
+            if git {
+                assert!(Command::new("/usr/bin/git").arg("-C").arg(&fixture.root).args(["init","--quiet"]).status().unwrap().success());
+                assert!(Command::new("/usr/bin/git").arg("-C").arg(&fixture.root).args(["add","--","Kai [private]/sentinel.txt"]).status().unwrap().success());
+            }
+            let id = fixture.start("nested-storage");
+            fs::write(fixture.root.join("work.txt"), "after").unwrap();
+            fs::write(private.join("sentinel.txt"), "private-live").unwrap();
+            fixture.seal(&id);
+            let preview = fixture.repo.preview(&id, Direction::Undo, 0).unwrap();
+            assert!(preview.changes.iter().all(|change| !change.path.starts_with("Kai [private]")));
+            fixture.apply(&id, Direction::Undo);
+            assert_eq!(fs::read_to_string(fixture.root.join("work.txt")).unwrap(), "before");
+            assert_eq!(fs::read_to_string(private.join("sentinel.txt")).unwrap(), "private-live");
+            fixture.apply(&id, Direction::Redo);
+            assert_eq!(fs::read_to_string(fixture.root.join("work.txt")).unwrap(), "after");
+            assert_eq!(fs::read_to_string(private.join("sentinel.txt")).unwrap(), "private-live");
+            assert!(fixture.repo.capture_before(&private, "session", "invalid", "private", &AtomicBool::new(false)).is_err());
         }
     }
     impl Drop for Fixture {

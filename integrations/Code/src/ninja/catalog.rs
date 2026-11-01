@@ -281,26 +281,32 @@ pub fn registry_page(page: usize, query: &str) -> Result<Vec<Model>> {
     }
     Ok(out)
 }
+fn valid_family(family: &str) -> bool {
+    !family.is_empty() && family.len() <= 128
+        && family.split('/').all(|part| !part.is_empty() && part != "." && part != ".."
+            && part.chars().all(|c| c.is_ascii_alphanumeric() || "_-.".contains(c)))
+}
 pub fn tags(family: &str) -> Result<Vec<String>> {
     anyhow::ensure!(
-        family.len() <= 128
-            && family
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || "_-/ .".contains(c))
-            && !family.contains([' ', '.']),
+        valid_family(family),
         "Invalid model family"
     );
     let html = String::from_utf8(http::public(&format!(
         "https://ollama.com/library/{family}/tags"
     ))?)?;
+    parse_tags(family, &html)
+}
+fn parse_tags(family: &str, html: &str) -> Result<Vec<String>> {
     let re = regex::Regex::new(r#"href="/library/([^"?#]+:[^"?#]+)""#)?;
+    let prefix = format!("{family}:");
     let mut tags = Vec::new();
     for c in re.captures_iter(&html) {
         let id = html_text(&c[1]);
-        if !tags.contains(&id) {
+        if id.starts_with(&prefix) && id.len() > prefix.len() && !tags.contains(&id) {
             tags.push(id)
         }
     }
+    anyhow::ensure!(!tags.is_empty(), "Ollama returned no download tags for {family}");
     Ok(tags)
 }
 fn html_text(s: &str) -> String {
@@ -540,4 +546,34 @@ pub fn generate_title(
             .as_str()
             .or_else(|| value["choices"][0]["message"]["content"].as_str())?,
     )
+}
+
+#[cfg(test)]
+mod tag_tests {
+    use super::*;
+    #[test]
+    fn versioned_families_allow_dots_without_allowing_path_traversal() {
+        for family in ["qwen3.8", "deepseek-v3.2", "llama3.3", "publisher/model-v1.2"] {
+            assert!(valid_family(family), "{family}");
+        }
+        for family in ["", "../qwen3.8", "qwen/../secret", "/qwen", "qwen/", "qwen//model", "qwen?x", "qwen#x", "qwen%2f..", "qwen model", ".", ".."] {
+            assert!(!valid_family(family), "{family}");
+        }
+    }
+    #[test]
+    fn tag_links_preserve_versioned_names_and_do_not_cache_empty_results() {
+        let html = r#"<a href="/library/qwen3.8:27b">27b</a><a href="/library/qwen3.8:27b">duplicate</a><a href="/library/qwen3.8:27b-q4_K_M">quantization</a><a href="/library/other:7b">other</a>"#;
+        assert_eq!(parse_tags("qwen3.8", html).unwrap(), ["qwen3.8:27b", "qwen3.8:27b-q4_K_M"]);
+        assert!(parse_tags("qwen3.8", "<html>No tags</html>").is_err());
+    }
+    #[test]
+    #[ignore = "Explicit live Ollama registry check"]
+    fn live_versioned_families_return_downloadable_tags() {
+        for family in ["qwen3.8", "qwen3.6", "deepseek-v3.1", "llama3.3"] {
+            let sizes = tags(family).unwrap();
+            assert!(!sizes.is_empty());
+            assert!(sizes.iter().all(|s| s.starts_with(&format!("{family}:"))));
+            eprintln!("{family}: {} real tags", sizes.len());
+        }
+    }
 }
