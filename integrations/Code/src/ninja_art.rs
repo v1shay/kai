@@ -23,15 +23,9 @@ fn images() -> &'static [Arc<Image>; 6] {
     })
 }
 pub(super) fn glyph(style:&str)->&'static str { match style {"lightning"=>"ninja-lightning","earth"=>"ninja-earth","ice"=>"ninja-ice","energy"=>"ninja-energy","water"=>"ninja-water",_=>"ninja-fire"} }
-pub(super) fn wallpaper(style:&str,animated:bool)->AnyElement {
-    let tint=color(style);
-    let runner=div().absolute().w(px(40.)).h(px(48.));
-    let runner=if animated {runner.with_animation(SharedString::from(format!("ninja-companion-{style}")),Animation::new(Duration::from_secs(24)).repeat(),move|v,t|{
-        let segment=t*4.;let (x,y)=if segment<1.{(segment,0.)}else if segment<2.{(1.,segment-1.)}else if segment<3.{(3.-segment,1.)}else{(0.,4.-segment)};
-        let glyph=match ((t*192.) as usize)%4{0=>"ninja-walk-0",1=>"ninja-walk-1",2=>"ninja-walk-2",_=>"ninja-walk-3"};
-        v.left(gpui::relative(x*0.94)).top(gpui::relative(y*0.88)).child(icon(glyph,40.,tint))
-    }).into_any_element()}else{runner.right_2().bottom(px(100.)).child(icon("ninja-walk-0",40.,tint)).into_any_element()};
-    div().id("ninja-wallpaper").debug_selector(||"ninja-wallpaper".into()).absolute().inset_0().overflow_hidden().child(runner).into_any_element()
+pub(super) fn wallpaper(_style:&str,_animated:bool)->AnyElement {
+    div().id("ninja-wallpaper").debug_selector(||"ninja-wallpaper".into()).absolute().inset_0()
+        .child(canvas(|bounds,_,_|unified::atmosphere_slot(bounds,false),|_,_,_,_|{}).size_full()).into_any_element()
 }
 pub(super) fn art(style: &str, size: f32, animated: bool) -> AnyElement {
     if !animated {

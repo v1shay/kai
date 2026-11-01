@@ -249,8 +249,8 @@ private final class NotchSurfaceHost:NSView {
     private var reviewedFinished=[String]()
     private let glassBackground=NotchGlassBackground(frame:.zero)
     private let workspaceBackground=NotchWorkspaceBackground(frame:.zero)
-    private let ninjaBackdrop=CALayer(),ninjaWallpaper=CALayer()
-    private var ninjaWallpaperStyle:String?
+    private let ninjaNotchScene=NinjaAtmosphereView(frame:.zero),ninjaWorkspaceScene=NinjaAtmosphereView(frame:.zero),ninjaQuickScene=NinjaAtmosphereView(frame:.zero)
+    private var ninjaWorkspaceSlot=CGRect.zero,ninjaQuickSlot=CGRect.zero
     private var codeWallpaperEnabled=UserDefaults.standard.bool(forKey:"notchCodeWallpaper") || CommandLine.arguments.contains("--unified-wallpaper-probe"),codeWallpaperItem:NSMenuItem?
     private var codeConnectionItem:NSMenuItem?
     private var glassSliders=[String:NSSlider](),glassLabels=[String:NSTextField](),glassChoiceItems=[NSMenuItem]()
@@ -1576,6 +1576,7 @@ private final class NotchSurfaceHost:NSView {
         if !visible{quickPrepared=nil}
         guard quickChatVisible != visible else{return}
         quickChatVisible=visible
+        updateNinjaWallpaper()
         if visible{
             workspaceAutomaticStatus=false;workspaceStatusRetire?.cancel();workspaceStatusRetire=nil;workspaceStatusMorph.cancel()
             workspaceNotchOverlay=false
@@ -2607,29 +2608,21 @@ private final class NotchSurfaceHost:NSView {
     @objc private func toggleBottomGlass(){if codeWallpaperEnabled{codeWallpaperEnabled=false;UserDefaults.standard.set(false,forKey:"notchCodeWallpaper");glassEnabled=true}else{glassEnabled.toggle()};UserDefaults.standard.set(glassEnabled,forKey:"notchBottomGlass");placePanel();refreshChecks()}
     @objc private func toggleCodeWallpaper(){codeWallpaperEnabled.toggle();UserDefaults.standard.set(codeWallpaperEnabled,forKey:"notchCodeWallpaper");placePanel();refreshChecks()}
     func setWorkspaceWallpaper(_ image:CGImage?,opacity:Float){workspaceBackground.setImage(image,opacity:opacity);AdaptiveTextBackdrop.shared.nativeBackgroundChanged()}
+    func ninjaAtmosphereGeometry(_ rect:CGRect,quick:Bool){if quick{ninjaQuickSlot=rect}else{ninjaWorkspaceSlot=rect};updateNinjaWallpaper()}
     private func updateNinjaWallpaper(){
-        guard let host=scalableUI.layer else{return}
-        guard miniOpen,showsNotchSurface,let ninja=latestState?.personalNinja else{ninjaBackdrop.isHidden=true;ninjaWallpaper.removeAllAnimations();ninjaWallpaperStyle=nil;return}
-        if ninjaBackdrop.superlayer !== host{ninjaBackdrop.masksToBounds=true;host.addSublayer(ninjaBackdrop);ninjaBackdrop.addSublayer(ninjaWallpaper)}
-        CATransaction.begin();CATransaction.setDisableActions(true);ninjaBackdrop.frame=scalableUI.bounds;ninjaBackdrop.isHidden=false;ninjaWallpaper.opacity=1;ninjaWallpaper.bounds=CGRect(x:0,y:0,width:32,height:40);ninjaWallpaper.position=CGPoint(x:24,y:96);ninjaWallpaper.contentsGravity = .resizeAspect;CATransaction.commit()
-        let motion=workspaceMorph.motionEnabled && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion && (latestState?.activeTurnId != nil || latestState?.workspaceVoiceActive == true)
-        if ninjaWallpaperStyle==ninja.style,ninjaWallpaper.animation(forKey:"run") != nil,motion{return}
-        ninjaWallpaper.removeAllAnimations();ninjaWallpaperStyle=ninja.style
-        // The same visible vector companion walks the extended surface perimeter.
-        let cacheKey="walk-"+ninja.style
-        let frames=ninjaFrames[cacheKey] ?? (0..<4).compactMap{index -> CGImage? in
-            guard let url=Bundle.main.resourceURL?.appendingPathComponent("providers/ninja-walk-\(index).svg"),let image=NSImage(contentsOf:url) else{return nil}
-            guard let cg=image.cgImage(forProposedRect:nil,context:nil,hints:nil),let context=CGContext(data:nil,width:48,height:56,bitsPerComponent:8,bytesPerRow:48*4,space:CGColorSpaceCreateDeviceRGB(),bitmapInfo:CGImageAlphaInfo.premultipliedLast.rawValue) else{return nil}
-            let colors:[String:UInt32]=["fire":0xef6758,"lightning":0x619dff,"earth":0xa5acba,"ice":0xc2edf4,"energy":0x74d6a0,"water":0x60ccd7];let color=colors[ninja.style] ?? 0xef6758
-            context.clip(to:CGRect(x:0,y:0,width:48,height:56),mask:cg);context.setFillColor(NSColor(srgbRed:CGFloat((color>>16)&255)/255,green:CGFloat((color>>8)&255)/255,blue:CGFloat(color&255)/255,alpha:1).cgColor);context.fill(CGRect(x:0,y:0,width:48,height:56));return context.makeImage()
+        guard let state=latestState,let ninja=state.personalNinja else{[ninjaNotchScene,ninjaWorkspaceScene,ninjaQuickScene].forEach{$0.suspend()};return}
+        let working=state.activeTurnId != nil || state.workspaceVoiceActive == true
+        let identity=ninja.host+":"+ninja.id+":"+(state.threadId ?? "")
+        let entries:[(NinjaAtmosphereView,NSView?,CGRect,Bool)]=[
+            (ninjaNotchScene,scalableUI,scalableUI.bounds,miniOpen&&showsNotchSurface),
+            (ninjaWorkspaceScene,EmbeddedCodeRuntime.shared.workspaceWindow?.contentView,ninjaWorkspaceSlot,!quickChatVisible&&workspaceMorph.expanded),
+            (ninjaQuickScene,quickWindow?.contentView,ninjaQuickSlot,quickChatVisible)]
+        for (scene,host,rect,visible) in entries{
+            guard let host,rect.width>0,rect.height>0 else{scene.suspend();continue}
+            if scene.superview !== host{scene.removeFromSuperview();host.addSubview(scene)}
+            scene.frame=scene === ninjaNotchScene ? rect:CGRect(x:rect.minX,y:host.bounds.height-rect.maxY,width:rect.width,height:rect.height)
+            scene.configure(identity:identity,style:ninja.style,working:working,motion:workspaceMorph.motionEnabled,visible:visible)
         }
-        ninjaFrames[cacheKey]=frames
-        guard let first=frames.first else{return};ninjaWallpaper.contents=first
-        ninjaWallpaper.backgroundColor=NSColor.clear.cgColor
-        guard motion else{return}
-        let loop=CAKeyframeAnimation(keyPath:"contents");loop.values=frames;loop.duration=0.5;loop.repeatCount = .infinity;loop.calculationMode = .discrete;ninjaWallpaper.add(loop,forKey:"frames")
-        let width=scalableUI.bounds.width,height=scalableUI.bounds.height
-        let run=CAKeyframeAnimation(keyPath:"position");run.values=[CGPoint(x:24,y:96),CGPoint(x:width-24,y:96),CGPoint(x:width-24,y:height-48),CGPoint(x:24,y:height-48),CGPoint(x:24,y:96)].map{NSValue(point:$0)};run.duration=24;run.repeatCount = .infinity;run.calculationMode = .linear;ninjaWallpaper.add(run,forKey:"run")
     }
     private func updateGlassBackground(){
         updateNinjaWallpaper()

@@ -424,7 +424,8 @@ impl Render for QuickChat {
                 this.orbit
                     .update(cx, |app, cx| app.show_modal(Modal::Settings, window, cx));
             }))
-            .child(surface);
+            .child(surface)
+            .when(self.orbit.read(cx).ninja_surface_owner().is_some(),|v|v.child(canvas(|bounds,_,_|unified::atmosphere_slot(bounds,true),|_,_,_,_|{}).absolute().size_full()));
         if self.visible && self.orbit.read(cx).motion && !native::reduced_motion() {
             view.with_animation(
                 ("quick-chat-enter", self.show_generation),
