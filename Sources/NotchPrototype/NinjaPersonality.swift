@@ -47,14 +47,14 @@ enum NinjaQuips {
         // Keep a full cycle for the small pools and a long cross-day history for greetings.
         defaults.set(Array((recent+[picked]).suffix(min(44,choices.count-1))),forKey:key)
         let clean=String(name.components(separatedBy:.newlines).joined(separator:" ").prefix(24))
-        return picked.replacingOccurrences(of:"{name}",with:clean.isEmpty ? "Your ninja":clean)
+        return picked.replacingOccurrences(of:"{name}",with:clean.isEmpty ? "your ninja":clean).lowercased()
     }
 }
 
 /// Small articulated pixel sprites, cached per palette. Actual limb poses rather
 /// than scaling or sliding a rigid logo; Core Animation plays the frames.
 @MainActor enum NinjaPixelActor {
-    enum Action:String {case rest,walk,run,wave,inspect,leap,bow}
+    enum Action:String {case rest,walk,run,wave,inspect,leap,bow,climb,tuck}
     private static var cache=[String:CGImage]()
     @MainActor static func frame(style:String,action:Action,step:Int,left:Bool=false)->CGImage{
         let n=step%8,key="\(style)/\(action)/\(n)/\(left)"
@@ -66,7 +66,7 @@ enum NinjaQuips {
         let angle=Double(n)*Double.pi/4,swing=sin(angle)
         let moving=action == .walk || action == .run
         let bob=moving ? (n%4<2 ? 0.0:1.0):0
-        let crouch=action == .inspect ? 4.0:action == .bow ? Double([0,1,2,3,4,3,2,1][n]):0
+        let crouch=(action == .inspect || action == .tuck) ? (action == .tuck ? 4+sin(angle)*2:4.0):action == .bow ? Double([0,1,2,3,4,3,2,1][n]):0
         let lift=action == .leap ? Double([0,3,7,10,10,7,3,0][n]):0
         c.translateBy(x:0,y:bob+crouch-lift)
         func rect(_ x:Double,_ y:Double,_ w:Double,_ h:Double,_ fill:NSColor){c.setFillColor(fill.cgColor);c.fill(CGRect(x:x.rounded(),y:y.rounded(),width:w,height:h))}
@@ -75,20 +75,25 @@ enum NinjaQuips {
         }
         let stride=action == .run ? 8.0:5.0
         for (i,x) in [20.0,28.0].enumerated(){
-            let sign=i==0 ? 1.0:-1.0,dx=moving ? swing*stride*sign:0
-            let knee=CGPoint(x:x+dx*0.45,y:43-(moving ? max(0,-swing*sign)*3:0))
-            let foot=CGPoint(x:x+dx,y:49-(moving ? max(0,-swing*sign)*5:0)-(action == .inspect && i==1 ? 4:0))
+            let sign=i==0 ? 1.0:-1.0,dx=moving ? swing*stride*sign:action == .climb ? swing*3*sign:0
+            let knee=CGPoint(x:x+dx*0.45+(action == .tuck ? sign*5:0),y:43-(moving ? max(0,-swing*sign)*3:action == .tuck ? 7:action == .climb ? max(0,swing*sign)*7:0))
+            let foot=CGPoint(x:x+dx,y:49-(moving ? max(0,-swing*sign)*5:0)-(action == .inspect && i==1 ? 4:action == .tuck ? 9:action == .climb ? max(0,swing*sign)*9:0))
             limb([CGPoint(x:x,y:37),knee,foot],i==0 ? dark:color);rect(foot.x-2,foot.y,7,3,dark)
         }
         let arm = moving ? -swing*(action == .run ? 9:6):0
-        limb([CGPoint(x:17,y:29),CGPoint(x:13,y:34+arm*0.4),CGPoint(x:12+arm*0.5,y:39+arm)],dark)
+        if action != .climb{limb([CGPoint(x:17,y:29),CGPoint(x:13,y:34+arm*0.4),CGPoint(x:12+arm*0.5,y:39+arm)],dark)}
         rect(17,27,14,13,color);rect(17,36,14,3,dark);rect(23,36,3,3,light)
         // Scarf tail trails behind the direction of travel.
         rect(10,24,8,3,dark);rect(moving && n%4<2 ? 6:8,23,5,3,color)
         rect(16,10,16,3,color);rect(13,13,22,14,color);rect(16,26,16,3,dark)
         rect(15,18,18,7,dark);rect(17,20,5,2,light);rect(27,20,5,2,light)
         if action == .rest && n==7{rect(17,20,5,2,dark);rect(27,20,5,2,dark);rect(17,22,5,1,light);rect(27,22,5,1,light)}
-        if action == .wave{
+        if action == .climb{
+            limb([CGPoint(x:17,y:29),CGPoint(x:12,y:23),CGPoint(x:12,y:15+swing*6)],dark)
+            limb([CGPoint(x:31,y:29),CGPoint(x:36,y:23),CGPoint(x:36,y:15-swing*6)],color)
+        }else if action == .tuck{
+            limb([CGPoint(x:31,y:29),CGPoint(x:34,y:34),CGPoint(x:29,y:38)],color)
+        }else if action == .wave{
             limb([CGPoint(x:31,y:29),CGPoint(x:36,y:23),CGPoint(x:36+sin(angle)*3,y:14)],color)
         }else if action == .inspect{
             limb([CGPoint(x:31,y:29),CGPoint(x:35,y:35),CGPoint(x:38,y:39+sin(angle)*2)],light)

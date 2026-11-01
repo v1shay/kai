@@ -8,18 +8,28 @@ import AppKit
         var calendar=Calendar.current;calendar.timeZone=TimeZone.current
         let date=calendar.date(from:DateComponents(year:2026,month:11,day:2,hour:8))!
         var seen=Set<String>()
-        for _ in 0..<45{let phrase=NinjaQuips.next(.arrival,name:"Zane",date:date,defaults:defaults);precondition(!phrase.contains("{name}"));precondition(seen.insert(phrase).inserted,"Arrival phrases must not repeat within their bag");}
+        for _ in 0..<45{let phrase=NinjaQuips.next(.arrival,name:"Zane",date:date,defaults:defaults);precondition(!phrase.contains("{name}"));precondition(phrase==phrase.lowercased(),"Ambient speech must be lowercase");precondition(seen.insert(phrase).inserted,"Arrival phrases must not repeat within their bag");}
         precondition(NinjaQuips.pool(.arrival,hour:8,weekday:2).contains("Top of the morning?"))
         precondition(!NinjaQuips.pool(.arrival,hour:23,weekday:2).contains("Top of the morning?"))
         precondition(NinjaQuips.pool(.arrival,hour:23,weekday:2).contains("The moon gets it."))
-        for moment in [NinjaQuips.Moment.work,.done,.nearby]{var unique=Set<String>();for _ in 0..<15{precondition(unique.insert(NinjaQuips.next(moment,name:"Kai",defaults:defaults)).inserted)}}
+        for moment in [NinjaQuips.Moment.work,.done,.nearby]{var unique=Set<String>();for _ in 0..<15{let phrase=NinjaQuips.next(moment,name:"Kai",defaults:defaults);precondition(phrase==phrase.lowercased());precondition(unique.insert(phrase).inserted)}}
         precondition(NinjaAtmosphereView.actorOpacity(y:60,height:180)<0.3)
         precondition(NinjaAtmosphereView.actorOpacity(y:140,height:180)<NinjaAtmosphereView.actorOpacity(y:60,height:180))
-        let actions:[NinjaPixelActor.Action]=[.rest,.walk,.run,.wave,.inspect,.leap,.bow]
+        let actions:[NinjaPixelActor.Action]=[.rest,.walk,.run,.wave,.inspect,.leap,.bow,.climb,.tuck]
         let contact=CGContext(data:nil,width:8*96,height:actions.count*112,bitsPerComponent:8,bytesPerRow:0,space:CGColorSpaceCreateDeviceRGB(),bitmapInfo:CGImageAlphaInfo.premultipliedLast.rawValue)!
         contact.setFillColor(NSColor(srgbRed:0.065,green:0.072,blue:0.08,alpha:1).cgColor);contact.fill(CGRect(x:0,y:0,width:768,height:actions.count*112))
         for (row,action) in actions.enumerated(){var frames=Set<Data>();for i in 0..<8{let image=NinjaPixelActor.frame(style:"fire",action:action,step:i);frames.insert(image.dataProvider!.data! as Data);contact.draw(image,in:CGRect(x:i*96,y:(actions.count-1-row)*112,width:96,height:112))};precondition(frames.count>1,"Every action needs articulated movement")}
         let sheet=NSBitmapImageRep(cgImage:contact.makeImage()!);try! sheet.representation(using:.png,properties:[:])!.write(to:URL(fileURLWithPath:"/private/tmp/kai-ninja-actions.png"))
+        for size in [CGSize(width:420,height:96),CGSize(width:1000,height:210)]{
+            for working in [false,true]{
+                let plan=NinjaMotionPlan(size:size,current:.zero,working:working,finished:false)
+                precondition(plan.samples.contains{$0.action == .climb} && plan.samples.contains{$0.action == .tuck})
+                let ys=plan.samples.map{$0.position.y};precondition(ys.max()!-ys.min()!>15,"Route must move vertically, not just animate limbs")
+                precondition(plan.samples.allSatisfy{$0.position.y>=45 && $0.position.y<size.height && $0.position.x>=0 && $0.position.x<=size.width})
+                precondition(hypot(plan.samples.first!.position.x-plan.samples.last!.position.x,plan.samples.first!.position.y-plan.samples.last!.position.y)<0.1,"Loop must close without a position jump")
+                for (a,b) in zip(plan.samples,plan.samples.dropFirst()){precondition(hypot(a.position.x-b.position.x,a.position.y-b.position.y)<35,"Motion samples must remain continuous")}
+            }
+        }
         let scene=NinjaAtmosphereView(frame:CGRect(x:0,y:0,width:1000,height:500))
         scene.configure(identity:"preview",style:"fire",working:false,motion:false,visible:true)
         scene.layoutSubtreeIfNeeded()
@@ -48,7 +58,7 @@ import AppKit
             if !window.isKeyWindow{window.close();print("NINJA_ATMOSPHERE_LIVE_SKIPPED_INACTIVE; static renders and inactive pause verified");NSApp.terminate(nil);return}
             RunLoop.current.run(until:Date().addingTimeInterval(0.4))
             scene.configure(identity:"live",style:"energy",working:true,motion:true,visible:true);window.displayIfNeeded();CATransaction.flush()
-            RunLoop.current.run(until:Date().addingTimeInterval(0.35))
+            RunLoop.current.run(until:Date().addingTimeInterval(1.5))
             let actor=scene.layer!.sublayers!.last!;let first=actor.presentation()!.position
             RunLoop.current.run(until:Date().addingTimeInterval(0.8));let second=actor.presentation()!.position
             fputs("LIVE_STATE active=\(NSApp.isActive) visible=\(window.isVisible) key=\(window.isKeyWindow) occlusion=\(window.occlusionState.rawValue) speed=\(scene.layer!.speed) first=\(first) second=\(second)\n",stderr)
@@ -64,6 +74,6 @@ import AppKit
           };NSApp.run()
         }
         scene.suspend();precondition(scene.isHidden)
-        print("NINJA_ATMOSPHERE_OK six identity renders, static/accessibility, work and suspend; phrase bags, time-of-day, seven articulated actions, depth fade")
+        print("NINJA_ATMOSPHERE_OK six identity renders, static/accessibility, work and suspend; phrase bags, time-of-day, nine articulated actions, vertical routes, jumps and lowercase speech")
     }
 }

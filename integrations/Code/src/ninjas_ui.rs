@@ -39,6 +39,8 @@ pub(super) struct Panel {
     delete_confirm:bool,
     pub messages: Vec<Value>,
     pub history_loading: bool,
+    history_scroll:ScrollHandle,
+    history_scroll_owner:std::cell::RefCell<Option<String>>,
     pub models_requested: bool,
     pub models_loading:Option<uuid::Uuid>,
     pub history_owner: Option<String>,
@@ -874,6 +876,8 @@ impl Orbit {
             delete_confirm:false,
             messages: vec![],
             history_loading: false,
+            history_scroll:ScrollHandle::new(),
+            history_scroll_owner:Default::default(),
             models_requested: false,
             models_loading:None,
             history_owner: None,
@@ -1055,6 +1059,7 @@ impl Orbit {
                                     panel.profile.revision = revision;
                                 }
                                 panel.chat = value["chat"].as_str().map(str::to_owned);
+                                panel.history_scroll.scroll_to_bottom();
                                 panel.task = Some(value);
                                 if submitted_prompt.as_deref()
                                     == Some(panel.fields[3].read(cx).text().as_str())
@@ -1697,6 +1702,12 @@ impl Orbit {
             }
         }
         tasks.sort_by_key(|t| t["created"].as_i64().unwrap_or(0));
+        let history_owner=format!("{}:{}:{}",p.host,p.profile.id,p.chat.as_deref().unwrap_or("draft"));
+        let changed=p.history_scroll_owner.borrow().as_ref()!=Some(&history_owner);
+        // Follow new layout/streaming only while already at the bottom. A user
+        // reading earlier messages keeps their position until changing chats.
+        if changed || p.history_scroll.max_offset().height+p.history_scroll.offset().y<px(24.){p.history_scroll.scroll_to_bottom();}
+        *p.history_scroll_owner.borrow_mut()=Some(history_owner.clone());
         let held = snapshot
             .and_then(|v| v["profiles"].as_array())
             .into_iter()
@@ -1820,11 +1831,12 @@ impl Orbit {
                 div()
                     .flex_1()
                     .min_h(px(0.))
-                    .id("ninja-task-history")
+                    .id(SharedString::from(format!("ninja-task-history-{history_owner}")))
+                    .debug_selector(||"ninja-task-history".into())
                     .overflow_y_scroll()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
+                    .track_scroll(&p.history_scroll)
+                    .flex().flex_col().gap_2()
+                    .child(div().flex_1().min_h(px(0.)))
                     .children(tasks.into_iter().map(|t| {
                         let id = t["id"].as_str().unwrap_or("").to_owned();
                         let selected = p
@@ -1854,6 +1866,7 @@ impl Orbit {
                         let scene = task_scene(&t);
                         let mut row = div()
                             .id(SharedString::from(format!("ninja-task-{id}")))
+                            .debug_selector({let id=id.clone();move||format!("ninja-task-{id}")})
                             .w_full()
                             .flex_none()
                             .flex()
@@ -2243,6 +2256,24 @@ mod tests {
             app.ninjas.snapshots.insert("local".into(),json!({"profiles":[{"id":"personal","name":"Ice","style":"ice"}],"tasks":[{"id":"task-7","profile":"personal","state":"approval","requests":[native]}]}));
             let snapshot=app.unified_snapshot(cx);assert_eq!(snapshot["menuBarNinjas"][0]["id"],"local:personal");assert_eq!(snapshot["menuBarNinjas"][0]["style"],"ice");assert_eq!(snapshot["approvalThreadId"],"ninja:local:task-7");assert_eq!(snapshot["nativeReview"]["token"],"question-42");assert_eq!(snapshot["nativeReview"]["kind"],"questions");assert_eq!(snapshot["nativeReview"]["questions"][0]["id"],"target");assert_eq!(snapshot["activeTasks"][0]["scene"],"permission");assert_eq!(snapshot["approvalCount"],1);app.ninjas.errors.insert("local".into(),"Disconnected".into());let offline=app.unified_snapshot(cx);assert!(offline["nativeReview"].is_null());assert!(offline["activeTasks"][0]["text"].as_str().unwrap().contains("Reconnecting"));
         });
+    }
+    #[gpui::test]
+    fn ninja_history_opens_at_bottom_but_preserves_reading_earlier_messages(cx:&mut TestAppContext){
+        let (view,cx)=crate::ui_tests::fixture(cx);
+        cx.update(|w,cx|view.update(cx,|app,cx|{
+            app.open_ninjas(Some("local".into()),None,w,cx);let p=app.ninjas.panel.as_mut().unwrap();p.profile.revision=1;p.settings=false;p.chat=Some("long".into());
+            p.messages=(0..24).map(|i|json!({"id":format!("long-{i}"),"chat":"long","profile":p.profile.id,"created":i,"prompt":"User request. ".repeat(15),"brief":"The completed response. ".repeat(24),"state":"completed","finished":i+1})).collect();
+        }));
+        crate::ui_tests::draw_frame(&view,cx);crate::ui_tests::draw_frame(&view,cx);
+        view.update(cx,|app,_|{let p=app.ninjas.panel.as_ref().unwrap();assert!(p.history_scroll.max_offset().height>px(100.));assert!((p.history_scroll.offset().y+p.history_scroll.max_offset().height).abs()<px(1.));p.history_scroll.set_offset(point(px(0.),px(0.)));});
+        crate::ui_tests::draw_frame(&view,cx);
+        view.update(cx,|app,_|{let p=app.ninjas.panel.as_mut().unwrap();assert_eq!(p.history_scroll.offset().y,px(0.));p.messages.last_mut().unwrap()["brief"]=json!("More streaming text. ".repeat(80));});
+        crate::ui_tests::draw_frame(&view,cx);
+        view.update(cx,|app,_|{let p=app.ninjas.panel.as_mut().unwrap();assert_eq!(p.history_scroll.offset().y,px(0.),"Streaming must not yank a reader back down");p.chat=Some("short".into());p.messages=vec![json!({"id":"short-last","profile":p.profile.id,"chat":"short","created":1,"prompt":"Quick question","brief":"Quick reply","state":"completed","finished":2})];});
+        crate::ui_tests::draw_frame(&view,cx);crate::ui_tests::draw_frame(&view,cx);
+        let viewport=cx.debug_bounds("ninja-task-history").unwrap();let row=cx.debug_bounds("ninja-task-short-last").unwrap();
+        assert!((viewport.bottom()-row.bottom()).abs()<px(3.),"Short history must sit above the composer: {row:?} in {viewport:?}");
+        view.update(cx,|app,_|{let p=app.ninjas.panel.as_ref().unwrap();assert!((p.history_scroll.offset().y+p.history_scroll.max_offset().height).abs()<px(1.));});
     }
     #[gpui::test]
     fn ninja_deletion_is_explicit_cancelable_and_cleans_only_its_own_surface(cx:&mut TestAppContext){

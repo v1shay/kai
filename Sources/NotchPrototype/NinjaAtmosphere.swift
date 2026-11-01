@@ -5,7 +5,7 @@ import QuartzCore
 /// no display link, polling, GPU readback, or conversation rerender timer.
 @MainActor final class NinjaAtmosphereView:NSView {
     enum Phase:String {case idle,working,finished}
-    private let field=CALayer(),grid=CALayer(),hoverTile=CALayer(),actor=CALayer(),portrait=CALayer(),caption=CATextLayer()
+    private let field=CALayer(),grid=CALayer(),hoverTile=CALayer(),actionTile=CALayer(),actor=CALayer(),portrait=CALayer(),caption=CATextLayer()
     private var tiles=[CALayer](),observers=[NSObjectProtocol]()
     private var identity="",name="Ninja",style="fire",phase=Phase.idle,motion=true,paused=false
     private var rasterKey="",sceneKey="",lastPointer:CFTimeInterval=0
@@ -15,7 +15,7 @@ import QuartzCore
     override func hitTest(_ point:NSPoint)->NSView?{nil}
     override init(frame:NSRect){
         super.init(frame:frame);wantsLayer=true;layer?.masksToBounds=true
-        layer?.addSublayer(field);field.addSublayer(grid);field.addSublayer(hoverTile);hoverTile.opacity=0;hoverTile.cornerRadius=0.8;layer?.addSublayer(actor);actor.addSublayer(portrait);actor.addSublayer(caption)
+        layer?.addSublayer(field);field.addSublayer(grid);field.addSublayer(hoverTile);hoverTile.opacity=0;hoverTile.cornerRadius=0.8;field.addSublayer(actionTile);actionTile.opacity=0;actionTile.cornerRadius=0.8;layer?.addSublayer(actor);actor.addSublayer(portrait);actor.addSublayer(caption)
         caption.font=NSFont.systemFont(ofSize:10,weight:.medium);caption.fontSize=10;caption.alignmentMode = .center;caption.isWrapped=true;caption.opacity=0
         for _ in 0..<28 {let tile=CALayer();tile.cornerRadius=0.8;tile.borderWidth=0.5;field.addSublayer(tile);tiles.append(tile)}
         for name in [NSWindow.didBecomeKeyNotification,NSWindow.didResignKeyNotification,NSWindow.didChangeOcclusionStateNotification,NSApplication.didBecomeActiveNotification,NSApplication.didResignActiveNotification]{
@@ -88,45 +88,29 @@ import QuartzCore
         let key="\(identity)/\(style)/\(phase.rawValue)/\(motion)/\(rasterKey)"
         guard key != sceneKey else{return};sceneKey=key
         let current=actor.presentation()?.position ?? actor.position
-        actor.removeAllAnimations();portrait.removeAllAnimations();field.removeAllAnimations();tiles.forEach{$0.removeAllAnimations()}
-        let working=phase == .working,duration=working ? 14.0:26.0
-        let padding=min(146,max(48,bounds.width*0.26)),left=padding,right=max(padding,bounds.width-padding)
-        let home=min(max(left,current.x),right),destination=home<(left+right)/2 ? right:left
-        let outboundLeft=destination<home
-        let y=max(38,min(66,field.bounds.height*0.36))
+        actor.removeAllAnimations();portrait.removeAllAnimations();field.removeAllAnimations();actionTile.removeAllAnimations();tiles.forEach{$0.removeAllAnimations()}
+        let working=phase == .working
+        let plan=NinjaMotionPlan(size:field.bounds.size,current:current,working:working,finished:phase == .finished)
         CATransaction.begin();CATransaction.setDisableActions(true)
-        actor.position=CGPoint(x:home,y:y);actor.opacity=Self.actorOpacity(y:y,height:field.bounds.height);field.opacity=1
+        actionTile.bounds=CGRect(x:0,y:0,width:6,height:6);actionTile.backgroundColor=Self.color(style).cgColor
+        actor.position=plan.samples[0].position;actor.opacity=Self.actorOpacity(y:actor.position.y,height:field.bounds.height);field.opacity=1
         CATransaction.commit()
         guard motion else{return}
-        // Grounded horizontal footwork, with real stops for gestures. Shared
-        // timing keeps footfalls, direction changes and displacement together.
-        let times:[NSNumber]=[0,0.12,0.38,0.53,0.80,0.93,1]
-        let xs=[home,home,destination,destination,home,home,home]
         let travel=CAKeyframeAnimation(keyPath:"position")
-        travel.values=xs.map{NSValue(point:CGPoint(x:$0,y:y))};travel.keyTimes=times
-        travel.duration=duration;travel.repeatCount = .infinity;travel.calculationMode = .linear;actor.add(travel,forKey:"footwork")
-        let count=Int(duration*12)
-        let poses=(0..<count).map{i -> CGImage in
-            let t=Double(i)/Double(count),action:NinjaPixelActor.Action,faceLeft:Bool
-            switch t {
-            case 0..<0.12: action=phase == .finished ? .bow:.wave;faceLeft=outboundLeft
-            case 0.12..<0.38: action=working ? .run:.walk;faceLeft=outboundLeft
-            case 0.38..<0.53: action = .inspect;faceLeft=outboundLeft
-            case 0.53..<0.80: action=working ? .run:.walk;faceLeft = !outboundLeft
-            case 0.80..<0.93: action=working ? .inspect:.rest;faceLeft = !outboundLeft
-            default: action=phase == .finished ? .leap:.rest;faceLeft=false
-            }
-            return NinjaPixelActor.frame(style:style,action:action,step:i/(working ? 1:2),left:faceLeft)
-        }
-        let gait=CAKeyframeAnimation(keyPath:"contents");gait.values=poses;gait.duration=duration;gait.repeatCount = .infinity;gait.calculationMode = .discrete;portrait.add(gait,forKey:"actions")
+        travel.values=plan.samples.map{NSValue(point:$0.position)};travel.duration=plan.duration;travel.repeatCount = .infinity;travel.calculationMode = .linear;actor.add(travel,forKey:"footwork")
+        let gait=CAKeyframeAnimation(keyPath:"contents")
+        gait.values=plan.samples.map{NinjaPixelActor.frame(style:style,action:$0.action,step:$0.step,left:$0.left)};gait.duration=plan.duration;gait.repeatCount = .infinity;gait.calculationMode = .discrete;portrait.add(gait,forKey:"actions")
+        let tumble=CAKeyframeAnimation(keyPath:"transform.rotation.z");tumble.values=plan.samples.map{$0.rotation};tumble.duration=plan.duration;tumble.repeatCount = .infinity;tumble.calculationMode = .discrete;portrait.add(tumble,forKey:"tumble")
+        let depth=CAKeyframeAnimation(keyPath:"opacity");depth.values=plan.samples.map{Self.actorOpacity(y:$0.position.y,height:field.bounds.height)};depth.duration=plan.duration;depth.repeatCount = .infinity;actor.add(depth,forKey:"depth")
+        let target=CAKeyframeAnimation(keyPath:"position");target.values=plan.samples.map{NSValue(point:CGPoint(x:floor(($0.position.x+12)/7)*7+3.5,y:floor(($0.position.y+12)/7)*7+3.5))};target.duration=plan.duration;target.repeatCount = .infinity;target.calculationMode = .discrete;actionTile.add(target,forKey:"target")
+        let tap=CAKeyframeAnimation(keyPath:"opacity");tap.values=plan.samples.map{sample -> Float in let contact=sample.action == .inspect || sample.action == .climb;return contact ? Self.actorOpacity(y:sample.position.y,height:field.bounds.height)*(sample.step%4<2 ? 0.8:0.3):0};tap.duration=plan.duration;tap.repeatCount = .infinity;tap.calculationMode = .discrete;actionTile.add(tap,forKey:"glow")
         for (i,tile) in tiles.enumerated(){
             let wave=CAKeyframeAnimation(keyPath:"opacity");let base=tile.opacity
             wave.values=[base*0.35,base*(working ? 1.9:1.1),base*0.35];wave.duration=working ? 3.6:8.5;wave.beginTime=tile.convertTime(CACurrentMediaTime(),from:nil)+Double(i%11)*0.19;wave.repeatCount = .infinity;wave.timingFunction=CAMediaTimingFunction(name:.easeInEaseOut);tile.add(wave,forKey:"glimmer")
             let drift=CABasicAnimation(keyPath:"transform.translation.y");drift.fromValue=2;drift.toValue = -3;drift.autoreverses=true;drift.duration=Double(4+i%5);drift.repeatCount = .infinity;tile.add(drift,forKey:"drift")
         }
-        if phase == .finished{let hop=CAKeyframeAnimation(keyPath:"transform.translation.y");hop.values=[0,-10,0,-4,0];hop.duration=0.8;portrait.add(hop,forKey:"celebrate")}
     }
-    static func actorOpacity(y:CGFloat,height:CGFloat)->Float{Float(0.42*pow(max(0.1,1-y/max(1,height)),1.15))}
+    static func actorOpacity(y:CGFloat,height:CGFloat)->Float{Float(0.42*pow(max(0.24,1-y/max(1,height)),1.15))}
     private func say(_ text:String,opening:Bool){
         caption.string=text
         guard motion else{caption.removeAllAnimations();return}
@@ -156,4 +140,54 @@ import QuartzCore
     func suspend(){isHidden=true;updatePlayback()}
     var diagnosticPlayback:String{"hidden=\(isHidden) motion=\(motion) paused=\(paused) window=\(window?.windowNumber ?? -1) key=\(window?.isKeyWindow ?? false) visible=\(window?.isVisible ?? false) occluded=\(window?.occlusionState.contains(.visible) ?? false)"}
     var diagnosticAnimationCount:Int{actor.animationKeys()?.count ?? 0}
+}
+
+/// Sample a short action score once, then let the render server play it. Each
+/// jump has a ballistic arc and landing; climbs animate alternating hands/feet.
+@MainActor struct NinjaMotionPlan {
+    struct Sample {let position:CGPoint;let action:NinjaPixelActor.Action;let step:Int;let left:Bool;let rotation:Double}
+    let samples:[Sample],duration:Double
+    init(size:CGSize,current:CGPoint,working:Bool,finished:Bool){
+        let padding=min(146,max(48,size.width*0.26)),left=padding,right=max(left,size.width-padding)
+        let top:CGFloat=56,bottom=max(top+12,size.height-28)
+        let home=CGPoint(x:current == .zero ? left:min(right+3,max(left-3,current.x)),y:current == .zero ? top:min(bottom,max(38,current.y)))
+        let span=right-left,far=home.x<(left+right)/2 ? right:left
+        let low=CGPoint(x:left+span*0.38,y:bottom),ledge=CGPoint(x:far,y:bottom)
+        let roof=CGPoint(x:far,y:top),across=CGPoint(x:far==right ? left:right,y:top+10)
+        let middle=CGPoint(x:left+span*0.65,y:bottom-7)
+        struct Leg {let from:CGPoint,to:CGPoint,action:NinjaPixelActor.Action,seconds:Double,jump:Bool,flip:Bool}
+        var legs=[Leg](),cursor=home
+        func add(_ to:CGPoint,_ action:NinjaPixelActor.Action,_ seconds:Double,jump:Bool=false,flip:Bool=false){legs.append(Leg(from:cursor,to:to,action:action,seconds:seconds,jump:jump,flip:flip));cursor=to}
+        func stride(_ to:CGPoint)->Double{max(0.7,min(3.5,Double(hypot(to.x-cursor.x,to.y-cursor.y))/(working ? 120:76)))}
+        add(home,finished ? .bow:.wave,1.2)
+        let floor=CGPoint(x:home.x,y:bottom)
+        add(floor,.leap,0.85,jump:true);add(floor,.inspect,0.22)
+        add(low,working ? .run:.walk,stride(low))
+        add(ledge,.leap,0.95,jump:true);add(ledge,.inspect,0.28)
+        add(ledge,.inspect,1.1)
+        add(roof,.climb,max(1.0,Double(bottom-top)/46))
+        add(roof,.rest,0.65)
+        add(across,.tuck,1.3,jump:true,flip:true);add(across,.inspect,0.28)
+        add(across,.wave,0.9)
+        add(middle,.leap,1.2,jump:true);add(middle,.inspect,0.28)
+        add(middle,.inspect,1.4)
+        add(home,.tuck,1.2,jump:true,flip:true);add(home,.inspect,0.28)
+        add(home,finished ? .bow:.rest,1.2)
+        let total=legs.reduce(0){$0+$1.seconds},count=Int(ceil(total*24))
+        var frames=[Sample](),legIndex=0,legStart=0.0
+        for i in 0...count {
+            let time=Double(i)/Double(count)*total
+            while legIndex<legs.count-1 && time>legStart+legs[legIndex].seconds{legStart+=legs[legIndex].seconds;legIndex+=1}
+            let leg=legs[legIndex],t=min(1,max(0,(time-legStart)/leg.seconds))
+            let arc=leg.jump ? min(32,max(6,Double(min(leg.from.y,leg.to.y)-46)))*4*t*(1-t):0
+            let grip=leg.action == .climb ? sin(t*Double.pi*10)*2:0
+            let point=CGPoint(x:leg.from.x+(leg.to.x-leg.from.x)*t+grip,y:leg.from.y+(leg.to.y-leg.from.y)*t-arc)
+            let direction=leg.to.x<leg.from.x
+            let step=leg.jump ? min(7,Int(t*8)):Int((time-legStart)*(working ? 16:10))%8
+            // Ease into and out of a somersault; end on the exact upright pose.
+            let spin=leg.flip ? (t*t*(3-2*t))*Double.pi*2*(direction ? -1:1):0
+            frames.append(Sample(position:point,action:leg.action,step:step,left:direction,rotation:spin))
+        }
+        samples=frames;duration=total
+    }
 }
