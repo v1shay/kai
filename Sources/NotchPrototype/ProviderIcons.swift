@@ -8,7 +8,10 @@ import AppKit
     }
     private static let cache=NSCache<NSString,NSImage>()
     static func image(_ value:String?,color:NSColor = .white)->NSImage?{
-        guard let id=identifier(value) else{return nil};let key=(id+color.description) as NSString
+        guard let id=identifier(value) else{return nil};return mark(id,color:color)
+    }
+    static func mark(_ id:String,color:NSColor = .white)->NSImage?{
+        let key=(id+color.description) as NSString
         if let image=cache.object(forKey:key){return image}
         let root=URL(fileURLWithPath:#filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let url=Bundle.main.resourceURL?.appendingPathComponent("providers/\(id).svg")

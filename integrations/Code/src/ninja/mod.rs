@@ -129,10 +129,13 @@ pub struct Machine {
     pub local: bool,
     pub os: String,
 }
+impl Machine {pub fn glyph(&self)->&'static str{let n=self.name.to_lowercase();if n.contains("book")||n.contains("laptop"){"machine-laptop"}else if self.os=="linux"||self.os=="freebsd"{"machine-server"}else{"machine-desktop"}}}
 pub fn local_machine() -> Machine {
     Machine {
         id: "local".into(),
-        name: "This Mac".into(),
+        name: {static NAME:std::sync::OnceLock<String>=std::sync::OnceLock::new();NAME.get_or_init(||{
+            http::command_json(Path::new("/usr/sbin/system_profiler"), &["SPHardwareDataType","-json"],Duration::from_secs(2)).ok().and_then(|v|v["SPHardwareDataType"][0]["machine_name"].as_str().map(|s|format!("This Mac · {}",s.trim_end_matches(" xxx")))).unwrap_or_else(||"This Mac".into())
+        }).clone()},
         host: "127.0.0.1".into(),
         online: true,
         local: true,

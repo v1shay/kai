@@ -434,7 +434,9 @@ impl Orbit {
         let model_column=picker.scope!=Scope::Providers;
         let effort=self.effort_model_choice().filter(|m|!m.reasoning_efforts.is_empty());
         let natural_width=if providers&&model_column{if effort.is_some(){620.}else{444.}}else if model_column{if effort.is_some(){444.}else{280.}}else{220.};
-        let horizontal=self.theme.horizontal_agent_picker && picker.max_width>=natural_width;
+        let ninja_panel=self.agent==AgentKind::Ninja && model_column;
+        let natural_width=natural_width+if ninja_panel{228.}else{0.};
+        let horizontal=(self.theme.horizontal_agent_picker||ninja_panel) && picker.max_width>=natural_width;
         let width=if horizontal{natural_width}else{280.0_f32}.min(picker.max_width);
         let heading=|label:&'static str,focused:bool|div().px_2().py_1().text_size(theme::ui_px(10.)).text_color(rgb(if focused{ACCENT}else{MUTED})).child(label);
         let provider_column=div().flex().flex_col().min_w(px(0.)).when(horizontal,|s|s.w(px(if model_column{166.}else{width-12.})).flex_none()).when(!horizontal,|s|s.w_full())
@@ -545,8 +547,7 @@ impl Orbit {
             .capture_action(cx.listener(|this,_:&input::Right,window,cx|this.picker_navigate("right",window,cx)))
             .capture_action(cx.listener(|this,_:&input::Submit,window,cx|this.picker_navigate("enter",window,cx)))
             .on_mouse_down_out(cx.listener(|this,event:&MouseDownEvent,_,cx|{if this.agent_picker.as_ref().is_some_and(|p|!p.closing&&!p.effort_only){this.dismissed_on_press(control_clicks::Control::Model(false),event.position);this.dismiss_agent_picker();cx.notify();}}))
-            .when(self.agent==AgentKind::Ninja,|s|s.child(self.ninja_options(cx)))
-            .child(div().flex().gap_1().when(!horizontal,|s|s.flex_col()).when(providers,|s|s.child(provider_column)).when(model_column,|s|s.child(model_view).when_some(effort,|s,m|s.child(div().when(horizontal,|s|s.w(px(170.)).flex_none()).when(!horizontal,|s|s.w_full()).child(self.reasoning_slider(m,cx))))))
+            .child(div().flex().gap_1().when(!horizontal,|s|s.flex_col()).when(providers,|s|s.child(provider_column)).when(model_column,|s|s.child(model_view).when_some(effort,|s,m|s.child(div().when(horizontal,|s|s.w(px(170.)).flex_none()).when(!horizontal,|s|s.w_full()).child(self.reasoning_slider(m,cx)))).when(ninja_panel,|s|s.child(div().w(px(if horizontal{222.}else{width-12.})).flex_none().child(self.ninja_options(cx))))))
         ).into_any_element()
     }
     fn picker_models(&self,cx:&Context<Self>)->Vec<(Option<String>,String)>{

@@ -19,3 +19,5 @@ nousresearch: https://github.com/lobehub/lobe-icons/blob/master/packages/static-
 ollama: https://github.com/lobehub/lobe-icons/blob/master/packages/static-svg/icons/ollama.svg (blob cc887e3dcfd2260c136e807a84909892dc139fc3)
 
 The Tailscale favicon backing squircle is removed, retaining the original nine-dot geometry, cropped to its bounds for a native template icon.
+
+llama.cpp engine mark: https://github.com/ggml-org/llama.cpp/blob/master/tools/ui/src/lib/assets/logo.svg — official Web UI mark, rendered as a native monochrome template. Machine outlines are original hardware icons.

@@ -507,13 +507,14 @@ impl Orbit {
             .flex_col()
             .gap_1()
             .p_2()
-            .border_b_1()
+            .border_l_1()
             .border_color(rgba(0xffffff18));
         let row = |id: String,
                    label: String,
                    selected: bool,
                    field: &'static str,
                    value: String,
+                   glyph: &'static str,
                    cx: &mut Context<Self>| {
             div()
                 .id(SharedString::from(id))
@@ -525,6 +526,7 @@ impl Orbit {
                 .text_color(rgb(if selected { 0x67dab0 } else { TEXT }))
                 .when(selected, |s| s.bg(rgba(0x67dab018)))
                 .hover(|s| s.bg(rgba(GLASS_HOVER)))
+                .flex().items_center().gap_2().child(icon(glyph,16.,TEXT))
                 .child(label)
                 .on_click(cx.listener(move |app, _, _, cx| {
                     if let Err(e) = app.ninja_set(field, &value, cx) {
@@ -552,6 +554,7 @@ impl Orbit {
                 machine.id == selection.machine,
                 "machine",
                 machine.id.clone(),
+                machine.glyph(),
                 cx,
             ));
         }
@@ -591,6 +594,7 @@ impl Orbit {
                     selected,
                     field,
                     value.into(),
+                    match value {"ollama"=>"lab-ollama","llama_cpp"=>"engine-llamacpp","codex"=>"codex",_=>"claude"},
                     cx,
                 ));
             }
@@ -609,6 +613,7 @@ impl Orbit {
                 false,
                 "cancel",
                 String::new(),
+                "x",
                 cx,
             ));
         }

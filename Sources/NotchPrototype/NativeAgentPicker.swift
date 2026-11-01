@@ -81,21 +81,23 @@ import AppKit
         let ids=scope == .providers ? [0]:scope == .models ? [1,2]:[0,1,2]
         let visibleIDs=ids.filter{$0 != 2 || !levels.isEmpty};columnIDs=visibleIDs
         let widths:[CGFloat]=[166,254,170]
-        let width=horizontal ? visibleIDs.reduce(16){$0+widths[$1]}+CGFloat(max(0,visibleIDs.count-1))*4:280
+        let baseWidth:CGFloat=horizontal ? visibleIDs.reduce(16){$0+widths[$1]}+CGFloat(max(0,visibleIDs.count-1))*4:280
+        let ninjaSide=state.ninja != nil && scope != .providers && horizontal && screen.width>=baseWidth+244
+        let width=baseWidth+(ninjaSide ? 244:0)
         let agents=providers,catalog=models,efforts=levels
         let counts=[agents.count,catalog.count,efforts.count]
         let desiredHeights=visibleIDs.map{CGFloat(min(counts[$0],8))*34+30}
         let fit=horizontal ? 1:min(1,(screen.height-32)/max(1,desiredHeights.reduce(0,+)))
         let heights=desiredHeights.map{$0*fit}
-        let ninjaHeight:CGFloat=(state.ninja == nil || scope == .providers) ? 0:(width<400 ? 144:112)
-        let height=min(screen.height-16,(horizontal ? (heights.max() ?? 90)+16:heights.reduce(16,+))+ninjaHeight)
+        let ninjaHeight:CGFloat=(state.ninja == nil || scope == .providers || ninjaSide) ? 0:144
+        let height=min(screen.height-16,max(ninjaSide ? 224:0,(horizontal ? (heights.max() ?? 90)+16:heights.reduce(16,+))+ninjaHeight))
         let top=anchor ?? CGPoint(x:panel.frame.minX+30,y:panel.frame.maxY+4)
         let frame=CGRect(x:min(max(screen.minX+8,top.x-30),screen.maxX-width-8),y:max(screen.minY+8,min(top.y-height-4,screen.maxY-height-8)),width:width,height:height)
         panel.setFrame(frame,display:false);glass.frame=CGRect(origin:.zero,size:frame.size)
-        if scope != .providers,let ninja=state.ninja{buildNinja(ninja,in:glass,width:width,top:height-8)}
-        var x:CGFloat=8,y=height-8-ninjaHeight
+        if scope != .providers,let ninja=state.ninja{let extra=NSView(frame:CGRect(x:ninjaSide ? baseWidth:0,y:0,width:ninjaSide ? 244:width,height:ninjaSide ? height:ninjaHeight));glass.addSubview(extra);buildNinja(ninja,in:extra,width:extra.frame.width,top:extra.frame.height-8)}
+        var x:CGFloat=8,y=height-8
         for (order,id) in visibleIDs.enumerated(){
-            let h=horizontal ? height-16-ninjaHeight:heights[order],w=horizontal ? widths[id]:width-16
+            let h=horizontal ? height-16-ninjaHeight:heights[order],w=horizontal ? widths[id]:baseWidth-16
             let host=NSView(frame:CGRect(x:x,y:y-h,width:w,height:h));glass.addSubview(host);columns.append(host)
             let title=NSTextField(labelWithString:["Provider","Model","Thinking intensity"][id]);title.font=AppTypography.ui(ofSize:11,weight:.medium);title.textColor=column==id ? .controlAccentColor:.secondaryLabelColor;title.frame=CGRect(x:8,y:h-23,width:w-16,height:18);host.addSubview(title)
             let scroll=NSScrollView(frame:CGRect(x:0,y:0,width:w,height:h-29));scroll.drawsBackground=false;scroll.hasVerticalScroller=true;scroll.autohidesScrollers=true;host.addSubview(scroll);scrolls.append(scroll)
@@ -123,13 +125,14 @@ import AppKit
     }
 
     private func buildNinja(_ ninja:KaiNinja,in host:NSView,width:CGFloat,top:CGFloat){
-        let title=NSTextField(labelWithString:"Ninja · local tools, private inference");title.font=AppTypography.ui(ofSize:11,weight:.medium);title.textColor = .secondaryLabelColor;title.frame=CGRect(x:12,y:top-18,width:width-24,height:18);host.addSubview(title)
+        let logo=NSImageView(frame:CGRect(x:12,y:top-18,width:14,height:14));logo.image=ProviderIcons.mark("tailscale");host.addSubview(logo)
+        let title=NSTextField(labelWithString:"Inference");title.font=AppTypography.ui(ofSize:11,weight:.medium);title.textColor = .secondaryLabelColor;title.frame=CGRect(x:34,y:top-18,width:width-46,height:18);host.addSubview(title)
         let values:[(String,[(String,String)],String)]=[("machine",ninja.machines.map{($0.id,$0.name+($0.online ? "":" · Offline"))},ninja.selection.machine),("engine",[("ollama","Ollama"),("llama_cpp","llama.cpp")],ninja.selection.engine),("harness",[("codex","Codex"),("claude","Claude Code")],ninja.selection.harness)]
         let narrow=width<400,extra:CGFloat=width<400 ? 32:0
         let widths:[CGFloat]=narrow ? [width-20,(width-26)/2,(width-26)/2]:[width-248,100,112];var x:CGFloat=10
         for (i,entry) in values.enumerated(){if narrow && i==1{x=10}
             let popup=NSPopUpButton(frame:CGRect(x:x,y:top-49-(narrow && i>0 ? 32:0),width:widths[i],height:26),pullsDown:false);popup.identifier=NSUserInterfaceItemIdentifier(entry.0);popup.target=self;popup.action=#selector(selectNinja(_:));popup.font=AppTypography.ui(ofSize:11)
-            for (value,label) in entry.1{popup.addItem(withTitle:label);popup.lastItem?.representedObject=value;if i==0{popup.lastItem?.image=NSImage(systemSymbolName:value=="local" ? "laptopcomputer":"desktopcomputer",accessibilityDescription:nil);popup.lastItem?.image?.size=CGSize(width:14,height:14)};if value==entry.2{popup.select(popup.lastItem)}}
+            for (value,label) in entry.1{popup.addItem(withTitle:label);popup.lastItem?.representedObject=value;if i==0{let name=label.lowercased();let symbol=name.contains("book")||name.contains("laptop") ? "laptopcomputer":name.contains("studio") ? "macstudio":name.contains("mini") ? "macmini":name.contains("mac") ? "desktopcomputer":"server.rack";popup.lastItem?.image=NSImage(systemSymbolName:symbol,accessibilityDescription:label)}else{popup.lastItem?.image=ProviderIcons.mark(value=="ollama" ? "lab-ollama":value=="llama_cpp" ? "engine-llamacpp":value)};popup.lastItem?.image?.size=CGSize(width:14,height:14);if value==entry.2{popup.select(popup.lastItem)}}
             popup.isEnabled=ninja.progress==nil;host.addSubview(popup);x+=widths[i]+6}
         let search=ninjaSearch ?? NSSearchField();ninjaSearch=search;search.frame=CGRect(x:12,y:top-80-extra,width:width-24,height:24);search.placeholderString="Search installed models, labs, or Ollama registry";search.stringValue=ninjaQuery;search.target=self;search.action=#selector(searchNinja(_:));search.sendsSearchStringImmediately=true;host.addSubview(search)
         let status=NSTextField(labelWithString:ninja.progress ?? ninja.error ?? (ninja.loading ? "Loading model inventory…":"Installed models first · choose a family to see download tags"));status.font=AppTypography.ui(ofSize:10);status.textColor = .secondaryLabelColor;status.lineBreakMode = .byTruncatingTail;status.frame=CGRect(x:12,y:top-102-extra,width:width-(ninja.canCancel == true ? 90:24),height:17);status.toolTip=status.stringValue;host.addSubview(status)

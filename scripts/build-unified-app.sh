@@ -34,7 +34,7 @@ cp "$root/.build/unified/"*.dylib "$resources/"
 cp -R "$root/Sources/NotchPrototype/Resources/"* "$resources/"
 mkdir -p "$resources/kai_pets" "$resources/providers"
 for provider in codex claude gemini opencode cursor grok antigravity ninja tailscale model-moon model-earth model-sun model-star; do cp "$root/integrations/Code/assets/$provider.svg" "$resources/providers/$provider.svg"; done
-for mark in "$root"/integrations/Code/assets/lab-*.svg; do cp "$mark" "$resources/providers/"; done
+for mark in "$root"/integrations/Code/assets/{lab,engine,machine}-*.svg; do cp "$mark" "$resources/providers/"; done
 mkdir -p "$resources/skills"
 cp -R "$root/integrations/Code/skills/"* "$resources/skills/"
 cp "$root/kai_speech.py" "$resources/"
@@ -60,7 +60,7 @@ for pet in catalog['pets']:
  source=root/'kai_pets'/pet['spritesheet'];target=resources/'kai_pets'/pet['spritesheet']
  target.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(source,target)
 info=plistlib.loads((root/'integrations/Code/scripts/Info.plist').read_bytes())
-info.update(CFBundleName='Kai Unified',CFBundleDisplayName='Kai Unified',CFBundleIdentifier='com.kai.unified.experimental',CFBundleExecutable='kai-unified',CFBundleVersion='61',CFBundleShortVersionString='0.12.24')
+info.update(CFBundleName='Kai Unified',CFBundleDisplayName='Kai Unified',CFBundleIdentifier='com.kai.unified.experimental',CFBundleExecutable='kai-unified',CFBundleVersion='62',CFBundleShortVersionString='0.12.25')
 icon=root/'integrations/Code/assets/Code.icns'
 if icon.exists():shutil.copy2(icon,resources/'Code-Bonsai.icns')
 info['CFBundleURLTypes']=[{'CFBundleURLName':'Kai workspace','CFBundleURLSchemes':['kai']}]

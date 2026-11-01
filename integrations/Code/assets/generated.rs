@@ -3,6 +3,11 @@ pub fn asset(path: &str) -> Option<&'static [u8]> {
     let path = path.strip_prefix("assets/").unwrap_or(path);
     let key = path.strip_suffix(".svg").unwrap_or(path);
     Some(match key {
+        "engine-llamacpp" => include_bytes!("engine-llamacpp.svg"),
+        "machine-laptop" => include_bytes!("machine-laptop.svg"),
+        "machine-desktop" => include_bytes!("machine-desktop.svg"),
+        "machine-server" => include_bytes!("machine-server.svg"),
+
         "lab-ai2" => include_bytes!("lab-ai2.svg"),
         "lab-ai21" => include_bytes!("lab-ai21.svg"),
         "lab-cohere" => include_bytes!("lab-cohere.svg"),
