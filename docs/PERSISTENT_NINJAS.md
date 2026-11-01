@@ -4,10 +4,10 @@ Personal Ninjas are durable identities in the sidebar, separate from the Ninja i
 
 ## Use
 
-1. Click **+** beside **Ninjas**. Choose This Mac or an online Tailscale machine with the worker installed.
+1. Click the Ninja **+** beside **Ninjas**. An already configured remote host is preferred; This Mac remains an explicit choice. The workspace path always belongs to the chosen execution host.
 2. Name it, choose its character and workspace on that host, select an installed provider and its model, then save it.
 3. Assign a task now, tonight at 22:00, or daily. Submitting a task captures the current settings. Later changes cannot change permissions or providers underneath an already queued/running task.
-4. Continue a chat or start another. Memory follows the identity. Compatible chats resume their native session; a provider/harness change starts a new native session with memory and bounded recent-work context.
+4. Saved Ninjas open as message conversations. The gear toggles their separate settings card; character choices are icon-only, and intensity choices use the shared finite tile shimmer. Recent conversation chips select chats; New chat starts empty. Compatible chats resume their native session; a provider/harness change starts a new native session with memory and bounded recent-work context.
 
 The worker reuses the normal native providers, including their shell, editing, MCP and delegation mechanisms. It is not a second chatbot implementation. Native requests retain their task, request ID, and delegated child owner; they can be answered through Kai's existing notch approval/question controls.
 
@@ -29,11 +29,29 @@ python3 scripts/install-ninja-worker.py '/path/to/Kai Unified.app' --keep-reacha
 
 The installer refuses an update while the worker has pending tasks. Providers use that host's installed CLIs and logins. Installing a provider is distinct from signing into it.
 
-## Workspace handoff
+## Calls and the remote computer
 
-For a saved remote Ninja, **Handoff current workspace via Taildrop** prepares a Git repository bundle, an exact tracked/untracked working tree honoring Git ignores, and bounded chat context. The receiving worker verifies the complete archive and every file before selecting the imported workspace. The UI waits for a receipt. Paths, links, duplicate members, expanded size, and checksums are checked; a changing source file fails the snapshot rather than silently sending inconsistent contents.
+**Call** is a personal-Ninja control, using Codex's native realtime transport on the selected execution host. Only the media peer and microphone live on the laptop. The host uses its own Codex login, Ninja persona/memory, host workspace, and captured permissions. Calling does not replace the identity's saved agent or model. Other providers' recent conversation context is carried into the host Codex call. Recorded shortcut openings use that same call path.
 
-Both devices must remain online until receipt is confirmed. A transfer cannot begin after the laptop has powered off. macOS may require the worker's Downloads permission to read a Taildrop receipt; protected project folders also retain their normal system permissions. The managed imported workspace lives in the worker's private application-support directory. Global provider credentials are never copied.
+The bounded startup snapshot is supplied through realtime V3 `initialItems`, with `includeStartupContext: false` (verified against the Studio's installed Codex 0.164.0 schema). This avoids a second automatic machine-tree scan: under a user LaunchAgent that scan was observed blocked in `codex_core::realtime_context::render_tree` at a macOS privacy-protected folder. This setting does not change the native workspace, sandbox, approvals, or macOS folder permissions. Persona, memory, recent work, and the last four conversation turns share a startup budget below 30 KiB; their full stored versions remain intact.
+
+SDP offers/answers live only in the worker's bounded in-memory signaling buffer, never the persisted UI snapshot or task record. Calls use a cursor-based revision long-poll. A lost client expires its signaling lease after 90 seconds; disconnected calls end without canceling independently assigned background work. Closing the panel does not hang up. End call flushes the native transcript; spoken corrections replace partial segments, with a bounded durable transcript for later context.
+
+**Computer** opens Apple's native Screen Sharing app at the selected host's Tailscale address. Its native video stream and Observe/Control modes are used; video is not embedded in Kai's message card. macOS Screen Sharing must be enabled on the host, with the account authorized there. Tailscale network membership does not replace macOS's screen-sharing authentication.
+
+**Take over** first persists a hold for this Ninja, stops its active tasks, and waits for native startup/tools to settle, then opens Screen Sharing. Queued work stays queued. **Resume Ninja** releases the hold. Holds survive worker restarts. Other Ninjas are unaffected.
+
+## Reference files
+
+**Send reference** uses Taildrop for explicitly selected files. It appends their host Downloads names to the message draft. It does not transfer a local project, change the Ninja's workspace, or make laptop files its execution root. The old workspace-import RPC and handoff button are retired. Protected host folders keep their normal macOS permission requirements.
+
+## Verification for 0.12.31
+
+- Sixteen focused worker/UI tests: single-line readable model labels, conversation/settings layout, selected-chat boundaries, animated intensity selection, exact status glyphs, persistent takeover holds, bounded spoken corrections, call-provider routing without mutating the saved profile, startup-context bounds, and private cursor-based signaling.
+- Fourteen existing media lifecycle checks cover capture/start/answer/stop, mute, recorded prompts, and stale media callbacks.
+- Existing native Codex WebRTC/approval tests are rerun alongside sidebar and voice routing checks.
+- Studio Screen Sharing responds with its native RFB protocol after being enabled by the user. The installed LaunchAgent passed a real WebRTC media connection and clean call end, starting from a Claude Ninja while preserving its saved provider/model. A separate live test stopped an active task for takeover, held the queue, resumed it, and verified the resulting file on the Studio. Results are recorded in `.build/validation/ninja-conversations/`.
+- Manual visual review and a live spoken microphone conversation are not claimed by these automated checks.
 
 ## Verification for 0.12.28
 

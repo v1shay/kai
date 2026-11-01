@@ -17,6 +17,7 @@ pub(super) struct State {
     pub panel: Option<Panel>,
     pub errors: HashMap<String, String>,
     pub started: bool,
+    pub call: Option<crate::ninja_call_ui::Call>,
 }
 pub(super) struct Panel {
     pub host: String,
@@ -25,10 +26,17 @@ pub(super) struct Panel {
     _subscriptions: Vec<Subscription>,
     pub models: Vec<Value>,
     pub busy: bool,
+    pub error: Option<String>,
     pub task: Option<Value>,
     pub chat: Option<String>,
     pub memory_revision: u64,
     pub schedule: usize,
+    pub settings: bool,
+    pub messages: Vec<Value>,
+    pub history_loading: bool,
+    pub models_requested: bool,
+    pub history_owner: Option<String>,
+    pub effort_preview: Option<(String, Instant)>,
     pub at: Instant,
     pub token: uuid::Uuid,
 }
@@ -139,7 +147,33 @@ impl State {
                     .flatten()
                     .find(|p| p["id"] == t["profile"]);
                 let name = p.and_then(|p| p["name"].as_str()).unwrap_or("Ninja");
-                out.push(json!({"id":format!("ninja:{}:{}",h.id,t["id"].as_str().unwrap_or("")),"runId":t["id"],"scene":if !reconnecting&&t["state"]=="approval"{"permission"}else{"thinking"},"text":if reconnecting{format!("{name} · Reconnecting to {}",h.name)}else{format!("{name} · {}",t["status"].as_str().unwrap_or("Working"))},"name":name,"agent":"ninja"}));
+                out.push(json!({"id":format!("ninja:{}:{}",h.id,t["id"].as_str().unwrap_or("")),"runId":t["id"],"scene":if reconnecting{"thinking"}else{task_scene(t)},"text":if reconnecting{format!("{name} · Reconnecting to {}",h.name)}else{format!("{name} · {}",t["status"].as_str().unwrap_or("Working"))},"name":name,"agent":"ninja"}));
+            }
+        }
+        if let Some(call) = &self.call {
+            let id = call
+                .task
+                .as_ref()
+                .map(|task| format!("ninja:{}:{task}", call.host.id));
+            if let Some(item) = out
+                .iter_mut()
+                .find(|v| Some(v["id"].as_str().unwrap_or("")) == id.as_deref())
+            {
+                if item["scene"] == "permission" {
+                    return out;
+                }
+                item["scene"] = json!(call.scene());
+                item["text"] = json!(format!(
+                    "{} · {}",
+                    call.name,
+                    if call.connected && call.backend {
+                        "On call"
+                    } else {
+                        "Calling…"
+                    }
+                ));
+            } else {
+                out.push(json!({"id":id.unwrap_or_else(||format!("ninja-call:{}",call.session)),"runId":call.session,"scene":call.scene(),"name":call.name,"text":format!("{} · Calling…",call.name),"agent":"ninja"}));
             }
         }
         out
@@ -177,17 +211,13 @@ impl State {
         json!({"owner":format!("ninja:{}:{task}",h.id),"token":r.id,"title":r.title,"detail":r.detail,"choices":choices,"questions":questions,"kind":kind})
     }
 }
-fn call(host: &Host, value: &Value) -> anyhow::Result<Value> {
+pub(super) fn call(host: &Host, value: &Value) -> anyhow::Result<Value> {
     if let Some(endpoint) = &host.endpoint {
         let v = ninja::http::json(
             "POST",
             &format!("{}/agents", endpoint.trim_end_matches('/')),
             Some(value),
-            Duration::from_secs(if value["action"] == "import_handoff" {
-                130
-            } else {
-                35
-            }),
+            Duration::from_secs(35),
         )?;
         if let Some(e) = v["error"].as_str() {
             anyhow::bail!("{e}")
@@ -285,10 +315,13 @@ fn chip_content(
 ) -> Stateful<Div> {
     let id = id.into();
     let label_selector = format!("{id}-label");
+    let selector = id.to_string();
     let model_row = id.starts_with("ninja-model-");
     div()
         .id(id)
+        .debug_selector(move || selector.clone())
         .h(px(28.))
+        .flex_none()
         .px_2()
         .flex()
         .items_center()
@@ -303,16 +336,62 @@ fn chip_content(
         .min_w(px(0.))
         .max_w_full()
         .when_some(mark, |v, mark| v.child(div().flex_none().child(mark)))
-        .child(
-            div()
-                .debug_selector(move || label_selector.clone())
-                .when(model_row, |v| v.flex_1().min_w(px(0.)).text_ellipsis())
-                .child(label),
-        )
+        .when(!label.is_empty(), |row| {
+            row.child(
+                div()
+                    .debug_selector(move || label_selector.clone())
+                    .when(model_row, |v| v.flex_1().min_w(px(0.)).truncate())
+                    .child(label),
+            )
+        })
         .on_click(cx.listener(move |app, _, w, cx| {
             cx.stop_propagation();
             action(app, w, cx)
         }))
+}
+fn host_address(host: &Host) -> Option<&str> {
+    let endpoint = host.endpoint.as_deref()?;
+    let authority = endpoint
+        .strip_prefix("http://")
+        .or_else(|| endpoint.strip_prefix("https://"))?
+        .split('/')
+        .next()?;
+    let name = authority.split(':').next()?;
+    (!name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-'))
+    .then_some(name)
+}
+fn bubble(user: bool, text: String, style: &str) -> Div {
+    div()
+        .w_full()
+        .flex()
+        .gap_2()
+        .items_start()
+        .when(user, |s| s.justify_end())
+        .when(!user, |s| s.child(avatar(style, 24.)))
+        .child(
+            div()
+                .max_w(relative(if user { 0.82 } else { 0.9 }))
+                .min_w(px(0.))
+                .px_3()
+                .py_2()
+                .rounded_lg()
+                .bg(rgba(if user { 0x9380ff32 } else { 0xffffff0b }))
+                .text_size(theme::ui_px(13.))
+                .child(text),
+        )
+}
+fn task_scene(task: &Value) -> &'static str {
+    match task["state"].as_str().unwrap_or("") {
+        "approval" => "permission",
+        "completed" => "success",
+        "failed" | "interrupted" => "failure",
+        "stopped" => "declined",
+        "queued" => "waiting",
+        _ => kai_icons::scene_for_status(task["status"].as_str().unwrap_or("Thinking")),
+    }
 }
 impl Orbit {
     pub(super) fn ninja_remote_command(
@@ -359,6 +438,7 @@ impl Orbit {
                 p.chat = task["chat"].as_str().map(str::to_owned);
                 p.task = Some(task.clone());
             }
+            self.ninja_conversation(cx);
             return Ok(true);
         }
         if !matches!(
@@ -434,62 +514,90 @@ impl Orbit {
         Ok(true)
     }
 
-    fn ninja_handoff(&mut self, cx: &mut Context<Self>) {
-        let context = serde_json::to_string(&self.unified_history()).unwrap_or_default();
-        let Some(panel) = &mut self.ninjas.panel else {
+    fn ninja_screen(&mut self, take_over: bool, cx: &mut Context<Self>) {
+        let Some(p) = self.ninjas.panel.as_ref() else {
             return;
         };
-        if panel.busy {
-            return;
-        }
         let Some(host) = self
             .ninjas
             .hosts
             .iter()
-            .find(|h| h.id == panel.host && h.endpoint.is_some())
+            .find(|h| h.id == p.host && h.endpoint.is_some())
             .cloned()
         else {
             return;
         };
-        if self
-            .sessions
+        let Some(address) = host_address(&host).map(str::to_owned) else {
+            return;
+        };
+        if !take_over {
+            if let Err(e) = native::open_screen_sharing(&address) {
+                self.notice = Some(e);
+            }
+            return;
+        }
+        let id = p.profile.id.clone();
+        self.ninjas.call.take();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { call(&host, &json!({"action":"take_over","id":id})) })
+                .await;
+            let _ = this.update(cx, |app, cx| {
+                match result {
+                    Ok(_) => {
+                        if let Err(e) = native::open_screen_sharing(&address) {
+                            app.notice = Some(e);
+                        }
+                    }
+                    Err(e) => app.notice = Some(e.to_string()),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+    fn ninja_send_reference(&mut self, cx: &mut Context<Self>) {
+        let Some(p) = self.ninjas.panel.as_ref().filter(|p| !p.busy) else {
+            return;
+        };
+        let Some(host) = self
+            .ninjas
+            .hosts
             .iter()
-            .any(|s| s.project_path == self.project && self.runs.contains_key(&s.id))
-        {
-            self.notice = Some("Finish local edits before handing off this workspace".into());
-            cx.notify();
+            .find(|h| h.id == p.host && h.endpoint.is_some())
+            .cloned()
+        else {
             return;
-        }
-        let token = panel.token;
-        let id = panel.profile.id.clone();
-        let project = self.project.clone();
-        if context.len() > 48 * 1024 {
-            self.notice = Some("Chat context exceeds the handoff limit".into());
-            cx.notify();
-            return;
-        }
-        panel.busy = true;
+        };
+        let token = p.token;
+        let paths = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: Some("Send reference files to Ninja host".into()),
+        });
         cx.spawn(async move|this,cx|{
+            let Ok(Ok(Some(paths)))=paths.await else{return};
             let remote=host.clone();
-            let result=cx.background_executor().spawn(async move { (||->anyhow::Result<Value>{
-                let packet=ninjas::handoff(&json!({"action":"export","project":project,"context":context,"out":ninjas::root().join("handoffs")}))?;
-                let endpoint=remote.endpoint.as_deref().ok_or_else(||anyhow::anyhow!("Choose remote host"))?;
-                let ip=endpoint.trim_start_matches("http://").trim_start_matches("https://").split('/').next().unwrap_or("").split(':').next().unwrap_or("");
-                anyhow::ensure!(!ip.is_empty(),"Missing Taildrop target");
+            let result=cx.background_executor().spawn(async move{(||->anyhow::Result<Vec<String>>{
+                anyhow::ensure!(!paths.is_empty()&&paths.len()<=8,"Send up to eight reference files at once");
+                let address=host_address(&remote).ok_or_else(||anyhow::anyhow!("Invalid Taildrop host"))?;
                 let cli=crate::process_env::dirs(&dirs::home_dir().unwrap_or_default()).into_iter().map(|p|p.join("tailscale")).chain([PathBuf::from("/Applications/Tailscale.app/Contents/MacOS/Tailscale")]).find(|p|p.is_file()).ok_or_else(||anyhow::anyhow!("Tailscale CLI unavailable"))?;
-                let mut transfer=std::process::Command::new(cli);transfer.args(["file","cp"]).arg(packet["archive"].as_str().unwrap()).arg(format!("{ip}:"));ninja::http::run(transfer,None,Duration::from_secs(120)).map_err(|e|anyhow::anyhow!("Taildrop transfer failed: {e}"))?;
-                let until=Instant::now()+Duration::from_secs(120);
-                loop{let receipt=call(&remote,&json!({"action":"import_handoff","id":id,"handoff":packet["id"],"sha256":packet["sha256"]}))?;
-                    if receipt["received"]==true{return Ok(receipt)}
-                    anyhow::ensure!(Instant::now()<until,"Studio has not confirmed receipt; keep both devices online and retry");std::thread::sleep(Duration::from_secs(1));}
-            })() }).await;
+                let mut names=vec![];
+                for path in paths {let metadata=std::fs::symlink_metadata(&path)?;anyhow::ensure!(metadata.is_file()&&metadata.len()<=64*1024*1024,"References must be regular files up to 64 MiB");
+                    let mut command=std::process::Command::new(&cli);command.args(["file","cp"]).arg(&path).arg(format!("{address}:"));
+                    ninja::http::run(command,None,Duration::from_secs(120))?;
+                    names.push(path.file_name().unwrap_or_default().to_string_lossy().into_owned());
+                }Ok(names)
+            })()}).await;
             let _=this.update(cx,|app,cx|{
-                if let Some(p)=app.ninjas.panel.as_mut().filter(|p|p.token==token){p.busy=false;match result{
-                    Ok(receipt)=>{if let Ok(profile)=serde_json::from_value::<Profile>(receipt["profile"].clone()){p.profile=profile;}p.fields[2].update(cx,|i,cx|i.set_text(receipt["project"].as_str().unwrap_or(""),cx));p.fields[3].update(cx,|i,cx|i.set_text(&format!("Continue this handed-off workspace. Previous chat context (quoted):\n{}",receipt["context"].as_str().unwrap_or("")),cx));app.notice=Some("Studio confirmed the workspace and context. Assign the next task to continue there.".into());},
-                    Err(e)=>app.notice=Some(e.to_string())}}
-                cx.notify();});
+                if let Some(p)=app.ninjas.panel.as_mut().filter(|p|p.token==token){match result{Ok(names)=>{
+                    let note=format!("\nReference files sent via Taildrop to this host's Downloads (reference only; keep working in your configured workspace): {}",names.join(", "));
+                    let draft=p.fields[3].read(cx).text();p.fields[3].update(cx,|input,cx|input.set_text(&format!("{draft}{note}"),cx));
+                },Err(e)=>app.notice=Some(e.to_string())}}cx.notify();
+            });
         }).detach();
-        cx.notify();
     }
 
     pub(super) fn start_ninja_watch(&mut self, host: Host, cx: &mut Context<Self>) {
@@ -538,6 +646,27 @@ impl Orbit {
                                     }
                                 }
                                 let previous = app.ninjas.snapshots.get(&host.id);
+                                let refresh_history = app.ninjas.panel.as_ref().is_some_and(|p| {
+                                    p.host == host.id
+                                        && value["tasks"].as_array().into_iter().flatten().any(
+                                            |t| {
+                                                t["profile"] == p.profile.id
+                                                    && t["chat"].as_str() == p.chat.as_deref()
+                                                    && t["finished"].is_number()
+                                                    && !previous.is_some_and(|v| {
+                                                        v["tasks"]
+                                                            .as_array()
+                                                            .into_iter()
+                                                            .flatten()
+                                                            .any(|old| {
+                                                                old["id"] == t["id"]
+                                                                    && old["finished"]
+                                                                        == t["finished"]
+                                                            })
+                                                    })
+                                            },
+                                        )
+                                });
                                 for task in
                                     value["tasks"].as_array().into_iter().flatten().filter(|t| {
                                         t["state"] == "completed" && t["acknowledged"] != true
@@ -564,6 +693,40 @@ impl Orbit {
                                 if app.ninjas.snapshots.get(&host.id) != Some(&value) {
                                     app.ninjas.snapshots.insert(host.id.clone(), value);
                                     app.ninjas.save();
+                                }
+                                if refresh_history {
+                                    app.ninja_conversation(cx);
+                                }
+                                if app.ninjas.panel.as_ref().is_some_and(|p| {
+                                    p.host == host.id
+                                        && p.profile.revision == 0
+                                        && !p.models_requested
+                                        && !p.busy
+                                        && !p.fields[2].read(cx).text().is_empty()
+                                }) {
+                                    if let Some(p) = &mut app.ninjas.panel {
+                                        let providers = app.ninjas.snapshots[&host.id]["providers"]
+                                            .as_array()
+                                            .cloned()
+                                            .unwrap_or_default();
+                                        if !providers.iter().any(|v| {
+                                            v["installed"] == true
+                                                && v["agent"] == json!(p.profile.agent)
+                                        }) {
+                                            if let Some(agent) = providers
+                                                .iter()
+                                                .filter(|v| v["installed"] == true)
+                                                .find_map(|v| {
+                                                    serde_json::from_value(v["agent"].clone()).ok()
+                                                })
+                                            {
+                                                p.profile.agent = agent;
+                                                p.profile.model = None;
+                                                p.profile.effort = None;
+                                            }
+                                        }
+                                    }
+                                    app.ninja_load_models(cx);
                                 }
                             }
                             Err(e) => {
@@ -602,10 +765,23 @@ impl Orbit {
         }
         let selected = host
             .or_else(|| {
+                self.ninja
+                    .draft
+                    .node
+                    .then(|| self.ninja.draft.machine.clone())
+            })
+            .or_else(|| {
                 self.ninjas
                     .hosts
                     .iter()
-                    .find(|h| h.id == self.ninja.draft.machine)
+                    .find(|h| h.endpoint.is_some() && h.id == self.ninja.draft.machine)
+                    .map(|h| h.id.clone())
+            })
+            .or_else(|| {
+                self.ninjas
+                    .hosts
+                    .iter()
+                    .find(|h| h.endpoint.is_some())
                     .map(|h| h.id.clone())
             })
             .unwrap_or_else(|| "local".into());
@@ -639,7 +815,11 @@ impl Orbit {
                     .find(|p| p["id"].as_str() == Some(id))
             })
             .and_then(|v| serde_json::from_value::<Profile>(v.clone()).ok());
-        let p=existing.unwrap_or_else(||Profile{id:uuid::Uuid::new_v4().to_string(),name:String::new(),persona:"A resourceful engineering partner. Do the work, verify it, and keep useful long-term context.".into(),style:"fire".into(),project:if selected=="local"{self.execution_root().unwrap_or_else(||self.project.clone())}else{snapshot.and_then(|v|v["home"].as_str()).map(PathBuf::from).unwrap_or_default()},agent:self.agent,model:self.request_model(),effort:self.request_effort(),ninja:(self.agent==AgentKind::Ninja).then(||self.ninja_selection()),edits:self.allow_edits,access:self.codex_access,approvals:self.codex_approvals,revision:0});
+        let mut p=existing.unwrap_or_else(||Profile{id:uuid::Uuid::new_v4().to_string(),name:String::new(),persona:"A resourceful personal partner. Complete tasks, verify results, and remember useful long-term context.".into(),style:"fire".into(),project:if selected=="local"{self.execution_root().unwrap_or_else(||self.project.clone())}else{snapshot.and_then(|v|v["home"].as_str()).map(PathBuf::from).unwrap_or_default()},agent:self.agent,model:self.request_model(),effort:self.request_effort(),ninja:(self.agent==AgentKind::Ninja).then(||self.ninja_selection()),edits:self.allow_edits,access:self.codex_access,approvals:self.codex_approvals,revision:0});
+        if p.revision == 0 && selected != "local" {
+            p.model = None;
+            p.effort = None;
+        }
         let mut fields = vec![];
         let mut subscriptions = vec![];
         for (placeholder, text) in [
@@ -659,9 +839,21 @@ impl Orbit {
                 input.set_text(&text, cx);
                 input
             });
-            subscriptions.push(cx.subscribe(&field, |_, _, _, cx| cx.notify()));
+            let task_input = fields.len() == 3;
+            subscriptions.push(cx.subscribe(&field, move |app, _, event, cx| {
+                if task_input && matches!(event, InputEvent::Submit) {
+                    app.ninja_submit_task(cx);
+                }
+                cx.notify();
+            }));
             fields.push(field);
         }
+        let latest = snapshot
+            .and_then(|v| v["tasks"].as_array())
+            .and_then(|ts| ts.iter().find(|t| t["profile"] == p.id))
+            .cloned();
+        let settings = p.revision == 0;
+        let effort_preview = p.effort.clone().map(|v| (v, Instant::now()));
         self.ninjas.panel = Some(Panel {
             host: selected.clone(),
             profile: p,
@@ -669,10 +861,20 @@ impl Orbit {
             _subscriptions: subscriptions,
             models: vec![],
             busy: false,
-            task: None,
-            chat: None,
+            error: None,
+            chat: latest
+                .as_ref()
+                .and_then(|t| t["chat"].as_str())
+                .map(str::to_owned),
+            task: latest,
             memory_revision: 0,
             schedule: 0,
+            settings,
+            messages: vec![],
+            history_loading: false,
+            models_requested: false,
+            history_owner: None,
+            effort_preview,
             at: Instant::now(),
             token: uuid::Uuid::new_v4(),
         });
@@ -683,6 +885,7 @@ impl Orbit {
             self.start_ninja_watch(host, cx);
         }
         if profile.is_some() {
+            self.ninja_conversation(cx);
             self.ninja_operation(
                 json!({"action":"memory","id":self.ninjas.panel.as_ref().unwrap().profile.id}),
                 cx,
@@ -715,6 +918,57 @@ impl Orbit {
         })
         .detach();
         cx.notify();
+    }
+    fn ninja_conversation(&mut self, cx: &mut Context<Self>) {
+        let Some(p) = &mut self.ninjas.panel else {
+            return;
+        };
+        if (p.history_loading && p.history_owner == p.chat) || p.profile.revision == 0 {
+            return;
+        }
+        let Some(chat) = p.chat.clone() else {
+            p.messages.clear();
+            return;
+        };
+        let Some(host) = self.ninjas.hosts.iter().find(|h| h.id == p.host).cloned() else {
+            return;
+        };
+        p.history_loading = true;
+        p.history_owner = Some(chat.clone());
+        let token = p.token;
+        let profile = p.profile.id.clone();
+        cx.spawn(async move |this, cx| {
+            let owner = chat.clone();
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    call(
+                        &host,
+                        &json!({"action":"conversation","id":profile,"chat":chat}),
+                    )
+                })
+                .await;
+            let _ = this.update(cx, |app, cx| {
+                if let Some(p) = app
+                    .ninjas
+                    .panel
+                    .as_mut()
+                    .filter(|p| p.token == token && p.history_owner.as_deref() == Some(&owner))
+                {
+                    p.history_loading = false;
+                    if p.chat.as_deref() == Some(&owner) {
+                        match result {
+                            Ok(v) => {
+                                p.messages = v["messages"].as_array().cloned().unwrap_or_default()
+                            }
+                            Err(e) => p.error = Some(e.to_string()),
+                        }
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
     pub(super) fn ninja_operation(&mut self, request: Value, cx: &mut Context<Self>) {
         let Some(panel) = &mut self.ninjas.panel else {
@@ -753,6 +1007,7 @@ impl Orbit {
                 match result {
                     Ok(value) => {
                         app.ninjas.errors.remove(&panel.host);
+                        panel.error = None;
                         match action.as_str() {
                             "models" => {
                                 if panel.profile.agent != captured_agent
@@ -772,11 +1027,13 @@ impl Orbit {
                                     panel.profile.effort =
                                         value["effort"].as_str().map(str::to_owned);
                                 }
+                                panel.effort_preview =
+                                    panel.profile.effort.clone().map(|v| (v, Instant::now()));
                             }
-                            "import_handoff" => {}
                             "save_profile" => {
                                 if let Ok(p) = serde_json::from_value::<Profile>(value) {
                                     panel.profile.revision = p.revision;
+                                    panel.settings = false;
                                 }
                             }
                             "memory" => {
@@ -818,8 +1075,20 @@ impl Orbit {
                         }
                     }
                     Err(e) => {
-                        app.ninjas.errors.insert(panel.host.clone(), e.to_string());
+                        panel.error = Some(e.to_string());
                     }
+                }
+                if matches!(action.as_str(), "task" | "submit") {
+                    app.ninja_conversation(cx);
+                }
+                if action == "memory"
+                    && app
+                        .ninjas
+                        .panel
+                        .as_ref()
+                        .is_some_and(|p| p.models.is_empty())
+                {
+                    app.ninja_load_models(cx);
                 }
                 cx.notify();
             });
@@ -829,7 +1098,12 @@ impl Orbit {
     }
     fn ninja_load_models(&mut self, cx: &mut Context<Self>) {
         let Some(p) = &self.ninjas.panel else { return };
-        self.ninja_operation(json!({"action":"models","agent":p.profile.agent,"project":p.fields[2].read(cx).text(),"model":p.profile.model,"ninja":p.profile.ninja}),cx);
+        if p.busy {
+            return;
+        }
+        let request = json!({"action":"models","agent":p.profile.agent,"project":p.fields[2].read(cx).text(),"model":p.profile.model,"ninja":p.profile.ninja});
+        self.ninjas.panel.as_mut().unwrap().models_requested = true;
+        self.ninja_operation(request, cx);
     }
     fn ninja_save_profile(&mut self, cx: &mut Context<Self>) {
         if self.ninjas.panel.as_ref().is_some_and(|p| p.busy) {
@@ -918,16 +1192,25 @@ impl Orbit {
                         div()
                             .text_size(theme::ui_px(11.))
                             .text_color(rgb(MUTED))
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(icon("ninja", 15., TEXT))
                             .child("Ninjas"),
                     )
-                    .child(chip("new-personal-ninja", "+", false, cx, |app, w, cx| {
-                        app.open_ninjas(None, None, w, cx)
-                    })),
+                    .child(marked_chip(
+                        "new-personal-ninja",
+                        "+",
+                        icon("ninja", 14., TEXT),
+                        false,
+                        cx,
+                        |app, w, cx| app.open_ninjas(None, None, w, cx),
+                    )),
             )
             .child(
                 div()
                     .flex()
-                    .flex_wrap()
+                    .flex_col()
                     .gap_1()
                     .children(rows.into_iter().map(|(host, p)| {
                         let id = p["id"].as_str().unwrap_or("").to_owned();
@@ -946,6 +1229,7 @@ impl Orbit {
                             .is_some_and(|v| v.profile.id == id && v.host == host);
                         div()
                             .id(SharedString::from(format!("personal-ninja-{host}-{id}")))
+                            .w_full()
                             .px_2()
                             .py_1()
                             .flex()
@@ -956,9 +1240,35 @@ impl Orbit {
                             .hover(|v| v.bg(rgba(GLASS_HOVER)))
                             .cursor_pointer()
                             .child(avatar(p["style"].as_str().unwrap_or("fire"), 24.))
-                            .child(div().text_size(theme::ui_px(11.)).child(name))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .truncate()
+                                    .text_size(theme::ui_px(12.))
+                                    .child(name),
+                            )
                             .when(active, |v| {
-                                v.child(div().size(px(5.)).rounded_full().bg(rgb(0x82dca9)))
+                                let task = self.ninjas.snapshots[&host]["tasks"]
+                                    .as_array()
+                                    .unwrap()
+                                    .iter()
+                                    .find(|t| {
+                                        t["profile"] == id
+                                            && ["running", "approval"]
+                                                .contains(&t["state"].as_str().unwrap_or(""))
+                                    })
+                                    .unwrap();
+                                v.child(self.sidebar_status_mark(
+                                    if task["state"] == "approval" {
+                                        "permission"
+                                    } else {
+                                        kai_icons::scene_for_status(
+                                            task["status"].as_str().unwrap_or("Working"),
+                                        )
+                                    },
+                                    cx.active_window().is_some(),
+                                ))
                             })
                             .on_click(cx.listener(move |app, _, w, cx| {
                                 cx.stop_propagation();
@@ -995,6 +1305,7 @@ impl Orbit {
             .cloned()
             .unwrap_or_default();
         let mut setup = div()
+            .w_full()
             .flex()
             .flex_col()
             .gap_2()
@@ -1044,11 +1355,11 @@ impl Orbit {
                     .flex()
                     .flex_wrap()
                     .gap_1()
-                    .children(ninjas::styles().into_iter().map(|(id, name, _)| {
+                    .children(ninjas::styles().into_iter().map(|(id, _name, _)| {
                         marked_chip(
                             SharedString::from(format!("ninja-style-{id}")),
-                            name,
-                            avatar(id, 20.),
+                            "",
+                            avatar(id, 26.),
                             p.profile.style == id,
                             cx,
                             move |app, _, cx| {
@@ -1058,6 +1369,8 @@ impl Orbit {
                                 cx.notify();
                             },
                         )
+                        .w(px(42.))
+                        .h(px(38.))
                     })),
             )
             .child(
@@ -1174,6 +1487,9 @@ impl Orbit {
         setup = setup.child(
             div()
                 .id("personal-ninja-model-list")
+                .w_full()
+                .min_w(px(0.))
+                .flex_none()
                 .max_h(px(160.))
                 .overflow_y_scroll()
                 .flex()
@@ -1199,7 +1515,9 @@ impl Orbit {
                             let id = model["id"].as_str().unwrap_or("").to_owned();
                             marked_chip(
                                 SharedString::from(format!("ninja-model-{id}")),
-                                model["name"].as_str().unwrap_or(&id).to_owned(),
+                                composer_design::display_label(
+                                    model["name"].as_str().unwrap_or(&id),
+                                ),
                                 icon(
                                     composer_design::model_glyph(&id)
                                         .unwrap_or(agent_icon(p.profile.agent)),
@@ -1237,53 +1555,117 @@ impl Orbit {
                         }),
                 ),
         );
-        setup = setup.child(div().flex().flex_wrap().gap_1().children(
-            efforts.iter().filter_map(Value::as_str).map(|effort| {
-                let value = effort.to_owned();
-                chip(
-                    SharedString::from(format!("ninja-effort-{value}")),
-                    composer_design::title(&value),
-                    p.profile.effort.as_deref() == Some(effort),
-                    cx,
-                    move |app, _, cx| {
-                        if let Some(p) = &mut app.ninjas.panel {
-                            p.profile.effort = Some(value.clone());
-                            if let Some(n) = &mut p.profile.ninja {
-                                n.thinking = Some(value.clone());
-                            }
+        setup = setup.child(
+            div().w_full().flex().flex_col().gap_1().children(
+                efforts
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .enumerate()
+                    .map(|(i, effort)| {
+                        let value = effort.to_owned();
+                        let hover_value = value.clone();
+                        let active = p.profile.effort.as_deref() == Some(effort);
+                        let color = composer_design::effort_color(
+                            effort,
+                            i as f32 / efforts.len().saturating_sub(1).max(1) as f32,
+                        );
+                        let elapsed = p
+                            .effort_preview
+                            .as_ref()
+                            .filter(|(v, _)| v == effort)
+                            .map(|(_, at)| at.elapsed().as_secs_f32());
+                        let motion = self.motion && !native::reduced_motion();
+                        if motion && window.is_window_active() && elapsed.is_some_and(|t| t < 5.) {
+                            request_motion_frame(window, cx);
                         }
-                        cx.notify();
-                    },
-                )
-            }),
-        ));
+                        div()
+                            .id(SharedString::from(format!("ninja-effort-{value}")))
+                            .debug_selector({
+                                let v = value.clone();
+                                move || format!("ninja-effort-{v}")
+                            })
+                            .w_full()
+                            .h(px(32.))
+                            .flex_none()
+                            .relative()
+                            .overflow_hidden()
+                            .rounded_md()
+                            .bg(rgba(if active { 0xffffff14 } else { 0xffffff05 }))
+                            .cursor_pointer()
+                            .child(composer_design::shimmer_tiles(elapsed, color, motion))
+                            .child(
+                                div()
+                                    .relative()
+                                    .px_3()
+                                    .h_full()
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .text_size(theme::ui_px(12.))
+                                    .text_color(rgb(color))
+                                    .child(composer_design::title(effort))
+                                    .when(active, |s| s.child("✓")),
+                            )
+                            .on_hover(cx.listener(move |app, hover: &bool, _, cx| {
+                                if let Some(p) = &mut app.ninjas.panel {
+                                    p.effort_preview = if *hover {
+                                        Some((hover_value.clone(), Instant::now()))
+                                    } else {
+                                        p.profile.effort.clone().map(|v| (v, Instant::now()))
+                                    };
+                                }
+                                cx.notify();
+                            }))
+                            .on_click(cx.listener(move |app, _, _, cx| {
+                                cx.stop_propagation();
+                                if let Some(p) = &mut app.ninjas.panel {
+                                    p.profile.effort = Some(value.clone());
+                                    p.effort_preview = Some((value.clone(), Instant::now()));
+                                    if let Some(n) = &mut p.profile.ninja {
+                                        n.thinking = Some(value.clone());
+                                    }
+                                }
+                                cx.notify();
+                            }))
+                    }),
+            ),
+        );
         setup=setup.child(div().flex().gap_1().children([("Read only",false,runtime::CodexAccess::Workspace),("Workspace",true,runtime::CodexAccess::Workspace),("Full access",true,runtime::CodexAccess::Full)].into_iter().map(|(label,edit,access)|marked_chip(SharedString::from(format!("ninja-access-{label}")),label,icon(if !edit{"lock-keyhole"}else if access==runtime::CodexAccess::Full{"lock-keyhole-open"}else{"shield"},14.,if !edit{TEXT}else if access==runtime::CodexAccess::Full{0xf38c82}else{0xf2b66e}),p.profile.edits==edit&&p.profile.access==access,cx,move|app,_,cx|{if let Some(p)=&mut app.ninjas.panel{p.profile.edits=edit;p.profile.access=access;}cx.notify();})))).child(div().flex().gap_1().children([("Ask me",runtime::CodexApprovals::Ask),("Never ask",runtime::CodexApprovals::Never)].into_iter().map(|(label,policy)|chip(SharedString::from(format!("ninja-approval-{label}")),label,p.profile.approvals==policy,cx,move|app,_,cx|{if let Some(p)=&mut app.ninjas.panel{p.profile.approvals=policy;}cx.notify();})))).child(div().text_size(theme::ui_px(10.)).text_color(rgb(MUTED)).child("Model and permission changes apply to future tasks. Memory follows this Ninja across chats.")).child(chip("ninja-save-profile",if p.busy{"Saving…"}else{"Save Ninja"},true,cx,|app,_,cx|app.ninja_save_profile(cx)));
-        if p.profile.revision > 0
-            && self
-                .ninjas
-                .hosts
-                .iter()
-                .any(|h| h.id == p.host && h.endpoint.is_some())
-        {
-            setup = setup.child(chip(
-                "ninja-handoff",
-                "Handoff current workspace via Taildrop",
-                false,
-                cx,
-                |app, _, cx| app.ninja_handoff(cx),
-            ));
-        }
         if p.profile.revision > 0 {
             setup=setup.child(div().text_size(theme::ui_px(11.)).child("Personal memory")).child(field(&p.fields[4],"file").min_h(px(90.))).child(chip("ninja-save-memory","Save memory",false,cx,|app,_,cx|{if let Some(p)=&app.ninjas.panel{let v=json!({"action":"memory","id":p.profile.id,"revision":p.memory_revision,"content":p.fields[4].read(cx).text()});app.ninja_operation(v,cx);}}));
         }
-        let tasks = snapshot
+        let summaries = snapshot
             .and_then(|v| v["tasks"].as_array())
             .into_iter()
             .flatten()
             .filter(|t| t["profile"] == p.profile.id)
-            .take(40)
             .cloned()
             .collect::<Vec<_>>();
+        let mut tasks = p.messages.clone();
+        for t in summaries
+            .iter()
+            .filter(|t| p.chat.as_deref() == t["chat"].as_str())
+        {
+            if let Some(old) = tasks.iter_mut().find(|v| v["id"] == t["id"]) {
+                // Full completed messages supersede clipped summaries; active
+                // stream updates always supersede a previously loaded body.
+                if old["finished"] != t["finished"]
+                    || ["running", "approval", "queued"]
+                        .contains(&t["state"].as_str().unwrap_or(""))
+                {
+                    *old = t.clone();
+                }
+            } else {
+                tasks.push(t.clone());
+            }
+        }
+        tasks.sort_by_key(|t| t["created"].as_i64().unwrap_or(0));
+        let held = snapshot
+            .and_then(|v| v["profiles"].as_array())
+            .into_iter()
+            .flatten()
+            .find(|v| v["id"] == p.profile.id)
+            .is_some_and(|v| v["held"] == true);
         let mut work = div()
             .flex()
             .flex_col()
@@ -1297,7 +1679,52 @@ impl Orbit {
                     .child(
                         div()
                             .text_size(theme::ui_px(15.))
-                            .child("Chats and task briefs"),
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(avatar(&p.profile.style, 28.))
+                            .child(if p.profile.name.is_empty() {
+                                "New Ninja".to_owned()
+                            } else {
+                                p.profile.name.clone()
+                            }),
+                    )
+                    .when(p.profile.revision > 0, |s| {
+                        s.child(marked_chip(
+                            "ninja-call",
+                            if self.ninjas.call.is_some() {
+                                "End call"
+                            } else {
+                                "Call"
+                            },
+                            icon("phone", 16., TEXT),
+                            self.ninjas.call.is_some(),
+                            cx,
+                            |app, w, cx| app.ninja_call_toggle(w, cx),
+                        ))
+                    })
+                    .when(
+                        self.ninjas
+                            .hosts
+                            .iter()
+                            .any(|h| h.id == p.host && h.endpoint.is_some()),
+                        |s| {
+                            s.child(marked_chip(
+                                "ninja-screen",
+                                "Computer",
+                                icon("machine-desktop", 16., TEXT),
+                                false,
+                                cx,
+                                |app, _, cx| app.ninja_screen(false, cx),
+                            ))
+                            .child(chip(
+                                "ninja-take-over",
+                                "Take over",
+                                false,
+                                cx,
+                                |app, _, cx| app.ninja_screen(true, cx),
+                            ))
+                        },
                     )
                     .child(chip(
                         "ninja-new-chat",
@@ -1311,10 +1738,49 @@ impl Orbit {
                                 }
                                 p.chat = None;
                                 p.task = None;
+                                p.messages.clear();
                             }
                             cx.notify();
                         },
                     )),
+            )
+            .child(
+                div()
+                    .id("ninja-conversations")
+                    .w_full()
+                    .flex_none()
+                    .overflow_x_scroll()
+                    .flex()
+                    .gap_1()
+                    .children({
+                        let mut seen = HashSet::new();
+                        summaries
+                            .iter()
+                            .filter(|t| seen.insert(t["chat"].clone().to_string()))
+                            .take(12)
+                            .map(|t| {
+                                let chat = t["chat"].as_str().unwrap_or("").to_owned();
+                                let selected = p.chat.as_deref() == Some(&chat);
+                                let id = chat.clone();
+                                chip(
+                                    SharedString::from(format!("ninja-conversation-{chat}")),
+                                    short(t["prompt"].as_str().unwrap_or("Chat"), 26),
+                                    selected,
+                                    cx,
+                                    move |app, _, cx| {
+                                        if let Some(p) = &mut app.ninjas.panel {
+                                            p.chat = Some(id.clone());
+                                            p.task = None;
+                                            p.messages.clear();
+                                        }
+                                        app.ninja_conversation(cx);
+                                        cx.notify();
+                                    },
+                                )
+                                .flex_none()
+                            })
+                            .collect::<Vec<_>>()
+                    }),
             )
             .child(
                 div()
@@ -1327,79 +1793,99 @@ impl Orbit {
                     .gap_2()
                     .children(tasks.into_iter().map(|t| {
                         let id = t["id"].as_str().unwrap_or("").to_owned();
-                        let selected = p.task.as_ref().is_some_and(|v| v["id"] == id);
-                        div()
+                        let selected = p
+                            .task
+                            .as_ref()
+                            .filter(|v| v["id"] == id && v["finished"] == t["finished"]);
+                        let prompt = selected
+                            .and_then(|v| v["prompt"].as_str())
+                            .or_else(|| t["prompt"].as_str())
+                            .unwrap_or("")
+                            .to_owned();
+                        let brief = selected
+                            .filter(|_| {
+                                !["running", "approval"]
+                                    .contains(&t["state"].as_str().unwrap_or(""))
+                            })
+                            .and_then(|v| v["brief"].as_str())
+                            .or_else(|| t["brief"].as_str())
+                            .unwrap_or("")
+                            .to_owned();
+                        let state = t["state"].as_str().unwrap_or("");
+                        let running = ["running", "approval", "queued"].contains(&state);
+                        let scene = task_scene(&t);
+                        let mut row = div()
                             .id(SharedString::from(format!("ninja-task-{id}")))
-                            .p_3()
-                            .rounded_lg()
-                            .bg(rgba(if selected { 0xffffff15 } else { 0xffffff07 }))
+                            .w_full()
+                            .flex_none()
                             .flex()
                             .flex_col()
-                            .gap_2()
-                            .cursor_pointer()
-                            .child(
+                            .gap_2();
+                        if t["call"].is_string() {
+                            row = row.child(
                                 div()
-                                    .text_size(theme::ui_px(11.))
+                                    .text_size(theme::ui_px(10.))
                                     .text_color(rgb(MUTED))
-                                    .flex()
-                                    .items_center()
-                                    .gap_2()
-                                    .when_some(t["model"].as_str(), |v, model| {
-                                        v.child(icon(
-                                            composer_design::model_glyph(model)
-                                                .unwrap_or(agent_icon(p.profile.agent)),
-                                            14.,
-                                            TEXT,
-                                        ))
-                                    })
-                                    .child(format!(
-                                        "{} · {}",
-                                        t["state"].as_str().unwrap_or(""),
-                                        t["model"].as_str().unwrap_or("")
-                                    )),
-                            )
-                            .child(
-                                div()
-                                    .text_size(theme::ui_px(12.))
-                                    .child(t["prompt"].as_str().unwrap_or("").to_owned()),
-                            )
-                            .child(
-                                div()
-                                    .text_size(theme::ui_px(11.))
-                                    .text_color(rgb(MUTED))
-                                    .child(
-                                        t["brief"]
-                                            .as_str()
-                                            .filter(|s| !s.is_empty())
-                                            .or_else(|| t["status"].as_str())
-                                            .unwrap_or("")
-                                            .to_owned(),
-                                    ),
-                            )
-                            .when(
-                                ["running", "approval", "queued"]
-                                    .contains(&t["state"].as_str().unwrap_or("")),
-                                |s| {
-                                    let id = id.clone();
-                                    s.child(chip(
-                                        SharedString::from(format!("ninja-stop-{id}")),
-                                        "Stop",
-                                        false,
-                                        cx,
-                                        move |app, _, cx| {
-                                            app.ninja_operation(
-                                                json!({"action":"stop","id":id}),
-                                                cx,
-                                            )
-                                        },
-                                    ))
+                                    .child("Call"),
+                            );
+                            for line in t["utterances"].as_array().into_iter().flatten() {
+                                row = row.child(bubble(
+                                    line["role"] == "user",
+                                    line["text"].as_str().unwrap_or("").to_owned(),
+                                    &p.profile.style,
+                                ));
+                            }
+                        } else {
+                            row = row
+                                .child(bubble(true, prompt, &p.profile.style))
+                                .child(bubble(false, brief, &p.profile.style));
+                        }
+                        row = row.child(
+                            div()
+                                .pl(px(32.))
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(self.sidebar_status_mark(
+                                    scene,
+                                    running && window.is_window_active(),
+                                ))
+                                .child(
+                                    div()
+                                        .text_size(theme::ui_px(10.))
+                                        .text_color(rgb(MUTED))
+                                        .child(t["status"].as_str().unwrap_or("").to_owned()),
+                                ),
+                        );
+                        if running {
+                            let stop = id.clone();
+                            row = row.child(chip(
+                                SharedString::from(format!("ninja-stop-{id}")),
+                                "Stop",
+                                false,
+                                cx,
+                                move |app, _, cx| {
+                                    app.ninja_operation(json!({"action":"stop","id":stop}), cx)
                                 },
+                            ));
+                        }
+                        let row = row.on_click(cx.listener(move |app, _, _, cx| {
+                            cx.stop_propagation();
+                            app.ninja_operation(json!({"action":"task","id":id}), cx);
+                        }));
+                        if self.motion && !native::reduced_motion() {
+                            row.with_animation(
+                                SharedString::from(format!(
+                                    "ninja-message-{}",
+                                    t["id"].as_str().unwrap_or("")
+                                )),
+                                Animation::new(Duration::from_millis(220)),
+                                |s, t| s.opacity(t).relative().top(px((1. - t) * 5.)),
                             )
-                            .on_click(cx.listener(move |app, _, _, cx| {
-                                cx.stop_propagation();
-                                app.ninja_operation(json!({"action":"task","id":id}), cx);
-                            }))
                             .into_any_element()
+                        } else {
+                            row.into_any_element()
+                        }
                     })),
             );
         let pending = snapshot
@@ -1416,12 +1902,102 @@ impl Orbit {
             })
             .collect::<Vec<_>>();
         for (task, r) in pending {
+            let child = r.get("childId").cloned().unwrap_or(Value::Null);
             if let Ok(request) = serde_json::from_value::<runtime::NativeRequest>(r) {
-                work=work.child(div().p_3().rounded_lg().bg(rgba(0xffb46718)).flex().flex_col().gap_2().child(div().text_size(theme::ui_px(12.)).child(request.title.clone())).child(div().text_size(theme::ui_px(11.)).child(request.detail.clone())).when(matches!(request.kind,runtime::NativeRequestKind::Approval{..}),|s|{let choices=match &request.kind{runtime::NativeRequestKind::Approval{choices}=>choices.clone(),_=>vec![]};s.child(div().flex().gap_1().children(choices.into_iter().map(|c|{let task=task.clone();let token=request.id.clone();chip(SharedString::from(format!("ninja-response-{}-{}",token,c.id)),c.label,false,cx,move|app,_,cx|app.ninja_operation(json!({"action":"respond","id":task,"request":token,"answer":runtime::NativeAnswer::Choice(c.id.clone())}),cx))})))}));
+                work=work.child(div().p_3().rounded_lg().bg(rgba(0xffb46718)).flex().flex_col().gap_2().child(div().text_size(theme::ui_px(12.)).child(request.title.clone())).child(div().text_size(theme::ui_px(11.)).child(request.detail.clone())).when(matches!(request.kind,runtime::NativeRequestKind::Approval{..}),|s|{let choices=match &request.kind{runtime::NativeRequestKind::Approval{choices}=>choices.clone(),_=>vec![]};s.child(div().flex().gap_1().children(choices.into_iter().map(|c|{let task=task.clone();let token=request.id.clone();let child=child.clone();chip(SharedString::from(format!("ninja-response-{}-{}",token,c.id)),c.label,false,cx,move|app,_,cx|app.ninja_operation(json!({"action":"respond","id":task,"request":token,"child":child,"answer":runtime::NativeAnswer::Choice(c.id.clone())}),cx))})))}));
             }
         }
+        if let Some(call) = &self.ninjas.call {
+            work = work.child(
+                div()
+                    .px_3()
+                    .py_2()
+                    .rounded_lg()
+                    .bg(rgba(0x9380ff18))
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(self.sidebar_status_mark(call.scene(), true))
+                    .child(div().flex_1().text_size(theme::ui_px(12.)).child(format!(
+                        "{} · {} · {}",
+                        call.name,
+                        if call.connected && call.backend {
+                            "On call"
+                        } else {
+                            "Calling…"
+                        },
+                        chat_timing::duration(call.started.elapsed().as_millis() as u64)
+                    )))
+                    .child(chip(
+                        "ninja-call-mute",
+                        if call.muted { "Unmute" } else { "Mute" },
+                        call.muted,
+                        cx,
+                        |app, _, cx| {
+                            if let Some(c) = &mut app.ninjas.call {
+                                c.muted = !c.muted;
+                                if let Err(e) = c.media.mute(c.muted) {
+                                    app.notice = Some(e.to_string());
+                                }
+                            }
+                            cx.notify();
+                        },
+                    ))
+                    .child(chip("ninja-call-end", "End", false, cx, |app, _, cx| {
+                        app.ninjas.call.take();
+                        cx.notify();
+                    })),
+            );
+        }
+        if held {
+            work = work.child(
+                div()
+                    .px_3()
+                    .py_2()
+                    .rounded_lg()
+                    .bg(rgba(0xf2b66e18))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_size(theme::ui_px(12.))
+                            .child("You have control · Ninja paused"),
+                    )
+                    .child(chip(
+                        "ninja-resume",
+                        "Resume Ninja",
+                        true,
+                        cx,
+                        |app, _, cx| {
+                            if let Some(p) = &app.ninjas.panel {
+                                app.ninja_operation(
+                                    json!({"action":"resume","id":p.profile.id}),
+                                    cx,
+                                );
+                            }
+                        },
+                    )),
+            );
+        }
         work = work
-            .child(field(&p.fields[3], "chat").min_h(px(90.)))
+            .child(field(&p.fields[3], "chat").min_h(px(68.)))
+            .when(
+                self.ninjas
+                    .hosts
+                    .iter()
+                    .any(|h| h.id == p.host && h.endpoint.is_some()),
+                |s| {
+                    s.child(marked_chip(
+                        "ninja-send-reference",
+                        "Send reference",
+                        icon("plus", 14., TEXT),
+                        false,
+                        cx,
+                        |app, _, cx| app.ninja_send_reference(cx),
+                    ))
+                },
+            )
             .child(
                 div().flex().gap_1().children(
                     ["Now", "Tonight 22:00", "Every 24h"]
@@ -1526,6 +2102,19 @@ impl Orbit {
                                             .child(host_name.to_owned()),
                                     ),
                             )
+                            .child(marked_chip(
+                                "ninja-settings",
+                                "",
+                                icon("settings", 16., TEXT),
+                                p.settings,
+                                cx,
+                                |app, _, cx| {
+                                    if let Some(p) = &mut app.ninjas.panel {
+                                        p.settings = !p.settings;
+                                    }
+                                    cx.notify();
+                                },
+                            ))
                             .child(chip(
                                 "close-personal-ninjas",
                                 "×",
@@ -1537,36 +2126,43 @@ impl Orbit {
                                 },
                             )),
                     )
-                    .when_some(self.ninjas.errors.get(&p.host).cloned(), |s, e| {
-                        s.child(
-                            div()
-                                .text_size(theme::ui_px(11.))
-                                .text_color(rgb(0xffb18a))
-                                .child(e),
-                        )
-                    })
+                    .when_some(
+                        p.error
+                            .clone()
+                            .or_else(|| self.ninjas.errors.get(&p.host).cloned()),
+                        |s, e| {
+                            s.child(
+                                div()
+                                    .text_size(theme::ui_px(11.))
+                                    .text_color(rgb(0xffb18a))
+                                    .child(e),
+                            )
+                        },
+                    )
                     .child(
                         div()
                             .flex()
                             .gap_4()
                             .flex_1()
                             .min_h(px(0.))
-                            .child(
-                                div()
-                                    .id("ninja-persona-fields")
-                                    .debug_selector(|| "ninja-persona-fields".into())
-                                    .w(px((width - 48.) * 0.45))
-                                    .flex_none()
-                                    .min_w(px(0.))
-                                    .p_3()
-                                    .rounded_lg()
-                                    .border_1()
-                                    .border_color(rgba(0xffffff14))
-                                    .bg(rgba(GLASS_SURFACE))
-                                    .h_full()
-                                    .overflow_y_scroll()
-                                    .child(setup),
-                            )
+                            .when(p.settings, |body| {
+                                body.child(
+                                    div()
+                                        .id("ninja-persona-fields")
+                                        .debug_selector(|| "ninja-persona-fields".into())
+                                        .w(px((width - 48.) * 0.45))
+                                        .flex_none()
+                                        .min_w(px(0.))
+                                        .p_3()
+                                        .rounded_lg()
+                                        .border_1()
+                                        .border_color(rgba(0xffffff14))
+                                        .bg(rgba(GLASS_SURFACE))
+                                        .h_full()
+                                        .overflow_y_scroll()
+                                        .child(setup),
+                                )
+                            })
                             .child(
                                 work.id("ninja-work-card")
                                     .debug_selector(|| "ninja-work-card".into())
@@ -1608,7 +2204,7 @@ mod tests {
                 let panel=app.ninjas.panel.as_mut().unwrap();panel.profile.agent=AgentKind::Ninja;
                 panel.profile.ninja=Some(ninja::Selection{model:"gpt-oss:20b".into(),harness:ninja::Harness::Claude,..Default::default()});
                 panel.profile.model=Some("gpt-oss:20b".into());
-                panel.models=vec![json!({"id":"gpt-oss:20b","name":"gpt-oss:20b","efforts":["low","medium","high"]}),json!({"id":"qwen3-coder:30b","name":"Qwen 3 Coder","efforts":[]})];
+                panel.models=vec![json!({"id":"gpt-oss:20b","name":"gpt-oss:20b","efforts":["low","medium","high"]}),json!({"id":"gpt-6.1-sol","name":"GPT-6.1 Sol","efforts":[]}),json!({"id":"qwen3-coder:30b","name":"Qwen 3 Coder","efforts":[]})];
                 panel.fields[2].update(cx,|input,cx|input.set_text("/Users/example/Library/Application Support/a-very-long-workspace-name/another-folder",cx));
             })
         });
@@ -1623,11 +2219,16 @@ mod tests {
         for name in [
             "ninja-model-gpt-oss:20b-label",
             "ninja-model-qwen3-coder:30b-label",
+            "ninja-model-gpt-6.1-sol-label",
         ] {
             let label = cx.debug_bounds(name).unwrap();
             assert!(
-                label.size.width > px(70.),
+                label.size.width > px(180.),
                 "Model name collapsed to an ellipsis: {label:?}"
+            );
+            assert!(
+                label.size.height <= px(20.),
+                "Model wrapped inside fixed-height row: {label:?}"
             );
         }
     }
@@ -1639,5 +2240,62 @@ mod tests {
             app.ninjas.snapshots.insert("local".into(),json!({"profiles":[{"id":"personal","name":"Ice","style":"ice"}],"tasks":[{"id":"task-7","profile":"personal","state":"approval","requests":[native]}]}));
             let snapshot=app.unified_snapshot(cx);assert_eq!(snapshot["menuBarNinjas"][0]["id"],"local:personal");assert_eq!(snapshot["menuBarNinjas"][0]["style"],"ice");assert_eq!(snapshot["approvalThreadId"],"ninja:local:task-7");assert_eq!(snapshot["nativeReview"]["token"],"question-42");assert_eq!(snapshot["nativeReview"]["kind"],"questions");assert_eq!(snapshot["nativeReview"]["questions"][0]["id"],"target");assert_eq!(snapshot["activeTasks"][0]["scene"],"permission");assert_eq!(snapshot["approvalCount"],1);app.ninjas.errors.insert("local".into(),"Disconnected".into());let offline=app.unified_snapshot(cx);assert!(offline["nativeReview"].is_null());assert!(offline["activeTasks"][0]["text"].as_str().unwrap().contains("Reconnecting"));
         });
+    }
+    #[gpui::test]
+    fn saved_ninjas_open_as_conversations_and_intensity_is_model_scoped(cx: &mut TestAppContext) {
+        let (view, cx) = crate::ui_tests::fixture(cx);
+        cx.update(|window,cx|view.update(cx,|app,cx|{
+            app.open_ninjas(Some("local".into()),None,window,cx);
+            let p=app.ninjas.panel.as_mut().unwrap();p.profile.revision=1;p.profile.name="Ice".into();p.settings=false;
+            p.profile.model=Some("fixture".into());p.models=vec![json!({"id":"fixture","name":"Fixture","efforts":["low","medium","high"]})];
+            p.chat=Some("chat-one".into());let id=p.profile.id.clone();
+            app.ninjas.snapshots.insert("local".into(),json!({"profiles":[],"tasks":[{"id":"one","profile":id,"chat":"chat-one","prompt":"First chat","brief":"Done","state":"completed"},{"id":"two","profile":id,"chat":"chat-two","prompt":"Other chat","brief":"Other","state":"completed"}]}));
+        }));
+        crate::ui_tests::draw_frame(&view, cx);
+        assert!(cx.debug_bounds("ninja-work-card").unwrap().size.width > px(750.));
+        crate::ui_tests::click_selector(cx, "ninja-settings");
+        crate::ui_tests::draw_frame(&view, cx);
+        crate::ui_tests::click_selector(cx, "ninja-effort-high");
+        view.update(cx, |app, _| {
+            let p = app.ninjas.panel.as_ref().unwrap();
+            assert_eq!(p.profile.effort.as_deref(), Some("high"));
+            assert_eq!(
+                p.effort_preview.as_ref().map(|(v, _)| v.as_str()),
+                Some("high")
+            );
+            assert_eq!(p.profile.model.as_deref(), Some("fixture"));
+        });
+        crate::ui_tests::click_selector(cx, "ninja-new-chat");
+        view.update(cx, |app, _| {
+            let p = app.ninjas.panel.as_ref().unwrap();
+            assert!(p.chat.is_none());
+            assert!(p.messages.is_empty());
+        });
+    }
+    #[test]
+    fn screen_hosts_and_statuses_are_exact() {
+        let mut h = Host {
+            id: "studio".into(),
+            name: "Studio".into(),
+            endpoint: Some("http://100.72.31.42:32187".into()),
+        };
+        assert_eq!(host_address(&h), Some("100.72.31.42"));
+        h.endpoint = Some("http://user@evil:32187".into());
+        assert!(host_address(&h).is_none());
+        for (state, status, scene) in [
+            ("approval", "Waiting", "permission"),
+            ("running", "Terminal command", "terminal"),
+            ("completed", "Completed", "success"),
+            ("failed", "Error", "failure"),
+        ] {
+            assert_eq!(task_scene(&json!({"state":state,"status":status})), scene);
+        }
+        let mut state = State::default();
+        state.hosts.push(Host { id: "studio".into(), name: "Studio".into(), endpoint: Some("http://100.72.31.42:32187".into()) });
+        state.snapshots.insert("studio".into(), json!({"profiles":[{"id":"n","name":"Ice"}],"tasks":[{"id":"t","profile":"n","state":"running","status":"Terminal command"}]}));
+        assert_eq!(state.active()[0]["scene"], "terminal");
+        state.snapshots.get_mut("studio").unwrap()["tasks"][0]["state"] = json!("approval");
+        assert_eq!(state.active()[0]["scene"], "permission");
+        assert!(svg_assets::asset("phone").is_some());
     }
 }

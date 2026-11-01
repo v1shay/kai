@@ -187,3 +187,9 @@ pub fn transport_diagnostic()->anyhow::Result<()>{
     }
     handle.cancel();anyhow::bail!("Native voice diagnostic timed out")
 }
+
+/// Opt-in method-only diagnostics; never include SDP, transcripts or tokens.
+pub fn protocol_trace()->bool {
+    static TRACE:std::sync::OnceLock<bool>=std::sync::OnceLock::new();
+    *TRACE.get_or_init(||std::env::var_os("KAI_VOICE_PROTOCOL_TRACE").is_some())
+}

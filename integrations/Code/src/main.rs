@@ -1,5 +1,6 @@
 mod ninjas;
 mod ninjas_ui;
+mod ninja_call_ui;
 mod ninja;
 mod ninja_ui;
 mod agent_controls;

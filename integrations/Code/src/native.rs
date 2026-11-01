@@ -370,3 +370,29 @@ pub fn panel_drag_guard(_:&gpui::Window,_:bool){}
 
 #[cfg(target_os="macos")]pub use mac::window_number;
 #[cfg(not(target_os="macos"))]pub fn window_number(_:&gpui::Window)->i64{0}
+
+/// Explicit user action. macOS owns the authenticated, hardware-decoded screen
+/// stream and Observe/Control switching; Kai does not poll or capture desktops.
+pub fn open_screen_sharing(host: &str) -> Result<(), String> {
+    if host.is_empty()
+        || host.len() > 253
+        || !host
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
+    {
+        return Err("Invalid Screen Sharing host".into());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut child = std::process::Command::new("/usr/bin/open")
+            .args(["-a", "Screen Sharing", &format!("vnc://{host}")])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        std::thread::spawn(move || { let _ = child.wait(); });
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("Screen Sharing requires macOS".into())
+    }
+}

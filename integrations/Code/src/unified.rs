@@ -722,7 +722,7 @@ impl Orbit {
             "workspace_settings" => self.show_modal(Modal::Settings, window, cx),
             "workspace_voice" => self.toggle_voice(window, cx),
             "workspace_voice_prompt" => {
-                if self.voice_call.is_some() {
+                if self.voice_call.is_some() || self.ninjas.call.is_some() {
                     return Err("A voice conversation is already running".into());
                 }
                 self.unified_voice_context = None;self.unified_voice_images.clear();self.voice_error=None;
@@ -758,7 +758,7 @@ impl Orbit {
                     .filter(|v| v.len() <= 32 * 1024 * 1024)
                     .map(str::to_owned);
                 self.start_voice_prompt(prompt, window, cx);
-                if self.voice_call.is_none(){return Err(self.notice.clone().unwrap_or_else(||"The native voice session could not start".into()))}
+                if self.voice_call.is_none() && self.ninjas.call.is_none(){return Err(self.notice.clone().unwrap_or_else(||"The native voice session could not start".into()))}
             }
             "workspace_voice_choice" => {
                 let voice = request["voice"].as_str().ok_or("Missing voice")?;
@@ -919,7 +919,7 @@ impl Orbit {
             "activity":if tasks.is_empty(){selected_activity.clone()}else{activity},"sessionActivity":self.voice_call.as_ref().filter(|v|v.owns_current_chat(self.active.as_deref())).map(|v|json!({"scene":v.scene(),"text":format!("{} · {}",v.caption(),voice::REALTIME_MODEL)})).unwrap_or(selected_activity),"activeTasks":tasks,"focusThreadId":approval.as_ref().map(|a|format!("code:{}",a.0)).or_else(||tasks.first().and_then(|t|t["id"].as_str().map(str::to_owned))),
             "notice":self.notice.as_deref().unwrap_or("Kai · Code"),"attachments":self.attachments.iter().filter(|a|!self.attachment_removals.contains_key(&a.id)).map(|a|a.path.to_string_lossy().into_owned()).collect::<Vec<_>>(),"modelsLoading":self.controls_pending.contains(self.agent.command()),"models":models.iter().map(|m|json!({"model":m.id,"displayName":m.label,"resolvedModel":self.controls.get(self.agent.command()).and_then(|(_,v)|v.defaults.aliases.get(&m.id)).unwrap_or(&m.id),"supportedReasoningEfforts":m.reasoning_efforts.iter().map(|v|json!({"reasoningEffort":v})).collect::<Vec<_>>()})).collect::<Vec<_>>(),
             "selectedModel":self.model,"reasoningEffort":self.unified_effort().unwrap_or(""),"canGoBack":!self.unified_back.is_empty(),"canGoForward":!self.unified_forward.is_empty(),
-            "agents":self.agents.iter().map(|a|json!({"id":a.kind.command(),"name":a.kind.name(),"available":a.available&&a.executable.is_some()})).collect::<Vec<_>>(),"selectedAgent":self.agent.command(),"workspaceVoiceChoice":self.voice_choice,"workspaceVoiceActive":self.voice_call.is_some(),"workspaceVoiceScene":self.voice_call.as_ref().map(|v|v.scene())});
+            "agents":self.agents.iter().map(|a|json!({"id":a.kind.command(),"name":a.kind.name(),"available":a.available&&a.executable.is_some()})).collect::<Vec<_>>(),"selectedAgent":self.agent.command(),"workspaceVoiceChoice":self.voice_choice,"workspaceVoiceActive":self.voice_call.is_some()||self.ninjas.call.is_some(),"workspaceVoiceScene":self.ninjas.call.as_ref().map(|v|v.scene()).or_else(||self.voice_call.as_ref().map(|v|v.scene()))});
         if approval.is_none(){let review=self.ninjas.review();if !review.is_null(){
             snapshot["approval"]=json!(true);snapshot["approvalThreadId"]=review["owner"].clone();snapshot["approvalRequestId"]=review["token"].clone();snapshot["approvalSummary"]=review["title"].clone();snapshot["focusThreadId"]=review["owner"].clone();snapshot["nativeReview"]=review;
         }}

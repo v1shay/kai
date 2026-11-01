@@ -137,6 +137,20 @@ impl Orbit {
             cx.notify();
         }
     }
+    pub(super) fn sidebar_status_mark(&self, scene: &'static str, active: bool) -> AnyElement {
+        let path = kai_icons::status_asset(scene);
+        let color = match scene { "failure"=>0xe58c8c, "permission"|"question"=>0xf2b66e, "success"=>0x8fc89a, _=>TEXT };
+        let mark = svg().path(path).size(px(14.)).flex_none().text_color(rgb(color));
+        if active && self.motion && !native::reduced_motion() {
+            mark.with_animation(SharedString::from(format!("sidebar-status-{scene}")),Animation::new(Duration::from_millis(1300)).repeat(),|v,t|v.opacity(0.72+0.28*(t*std::f32::consts::PI).sin())).into_any_element()
+        } else { mark.into_any_element() }
+    }
+    pub(super) fn chat_sidebar_status(&self, id: &str, active: bool) -> AnyElement {
+        let scene = self.native_pending.values().find(|p|p.owner==id && p.current(&self.runs)).map(|p|p.indicator_scene())
+            .or_else(||self.runs.get(id).map(|r|kai_icons::scene_for_status(&r.status)))
+            .unwrap_or(if active{"thinking"}else{"success"});
+        self.sidebar_status_mark(scene,active)
+    }
     pub(super) fn activity_section(&self, cx: &Context<Self>) -> AnyElement {
         let count = self.project_tree.activity.len();
         if count == 0 {
@@ -192,30 +206,7 @@ impl Orbit {
             .unwrap_or_default()
             .to_string_lossy()
             .into_owned();
-        let mark = if running {
-            let glyph = icon("refresh", 12., MUTED);
-            if self.motion && !native::reduced_motion() && window.is_window_active() {
-                glyph
-                    .with_animation(
-                        "activity-spin",
-                        Animation::new(Duration::from_millis(1200)).repeat(),
-                        |glyph, t| {
-                            glyph.with_transformation(Transformation::rotate(radians(
-                                t * std::f32::consts::TAU,
-                            )))
-                        },
-                    )
-                    .into_any_element()
-            } else {
-                glyph.into_any_element()
-            }
-        } else {
-            div()
-                .size(px(6.))
-                .rounded_full()
-                .bg(rgb(0x9fc6a8))
-                .into_any_element()
-        };
+        let mark = self.chat_sidebar_status(&session.id, running && window.is_window_active());
         let animation_id = SharedString::from(format!(
             "activity-enter-{}-{}-{running}",
             session.id,

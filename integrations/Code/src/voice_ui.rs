@@ -183,6 +183,10 @@ impl Orbit {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.ninjas.panel.as_ref().is_some_and(|p|p.profile.revision>0) || self.ninjas.call.is_some() {
+            self.ninja_call_toggle(window,cx);
+            if let (Some(call),Some(prompt))=(&self.ninjas.call,initial.as_deref()){if let Err(e)=call.media.initial_prompt(prompt){self.ninjas.call.take();self.notice=Some(e.to_string());}}return;
+        }
         if self.voice_call.is_some() {
             self.stop_voice(cx);
             return;
@@ -511,6 +515,9 @@ impl Orbit {
         Ok(())
     }
     pub(super) fn stop_voice(&mut self, cx: &mut Context<Self>) {
+        if self.ninjas.call.take().is_some() {
+            cx.notify();
+        }
         let Some(call) = self.voice_call.as_mut() else {
             return;
         };

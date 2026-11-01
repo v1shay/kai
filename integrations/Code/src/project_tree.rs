@@ -716,11 +716,7 @@ impl Orbit {
                         )
                         .when(running, |s| {
                             s.child(
-                                div()
-                                    .size(px(4.))
-                                    .rounded_full()
-                                    .bg(rgb(0x9fc6a8))
-                                    .flex_none(),
+                                self.chat_sidebar_status(&session.id, cx.active_window().is_some()),
                             )
                         })
                         .when(self.lifecycle.pinned_chats.contains(&session.id), |s| {

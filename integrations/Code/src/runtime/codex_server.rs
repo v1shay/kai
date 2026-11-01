@@ -1015,6 +1015,9 @@ impl Session {
         initialized: &mut bool,
     ) -> Result<()> {
         if let Some(method) = value["method"].as_str() {
+            if crate::voice::protocol_trace() && (method.contains("realtime") || self.voice.is_some()&&method=="turn/completed") {
+                eprintln!("Voice wire {method}: current={}, voice={}, request={}",value["params"]["threadId"]==self.thread,self.voice.is_some(),!value["id"].is_null());
+            }
             if let Some(service) = self.service.clone() {
                 let p = &value["params"];
                 if method == "thread/started" {
@@ -1571,6 +1574,9 @@ impl Session {
         Ok(())
     }
     fn notification(&mut self, method: &str, p: &Value, ctx: &NativeContext) -> Result<()> {
+        if method.starts_with("thread/realtime/") && (crate::voice::protocol_trace() || cfg!(test)&&std::env::var_os("KAI_TEST_VOICE_OFFER").is_some()) {
+            eprintln!("Voice notification {method}: current={}, voice={}",p["threadId"]==self.thread,self.voice.is_some());
+        }
         if method.starts_with("thread/realtime/") && self.voice.is_some() {
             return self.voice_notification(method, p, ctx);
         }
@@ -3387,6 +3393,23 @@ send({'method':'thread/realtime/closed','params':{'threadId':'12345678-1234-4234
         state.item(&json!({"id":"final","type":"agentMessage","phase":"final_answer","text":"Final **answer**"}),true);
         let source=state.parser.rendered_output();assert!(source.find("Ran commands").unwrap()<source.find("Final answer").unwrap());assert!(source.find("Final answer").unwrap()<source.find("Final **answer**").unwrap());
         let count=state.parser.interactions.len();state.item(&json!({"id":"final","type":"agentMessage","phase":"final_answer","text":"Final **answer**"}),true);assert_eq!(state.parser.interactions.len(),count);
+    }
+    #[test]
+    #[ignore = "requires an authenticated Codex and a live microphone-free WebRTC offer"]
+    fn live_personal_voice_signaling(){
+        let path=std::path::PathBuf::from(std::env::var("KAI_TEST_VOICE_OFFER").unwrap());let value:Value=serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let home=dirs::home_dir().unwrap();let cli=crate::discovery::discover_agent(AgentKind::Codex,&home).executable.unwrap();let mut req=request(&cli);req.project=broker_project();req.identity=Some(crate::ninjas::Identity{id:uuid::Uuid::new_v4().to_string(),name:"Voice check".into()});req.prompt="Do not use tools. Reply Ready, then wait for my voice.".into();req.model=None;
+        let mut params=crate::voice::Start{session_id:"11111111-1111-4111-8111-111111111111".into(),sdp:value["sdp"].as_str().unwrap().into(),voice:None}.params().unwrap();params["_codePrepareVoiceContext"]=json!(true);params["initialItems"]=json!([{"role":"user","text":"Continue the preceding context and wait for my voice."}]);
+        let handle=maintenance(req,"thread/realtime/start",params).unwrap();let until=Instant::now()+Duration::from_secs(50);let mut started=false;let mut answer=false;
+        while Instant::now()<until{
+            match handle.events.recv_timeout(Duration::from_secs(5)){
+                Ok(RuntimeEvent::Voice(crate::voice::Signal::Started{..}))=>{started=true;eprintln!("LIVE_STARTED");},
+                Ok(RuntimeEvent::Voice(crate::voice::Signal::Answer{sdp,..}))=>{answer=true;eprintln!("LIVE_ANSWER");if let Some(out)=std::env::var_os("KAI_TEST_VOICE_ANSWER"){std::fs::write(out,serde_json::to_vec(&sdp).unwrap()).unwrap();}break;},
+                Ok(RuntimeEvent::Status(s))=>eprintln!("LIVE_STATUS {s}"),
+                Ok(RuntimeEvent::Failed(e))=>panic!("{e}"),_=>{}
+            }
+        }
+        handle.native_command("thread/realtime/stop",json!({})).ok();handle.cancel();assert!(started&&answer,"Missing realtime signaling");
     }
     #[test]
     fn native_voice_uses_webrtc_same_chat_approvals_and_survives_delegated_turn_completion() {

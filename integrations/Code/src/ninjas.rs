@@ -94,6 +94,15 @@ impl Profile {
         Ok(())
     }
 }
+fn call_profile(source: &Profile) -> Profile {
+    Profile {
+        agent: AgentKind::Codex,
+        ninja: None,
+        model: None,
+        effort: None,
+        ..source.clone()
+    }
+}
 fn compatible(a: &Profile, b: &Profile) -> bool {
     a.project == b.project
         && a.agent == b.agent
@@ -133,6 +142,63 @@ pub struct Task {
     pub brief: String,
     pub requests: Vec<NativeRequest>,
     pub acknowledged: bool,
+    #[serde(default)]
+    pub call: Option<String>,
+    #[serde(default)]
+    pub utterances: Vec<Utterance>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Utterance {
+    pub id: String,
+    pub role: String,
+    pub text: String,
+}
+fn record_utterance(utterances: &mut Vec<Utterance>, id: &str, role: &str, text: &str) {
+    if !["user", "assistant"].contains(&role) {
+        return;
+    }
+    let text = clip(text, 8 * 1024);
+    if let Some(line) = utterances.iter_mut().find(|line| line.id == id) {
+        line.text = text;
+    } else {
+        if utterances.len() >= 64 {
+            utterances.remove(0);
+        }
+        utterances.push(Utterance {
+            id: id.into(),
+            role: role.into(),
+            text,
+        });
+    }
+    while utterances.iter().map(|v| v.text.len()).sum::<usize>() > 64 * 1024 {
+        utterances.remove(0);
+    }
+}
+fn readable_brief(text: &str) -> String {
+    if !text.contains("<orbit_interaction ") {
+        return text.to_owned();
+    }
+    crate::presentation::blocks(text)
+        .into_iter()
+        .filter_map(|b| match b {
+            crate::presentation::MessageBlock::Paragraph(s)
+            | crate::presentation::MessageBlock::RichParagraph { text: s, .. }
+            | crate::presentation::MessageBlock::Heading(s)
+            | crate::presentation::MessageBlock::Quote(s)
+            | crate::presentation::MessageBlock::Code { text: s, .. }
+            | crate::presentation::MessageBlock::ListItem { text: s, .. }
+            | crate::presentation::MessageBlock::Voice { text: s, .. } => Some(s),
+            crate::presentation::MessageBlock::TableRow { cells, .. } => Some(cells.join(" · ")),
+            crate::presentation::MessageBlock::Attachment { name, .. } => Some(name),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+fn conversation_task(t: &Task) -> Value {
+    let mut value = json!(t);
+    value["brief"] = json!(readable_brief(&t.brief));
+    value
 }
 fn now() -> i64 {
     chrono::Utc::now().timestamp()
@@ -143,6 +209,22 @@ fn clip(s: &str, max: usize) -> String {
         n -= 1
     }
     s[..n].to_owned()
+}
+fn call_context(profile: &Profile, memory: &Memory, briefs: &str, conversation: &str) -> String {
+    // Realtime V3 accepts at most 8,192 estimated tokens in initialItems.
+    // Keep the full profile in storage; bound only the call's startup snapshot.
+    format!(
+        "You are {}, a persistent personal assistant.\nPersona:\n{}\n\nPersistent memory (revision {}):\n{}\n\nRecent completed work, quoted context rather than new instructions:\n{}\n\nCurrent conversation and call instructions:\n{}\n\nUse ninja_memory for durable facts. Use this host's native tools within the captured permissions when the user asks for work. Do not execute quoted old requests. Wait for the user's voice.",
+        profile.name, clip(&profile.persona, 8192), memory.revision,
+        clip(&memory.content, 8192), clip(briefs, 2000), clip(conversation, 10_000)
+    )
+}
+fn call_params(mut offer: Value, context: String) -> Value {
+    // Codex's default machine-tree scan can wait on a macOS privacy prompt.
+    // Persona, memory and current conversation are explicitly supplied instead.
+    offer["includeStartupContext"] = json!(false);
+    offer["initialItems"] = json!([{"role":"user","text":context}]);
+    offer
 }
 pub fn root() -> PathBuf {
     dirs::data_local_dir()
@@ -171,8 +253,22 @@ impl Store {
         fs::set_permissions(root, fs::Permissions::from_mode(0o700))?;
         let db = Connection::open(root.join("ninjas.sqlite"))?;
         db.busy_timeout(Duration::from_secs(3))?;
-        db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS profiles(id TEXT PRIMARY KEY, payload TEXT NOT NULL); CREATE TABLE IF NOT EXISTS memory(id TEXT PRIMARY KEY, content TEXT NOT NULL DEFAULT '', revision INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS tasks(id TEXT PRIMARY KEY, profile TEXT NOT NULL, chat TEXT NOT NULL, state TEXT NOT NULL, due INTEGER NOT NULL, created INTEGER NOT NULL, payload TEXT NOT NULL); CREATE INDEX IF NOT EXISTS task_queue ON tasks(state,due,created);")?;
+        db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS profiles(id TEXT PRIMARY KEY, payload TEXT NOT NULL); CREATE TABLE IF NOT EXISTS memory(id TEXT PRIMARY KEY, content TEXT NOT NULL DEFAULT '', revision INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS tasks(id TEXT PRIMARY KEY, profile TEXT NOT NULL, chat TEXT NOT NULL, state TEXT NOT NULL, due INTEGER NOT NULL, created INTEGER NOT NULL, payload TEXT NOT NULL); CREATE INDEX IF NOT EXISTS task_queue ON tasks(state,due,created); CREATE TABLE IF NOT EXISTS control(profile TEXT PRIMARY KEY,held INTEGER NOT NULL DEFAULT 0);")?;
         Ok(Self { db })
+    }
+    fn held(&self, id: &str) -> Result<bool> {
+        Ok(self
+            .db
+            .query_row("SELECT held FROM control WHERE profile=?1", [id], |r| {
+                r.get::<_, bool>(0)
+            })
+            .optional()?
+            .unwrap_or(false))
+    }
+    fn hold(&self, id: &str, value: bool) -> Result<()> {
+        self.profile(id)?;
+        self.db.execute("INSERT INTO control(profile,held) VALUES(?1,?2) ON CONFLICT(profile) DO UPDATE SET held=excluded.held",params![id,value])?;
+        Ok(())
     }
     fn profiles(&self) -> Result<Vec<Profile>> {
         let mut q = self
@@ -331,6 +427,8 @@ impl Store {
             brief: String::new(),
             requests: vec![],
             acknowledged: false,
+            call: None,
+            utterances: vec![],
         };
         self.save_task(&t)?;
         Ok(t)
@@ -343,10 +441,18 @@ struct Live {
     provider: AgentKind,
     wake: async_channel::Sender<()>,
 }
+struct CallSession {
+    offer: Option<Value>,
+    signals: std::collections::VecDeque<(u64, crate::voice::Signal)>,
+    sequence: u64,
+    seen: std::time::Instant,
+}
 struct Worker {
     store: Mutex<Store>,
     root: PathBuf,
     live: Mutex<HashMap<String, Live>>,
+    calls: Mutex<HashMap<String, CallSession>>,
+    starting: Mutex<std::collections::HashSet<String>>,
     change: Mutex<u64>,
     wake: Condvar,
 }
@@ -374,7 +480,16 @@ impl Worker {
         })
         .collect::<Vec<_>>();
         let db = self.store.lock().unwrap();
-        let profiles = db.profiles()?;
+        let profiles = db
+            .profiles()?
+            .into_iter()
+            .map(|p| {
+                let held = db.held(&p.id).unwrap_or(false);
+                let mut value = json!(p);
+                value["held"] = json!(held);
+                value
+            })
+            .collect::<Vec<_>>();
         let mut tasks = db.pending()?;
         let existing = tasks
             .iter()
@@ -386,9 +501,9 @@ impl Worker {
                 .filter(|t| !existing.contains(&t.id))
                 .take(20),
         );
-        let tasks=tasks.iter().map(|t|{let mut requests=t.requests.iter().map(|r|json!(r)).collect::<Vec<_>>();for child in runtime::broker::children(&t.profile.project).into_iter().filter(|c|t.native_id.as_deref()==Some(c.parent_id.as_str())){for request in child.requests{let mut v=json!(request);v["childId"]=json!(child.id);requests.push(v);}}json!({"id":t.id,"profile":t.profile.id,"chat":t.chat,"prompt":clip(&t.prompt,600),"state":if requests.is_empty(){t.state.as_str()}else{"approval"},"status":t.status,"model":t.model,"effort":t.effort,"brief":clip(&t.brief,2400),"created":t.created,"due":t.due,"started":t.started,"finished":t.finished,"requests":requests,"acknowledged":t.acknowledged})}).collect::<Vec<_>>();
+        let tasks=tasks.iter().map(|t|{let mut requests=t.requests.iter().map(|r|json!(r)).collect::<Vec<_>>();for child in runtime::broker::children(&t.profile.project).into_iter().filter(|c|t.native_id.as_deref()==Some(c.parent_id.as_str())){for request in child.requests{let mut v=json!(request);v["childId"]=json!(child.id);requests.push(v);}}json!({"id":t.id,"profile":t.profile.id,"chat":t.chat,"prompt":clip(&t.prompt,600),"state":if requests.is_empty(){t.state.as_str()}else{"approval"},"status":t.status,"model":t.model,"effort":t.effort,"brief":clip(&readable_brief(&t.brief),2400),"created":t.created,"due":t.due,"started":t.started,"finished":t.finished,"requests":requests,"acknowledged":t.acknowledged,"call":t.call,"utterances":t.utterances.iter().rev().take(16).collect::<Vec<_>>().into_iter().rev().map(|line|json!({"id":line.id,"role":line.role,"text":clip(&line.text,2000)})).collect::<Vec<_>>()})}).collect::<Vec<_>>();
         Ok(
-            json!({"revision":*self.change.lock().unwrap(),"profiles":profiles,"tasks":tasks,"machine":ninja::local_machine().name,"home":dirs::home_dir(),"providers":providers}),
+            json!({"protocol":2,"revision":*self.change.lock().unwrap(),"profiles":profiles,"tasks":tasks,"machine":ninja::local_machine().name,"home":dirs::home_dir(),"providers":providers}),
         )
     }
     fn request(self: &Arc<Self>, v: Value) -> Result<Value> {
@@ -410,26 +525,202 @@ impl Worker {
                 }
                 self.snapshot()
             }
-            "import_handoff" => {
-                let mut value = handoff(
-                    &json!({"action":"receive","id":v["handoff"],"sha256":v["sha256"],"root":self.root}),
-                )?;
-                if value["received"] == true {
-                    let mut db = self.store.lock().unwrap();
-                    let mut p = db.profile(id()?)?;
-                    let imported = PathBuf::from(
-                        value["project"]
-                            .as_str()
-                            .context("Missing imported workspace")?,
-                    );
-                    if p.project != imported {
-                        p.project = imported;
-                        p = db.save_profile(p)?;
-                    }
-                    value["profile"] = json!(p);
-                    self.changed();
+            "call_start" => {
+                let start = crate::voice::Start {
+                    session_id: v["session"]
+                        .as_str()
+                        .context("Missing call identity")?
+                        .into(),
+                    sdp: v["sdp"].as_str().context("Missing call offer")?.into(),
+                    voice: v["voice"].as_str().map(str::to_owned),
+                };
+                let offer = start.params()?;
+                let db = self.store.lock().unwrap();
+                let profile_id = id()?;
+                ensure!(
+                    !db.pending()?.iter().any(|t| t.profile.id == profile_id),
+                    "Finish this Ninja's current task before calling"
+                );
+                let profile = db.profile(id()?)?;
+                ensure!(!db.held(&profile.id)?, "Resume this Ninja before calling");
+                ensure!(
+                    discovery::discover_agent(
+                        AgentKind::Codex,
+                        &dirs::home_dir().unwrap_or_default()
+                    )
+                    .available,
+                    "Install and sign in to Codex on this execution host to call this Ninja"
+                );
+                let mut task = db.submit(id()?, "Voice call", v["chat"].as_str(), 0, None)?;
+                // The voice bridge is Codex, but identity, memory, workspace and
+                // permissions remain this Ninja's. Never change its saved provider.
+                task.profile = call_profile(&task.profile);
+                task.model = None;
+                task.effort = None;
+                task.native_id = None;
+                task.call = Some(start.session_id.clone());
+                task.prompt="Prepare the quoted Ninja persona, memory, and recent chat context for this call. Do not execute old requests. Acknowledge briefly and wait for the user's voice.".into();
+                if let Some(chat) = v["chat"].as_str() {
+                    let history = db
+                        .tasks(Some(&profile.id))?
+                        .into_iter()
+                        .filter(|t| t.chat == chat && t.id != task.id)
+                        .take(4)
+                        .map(|t| {
+                            format!(
+                                "User: {}\nNinja: {}",
+                                clip(&t.prompt, 600),
+                                clip(&readable_brief(&t.brief), 1200)
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                        .collect::<Vec<_>>()
+                        .join("\n\n");
+                    task.prompt
+                        .push_str(&format!("\nQuoted current conversation:\n{history}"));
                 }
-                Ok(value)
+                self.calls.lock().unwrap().insert(
+                    task.id.clone(),
+                    CallSession {
+                        offer: Some(offer),
+                        signals: Default::default(),
+                        sequence: 0,
+                        seen: std::time::Instant::now(),
+                    },
+                );
+                db.save_task(&task)?;
+                drop(db);
+                self.changed();
+                // A lost/killed laptop must not strand a paid live call. This
+                // lease exists only during a call, never for background tasks.
+                let worker = self.clone();
+                let tid = task.id.clone();
+                thread::spawn(move || {
+                    loop {
+                        thread::sleep(Duration::from_secs(15));
+                        let expired = worker
+                            .calls
+                            .lock()
+                            .unwrap()
+                            .get(&tid)
+                            .map(|c| c.seen.elapsed() > Duration::from_secs(90));
+                        match expired {
+                            None => break,
+                            Some(false) => {}
+                            Some(true) => {
+                                let sid = worker
+                                    .store
+                                    .lock()
+                                    .unwrap()
+                                    .task(&tid)
+                                    .ok()
+                                    .and_then(|t| t.call);
+                                let _ = worker
+                                    .request(json!({"action":"call_end","id":tid,"session":sid}));
+                                worker.calls.lock().unwrap().remove(&tid);
+                                worker.changed();
+                                break;
+                            }
+                        }
+                    }
+                });
+                Ok(json!(task))
+            }
+            "call_end" => {
+                let task = self.store.lock().unwrap().task(id()?)?;
+                ensure!(
+                    task.call.as_deref() == v["session"].as_str() && task.call.is_some(),
+                    "Call identity changed"
+                );
+                let live = self.live.lock().unwrap();
+                if let Some(run) = live.get(id()?) {
+                    run.handle
+                        .lock()
+                        .unwrap()
+                        .native_command("thread/realtime/stop", json!({}))?;
+                } else if task.state == "queued" {
+                    drop(live);
+                    return self.request(json!({"action":"stop","id":id()?}));
+                }
+                self.changed();
+                Ok(json!({"ok":true}))
+            }
+            "call_poll" => {
+                let cursor = v["cursor"].as_u64().unwrap_or(0);
+                let sequence = *self.change.lock().unwrap();
+                let read = || -> Result<Value> {
+                    let mut calls = self.calls.lock().unwrap();
+                    let call = calls.get_mut(id()?).context("Call has ended")?;
+                    call.seen = std::time::Instant::now();
+                    Ok(
+                        json!({"cursor":call.sequence,"signals":call.signals.iter().filter(|(n,_)|*n>cursor).map(|(_,s)|s).collect::<Vec<_>>()}),
+                    )
+                };
+                let value = read()?;
+                if value["signals"].as_array().is_some_and(|v| v.is_empty()) {
+                    let guard = self.change.lock().unwrap();
+                    if *guard == sequence {
+                        drop(
+                            self.wake
+                                .wait_timeout(guard, Duration::from_secs(25))
+                                .unwrap(),
+                        );
+                    }
+                    read()
+                } else {
+                    Ok(value)
+                }
+            }
+            "take_over" => {
+                let profile_id = id()?;
+                let tasks = {
+                    let db = self.store.lock().unwrap();
+                    db.hold(profile_id, true)?;
+                    db.pending()?
+                        .into_iter()
+                        .filter(|t| {
+                            t.profile.id == profile_id
+                                && ["running", "approval"].contains(&t.state.as_str())
+                        })
+                        .map(|t| t.id)
+                        .collect::<Vec<_>>()
+                };
+                self.changed();
+                for task in tasks {
+                    let settled = self
+                        .live
+                        .lock()
+                        .unwrap()
+                        .get(&task)
+                        .map(|r| r.handle.lock().unwrap().settled.clone());
+                    self.request(json!({"action":"stop","id":task}))?;
+                    let until = std::time::Instant::now() + Duration::from_secs(8);
+                    while self.starting.lock().unwrap().contains(&task) {
+                        ensure!(
+                            std::time::Instant::now() < until,
+                            "Native startup is still stopping. Keep this Ninja paused and retry takeover."
+                        );
+                        thread::sleep(Duration::from_millis(40));
+                    }
+                    if let Some(settled) = settled {
+                        let until = std::time::Instant::now() + Duration::from_secs(8);
+                        while !settled.is_closed() {
+                            ensure!(
+                                std::time::Instant::now() < until,
+                                "Native tools are still stopping. Keep this Ninja paused and retry takeover."
+                            );
+                            thread::sleep(Duration::from_millis(40));
+                        }
+                    }
+                }
+                Ok(json!({"ok":true,"held":true}))
+            }
+            "resume" => {
+                self.store.lock().unwrap().hold(id()?, false)?;
+                self.changed();
+                Ok(json!({"ok":true,"held":false}))
             }
             "save_profile" => {
                 let p: Profile = serde_json::from_value(v["profile"].clone())?;
@@ -606,9 +897,39 @@ impl Worker {
                 self.changed();
                 Ok(json!({"ok":true}))
             }
+            "conversation" => {
+                let db = self.store.lock().unwrap();
+                db.profile(id()?)?;
+                let chat = v["chat"].as_str().context("Choose a chat")?;
+                let mut messages = db
+                    .tasks(Some(id()?))?
+                    .into_iter()
+                    .filter(|t| t.chat == chat)
+                    .take(24)
+                    .collect::<Vec<_>>();
+                messages.reverse();
+                // Hard response budget keeps a long-lived Ninja from pushing
+                // multi-megabyte histories through every status revision.
+                let mut used = 0;
+                let messages = messages
+                    .into_iter()
+                    .rev()
+                    .take_while(|t| {
+                        used += t.prompt.len()
+                            + t.brief.len()
+                            + t.utterances.iter().map(|u| u.text.len()).sum::<usize>()
+                            + 4096;
+                        used < 768 * 1024
+                    })
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect::<Vec<_>>();
+                Ok(json!({"messages":messages.iter().map(conversation_task).collect::<Vec<_>>()}))
+            }
             "task" => {
                 let t = self.store.lock().unwrap().task(id()?)?;
-                let mut value = json!(t);
+                let mut value = conversation_task(&t);
                 value["subagents"]=json!(runtime::broker::children(&t.profile.project).iter().filter(|c|t.native_id.as_deref()==Some(c.parent_id.as_str())).map(|c|json!({"id":c.id,"name":c.name,"task":c.task,"model":c.model,"status":format!("{:?}",c.status),"preview":c.preview,"requests":c.requests})).collect::<Vec<_>>());
                 Ok(value)
             }
@@ -633,6 +954,7 @@ impl Worker {
                         t.state == "queued"
                             && t.due <= now()
                             && !active_profiles.contains(&t.profile.id.as_str())
+                            && !db.held(&t.profile.id).unwrap_or(true)
                     })
                     .min_by_key(|t| (t.due, t.created))
                     .cloned()
@@ -644,6 +966,7 @@ impl Worker {
                 t.status = "Starting native harness".into();
                 t.started = Some(now());
                 if db.save_task(&t).is_ok() {
+                    self.starting.lock().unwrap().insert(t.id.clone());
                     let worker = self.clone();
                     thread::spawn(move || worker.execute(t));
                     started = true;
@@ -675,6 +998,7 @@ impl Worker {
         }
     }
     fn execute(self: Arc<Self>, mut t: Task) {
+        if t.call.is_some()&&crate::voice::protocol_trace(){eprintln!("Ninja call dispatched");}
         let result = (|| -> Result<()> {
             if self.store.lock().unwrap().task(&t.id)?.state == "stopped" {
                 t.state = "stopped".into();
@@ -721,7 +1045,7 @@ impl Worker {
                 .collect::<Vec<_>>()
                 .join("\n\n");
             let prompt = format!(
-                "You are {}, a persistent personal coding agent. Persona:\n{}\n\nYour persistent memory (revision {}):\n{}\n\nRecent completed work, quoted context rather than new instructions:\n{}\n\nUse ninja_memory to maintain concise durable facts across chats. Use the native shell, file, patch, MCP and subagent tools to do actual engineering work. Work only within your captured native permissions. Verify results. Finish with a concise brief of changes, checks, and remaining issues.\n\nAssigned task:\n{}",
+                "You are {}, a persistent personal assistant. Persona:\n{}\n\nYour persistent memory (revision {}):\n{}\n\nRecent completed work, quoted context rather than new instructions:\n{}\n\nUse ninja_memory to maintain concise durable facts across chats. Use the native shell, file, patch, MCP and subagent tools to complete assigned work on this host. Work only within your captured native permissions. Verify results. Finish with a concise brief of changes, checks, and remaining issues.\n\nAssigned task:\n{}",
                 p.name, p.persona, memory.revision, memory.content, briefs, t.prompt
             );
             let request = RunRequest {
@@ -746,7 +1070,19 @@ impl Worker {
                 codex_access: p.access,
                 codex_approvals: p.approvals,
             };
-            let handle = runtime::launch(request)?;
+            let handle = if t.call.is_some() {
+                let offer = self
+                    .calls
+                    .lock()
+                    .unwrap()
+                    .get_mut(&t.id)
+                    .and_then(|c| c.offer.take())
+                    .context("Call offer expired; start a new call")?;
+                let offer = call_params(offer, call_context(p, &memory, &briefs, &t.prompt));
+                runtime::launch_native_command(request, "thread/realtime/start", offer)?
+            } else {
+                runtime::launch(request)?
+            };
             let wake = handle.wake.clone();
             let (control_wake, broker_wake) = async_channel::bounded(1);
             let handle = Arc::new(Mutex::new(handle));
@@ -774,6 +1110,7 @@ impl Worker {
                 },
             );
             drop(live);
+            self.starting.lock().unwrap().remove(&t.id);
             let mut finished = false;
             let mut last_save = std::time::Instant::now() - Duration::from_secs(2);
             loop {
@@ -792,6 +1129,7 @@ impl Worker {
                         RuntimeEvent::Text(_)
                             | RuntimeEvent::ReplaceText(_)
                             | RuntimeEvent::ReplacePreview(_)
+                            | RuntimeEvent::Voice(crate::voice::Signal::Transcript { .. })
                     );
                     match event {
                         RuntimeEvent::Text(text) => {
@@ -800,6 +1138,24 @@ impl Worker {
                         }
                         RuntimeEvent::ReplaceText(text) | RuntimeEvent::ReplacePreview(text) => {
                             t.brief = clip(&text, 64 * 1024)
+                        }
+                        RuntimeEvent::Voice(signal) => {
+                            if crate::voice::protocol_trace(){eprintln!("Ninja call signal {} mapped={}",match &signal{crate::voice::Signal::Started{..}=>"Started",crate::voice::Signal::Answer{..}=>"Answer",crate::voice::Signal::Closed{..}=>"Closed",crate::voice::Signal::Transcript{..}=>"Transcript"},self.calls.lock().unwrap().contains_key(&t.id));}
+                            if let crate::voice::Signal::Transcript { id, role, text, .. } = &signal
+                            {
+                                record_utterance(&mut t.utterances, id, role, text);
+                            }
+                            if !matches!(signal, crate::voice::Signal::Transcript { .. }) {
+                                if let Some(call) = self.calls.lock().unwrap().get_mut(&t.id) {
+                                    call.sequence += 1;
+                                    let seq = call.sequence;
+                                    if call.signals.len() >= 16 {
+                                        call.signals.pop_front();
+                                    }
+                                    call.signals.push_back((seq, signal));
+                                }
+                                self.changed();
+                            }
                         }
                         RuntimeEvent::Status(s) => t.status = s,
                         RuntimeEvent::SessionId(id) => t.native_id = Some(id),
@@ -930,10 +1286,33 @@ impl Worker {
             t.state = "failed".into();
             t.status = e.to_string();
         }
+        self.starting.lock().unwrap().remove(&t.id);
         t.finished = Some(now());
         t.requests.clear();
+        if !t.utterances.is_empty() {
+            t.brief = clip(
+                &t.utterances
+                    .iter()
+                    .map(|u| format!("{}: {}", u.role, u.text))
+                    .collect::<Vec<_>>()
+                    .join("\n\n"),
+                64 * 1024,
+            );
+        }
         self.live.lock().unwrap().remove(&t.id);
         let db = self.store.lock().unwrap();
+        if let Some(session_id) = t.call.as_ref() {
+            if let Some(call) = self.calls.lock().unwrap().get_mut(&t.id) {
+                call.sequence += 1;
+                call.signals.push_back((
+                    call.sequence,
+                    crate::voice::Signal::Closed {
+                        session_id: session_id.clone(),
+                        reason: Some(t.status.clone()),
+                    },
+                ));
+            }
+        }
         let _ = db.save_task(&t);
         if t.state == "completed" {
             if let Some(repeat) = t.repeat {
@@ -993,6 +1372,7 @@ fn wait_events(a: &async_channel::Receiver<()>, b: &async_channel::Receiver<()>)
     }
 }
 pub fn serve() -> Result<()> {
+    if crate::voice::protocol_trace(){eprintln!("Ninja voice trace enabled");}
     let args = std::env::args().collect::<Vec<_>>();
     let folder = args
         .windows(2)
@@ -1033,6 +1413,8 @@ pub fn serve() -> Result<()> {
         store: Mutex::new(db),
         root: folder,
         live: Mutex::new(HashMap::new()),
+        calls: Mutex::new(HashMap::new()),
+        starting: Mutex::new(Default::default()),
         change: Mutex::new(1),
         wake: Condvar::new(),
     });
@@ -1325,6 +1707,8 @@ mod tests {
             store: Mutex::new(db),
             root: f.0.clone(),
             live: Mutex::new(HashMap::new()),
+            calls: Mutex::new(HashMap::new()),
+            starting: Mutex::new(Default::default()),
             change: Mutex::new(1),
             wake: Condvar::new(),
         });
@@ -1357,5 +1741,240 @@ mod tests {
         a.try_send(()).unwrap();
         wait_events(&b, &d);
         assert!(b.is_empty());
+    }
+    #[test]
+    fn call_routes_to_host_codex_without_replacing_identity_model_or_permissions() {
+        let f = Fixture::new();
+        let mut source = f.profile();
+        source.agent = AgentKind::Gemini;
+        source.model = Some("host-gemini".into());
+        source.effort = Some("high".into());
+        source.access = CodexAccess::Full;
+        source.approvals = CodexApprovals::Never;
+        let target = call_profile(&source);
+        assert_eq!(target.agent, AgentKind::Codex);
+        assert!(target.model.is_none());
+        assert_eq!(target.id, source.id);
+        assert_eq!(target.project, source.project);
+        assert_eq!(target.access, source.access);
+        assert_eq!(target.approvals, source.approvals);
+        assert_eq!(source.agent, AgentKind::Gemini);
+        assert_eq!(source.model.as_deref(), Some("host-gemini"));
+    }
+    #[test]
+    fn call_startup_context_fits_native_limit_without_an_extra_filesystem_scan() {
+        let f = Fixture::new();
+        let mut p = f.profile();
+        p.persona = "忍".repeat(2700);
+        let memory = Memory { content: "🧠".repeat(8192), revision: 8 };
+        let context = call_context(&p, &memory, &"work".repeat(3000), "Latest request: discuss my current task.");
+        assert!(context.len() < 30 * 1024);
+        assert!(context.contains("Latest request: discuss my current task."));
+        assert!(context.contains("revision 8"));
+        let session = uuid::Uuid::new_v4().to_string();
+        let offer = crate::voice::Start { session_id: session.clone(), sdp: "v=0\r\nOFFER".into(), voice: None }.params().unwrap();
+        let params = call_params(offer, context);
+        assert_eq!(crate::voice::session_id(&params).unwrap(), session);
+        assert_eq!(params["includeStartupContext"], false);
+        assert!(params.get("_codePrepareVoiceContext").is_none());
+        assert!(serde_json::from_str::<Value>(&params.to_string()).is_ok());
+    }
+    #[test]
+    fn spoken_corrections_are_bounded_and_retained_for_context() {
+        let mut lines = vec![];
+        record_utterance(&mut lines, "a", "user", "wrong partial words");
+        record_utterance(&mut lines, "a", "user", "correct words");
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].text, "correct words");
+        record_utterance(&mut lines, "bad", "tool", "not a spoken message");
+        assert_eq!(lines.len(), 1);
+        for i in 0..100 {
+            record_utterance(&mut lines, &i.to_string(), "assistant", &"x".repeat(9000));
+        }
+        assert!(lines.len() <= 64);
+        assert!(lines.iter().map(|v| v.text.len()).sum::<usize>() <= 64 * 1024);
+    }
+    #[test]
+    fn human_takeover_persists_and_keeps_queued_tasks_and_conversations_scoped() {
+        let f = Fixture::new();
+        let mut db = Store::open(&f.0).unwrap();
+        let p = db.save_profile(f.profile()).unwrap();
+        let other = db.save_profile(f.profile()).unwrap();
+        let first = db.submit(&p.id, "First chat", None, 0, None).unwrap();
+        let second = db.submit(&p.id, "Different chat", None, 0, None).unwrap();
+        let _ = db
+            .submit(&other.id, "Other identity", None, 0, None)
+            .unwrap();
+        let worker = Arc::new(Worker {
+            store: Mutex::new(db),
+            root: f.0.clone(),
+            live: Mutex::new(HashMap::new()),
+            calls: Mutex::new(HashMap::new()),
+            starting: Mutex::new(Default::default()),
+            change: Mutex::new(1),
+            wake: Condvar::new(),
+        });
+        worker
+            .request(json!({"action":"take_over","id":p.id}))
+            .unwrap();
+        assert!(worker.store.lock().unwrap().held(&p.id).unwrap());
+        assert_eq!(
+            worker.store.lock().unwrap().task(&first.id).unwrap().state,
+            "queued"
+        );
+        let chat = worker
+            .request(json!({"action":"conversation","id":p.id,"chat":first.chat}))
+            .unwrap();
+        assert_eq!(chat["messages"].as_array().unwrap().len(), 1);
+        assert_eq!(chat["messages"][0]["id"], first.id);
+        assert_ne!(chat["messages"][0]["id"], second.id);
+        let reopened = Store::open(&f.0).unwrap();
+        assert!(reopened.held(&p.id).unwrap());
+        assert!(!reopened.held(&other.id).unwrap());
+        worker
+            .request(json!({"action":"resume","id":p.id}))
+            .unwrap();
+        assert!(!reopened.held(&p.id).unwrap());
+        assert!(
+            worker
+                .request(json!({"action":"call_end","id":first.id,"session":"wrong"}))
+                .is_err()
+        );
+        assert!(
+            worker
+                .request(json!({"action":"import_handoff","id":p.id}))
+                .is_err()
+        );
+    }
+    #[test]
+    fn call_signaling_is_cursor_scoped_and_excluded_from_disk_snapshots() {
+        let f = Fixture::new();
+        let mut db = Store::open(&f.0).unwrap();
+        let p = db.save_profile(f.profile()).unwrap();
+        let t = db.submit(&p.id, "Call", None, 0, None).unwrap();
+        let session = uuid::Uuid::new_v4().to_string();
+        let worker = Arc::new(Worker {
+            store: Mutex::new(db),
+            root: f.0.clone(),
+            live: Mutex::new(HashMap::new()),
+            calls: Mutex::new(HashMap::from([(
+                t.id.clone(),
+                CallSession {
+                    offer: Some(json!({"transport":{"sdp":"v=0 PRIVATE-OFFER"}})),
+                    signals: std::collections::VecDeque::from([
+                        (
+                            1,
+                            crate::voice::Signal::Started {
+                                session_id: session.clone(),
+                            },
+                        ),
+                        (
+                            2,
+                            crate::voice::Signal::Answer {
+                                session_id: session.clone(),
+                                sdp: "v=0 PRIVATE-ANSWER".into(),
+                            },
+                        ),
+                    ]),
+                    sequence: 2,
+                    seen: std::time::Instant::now(),
+                },
+            )])),
+            starting: Mutex::new(Default::default()),
+            change: Mutex::new(1),
+            wake: Condvar::new(),
+        });
+        let response = worker
+            .request(json!({"action":"call_poll","id":t.id,"cursor":1}))
+            .unwrap();
+        assert_eq!(response["cursor"], 2);
+        assert_eq!(response["signals"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            response["signals"][0]["Answer"]["sdp"],
+            "v=0 PRIVATE-ANSWER"
+        );
+        assert!(!worker.snapshot().unwrap().to_string().contains("PRIVATE-"));
+        assert!(
+            !serde_json::to_string(&worker.store.lock().unwrap().task(&t.id).unwrap())
+                .unwrap()
+                .contains("PRIVATE-")
+        );
+    }
+    #[test]
+    #[ignore = "requires signed-in Codex and a live WebRTC offer"]
+    fn live_worker_call_signaling() {
+        let f = Fixture::new();
+        let mut db = Store::open(&f.0).unwrap();
+        let mut source = f.profile();
+        source.edits = false;
+        let p = db.save_profile(source).unwrap();
+        let worker = Arc::new(Worker {
+            store: Mutex::new(db),
+            root: f.0.clone(),
+            live: Mutex::new(HashMap::new()),
+            calls: Mutex::new(HashMap::new()),
+            starting: Mutex::new(Default::default()),
+            change: Mutex::new(1),
+            wake: Condvar::new(),
+        });
+        let w = worker.clone();
+        thread::spawn(move || w.queue());
+        let offer: Value = serde_json::from_slice(
+            &std::fs::read(std::env::var("KAI_TEST_VOICE_OFFER").unwrap()).unwrap(),
+        )
+        .unwrap();
+        let task=worker.request(json!({"action":"call_start","id":p.id,"session":"11111111-1111-4111-8111-111111111111","sdp":offer["sdp"]})).unwrap();
+        let until = std::time::Instant::now() + Duration::from_secs(50);
+        let mut cursor = 0;
+        let mut answered = false;
+        while std::time::Instant::now() < until {
+            let v = worker
+                .request(json!({"action":"call_poll","id":task["id"],"cursor":cursor}))
+                .unwrap();
+            cursor = v["cursor"].as_u64().unwrap();
+            eprintln!(
+                "WORKER_POLL cursor={cursor} status={}",
+                worker
+                    .store
+                    .lock()
+                    .unwrap()
+                    .task(task["id"].as_str().unwrap())
+                    .unwrap()
+                    .status
+            );
+            if v["signals"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|s| s.get("Answer").is_some())
+            {
+                answered = true;
+                break;
+            }
+        }
+        worker.request(json!({"action":"call_end","id":task["id"],"session":"11111111-1111-4111-8111-111111111111"})).ok();
+        if !answered {
+            worker
+                .request(json!({"action":"stop","id":task["id"]}))
+                .ok();
+        }
+        assert!(answered, "Worker lost voice signaling");
+    }
+
+    #[test]
+    fn message_previews_hide_tool_envelopes_without_dropping_the_reply() {
+        let envelope = crate::chat_interactions::serialize_interaction(
+            &crate::chat_interactions::ChatInteraction::Status {
+                title: "Thinking".into(),
+                details: "Internal progress".into(),
+                status: crate::chat_interactions::InteractionStatus::Working,
+            },
+        );
+        let text = format!("{envelope}\n\nHere is your reply.\n\n```rust\nlet answer = 42;\n```");
+        let readable = readable_brief(&text);
+        assert!(readable.contains("Here is your reply."));
+        assert!(readable.contains("let answer = 42;"));
+        assert!(!readable.contains("orbit_interaction"));
+        assert!(!readable.contains("Internal progress"));
     }
 }

@@ -4,7 +4,7 @@ Run on the destination Mac. Uses its existing Tailscale and provider logins.
 """
 import argparse,hashlib,json,os,pathlib,plistlib,shutil,socket,subprocess,tempfile,time
 
-def install(bundle,keep_reachable):
+def install(bundle,keep_reachable,worker_only=False):
     source=bundle.resolve(strict=True);binary=source/'Contents/MacOS/kai-unified'
     if not binary.is_file():raise ValueError('Choose a built Kai Unified.app')
     home=pathlib.Path.home();root=home/'.kai-ninja';root.mkdir(mode=0o700,exist_ok=True)
@@ -22,7 +22,7 @@ def install(bundle,keep_reachable):
         target=staged/'Contents/MacOS/kai-unified';target.parent.mkdir();shutil.copy2(binary,target);target.chmod(0o700)
         for name in ['kai_ninja.py','kai_inference_stream.py','kai_ninja_handoff.py','kai_workspace_mcp.py']:
             shutil.copy2(source/'Contents/Resources'/name,resources/name)
-        info={'CFBundleIdentifier':'com.kai.ninjas.worker','CFBundleExecutable':'kai-unified','CFBundleName':'Kai Ninja Worker','CFBundleVersion':plistlib.loads((source/'Contents/Info.plist').read_bytes())['CFBundleVersion'],'LSUIElement':True,'NSDownloadsFolderUsageDescription':'Receive the workspace handoffs you explicitly send through Taildrop.'}
+        info={'CFBundleIdentifier':'com.kai.ninjas.worker','CFBundleExecutable':'kai-unified','CFBundleName':'Kai Ninja Worker','CFBundleVersion':plistlib.loads((source/'Contents/Info.plist').read_bytes())['CFBundleVersion'],'CFBundleShortVersionString':plistlib.loads((source/'Contents/Info.plist').read_bytes())['CFBundleShortVersionString'],'LSUIElement':True,'NSDownloadsFolderUsageDescription':'Read the reference files you explicitly send through Taildrop.'}
         (staged/'Contents/Info.plist').write_bytes(plistlib.dumps(info))
         subprocess.run(['codesign','--force','--sign','-','--deep',str(staged)],check=True)
         destination=root/'Worker.app';backup=root/('worker-backup-'+str(int(time.time()))+'.app')
@@ -31,6 +31,9 @@ def install(bundle,keep_reachable):
     executable=destination/'Contents/MacOS/kai-unified'
     subprocess.run([str(executable),'--install-ninja-worker']+(['--keep-reachable'] if keep_reachable else []),check=True)
     subprocess.run(['launchctl','kickstart','-k','gui/'+str(os.getuid())+'/com.kai.ninjas.worker'],check=True)
+    if worker_only:
+        print('Updated headless Ninja worker; inference host left running:',destination)
+        return
     args=['/usr/bin/python3',str(source/'Contents/Resources/kai_ninja_host.py'),'--install','--owner',config['owner'],'--port',str(config['port']),'--worker',str(executable)]
     if keep_reachable:args.append('--keep-reachable')
     if config.get('identity')=='serve':args.append('--serve')
@@ -38,4 +41,4 @@ def install(bundle,keep_reachable):
     print('Installed headless Ninja worker:',destination)
     print('The user must log in after a reboot. macOS may request access to Downloads or protected project folders.')
 if __name__=='__main__':
-    p=argparse.ArgumentParser();p.add_argument('bundle',type=pathlib.Path);p.add_argument('--keep-reachable',action='store_true',help='Prevent system sleep on AC power, without keeping the display awake');args=p.parse_args();install(args.bundle,args.keep_reachable)
+    p=argparse.ArgumentParser();p.add_argument('bundle',type=pathlib.Path);p.add_argument('--keep-reachable',action='store_true',help='Prevent system sleep on AC power, without keeping the display awake');p.add_argument('--worker-only',action='store_true',help='Update the worker without restarting an existing inference host');args=p.parse_args();install(args.bundle,args.keep_reachable,args.worker_only)
