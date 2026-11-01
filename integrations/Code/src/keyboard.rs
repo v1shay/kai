@@ -40,7 +40,7 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "Move terminal to next edge",
     ),
     ("ctrl-u", "usage", "Context and usage"),
-    ("ctrl-o", "orchestrator", "New orchestrator"),
+    ("ctrl-o", "orchestrator", "Toggle orchestration"),
     ("ctrl-r", "dictate", "Dictate"),
     ("ctrl-shift-r", "voice", "Real-time voice"),
     ("ctrl-shift-a", "children", "Subagents"),
@@ -154,7 +154,7 @@ impl Orbit {
                 self.dock_terminal(sides[(i + 1) % sides.len()], cx)
             }
             "usage" => self.show_modal(Modal::Status, window, cx),
-            "orchestrator" => self.start_orchestrator(window, cx),
+            "orchestrator" => self.toggle_orchestrator(window, cx),
             "dictate" => self.toggle_dictation(window, cx),
             "voice" => self.toggle_voice(window, cx),
             "children" => self.toggle_children(window, cx),

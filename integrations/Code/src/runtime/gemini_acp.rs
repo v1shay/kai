@@ -26,12 +26,15 @@ pub(super) fn launch(request: RunRequest) -> Result<RunHandle> {
 pub(super) fn launch_command(request: RunRequest) -> Result<RunHandle> {
     launch_mode(request, true)
 }
-fn launch_mode(request: RunRequest, cli_command: bool) -> Result<RunHandle> {
+fn launch_mode(mut request: RunRequest, cli_command: bool) -> Result<RunHandle> {
     super::validate_images(&request)?;
     ensure!(
         !request.fork_session,
         "This ACP provider cannot fork a native session"
     );
+    let workspace=super::workspace_mcp::Bridge::prepare(&request)?;
+    let mcp=workspace.as_ref().map(|bridge|bridge.acp());
+    if request.orchestrator { request.prompt=format!("{}\n\nUser request:\n{}",crate::orchestrator::INSTRUCTIONS,request.prompt); }
     let mut command = Command::new(&request.executable);
     crate::process_env::apply(&mut command);
     command.current_dir(&request.project);
@@ -70,7 +73,8 @@ fn launch_mode(request: RunRequest, cli_command: bool) -> Result<RunHandle> {
     let mut child = command
         .spawn()
         .with_context(|| format!("Could not start {} ACP", request.agent.name()))?;
-    let (handle, context) = native_handle(child.id() as i32);
+    let (mut handle, context) = native_handle(child.id() as i32);
+    if let Some(bridge)=workspace { bridge.attach(&mut handle,&context.tx,&context.cancelled); }
     let pipes = Pipes::new(&mut child);
     let mut pipes = match pipes {
         Ok(pipes) => pipes,
@@ -99,6 +103,7 @@ fn launch_mode(request: RunRequest, cli_command: bool) -> Result<RunHandle> {
             &mut child,
             &context,
             &mut parser,
+            mcp,
         );
         if result.is_err() {
             pipes.cancel_native();
@@ -830,6 +835,7 @@ fn run(
     child: &mut Child,
     cx: &NativeContext,
     parser: &mut StreamParser,
+    mcp: Option<Value>,
 ) -> Result<()> {
     let mut session = Session::new();
     session.agent = request.agent;
@@ -859,7 +865,7 @@ fn run(
             "Installed agent does not advertise native session resume"
         );
     }
-    let mut params = json!({"cwd":request.project,"mcpServers":[]});
+    let mut params = json!({"cwd":request.project,"mcpServers":mcp.into_iter().collect::<Vec<_>>()});
     if session.loading {
         params["sessionId"] = json!(session.id);
     }

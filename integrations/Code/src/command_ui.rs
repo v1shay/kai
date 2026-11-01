@@ -400,7 +400,7 @@ impl Orbit {
             Action::Artifacts=>{self.show_modal(Modal::Search,window,cx);self.load_artifact_index(cx);},
             Action::Fork=>self.fork_conversation(window,cx),
             Action::ChatContext => self.toggle_context_picker(window, cx),
-            Action::Orchestrate => self.start_orchestrator(window,cx),
+            Action::Orchestrate => self.toggle_orchestrator(window,cx),
             Action::Team => self.toggle_team_panel(window, cx),
             Action::Shell => self.toggle_terminal(window, cx),
             Action::New => self.new_conversation(window, cx),

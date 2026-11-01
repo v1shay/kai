@@ -4,6 +4,8 @@
 
 #[path = "runtime/adapters.rs"]
 mod adapters;
+#[path = "runtime/workspace_mcp.rs"]
+mod workspace_mcp;
 #[path="runtime/antigravity_hook.rs"]mod antigravity_hook;
 #[path = "runtime/native_requests.rs"]
 mod native_requests;
@@ -119,6 +121,7 @@ pub enum RuntimeEvent {
 }
 
 pub struct RunHandle {
+    workspace: Option<workspace_mcp::Bridge>,
     /// Turn quiescence: output is finalized and owned child work/requests have
     /// settled. A healthy native broker may retain its idle provider process.
     pub settled: async_channel::Receiver<()>,
@@ -153,6 +156,7 @@ fn native_handle(pid: i32) -> (RunHandle, NativeContext) {
     let finalized_source = Arc::new(Mutex::new(None));
     (
         RunHandle {
+            workspace: None,
             settled,
             events: EventReceiver {
                 inner: event_rx,
@@ -195,6 +199,7 @@ impl RunHandle {
         let (_, events) = mpsc::sync_channel(QUEUED_EVENTS_LIMIT);
         let (_, wake) = async_channel::bounded(1);
         Self {
+            workspace: None,
             settled: {
                 let (_, receiver) = async_channel::bounded(1);
                 receiver
@@ -226,6 +231,7 @@ impl RunHandle {
             sender.try_send(event).unwrap();
         }
         Self {
+            workspace: None,
             settled: {
                 let (_, receiver) = async_channel::bounded(1);
                 receiver
@@ -262,6 +268,9 @@ impl RunHandle {
     }
     #[allow(dead_code)] // Reserved capability-gated native controls; typed UI uses dedicated methods.
     pub fn native_command(&self, method: &str, params: Value) -> Result<()> {
+        if method == "code/workspace/result" {
+            if let Some(bridge) = &self.workspace { return bridge.reply(params["id"].as_str().context("Missing workspace request ID")?, params["value"].clone()); }
+        }
         self.send_control(NativeControl::Rpc {
             method: method.into(),
             params,
@@ -282,6 +291,7 @@ impl RunHandle {
             .take()
     }
     pub fn cancel(&self) {
+        if let Some(bridge) = &self.workspace { bridge.stop(); }
         let first_cancel = !self.cancelled.swap(true, Ordering::AcqRel);
         // Synchronize notification with the waiter's mutex so cancellation
         // cannot fall between its predicate check and condition-variable wait.
@@ -855,7 +865,12 @@ fn launch_mode_internal(mut request: RunRequest, cli_command: bool, native: bool
             },
         )
     });
+    if request.orchestrator {
+        request.prompt = format!("{}\n\nUser request:\n{}", crate::orchestrator::INSTRUCTIONS, request.prompt);
+    }
+    let workspace=workspace_mcp::Bridge::prepare(&request)?;
     let mut command=command_for(&request)?;
+    if let Some(bridge)=&workspace { bridge.configure_agy(&mut command,&dirs::home_dir().context("Missing user home")?)?; }
     let mut agy_gate=if request.agent==AgentKind::Antigravity&&native{Some(antigravity_hook::Gate::prepare(&request,&mut command)?)}else{None};
     let(control_tx,control_rx)=mpsc::sync_channel(32);
     let mut child=command.spawn().context("Could not start the agent CLI")?;
@@ -876,7 +891,8 @@ fn launch_mode_internal(mut request: RunRequest, cli_command: bool, native: bool
     };
     let finalized_source = Arc::new(Mutex::new(None));
     let(history_tx,history_rx)=mpsc::sync_channel::<async_channel::Sender<std::result::Result<ResponseSource,String>>>(1);
-    let handle = RunHandle {
+    let mut handle = RunHandle {
+        workspace: None,
         settled,
         events,
         wake,
@@ -887,6 +903,7 @@ fn launch_mode_internal(mut request: RunRequest, cli_command: bool, native: bool
         process_group: group.clone(),
         finalized_source: finalized_source.clone(),
     };
+    if let Some(bridge)=workspace { bridge.attach(&mut handle,&tx,&cancelled); }
     let mut stdout = child.stdout.take().context("Agent stdout is unavailable")?;
     let mut stderr = child.stderr.take().context("Agent stderr is unavailable")?;
     let mut stdin = child.stdin.take().context("Agent stdin is unavailable")?;
@@ -1380,6 +1397,7 @@ fn interaction_weight(card: &crate::chat_interactions::ChatInteraction) -> usize
         ChatInteraction::Answer { question, answer } => question.len() + answer.len(),
     }
 }
+#[derive(Clone)]
 struct NotifyingSender {
     events: SyncSender<RuntimeEvent>,
     wake: async_channel::Sender<()>,

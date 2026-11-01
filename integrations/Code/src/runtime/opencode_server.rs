@@ -25,6 +25,7 @@ use std::{
     time::{Duration, Instant},
 };
 const BODY_LIMIT: usize = 2 * 1024 * 1024;
+const PROVIDER_CATALOG_LIMIT: usize = 16 * 1024 * 1024;
 
 pub(super) fn launch(request: RunRequest) -> Result<RunHandle> {
     launch_mode(request, false)
@@ -38,7 +39,8 @@ fn launch_mode(request: RunRequest, cli_command: bool) -> Result<RunHandle> {
         !request.fork_session,
         "OpenCode native forks require an explicit fork operation"
     );
-    if let Some(service) = broker::checkout(&request)? {
+    let workspace=super::workspace_mcp::Bridge::prepare(&request)?;
+    if let Some(service) = if request.orchestrator { None } else { broker::checkout(&request)? } {
         let (handle, cx) = native_handle(service.pid);
         service.attach(&cx)?;
         let mode = cli_command.then(|| ("opencode.command".into(), Value::Null));
@@ -71,10 +73,12 @@ fn launch_mode(request: RunRequest, cli_command: bool) -> Result<RunHandle> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .process_group(0);
+    if let Some(bridge)=&workspace { bridge.configure_opencode(&mut command)?; }
     let mut child = command
         .spawn()
         .context("Could not start the OpenCode server")?;
-    let (handle, cx) = native_handle(child.id() as i32);
+    let (mut handle, cx) = native_handle(child.id() as i32);
+    if let Some(bridge)=workspace { bridge.attach(&mut handle,&cx.tx,&cx.cancelled); }
     let (service, commands, wake) = match broker::register(&request, child.id() as i32) {
         Ok(registered) => registered,
         Err(error) => {
@@ -488,6 +492,7 @@ impl Api {
         let status = response.status;
         let mut bytes = vec![];
         let streamed = path.ends_with("/command") || path.ends_with("/shell");
+        let limit=if path=="/provider"{PROVIDER_CATALOG_LIMIT}else{BODY_LIMIT};
         let mut drained = false;
         let deadline = Instant::now() + Duration::from_secs(60);
         while !response.done {
@@ -497,10 +502,10 @@ impl Api {
             );
             ensure!(!cancelled.load(Ordering::Acquire), "Stopped");
             let part = response.poll()?;
-            if !drained && bytes.len() + part.len() > BODY_LIMIT {
+            if !drained && bytes.len() + part.len() > limit {
                 ensure!(
                     streamed,
-                    "OpenCode metadata response exceeds its bounded display budget"
+                    "OpenCode metadata response for {path} exceeds its bounded display budget"
                 );
                 bytes.clear();
                 drained = true;
@@ -2131,6 +2136,7 @@ fn run(
         parts.push(json!({"type":"file","mime":"image/png","filename":image.file_name().and_then(|v|v.to_str()).unwrap_or("image.png"),"url":format!("file://{}",encode_file_path(path))}));
     }
     let mut body = json!({"messageID":session.user_message,"agent":if request.allow_edits{"build"}else{"plan"},"parts":parts});
+    if request.orchestrator { body["system"]=json!(crate::orchestrator::INSTRUCTIONS); }
     if let Some(model) = &request.model {
         let (provider, model) = model
             .split_once('/')
@@ -2306,6 +2312,17 @@ fn encode_file_path(path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn full_provider_catalog_has_its_own_bound_without_expanding_message_limits() {
+        use std::net::TcpListener;
+        for path in ["/provider","/session/ses_fixture"] {
+            let listener=TcpListener::bind("127.0.0.1:0").unwrap();let address=listener.local_addr().unwrap();
+            let response=serde_json::to_vec(&json!({"all":[],"description":"x".repeat(BODY_LIMIT+1024)})).unwrap();
+            let server=thread::spawn(move||{let(mut stream,_)=listener.accept().unwrap();let mut bytes=Vec::new();let mut byte=[0];while !bytes.ends_with(b"\r\n\r\n"){stream.read_exact(&mut byte).unwrap();bytes.push(byte[0]);}let header=format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",response.len());let _=stream.write_all(header.as_bytes());let _=stream.write_all(&response);});
+            let api=Api{address:match address{std::net::SocketAddr::V4(a)=>a,_=>unreachable!()},authorization:String::new(),directory:String::new(),paths:HashSet::new()};
+            let result=api.request("GET",path,None,&AtomicBool::new(false));if path=="/provider"{assert_eq!(result.unwrap()["all"],json!([]));}else{assert!(result.unwrap_err().to_string().contains("bounded display budget"));}server.join().unwrap();
+        }
+    }
     use super::*;
     fn fixture(source: &str) -> (std::path::PathBuf, std::path::PathBuf) {
         use std::os::unix::fs::PermissionsExt;

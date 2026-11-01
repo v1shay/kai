@@ -23,6 +23,7 @@ pub(super) fn launch(request: RunRequest) -> Result<RunHandle> {
     if let Some(model) = &request.model {
         anyhow::ensure!(valid_model_id(model), "Invalid Claude model");
     }
+    let workspace=super::workspace_mcp::Bridge::prepare(&request)?;
     let mut command = Command::new(&request.executable);
     crate::process_env::apply(&mut command);
     command.args([
@@ -68,8 +69,10 @@ pub(super) fn launch(request: RunRequest) -> Result<RunHandle> {
         .stderr(Stdio::piped())
         .process_group(0);
     let ninja_lease=request.ninja.as_ref().map(|selection|crate::ninja::configure_claude(&mut command,selection)).transpose()?;
+    if let Some(bridge)=&workspace { bridge.configure_claude(&mut command); }
     let mut child = command.spawn().context("Could not start Claude Code")?;
-    let (handle, ctx) = native_handle(child.id() as i32);
+    let (mut handle, ctx) = native_handle(child.id() as i32);
+    if let Some(bridge)=workspace { bridge.attach(&mut handle,&ctx.tx,&ctx.cancelled); }
     let stdout = child.stdout.take().context("Claude output unavailable")?;
     let stderr = child
         .stderr

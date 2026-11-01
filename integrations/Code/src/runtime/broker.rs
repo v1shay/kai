@@ -73,6 +73,7 @@ struct ActiveTurn {
     group: Arc<Mutex<Option<i32>>>,
 }
 pub(super) struct Service {
+    scoped_workspace: bool,
     ninja_route:Option<String>,
     ninja_model:Option<(String,Option<String>)>,
     pub agent: AgentKind,
@@ -544,6 +545,7 @@ impl Service {
     }
 }
 pub(super) fn checkout(request: &RunRequest) -> Result<Option<Arc<Service>>> {
+    if request.agent == AgentKind::OpenCode && request.orchestrator { return Ok(None); }
     let Some(id) = request
         .resume_id
         .as_deref()
@@ -554,6 +556,7 @@ pub(super) fn checkout(request: &RunRequest) -> Result<Option<Arc<Service>>> {
     let entries = registry().lock().unwrap_or_else(|e| e.into_inner());
     if let Some(entry) = entries.iter().find(|entry| {
         entry.alive.load(Ordering::Acquire)
+            && !(entry.agent == AgentKind::OpenCode && entry.scoped_workspace)
             && !entry.shutdown.load(Ordering::Acquire)
             && entry.ninja_route == request.ninja.as_ref().map(|v|v.fingerprint())
             && entry.agent == request.agent
@@ -597,6 +600,7 @@ pub(super) fn register(
     wake.set_nonblocking(true)?;
     read.set_nonblocking(true)?;
     let service = Arc::new(Service {
+        scoped_workspace:request.orchestrator,
         ninja_route:request.ninja.as_ref().map(|v|v.fingerprint()),
         ninja_model:request.ninja.as_ref().map(|v|(v.model.clone(),v.thinking.clone())),
         agent: request.agent,
@@ -855,6 +859,7 @@ mod tests {
         let (wake, _) = UnixStream::pair().unwrap();
         let (cleanup, finished) = async_channel::bounded(1);
         Service {
+            scoped_workspace:false,
             ninja_route:None,ninja_model:None,
             agent: AgentKind::Codex,
             executable: PathBuf::from("fixture"),

@@ -228,7 +228,7 @@ impl Orbit {
                 0.
             } + text_width(window, &model))
             .min(238.);
-        if self.active.is_none() || self.orchestrator_active() {
+        {
             plan.widths[ORCHESTRATE] =
                 16. + text_width(
                     window,
@@ -679,7 +679,7 @@ impl Orbit {
                 Action::Thinking,
             ));
         }
-        if self.active.is_none() || self.orchestrator_active() {
+        {
             rows.push((
                 "orchestrate",
                 "Orchestrate".into(),

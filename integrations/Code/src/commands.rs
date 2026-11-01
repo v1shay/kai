@@ -128,7 +128,7 @@ const BASE: &[(&str, &str, Action)] = &[
         "Preview redoing this chat's latest undone prompt",
         Action::Redo,
     ),
-    ("orchestrate", "Start a Codex workspace orchestrator", Action::Orchestrate),
+    ("orchestrate", "Toggle workspace orchestration for this chat", Action::Orchestrate),
     ("new", "Start a new conversation", Action::New),
     (
         "clear",

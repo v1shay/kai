@@ -40,6 +40,7 @@ cp -R "$root/integrations/Code/skills/"* "$resources/skills/"
 cp "$root/kai_speech.py" "$resources/"
 cp "$root/integrations/Code/native_helpers/kai_ninja.py" "$resources/"
 cp "$root/integrations/Code/native_helpers/kai_ninja_host.py" "$resources/"
+cp "$root/integrations/Code/native_helpers/kai_workspace_mcp.py" "$resources/"
 cp "$root/integrations/Code/native_helpers/kai_remote.py" "$resources/"
 cp "$root/integrations/Code/native_helpers/kai_agy_hook.py" "$resources/"
 cp "$root/integrations/Code/native_helpers/kai_mcp_app.html" "$resources/"
@@ -60,7 +61,7 @@ for pet in catalog['pets']:
  source=root/'kai_pets'/pet['spritesheet'];target=resources/'kai_pets'/pet['spritesheet']
  target.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(source,target)
 info=plistlib.loads((root/'integrations/Code/scripts/Info.plist').read_bytes())
-info.update(CFBundleName='Kai Unified',CFBundleDisplayName='Kai Unified',CFBundleIdentifier='com.kai.unified.experimental',CFBundleExecutable='kai-unified',CFBundleVersion='63',CFBundleShortVersionString='0.12.26')
+info.update(CFBundleName='Kai Unified',CFBundleDisplayName='Kai Unified',CFBundleIdentifier='com.kai.unified.experimental',CFBundleExecutable='kai-unified',CFBundleVersion='64',CFBundleShortVersionString='0.12.27')
 icon=root/'integrations/Code/assets/Code.icns'
 if icon.exists():shutil.copy2(icon,resources/'Code-Bonsai.icns')
 info['CFBundleURLTypes']=[{'CFBundleURLName':'Kai workspace','CFBundleURLSchemes':['kai']}]

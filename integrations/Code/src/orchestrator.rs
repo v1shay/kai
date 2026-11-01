@@ -1,4 +1,4 @@
-//! Explicit Code workspace orchestration. Every call belongs to one live Codex
+//! Explicit Code workspace orchestration. Every call belongs to one live agent
 //! invocation; child runs use the normal durable scheduler and approval tray.
 use super::*;
 use serde_json::{Value, json};
@@ -194,22 +194,15 @@ impl Orbit {
         )
     }
     pub(super) fn orchestrator_active(&self) -> bool {
-        self.agent == AgentKind::Codex
-            && self.active.as_ref().map_or(self.orchestrator_new, |id| {
+        self.active.as_ref().map_or(self.orchestrator_new, |id| {
                 self.orchestrator_chats.contains(id)
             })
     }
-    pub(super) fn start_orchestrator(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn start_orchestrator(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         let from = self.orchestrator_expansion();
-        let draft = self.active.is_none().then(|| self.composer.read(cx).text());
-        self.new_unprojected_conversation(window, cx);
-        if let Some(draft) = draft {
-            self.composer
-                .update(cx, |input, cx| input.set_text(&draft, cx));
-        }
-        self.agent = AgentKind::Codex;
-        self.model = self.agent_models.get("codex").cloned().flatten();
-        self.orchestrator_new = true;
+        if let Some(id)=&self.active { self.orchestrator_chats.insert(id.clone()); }
+        else { self.orchestrator_new=true; }
+        self.queue_workspace_save(cx);
         self.orchestrator_transition = Some((Instant::now(), from));
         self.notice = None;
         self.refresh_unified_models(cx);
@@ -224,18 +217,16 @@ impl Orbit {
         })
     }
     pub(super) fn toggle_orchestrator(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.active.is_some() { return; }
-        if self.orchestrator_new {
+        if self.orchestrator_active() {
             let from = self.orchestrator_expansion();
-            self.orchestrator_new = false;
-            self.orchestrator_transition = Some((Instant::now(), from));
+            if let Some(id)=&self.active { self.orchestrator_chats.remove(id); }
+            self.orchestrator_new=false;
+            self.orchestrator_transition=Some((Instant::now(),from));
+            self.queue_workspace_save(cx);
             cx.notify();
-        } else { self.start_orchestrator(window, cx); }
+        } else { self.start_orchestrator(window,cx); }
     }
     pub(super) fn orchestrator_chip_adaptive(&self, window: &Window, cx: &Context<Self>, detail: f32) -> AnyElement {
-        if self.active.is_some() && !self.orchestrator_active() {
-            return div().into_any_element();
-        }
         let active = self.orchestrator_active();
         let color = if active { 0xc3a4ff } else { MUTED };
         let expansion = self.orchestrator_expansion().max(1. - detail);
@@ -674,7 +665,7 @@ impl Orbit {
                         external_id: None,
                         transcript_path: None,
                     };
-                    let model = if agent == AgentKind::Codex {
+                    let model = if self.sessions.iter().find(|s|s.id==owner).is_some_and(|s|s.agent==agent) {
                         self.workspace_policy(owner).and_then(|p| p.model)
                     } else {
                         self.agent_models.get(agent.command()).cloned().flatten()
@@ -841,7 +832,7 @@ mod tests {
         });
     }
     #[gpui::test]
-    fn orchestrator_is_explicit_new_codex_chat_and_never_leaks_into_regular_new_chat(
+    fn orchestrator_preserves_selected_provider_and_never_leaks_into_regular_new_chat(
         cx: &mut TestAppContext,
     ) {
         let (view, cx) = crate::ui_tests::fixture(cx);
@@ -849,7 +840,7 @@ mod tests {
             view.update(cx, |app, cx| {
                 app.agent = AgentKind::Gemini;
                 app.start_orchestrator(window, cx);
-                assert_eq!(app.agent, AgentKind::Codex);
+                assert_eq!(app.agent, AgentKind::Gemini);
                 assert!(app.orchestrator_active());
                 assert!(app.active.is_none());
                 app.new_conversation(window, cx);
@@ -857,6 +848,35 @@ mod tests {
                 assert!(commands::lookup(AgentKind::Codex, "orchestrate").is_some());
             })
         });
+    }
+    #[gpui::test]
+    fn enabling_orchestration_keeps_every_provider_model_draft_project_and_active_chat(cx:&mut TestAppContext) {
+        let(view,cx)=crate::ui_tests::fixture(cx);
+        cx.update(|window,cx|view.update(cx,|app,cx|{
+            for agent in [AgentKind::Codex,AgentKind::Claude,AgentKind::Gemini,AgentKind::Cursor,AgentKind::Grok,AgentKind::OpenCode,AgentKind::Antigravity,AgentKind::Ninja] {
+                app.active=None;app.orchestrator_new=false;app.agent=agent;app.model=Some("exact-selected-model".into());
+                app.composer.update(cx,|input,cx|input.set_text("Keep my draft",cx));
+                let project=app.project.clone();let ninja=app.ninja.draft.clone();let access=(app.allow_edits,app.codex_access,app.codex_approvals);let effort=app.reasoning_efforts.clone();
+                app.start_orchestrator(window,cx);
+                assert_eq!(app.agent,agent);assert_eq!(app.model.as_deref(),Some("exact-selected-model"));assert_eq!(app.project,project);assert_eq!(app.composer.read(cx).text(),"Keep my draft");assert_eq!(app.ninja.draft,ninja);assert_eq!(app.reasoning_efforts,effort);assert_eq!((app.allow_edits,app.codex_access,app.codex_approvals),access);assert!(app.orchestrator_active());
+                app.toggle_orchestrator(window,cx);assert!(!app.orchestrator_active());assert_eq!(app.agent,agent);
+                let owner=parent(app);app.active=Some(owner.clone());app.agent=agent;
+                app.orchestrator_chats.remove(&owner);app.toggle_orchestrator(window,cx);
+                assert_eq!(app.active.as_deref(),Some(owner.as_str()));assert_eq!(app.agent,agent);assert_eq!(app.model.as_deref(),Some("exact-selected-model"));assert!(app.orchestrator_active());
+                app.toggle_orchestrator(window,cx);assert!(!app.orchestrator_active());assert_eq!(app.active.as_deref(),Some(owner.as_str()));
+                app.runs.remove(&owner);
+            }
+        }));
+    }
+    #[gpui::test]
+    fn non_codex_controller_does_not_leak_its_model_into_new_codex_workers(cx:&mut TestAppContext) {
+        let(view,cx)=crate::ui_tests::fixture(cx);cx.update(|window,cx|view.update(cx,|app,cx|{
+            let owner=parent(app);app.runs.get_mut(&owner).unwrap().retry.as_mut().unwrap().agent=AgentKind::Claude;
+            app.sessions.push(SessionSummary{id:owner.clone(),title:"Claude controller".into(),agent:AgentKind::Claude,project_path:app.project.clone(),execution_path:None,updated_at:0,external_id:None,transcript_path:None});
+            app.agent_models.insert("codex".into(),Some("codex-selected".into()));for agent in &mut app.agents {agent.available=true;}
+            let count=app.sessions.len();app.workspace_tool(&owner,"test-call","code_workspace",json!({"action":"create_chat","project":app.project,"agent":"codex","name":"Worker model proof"}),window,cx);
+            assert_eq!(app.sessions.len(),count+1);let worker=app.sessions.iter().find(|s|s.title=="Worker model proof").unwrap();assert_eq!(app.session_models.get(&worker.id).cloned().flatten().as_deref(),Some("codex-selected"));
+        }));
     }
     #[gpui::test]
     fn stale_tool_events_cannot_create_chats_and_receipts_do_not_claim_completion(
