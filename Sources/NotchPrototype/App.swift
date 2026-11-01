@@ -208,6 +208,7 @@ private final class NotchSurfaceHost:NSView {
 
 @MainActor final class KaiPetApp: NSObject, NSApplicationDelegate, NSTextFieldDelegate, NSTextViewDelegate {
     private var unifiedMenuItems=[NSMenuItem]()
+    private let menuBarIdentity=MenuBarIdentityMenu()
     private let nativeReview=NativeRequestReview()
     private let inlinePetImages=SpriteAssetCache(maxPixelSize:960)
     private var inlinePetLoading=Set<URL>(),inlinePetVisuals=[String:InlineTaskPet](),lastPetVisualPayload:Data?
@@ -690,9 +691,19 @@ private final class NotchSurfaceHost:NSView {
     func applicationWillTerminate(_ notification:Notification){petLibraryMonitor.stop();NSWorkspace.shared.notificationCenter.removeObserver(self);NotificationCenter.default.removeObserver(self);hangDiagnostics.stop();compactPetCycle?.cancel();cancelWorkspaceHold();quickMorph.cancel();workspaceMorph.cancel();workspaceStatusMorph.cancel();workspaceStatusRetire?.cancel();passiveRetire?.cancel();textReveal.finish();petAppIcon.stop();floatingTasks.stop();imageEncodingWork?.cancel();voicePrompt.cancel();voiceLaunchTimeout?.cancel();shortcutPreparation.cancel();cancelShortcutHold();mediaReleaseWork?.cancel();chatVoice.stop();dictation.cancel();speech.stop();media.stop();artworkTask?.cancel();bridge.stop();attachmentFiles.forEach{try? FileManager.default.removeItem(at:$0)}}
     @objc private func codexPreview(_ note:Notification){guard let path=note.userInfo?["path"] as? String else{return};pinned=true;setOpen(true,mini:true,userInitiated:true);miniUI.previewFile(URL(fileURLWithPath:(path as NSString).expandingTildeInPath))}
 
+    private func applyMenuBarIdentity(_ mark:MenuBarMark){
+        guard let button=status?.button else{return}
+        button.image=MenuBarIdentityMenu.image(mark)
+        button.title=button.image == nil ? "海":""
+        button.imagePosition=button.image == nil ? .noImage:.imageOnly
+        button.toolTip=mark.kind == "kai" ? "Kai Unified":mark.name+" · Kai Unified"
+        button.setAccessibilityLabel(button.toolTip)
+    }
+
     private func buildMenu() {
         status = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        status.button?.title = "海"; status.button?.toolTip = "kai"
+        menuBarIdentity.onChange={ [weak self] in self?.applyMenuBarIdentity($0) }
+        applyMenuBarIdentity(menuBarIdentity.mark)
         let menu = NSMenu()
         if EmbeddedCodeRuntime.shared.active {
             let workspace=menu.addItem(withTitle:"Open Code workspace",action:#selector(expandWorkspace),keyEquivalent:"");workspace.target=self
@@ -701,6 +712,7 @@ private final class NotchSurfaceHost:NSView {
             unifiedMenuItems=[workspace,compact,settings]
             menu.addItem(.separator())
         }
+        let identity=menu.addItem(withTitle:"Menu bar icon",action:nil,keyEquivalent:"");identity.submenu=menuBarIdentity.menu
         let defaultModelItem=menu.addItem(withTitle:"Default model",action:nil,keyEquivalent:"")
         defaultModelItem.submenu=defaultModelMenu.menu
         showItem = menu.addItem(withTitle: "show notch", action: #selector(toggleFromMenu), keyEquivalent: "")
@@ -844,7 +856,7 @@ private final class NotchSurfaceHost:NSView {
         let quit = menu.addItem(withTitle: "quit kai pet", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         quit.target = NSApp
         func items(_ values:[NSMenuItem?])->[NSMenuItem]{values.compactMap{$0}}
-        NotchMenuOrganizer.organize(menu,quick:unifiedMenuItems+items([showItem,chatVoiceMenuItem,voiceApprovalMenuItem]),sections:[
+        NotchMenuOrganizer.organize(menu,quick:unifiedMenuItems+items([showItem,chatVoiceMenuItem,voiceApprovalMenuItem,identity]),sections:[
             .init(title:"Chats & Models",items:[defaultModelItem]),
             .init(title:"Shortcuts & Input",items:items([shortcutItem,timingItem,expandedDictationItem,autoSendItem,contextItem,compactSendItem])),
             .init(title:"Voice & Audio",items:items([realtimeVoices,speechItem,voices,rescanVoicesItem,stopSpeakingItem,soundsItem])),
@@ -1803,6 +1815,7 @@ private final class NotchSurfaceHost:NSView {
     }
 
     private func receive(_ state:KaiState){
+        menuBarIdentity.synchronize(state)
         if let interface=state.interfaceFont,let code=state.codeFont{applyTypography(interface:interface,code:code)}
         let pickerToOpen=pendingSlashPicker
         let slashAccepted=pendingSlashID != nil && state.completedRequestId == pendingSlashID && state.completedRequestError == nil && composerField?.stringValue == pendingSlashDraft

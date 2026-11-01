@@ -3,7 +3,8 @@ import AppKit
 @MainActor enum ProviderIcons {
     static let names=["codex","claude","gemini","opencode","cursor","grok","antigravity","ninja"]
     static func identifier(_ value:String?)->String? {
-        guard let text=value?.lowercased() else{return nil}
+        guard let raw=value?.lowercased() else{return nil}
+        let text=["cursor-agent":"cursor","agy":"antigravity"][raw] ?? raw
         return names.first{ text == $0 || text.hasPrefix($0+" ·") || text.hasSuffix(":"+$0) }
     }
     private static let cache=NSCache<NSString,NSImage>()

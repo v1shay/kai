@@ -41,6 +41,8 @@ struct KaiNinjaSelection:Decodable,Equatable{let machine:String;let endpoint:Str
 struct KaiNinjaMachine:Decodable,Equatable{let id:String;let name:String;let online:Bool;let local:Bool}
 struct KaiNinja:Decodable,Equatable{var canCancel:Bool?=nil;let selection:KaiNinjaSelection;let machines:[KaiNinjaMachine];let progress:String?;let error:String?;let loading:Bool}
 struct KaiState: Decodable {
+    var menuBarNinjas:[MenuBarNinja]?=nil
+    var menuBarNinja:MenuBarNinja?=nil
     var ninja:KaiNinja?=nil
     let contextWindow:KaiContextWindow?
     let usageResets:KaiResets?

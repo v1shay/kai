@@ -107,6 +107,20 @@ impl State {
         *pending.lock().unwrap() = Some(json!({"hosts":self.hosts,"snapshots":self.snapshots}));
         let _ = wake.try_send(());
     }
+    pub fn menu_identities(&self) -> Vec<Value> {
+        self.hosts.iter().flat_map(|h|self.snapshots.get(&h.id).into_iter().flat_map(move|v|v["profiles"].as_array().into_iter().flatten().filter_map(move|p|{
+            Some(json!({"id":format!("{}:{}",h.id,p["id"].as_str()?),"name":p["name"].as_str()?,"style":p["style"].as_str().unwrap_or("fire"),"host":h.name}))
+        }))).collect()
+    }
+    pub fn current_menu_identity(&self) -> Value {
+        let Some(p) = self.panel.as_ref().filter(|p| p.profile.revision > 0) else {
+            return Value::Null;
+        };
+        self.menu_identities()
+            .into_iter()
+            .find(|v| v["id"] == format!("{}:{}", p.host, p.profile.id))
+            .unwrap_or(Value::Null)
+    }
     pub fn active(&self) -> Vec<Value> {
         let mut out = vec![];
         for h in &self.hosts {
@@ -214,17 +228,7 @@ fn chip(
     cx: &Context<Orbit>,
     action: impl Fn(&mut Orbit, &mut Window, &mut Context<Orbit>) + 'static,
 ) -> Stateful<Div> {
-    chip_content(
-        id,
-        div()
-            .min_w(px(0.))
-            .text_ellipsis()
-            .child(label.into())
-            .into_any_element(),
-        on,
-        cx,
-        action,
-    )
+    chip_content(id, label.into(), None, on, cx, action)
 }
 fn marked_chip(
     id: impl Into<SharedString>,
@@ -236,14 +240,8 @@ fn marked_chip(
 ) -> Stateful<Div> {
     chip_content(
         id,
-        div()
-            .flex()
-            .items_center()
-            .gap_2()
-            .min_w(px(0.))
-            .child(div().flex_none().child(mark))
-            .child(div().min_w(px(0.)).text_ellipsis().child(label.into()))
-            .into_any_element(),
+        label.into(),
+        Some(mark.into_any_element()),
         on,
         cx,
         action,
@@ -279,12 +277,15 @@ fn field(input: &Entity<TextInput>, glyph: &'static str) -> Div {
 }
 fn chip_content(
     id: impl Into<SharedString>,
-    content: AnyElement,
+    label: SharedString,
+    mark: Option<AnyElement>,
     on: bool,
     cx: &Context<Orbit>,
     action: impl Fn(&mut Orbit, &mut Window, &mut Context<Orbit>) + 'static,
 ) -> Stateful<Div> {
     let id = id.into();
+    let label_selector = format!("{id}-label");
+    let model_row = id.starts_with("ninja-model-");
     div()
         .id(id)
         .h(px(28.))
@@ -292,6 +293,7 @@ fn chip_content(
         .flex()
         .items_center()
         .justify_center()
+        .gap_2()
         .rounded_md()
         .bg(rgba(if on { 0x9380ff35 } else { 0xffffff09 }))
         .hover(|s| s.bg(rgba(GLASS_HOVER)))
@@ -300,7 +302,13 @@ fn chip_content(
         .cursor_pointer()
         .min_w(px(0.))
         .max_w_full()
-        .child(content)
+        .when_some(mark, |v, mark| v.child(div().flex_none().child(mark)))
+        .child(
+            div()
+                .debug_selector(move || label_selector.clone())
+                .when(model_row, |v| v.flex_1().min_w(px(0.)).text_ellipsis())
+                .child(label),
+        )
         .on_click(cx.listener(move |app, _, w, cx| {
             cx.stop_propagation();
             action(app, w, cx)
@@ -1224,6 +1232,8 @@ impl Orbit {
                                     cx.notify();
                                 },
                             )
+                            .w_full()
+                            .justify_start()
                         }),
                 ),
         );
@@ -1610,14 +1620,24 @@ mod tests {
         assert!(workspace.left() >= fields.left() && workspace.right() <= fields.right());
         let work = cx.debug_bounds("ninja-work-card").unwrap();
         assert!(work.left() >= fields.right() && work.right() <= card.right());
+        for name in [
+            "ninja-model-gpt-oss:20b-label",
+            "ninja-model-qwen3-coder:30b-label",
+        ] {
+            let label = cx.debug_bounds(name).unwrap();
+            assert!(
+                label.size.width > px(70.),
+                "Model name collapsed to an ellipsis: {label:?}"
+            );
+        }
     }
     #[gpui::test]
     fn remote_reviews_keep_exact_owner_token_and_native_questions(cx: &mut TestAppContext) {
         let (view, cx) = crate::ui_tests::fixture(cx);
         view.update(cx,|app,cx|{
             let native=runtime::NativeRequest{id:"question-42".into(),method:"question".into(),title:"Choose deployment".into(),detail:"Exact remote request".into(),kind:runtime::NativeRequestKind::Questions{questions:vec![runtime::NativeQuestion{id:"target".into(),header:"Target".into(),question:"Which environment?".into(),options:vec![],secret:false,multiple:false,required:true}]}};
-            app.ninjas.snapshots.insert("local".into(),json!({"profiles":[{"id":"personal","name":"Ice"}],"tasks":[{"id":"task-7","profile":"personal","state":"approval","requests":[native]}]}));
-            let snapshot=app.unified_snapshot(cx);assert_eq!(snapshot["approvalThreadId"],"ninja:local:task-7");assert_eq!(snapshot["nativeReview"]["token"],"question-42");assert_eq!(snapshot["nativeReview"]["kind"],"questions");assert_eq!(snapshot["nativeReview"]["questions"][0]["id"],"target");assert_eq!(snapshot["activeTasks"][0]["scene"],"permission");assert_eq!(snapshot["approvalCount"],1);app.ninjas.errors.insert("local".into(),"Disconnected".into());let offline=app.unified_snapshot(cx);assert!(offline["nativeReview"].is_null());assert!(offline["activeTasks"][0]["text"].as_str().unwrap().contains("Reconnecting"));
+            app.ninjas.snapshots.insert("local".into(),json!({"profiles":[{"id":"personal","name":"Ice","style":"ice"}],"tasks":[{"id":"task-7","profile":"personal","state":"approval","requests":[native]}]}));
+            let snapshot=app.unified_snapshot(cx);assert_eq!(snapshot["menuBarNinjas"][0]["id"],"local:personal");assert_eq!(snapshot["menuBarNinjas"][0]["style"],"ice");assert_eq!(snapshot["approvalThreadId"],"ninja:local:task-7");assert_eq!(snapshot["nativeReview"]["token"],"question-42");assert_eq!(snapshot["nativeReview"]["kind"],"questions");assert_eq!(snapshot["nativeReview"]["questions"][0]["id"],"target");assert_eq!(snapshot["activeTasks"][0]["scene"],"permission");assert_eq!(snapshot["approvalCount"],1);app.ninjas.errors.insert("local".into(),"Disconnected".into());let offline=app.unified_snapshot(cx);assert!(offline["nativeReview"].is_null());assert!(offline["activeTasks"][0]["text"].as_str().unwrap().contains("Reconnecting"));
         });
     }
 }

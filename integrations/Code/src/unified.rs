@@ -923,6 +923,7 @@ impl Orbit {
         if approval.is_none(){let review=self.ninjas.review();if !review.is_null(){
             snapshot["approval"]=json!(true);snapshot["approvalThreadId"]=review["owner"].clone();snapshot["approvalRequestId"]=review["token"].clone();snapshot["approvalSummary"]=review["title"].clone();snapshot["focusThreadId"]=review["owner"].clone();snapshot["nativeReview"]=review;
         }}
+        snapshot["menuBarNinjas"]=json!(self.ninjas.menu_identities());snapshot["menuBarNinja"]=self.ninjas.current_menu_identity();
         snapshot["slashCommands"]=self.unified_slash_commands();
         snapshot["interfaceFont"]=json!(self.theme.ui_font);snapshot["codeFont"]=json!(self.theme.mono_font);
         snapshot["borderlessComposer"]=json!(self.theme.borderless_composer);
