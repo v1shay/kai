@@ -46,8 +46,8 @@ import AppKit
         previousWindow=NSApp.keyWindow;previousResponder=previousWindow?.firstResponder
         let panel=NotchPanel(contentRect:CGRect(x:anchor.x,y:anchor.y-310,width:620,height:310),styleMask:[.borderless,.nonactivatingPanel],backing:.buffered,defer:false)
         panel.isOpaque=false;panel.backgroundColor = .clear;panel.hasShadow=true;panel.level = .popUpMenu;panel.collectionBehavior=[.canJoinAllSpaces,.fullScreenAuxiliary];panel.isReleasedWhenClosed=false
-        let glass=NSVisualEffectView();glass.material = .popover;glass.blendingMode = .behindWindow;glass.state = .active;glass.wantsLayer=true;glass.layer?.cornerRadius=13;glass.layer?.masksToBounds=true;glass.layer?.borderWidth=0.7;glass.layer?.borderColor=NSColor.white.withAlphaComponent(0.16).cgColor
-        self.panel=panel;self.glass=glass;panel.contentView=glass
+        let glass=composerGlass(in:panel,radius:13)
+        self.panel=panel;self.glass=glass
         rebuild(anchor:anchor);panel.alphaValue=0;panel.makeKeyAndOrderFront(nil)
         NSAnimationContext.runAnimationGroup{c in c.duration=NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0:0.16;panel.animator().alphaValue=1}
         monitor=NSEvent.addLocalMonitorForEvents(matching:[.keyDown,.leftMouseDown,.rightMouseDown]){[weak self,weak panel] event in
@@ -101,7 +101,7 @@ import AppKit
             let host=NSView(frame:CGRect(x:x,y:y-h,width:w,height:h));glass.addSubview(host);columns.append(host)
             let title=NSTextField(labelWithString:["Provider","Model","Thinking intensity"][id]);title.font=AppTypography.ui(ofSize:11,weight:.medium);title.textColor=column==id ? .controlAccentColor:.secondaryLabelColor;title.frame=CGRect(x:8,y:h-23,width:w-16,height:18);host.addSubview(title)
             let scroll=NSScrollView(frame:CGRect(x:0,y:0,width:w,height:h-29));scroll.drawsBackground=false;scroll.hasVerticalScroller=true;scroll.autohidesScrollers=true;host.addSubview(scroll);scrolls.append(scroll)
-            let document=NSView(frame:CGRect(x:0,y:0,width:w,height:CGFloat(counts[id])*34));scroll.documentView=document
+            let document=NSView(frame:CGRect(x:0,y:0,width:w,height:max(scroll.contentSize.height,CGFloat(counts[id])*34)));scroll.documentView=document
             for i in 0..<counts[id]{
                 let rect=CGRect(x:0,y:document.frame.height-CGFloat(i+1)*34,width:w-3,height:32)
                 if id==2{
@@ -110,11 +110,14 @@ import AppKit
                     row.setPreview(column==2 ? cursors[2]==i:row.selected)
                     if column==2 && cursors[2]==i{row.layer?.backgroundColor=NSColor.white.withAlphaComponent(0.09).cgColor}
                 }else{
-                    let label=id==0 ? agents[i].name:ModelIdentity.title(catalog[i].displayName)
-                    let button=NSButton(title:label,target:self,action:#selector(selectRow(_:)));button.tag=id*10000+i;button.isBordered=false;button.alignment = .left;button.font=AppTypography.ui(ofSize:12,weight:.medium);button.lineBreakMode = .byTruncatingTail;button.frame=rect;button.wantsLayer=true;button.layer?.cornerRadius=6
+                    let installed=id==1 && state.selectedAgent=="ninja" && catalog[i].displayName.hasSuffix(" · Installed")
+                    let label=id==0 ? agents[i].name:ModelIdentity.title(state.selectedAgent=="ninja" ? catalog[i].displayName.replacingOccurrences(of:" · Installed",with:""):catalog[i].displayName)
+                    let button=NativePickerRow(title:"",target:self,action:#selector(selectRow(_:)));button.tag=id*10000+i;button.isBordered=false;button.alignment = .left;button.font=AppTypography.ui(ofSize:12,weight:.medium);button.lineBreakMode = .byTruncatingTail;button.frame=rect;button.wantsLayer=true;button.layer?.cornerRadius=6
                     let selected=id==0 ? agents[i].id==state.selectedAgent:catalog[i].model==selectedModel
                     button.layer?.backgroundColor=NSColor.white.withAlphaComponent(column==id && cursors[id]==i ? 0.11:selected ? 0.06:0).cgColor
-                    button.image=id==0 ? ProviderIcons.image(agents[i].id):ModelIdentity.image(catalog[i].resolvedModel ?? catalog[i].model);button.image?.size=CGSize(width:16,height:16);button.imagePosition = .imageLeading
+                    let glyph=id==0 ? agents[i].id:ModelIdentity.glyph(catalog[i].resolvedModel ?? catalog[i].model)
+                    button.configure(label:label,image:glyph.flatMap{ProviderIcons.mark($0,color:installed ? NativePickerRow.labColor(catalog[i].model):NSColor.white.withAlphaComponent(id==0 ? 1:0.55))})
+                    button.toolTip=installed ? label+" · Installed":label
                     button.isEnabled=pendingAgent==nil || id==0;button.setAccessibilityLabel(label);document.addSubview(button);buttons[id].append(button)
                 }
             }
@@ -182,4 +185,15 @@ import AppKit
         }
     }
     private func commitEffort(_ effort:String){guard pendingAgent==nil,levels.contains(effort),let model=choice else{return};onEffort?(model.model,effort);dismiss(restoreFocus:true)}
+}
+
+@MainActor private final class NativePickerRow:NSButton {
+    private let mark=NSImageView(),caption=NSTextField(labelWithString:"")
+    override init(frame:NSRect){super.init(frame:frame);setup()}
+    required init?(coder:NSCoder){super.init(coder:coder);setup()}
+    private func setup(){caption.font=AppTypography.ui(ofSize:12,weight:.medium);caption.textColor = .labelColor;caption.lineBreakMode = .byTruncatingTail;caption.isSelectable=false;mark.imageScaling = .scaleProportionallyDown;addSubview(mark);addSubview(caption)}
+    func configure(label:String,image:NSImage?){caption.stringValue=label;mark.image=image;mark.isHidden=image==nil;needsLayout=true}
+    override func layout(){super.layout();mark.frame=CGRect(x:9,y:bounds.midY-8,width:16,height:16);let x:CGFloat=mark.isHidden ? 10:33;caption.frame=CGRect(x:x,y:bounds.midY-8,width:max(0,bounds.width-x-9),height:17)}
+    override func hitTest(_ point:NSPoint)->NSView?{super.hitTest(point)==nil ? nil:self}
+    static func labColor(_ model:String)->NSColor{let id=ModelIdentity.glyph(model) ?? "";let rgb:UInt32;switch id{case "lab-qwen":rgb=0x9b87ff;case "lab-google":rgb=0x6da2ff;case "lab-deepseek":rgb=0x5d8dff;case "lab-meta":rgb=0x38a3ff;case "lab-mistral":rgb=0xffa63d;case "lab-nvidia":rgb=0x95d346;case "lab-cohere":rgb=0x70bca5;case "lab-openai":rgb=0xffffff;case "lab-zai":rgb=0xbca5ff;default:rgb=0x89cad9};return NSColor(srgbRed:CGFloat((rgb>>16)&255)/255,green:CGFloat((rgb>>8)&255)/255,blue:CGFloat(rgb&255)/255,alpha:1)}
 }

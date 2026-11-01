@@ -398,6 +398,9 @@ impl Orbit {
         let selected = if self.agent==AgentKind::Ninja{id.as_deref()==Some(self.ninja_selection().model.as_str())}else{self.model == id};
         let cursor=self.agent_picker.as_ref().is_some_and(|p|p.column==Column::Models&&p.model_cursor==ix);
         let glyph=composer_design::model_glyph(id.as_deref().unwrap_or(&label));
+        let installed=self.agent==AgentKind::Ninja&&self.ninja_models().iter().any(|m|Some(&m.id)==id.as_ref()&&m.installed);
+        let glyph_color=if installed{ninja::lab_color(id.as_deref().unwrap_or(""))}else{TEXT};
+        let label=if self.agent==AgentKind::Ninja{label.replace(" · Installed","")}else{label};
         div()
             .id(("model", ix))
             .debug_selector(move || format!("model-choice-{ix}"))
@@ -410,7 +413,7 @@ impl Orbit {
             .cursor_pointer()
             .hover(|s| s.bg(rgba(GLASS_HOVER)))
             .when(cursor,|s|s.bg(rgba(GLASS_HOVER)))
-            .when_some(glyph,|s,glyph|s.child(icon(glyph,15.,TEXT)))
+            .when_some(glyph,|s,glyph|s.child(icon(glyph,15.,glyph_color)))
             .child(
                 div()
                     .flex_1()

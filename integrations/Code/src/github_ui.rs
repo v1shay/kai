@@ -46,6 +46,7 @@ pub(super) struct State {
     mine_checked: Option<Instant>,
     mine_job: Option<ReadJob>,
     mine_error: Option<String>,
+    widget_offset: usize,
 }
 impl Default for State {
     fn default() -> Self {
@@ -70,6 +71,7 @@ impl Default for State {
             mine_checked: None,
             mine_job: None,
             mine_error: None,
+            widget_offset: 0,
         }
     }
 }
@@ -237,7 +239,7 @@ impl State {
     }
     fn natural_widget_height(&self) -> f32 {
         let page = self.personal();
-        88. + page.map_or(0, |p| p.items.len().min(3)) as f32 * 34.
+        64. + page.map_or(0, |p| p.items.len().min(3)) as f32 * 34.
             + if page.is_some_and(|p| p.total > 3) {
                 36.
             } else {
@@ -1084,21 +1086,7 @@ impl Orbit {
         .detach();
     }
     pub(super) fn github_widget(&self, cx: &Context<Self>) -> AnyElement {
-        let snapshot = self.github.snapshot.as_ref();
         let personal = self.github.personal();
-        let repo = snapshot.and_then(|s| s.checkout.as_ref());
-        let has_repo = repo.is_some();
-        let branch_label = if let Some(repo) = repo {
-            repo.branch
-                .clone()
-                .unwrap_or_else(|| "Detached HEAD".into())
-        } else if let Some(page) = personal {
-            format!("{} · {} open PRs", page.login, page.total)
-        } else if self.github.mine_job.is_some() {
-            "Loading your pull requests…".into()
-        } else {
-            "GitHub account".into()
-        };
         let height = self.github.widget_height(self.motion);
         let animate = self.motion && !native::reduced_motion();
         div()
@@ -1130,8 +1118,8 @@ impl Orbit {
                             .flex()
                             .items_center()
                             .gap_2()
-                            .child(icon("kai/integrations/github", 15., TEXT))
-                            .child(div().flex_1().text_size(theme::ui_px(11.)).child("GitHub"))
+                            .child(icon("kai/integrations/github", 18., TEXT))
+                            .child(div().flex_1().text_size(theme::ui_px(12.)).child("GitHub"))
                             .child(button(
                                 "github-open",
                                 "",
@@ -1141,39 +1129,10 @@ impl Orbit {
                                 |app, w, cx| app.open_github(Tab::Pulls, w, cx),
                             )),
                     )
-                    .child(
-                        div()
-                            .id("github-current-branch")
-                            .debug_selector(|| "github-current-branch".into())
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .cursor_pointer()
-                            .text_size(theme::ui_px(10.))
-                            .text_color(rgb(MUTED))
-                            .child(icon(
-                                if has_repo {
-                                    "branch"
-                                } else {
-                                    "git-pull-request"
-                                },
-                                12.,
-                                MUTED,
-                            ))
-                            .child(branch_label)
-                            .on_click(cx.listener(move |app, _, w, cx| {
-                                cx.stop_propagation();
-                                app.open_github(
-                                    if has_repo { Tab::Branches } else { Tab::Pulls },
-                                    w,
-                                    cx,
-                                )
-                            })),
-                    )
                     .children(
                         personal
                             .into_iter()
-                            .flat_map(|p| p.items.iter().take(3))
+                            .flat_map(|p| p.items.iter().skip(self.github.widget_offset.min(p.items.len().saturating_sub(1)/3*3)).take(3))
                             .map(|pr| {
                                 let (glyph, color) = pr.glyph();
                                 let url = pr.url.clone();
@@ -1204,12 +1163,12 @@ impl Orbit {
                                     .gap_2()
                                     .cursor_pointer()
                                     .hover(|s| s.bg(rgba(GLASS_HOVER)))
-                                    .child(icon(glyph, 13., color))
+                                    .child(icon(glyph, 15., color))
                                     .child(
                                         div()
                                             .flex_1()
                                             .min_w(px(0.))
-                                            .text_size(theme::ui_px(10.))
+                                            .text_size(theme::ui_px(12.))
                                             .text_ellipsis()
                                             .child(format!(
                                                 "{} #{} {}",
@@ -1230,11 +1189,16 @@ impl Orbit {
                     .when(personal.is_some_and(|p| p.total > 3), |s| {
                         s.child(button(
                             "github-all-pulls",
-                            "All pull requests",
-                            None,
+                            if self.github.widget_offset==0 {"Next three"} else {"More pull requests"},
+                            Some("chevron-down"),
                             true,
                             cx,
-                            |app, w, cx| app.open_github(Tab::Pulls, w, cx),
+                            |app, _, cx| {
+                                let count=app.github.personal().map_or(0,|p|p.items.len());
+                                app.github.widget_offset=if app.github.widget_offset+3<count{app.github.widget_offset+3}else{0};
+                                for (i,url) in app.github.personal().into_iter().flat_map(|p|p.items.iter().skip(app.github.widget_offset).take(3)).map(|p|p.url.clone()).collect::<Vec<_>>().into_iter().enumerate(){app.github.pr_entries.insert(url,Instant::now()+Duration::from_millis(i as u64*35));}
+                                cx.notify();
+                            },
                         ))
                     }),
             )
@@ -2332,7 +2296,7 @@ mod tests {
                 app.github.personal().is_none(),
                 "Another GitHub host must not display cached public-account PRs"
             );
-            assert_eq!(app.github.natural_widget_height(), 88.);
+            assert_eq!(app.github.natural_widget_height(), 64.);
         });
     }
     #[gpui::test]

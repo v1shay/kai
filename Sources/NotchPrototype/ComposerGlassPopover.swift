@@ -64,6 +64,18 @@ import AppKit
     override func accessibilityPerformPress()->Bool{commit?(value);return true}
 }
 
+/// Keep the native material inside a plain, continuously rounded host. Using
+/// an effect view as the window's root lets AppKit's frame draw a square rim.
+@MainActor func composerGlass(in panel:NSPanel,radius:CGFloat)->NSVisualEffectView {
+    let root=NSView(frame:CGRect(origin:.zero,size:panel.frame.size));root.wantsLayer=true
+    root.layer?.cornerRadius=radius;root.layer?.cornerCurve = .continuous;root.layer?.masksToBounds=true;root.layer?.borderWidth=0
+    let glass=NSVisualEffectView(frame:root.bounds);glass.autoresizingMask=[.width,.height];glass.material = .popover;glass.blendingMode = .behindWindow;glass.state = .active;glass.wantsLayer=true
+    glass.layer?.cornerRadius=radius;glass.layer?.cornerCurve = .continuous;glass.layer?.masksToBounds=true;glass.layer?.borderWidth=0.7;glass.layer?.borderColor=NSColor.white.withAlphaComponent(0.16).cgColor
+    root.addSubview(glass);panel.contentView=root
+    panel.contentView?.superview?.layer?.borderWidth=0
+    return glass
+}
+
 @MainActor final class ComposerGlassPopover {
     private var panel:NSPanel?,monitor:Any?,globalMonitor:Any?
     private var key:String?
@@ -83,7 +95,7 @@ import AppKit
         let screen=NSScreen.screens.first{$0.frame.contains(anchor)}?.visibleFrame ?? NSScreen.main?.visibleFrame ?? CGRect(x:0,y:0,width:1200,height:800)
         let origin=CGPoint(x:min(max(screen.minX+8,anchor.x-30),screen.maxX-width-8),y:max(screen.minY+8,min(anchor.y-height-4,screen.maxY-height-8)))
         let panel=NSPanel(contentRect:CGRect(origin:origin,size:CGSize(width:width,height:height)),styleMask:[.borderless,.nonactivatingPanel],backing:.buffered,defer:false);panel.isOpaque=false;panel.backgroundColor = .clear;panel.hasShadow=true;panel.level = .popUpMenu;panel.collectionBehavior=[.canJoinAllSpaces,.fullScreenAuxiliary]
-        let glass=NSVisualEffectView(frame:CGRect(x:0,y:0,width:width,height:height));glass.material = .popover;glass.blendingMode = .behindWindow;glass.state = .active;glass.wantsLayer=true;glass.layer?.cornerRadius=14;glass.layer?.masksToBounds=true;glass.layer?.borderWidth=0.7;glass.layer?.borderColor=NSColor.white.withAlphaComponent(0.18).cgColor;panel.contentView=glass
+        let glass=composerGlass(in:panel,radius:14)
         let heading=NSTextField(labelWithString:title);heading.font=AppTypography.ui(ofSize:11,weight:.medium);heading.textColor = .secondaryLabelColor;heading.frame=CGRect(x:15,y:height-29,width:width-30,height:18);glass.addSubview(heading)
         for (i,row) in rows.enumerated(){row.frame=CGRect(x:10,y:height-38-CGFloat(i+1)*38,width:244,height:34);glass.addSubview(row)}
         self.panel=panel;panel.alphaValue=0;panel.orderFrontRegardless()

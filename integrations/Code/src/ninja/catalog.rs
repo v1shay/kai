@@ -577,3 +577,5 @@ mod tag_tests {
         }
     }
 }
+
+pub fn lab_color(id:&str)->u32 {match lab(id,"").as_str(){"Qwen"=>0x9b87ff,"Google"=>0x6da2ff,"DeepSeek"=>0x5d8dff,"Meta"=>0x38a3ff,"Mistral"=>0xffa63d,"NVIDIA"=>0x95d346,"Cohere"=>0x70bca5,"OpenAI"=>0xffffff,"Z.ai"=>0xbca5ff,_=>0x89cad9}}
