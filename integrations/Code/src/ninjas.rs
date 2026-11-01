@@ -1600,6 +1600,20 @@ mod tests {
         }
     }
     #[test]
+    fn delete_ninja_preserves_files_and_other_identities_and_rejects_pending_work() {
+        let f=Fixture::new();let mut db=Store::open(&f.0).unwrap();
+        let a=db.save_profile(f.profile()).unwrap();let b=db.save_profile(f.profile()).unwrap();
+        fs::write(f.0.join("keep.txt"),"workspace file").unwrap();
+        db.write_memory(&a.id,0,"Personal memory").unwrap();
+        let mut task=db.submit(&a.id,"Queued task",None,0,None).unwrap();
+        let worker=Arc::new(Worker{store:Mutex::new(db),root:f.0.clone(),live:Mutex::new(HashMap::new()),calls:Mutex::new(HashMap::new()),starting:Mutex::new(Default::default()),change:Mutex::new(1),wake:Condvar::new()});
+        assert!(worker.request(json!({"action":"delete_profile","id":a.id})).is_err());
+        task.state="stopped".into();worker.store.lock().unwrap().save_task(&task).unwrap();
+        worker.request(json!({"action":"delete_profile","id":a.id})).unwrap();
+        let db=worker.store.lock().unwrap();assert!(db.profile(&a.id).is_err());assert!(db.memory(&a.id).is_err());assert!(db.profile(&b.id).is_ok());
+        assert_eq!(fs::read_to_string(f.0.join("keep.txt")).unwrap(),"workspace file");
+    }
+    #[test]
     fn memory_is_scoped_and_revision_checked() {
         let f = Fixture::new();
         let mut db = Store::open(&f.0).unwrap();

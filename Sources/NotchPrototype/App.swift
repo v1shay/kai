@@ -2621,7 +2621,7 @@ private final class NotchSurfaceHost:NSView {
             guard let host,rect.width>0,rect.height>0 else{scene.suspend();continue}
             if scene.superview !== host{scene.removeFromSuperview();host.addSubview(scene)}
             scene.frame=scene === ninjaNotchScene ? rect:CGRect(x:rect.minX,y:host.bounds.height-rect.maxY,width:rect.width,height:rect.height)
-            scene.configure(identity:identity,style:ninja.style,working:working,motion:workspaceMorph.motionEnabled,visible:visible)
+            scene.configure(identity:identity,name:ninja.name,style:ninja.style,working:working,motion:workspaceMorph.motionEnabled,visible:visible)
         }
     }
     private func updateGlassBackground(){

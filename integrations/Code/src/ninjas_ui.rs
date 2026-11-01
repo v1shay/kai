@@ -36,6 +36,7 @@ pub(super) struct Panel {
     reference_pending:usize,
     reference_submit:bool,
     pub settings: bool,
+    delete_confirm:bool,
     pub messages: Vec<Value>,
     pub history_loading: bool,
     pub models_requested: bool,
@@ -870,6 +871,7 @@ impl Orbit {
             reference_pending:0,
             reference_submit:false,
             settings,
+            delete_confirm:false,
             messages: vec![],
             history_loading: false,
             models_requested: false,
@@ -1073,7 +1075,8 @@ impl Orbit {
                                 panel.task = Some(value);
                             }
                             "delete_profile" => {
-                                app.remember_ninja_draft(cx);app.ninjas.desktop=None;app.ninjas.panel = None;
+                                let host=panel.host.clone();let id=panel.profile.id.clone();
+                                app.ninja_forget_profile(&host,&id);
                             }
                             _ => {}
                         }
@@ -1100,6 +1103,17 @@ impl Orbit {
         })
         .detach();
         cx.notify();
+    }
+    fn ninja_forget_profile(&mut self,host:&str,id:&str){
+        // Do not save the deleted draft again when dismissing its surface.
+        self.ninjas.panel=None;self.ninjas.desktop=None;
+        let prefix=format!("{host}:{id}:");
+        self.ninjas.drafts.retain(|key,_|!key.starts_with(&prefix));
+        if let Some(snapshot)=self.ninjas.snapshots.get_mut(host){
+            if let Some(profiles)=snapshot["profiles"].as_array_mut(){profiles.retain(|p|p["id"]!=id);}
+            if let Some(tasks)=snapshot["tasks"].as_array_mut(){tasks.retain(|t|t["profile"]!=id);}
+        }
+        self.ninjas.save();
     }
     fn ninja_load_models(&mut self, cx: &mut Context<Self>) {
         let Some(p) = &self.ninjas.panel else { return };
@@ -1337,6 +1351,16 @@ impl Orbit {
                         },
                     )),
             )
+            .when(p.profile.revision>0,|s|s.child(
+                div().flex().items_center().justify_between().gap_2()
+                    .child(div().text_size(theme::ui_px(11.)).text_color(rgb(MUTED)).child("Identity & personal memory"))
+                    .child(marked_chip("ninja-delete","",icon("trash",16.,0xf38c82),p.delete_confirm,cx,|app,_,cx|{if let Some(p)=&mut app.ninjas.panel{p.delete_confirm=!p.delete_confirm;}cx.notify();}))))
+            .when(p.delete_confirm,|s|s.child(
+                div().debug_selector(||"ninja-delete-confirmation".into()).p_3().rounded_lg().bg(rgba(0xf38c8212)).flex().flex_col().gap_2()
+                    .child(div().text_size(theme::ui_px(12.)).child("Delete this Ninja and its personal memory? Workspace files stay untouched. Stop any active or scheduled tasks first."))
+                    .child(div().flex().justify_end().gap_2()
+                        .child(chip("ninja-delete-cancel","Cancel",false,cx,|app,_,cx|{if let Some(p)=&mut app.ninjas.panel{p.delete_confirm=false;}cx.notify();}))
+                        .child(marked_chip("ninja-delete-confirm",if p.busy{"Deleting…"}else{"Delete Ninja"},icon("trash",14.,0xf38c82),false,cx,|app,_,cx|{if let Some(p)=&app.ninjas.panel{if p.delete_confirm{let request=json!({"action":"delete_profile","id":p.profile.id});app.ninja_operation(request,cx);}}})))))
             .child(field(&p.fields[0], "ninja"))
             .child(field(&p.fields[1], "chat").min_h(px(76.)))
             .child(
@@ -2219,6 +2243,19 @@ mod tests {
             app.ninjas.snapshots.insert("local".into(),json!({"profiles":[{"id":"personal","name":"Ice","style":"ice"}],"tasks":[{"id":"task-7","profile":"personal","state":"approval","requests":[native]}]}));
             let snapshot=app.unified_snapshot(cx);assert_eq!(snapshot["menuBarNinjas"][0]["id"],"local:personal");assert_eq!(snapshot["menuBarNinjas"][0]["style"],"ice");assert_eq!(snapshot["approvalThreadId"],"ninja:local:task-7");assert_eq!(snapshot["nativeReview"]["token"],"question-42");assert_eq!(snapshot["nativeReview"]["kind"],"questions");assert_eq!(snapshot["nativeReview"]["questions"][0]["id"],"target");assert_eq!(snapshot["activeTasks"][0]["scene"],"permission");assert_eq!(snapshot["approvalCount"],1);app.ninjas.errors.insert("local".into(),"Disconnected".into());let offline=app.unified_snapshot(cx);assert!(offline["nativeReview"].is_null());assert!(offline["activeTasks"][0]["text"].as_str().unwrap().contains("Reconnecting"));
         });
+    }
+    #[gpui::test]
+    fn ninja_deletion_is_explicit_cancelable_and_cleans_only_its_own_surface(cx:&mut TestAppContext){
+        let (view,cx)=crate::ui_tests::fixture(cx);
+        let id=cx.update(|w,cx|view.update(cx,|app,cx|{
+            app.open_ninjas(Some("local".into()),None,w,cx);let p=app.ninjas.panel.as_mut().unwrap();p.profile.revision=1;p.settings=true;let id=p.profile.id.clone();
+            app.ninjas.drafts.insert(format!("local:{id}:chat"),"draft".into());app.ninjas.drafts.insert("local:other:chat".into(),"keep".into());
+            app.ninjas.snapshots.insert("local".into(),json!({"profiles":[{"id":id},{"id":"other"}],"tasks":[{"profile":id,"state":"completed"},{"profile":"other","state":"completed"}]}));id
+        }));
+        crate::ui_tests::draw_frame(&view,cx);assert!(cx.debug_bounds("ninja-delete-confirmation").is_none());
+        crate::ui_tests::click_selector(cx,"ninja-delete");crate::ui_tests::draw_frame(&view,cx);assert!(cx.debug_bounds("ninja-delete-confirmation").is_some());
+        crate::ui_tests::click_selector(cx,"ninja-delete-cancel");crate::ui_tests::draw_frame(&view,cx);view.update(cx,|app,_|assert!(!app.ninjas.panel.as_ref().unwrap().delete_confirm,"Cancel must dismiss confirmation"));
+        view.update(cx,|app,_|{assert!(app.ninjas.panel.is_some());app.ninja_forget_profile("local",&id);assert!(app.ninjas.panel.is_none());assert_eq!(app.ninjas.snapshots["local"]["profiles"],json!([{"id":"other"}]));assert_eq!(app.ninjas.snapshots["local"]["tasks"],json!([{"profile":"other","state":"completed"}]));assert_eq!(app.ninjas.drafts.len(),1);});
     }
     #[gpui::test]
     fn saved_ninjas_open_as_conversations_and_intensity_is_model_scoped(cx: &mut TestAppContext) {

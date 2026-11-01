@@ -3,6 +3,23 @@ import AppKit
     @MainActor static func main(){
         _=NSApplication.shared
         if CommandLine.arguments.contains("--live"){NSApp.setActivationPolicy(.regular)}
+        let suite="kai-ninja-phrases-test-"+UUID().uuidString,defaults=UserDefaults(suiteName:suite)!
+        defer{defaults.removePersistentDomain(forName:suite)}
+        var calendar=Calendar.current;calendar.timeZone=TimeZone.current
+        let date=calendar.date(from:DateComponents(year:2026,month:11,day:2,hour:8))!
+        var seen=Set<String>()
+        for _ in 0..<45{let phrase=NinjaQuips.next(.arrival,name:"Zane",date:date,defaults:defaults);precondition(!phrase.contains("{name}"));precondition(seen.insert(phrase).inserted,"Arrival phrases must not repeat within their bag");}
+        precondition(NinjaQuips.pool(.arrival,hour:8,weekday:2).contains("Top of the morning?"))
+        precondition(!NinjaQuips.pool(.arrival,hour:23,weekday:2).contains("Top of the morning?"))
+        precondition(NinjaQuips.pool(.arrival,hour:23,weekday:2).contains("The moon gets it."))
+        for moment in [NinjaQuips.Moment.work,.done,.nearby]{var unique=Set<String>();for _ in 0..<15{precondition(unique.insert(NinjaQuips.next(moment,name:"Kai",defaults:defaults)).inserted)}}
+        precondition(NinjaAtmosphereView.actorOpacity(y:60,height:180)<0.3)
+        precondition(NinjaAtmosphereView.actorOpacity(y:140,height:180)<NinjaAtmosphereView.actorOpacity(y:60,height:180))
+        let actions:[NinjaPixelActor.Action]=[.rest,.walk,.run,.wave,.inspect,.leap,.bow]
+        let contact=CGContext(data:nil,width:8*96,height:actions.count*112,bitsPerComponent:8,bytesPerRow:0,space:CGColorSpaceCreateDeviceRGB(),bitmapInfo:CGImageAlphaInfo.premultipliedLast.rawValue)!
+        contact.setFillColor(NSColor(srgbRed:0.065,green:0.072,blue:0.08,alpha:1).cgColor);contact.fill(CGRect(x:0,y:0,width:768,height:actions.count*112))
+        for (row,action) in actions.enumerated(){var frames=Set<Data>();for i in 0..<8{let image=NinjaPixelActor.frame(style:"fire",action:action,step:i);frames.insert(image.dataProvider!.data! as Data);contact.draw(image,in:CGRect(x:i*96,y:(actions.count-1-row)*112,width:96,height:112))};precondition(frames.count>1,"Every action needs articulated movement")}
+        let sheet=NSBitmapImageRep(cgImage:contact.makeImage()!);try! sheet.representation(using:.png,properties:[:])!.write(to:URL(fileURLWithPath:"/private/tmp/kai-ninja-actions.png"))
         let scene=NinjaAtmosphereView(frame:CGRect(x:0,y:0,width:1000,height:500))
         scene.configure(identity:"preview",style:"fire",working:false,motion:false,visible:true)
         scene.layoutSubtreeIfNeeded()
@@ -47,6 +64,6 @@ import AppKit
           };NSApp.run()
         }
         scene.suspend();precondition(scene.isHidden)
-        print("NINJA_ATMOSPHERE_OK six identity renders, static/accessibility, work and suspend")
+        print("NINJA_ATMOSPHERE_OK six identity renders, static/accessibility, work and suspend; phrase bags, time-of-day, seven articulated actions, depth fade")
     }
 }
