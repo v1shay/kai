@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Deterministic pixel-art Ninja loops. No image service or runtime generator.
-GIF89a, 48x56, 12 frames, transparent palette and bounded LZW literal blocks.
+GIF89a, 48x56, 24 frames, transparent palette and bounded LZW literal blocks.
 """
 from pathlib import Path
 import math,struct
@@ -21,8 +21,8 @@ def make(color):
     palette=[(0,0,0),(18,24,37),(242,231,200),(12,17,26)]+[tuple(int(c*(i/59)) for c in rgb) for i in range(60)]
     data=bytearray(b'GIF89a'+struct.pack('<HHBBB',48,56,0xf5,0,0)+bytes(c for p in palette for c in p))
     data+=b'!\xff\x0bNETSCAPE2.0\x03\x01\0\0\0'
-    for frame in range(12):
-        pixels=[0]*(48*56);phase=frame*math.tau/12;bob=round(math.sin(phase)*.8)
+    for frame in range(24):
+        pixels=[0]*(48*56);phase=frame*math.tau/24;bob=round(math.sin(phase*2)*1.2)
         def dot(x,y,c):
             if 0<=x<48 and 0<=y<56:pixels[y*48+x]=c
         def rect(x,y,w,h,c):
@@ -40,8 +40,11 @@ def make(color):
         rect(17,y+15,14,3,58);rect(18,y+18,12,2,46)
         # Scarf tails catch the breeze; each style keeps its exact identity color.
         tail=round(math.sin(phase)*2);rect(32,y+15,7,3,54);rect(37,y+17,3,7+tail,39)
-        rect(18,y+23,12,11,48);rect(20,y+24,8,2,57);rect(16,y+27,3,7,34);rect(30,y+27,3,7,34)
-        rect(18,y+34,5,6,25);rect(25,y+34,5,6,30);rect(17,y+39,6,2,1);rect(25,y+39,7,2,1)
+        stride=round(math.sin(phase)*4);lift=round(max(0,math.cos(phase))*3)
+        rect(18,y+23,12,11,48);rect(20,y+24,8,2,57)
+        rect(15-stride//2,y+25,4,6,34);rect(30+stride//2,y+25,4,6,42)
+        rect(18-stride,y+33,5,6-lift,25);rect(25+stride,y+33,5,6,30)
+        rect(16-stride,y+38-lift,7,2,1);rect(25+stride,y+39,7,2,1)
         for row in range(26,33,2):dot(20+(row%3),y+row,60)
         # Brief eye glint, not a full blink that makes the face disappear.
         if frame==8:dot(18,y+10,2);dot(26,y+10,2)

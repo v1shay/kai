@@ -121,6 +121,7 @@ impl Controller {
                 ..Default::default()
             },
             move |window, cx| {
+                #[cfg(not(test))]
                 native::configure(window);
                 native_panel::configure(window);
                 cx.new(|cx| QuickChat::new(orbit, window, cx))

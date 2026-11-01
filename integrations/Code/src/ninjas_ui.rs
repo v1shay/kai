@@ -537,9 +537,12 @@ impl Orbit {
         };
         let username=self.ninjas.snapshots.get(&host.id).and_then(|v|v["home"].as_str()).and_then(|s|s.rsplit('/').next()).unwrap_or("").to_owned();
         let id = p.profile.id.clone();
+        let token=p.token;let tint=crate::ninja_art::color(&p.profile.style);
         let desktop=self.ninjas.desktop.clone().unwrap_or_else(||cx.new(|cx|crate::remote_desktop::RemoteDesktop::new(address,host.name.clone(),username,window,cx)));
         self.ninjas.desktop=Some(desktop.clone());
         if !take_over {cx.notify();return;}
+        if !desktop.read(cx).connected(){desktop.update(cx,|v,cx|v.takeover_error("Connect to this Mac before taking control".into(),cx));cx.notify();return;}
+        let epoch=desktop.update(cx,|v,cx|v.takeover_pending(tint,cx));
         self.ninjas.call.take();
         cx.spawn(async move |this, cx| {
             let result = cx
@@ -547,12 +550,7 @@ impl Orbit {
                 .spawn(async move { call(&host, &json!({"action":"take_over","id":id})) })
                 .await;
             let _ = this.update(cx, |app, cx| {
-                match result {
-                    Ok(_) => {
-                        desktop.update(cx,|view,cx|view.controlling(true,cx));
-                    }
-                    Err(e) => app.notice = Some(e.to_string()),
-                }
+                if app.ninjas.panel.as_ref().is_some_and(|p|p.token==token) && app.ninjas.desktop.as_ref()==Some(&desktop){desktop.update(cx,|view,cx|view.takeover_finished(epoch,result.map(|_|()).map_err(|e|e.to_string()),cx));}
                 cx.notify();
             });
         })
@@ -1279,16 +1277,20 @@ impl Orbit {
             )
             .into_any_element()
     }
+    pub(super) fn ninjas_conversation(&self, window: &Window, cx: &Context<Self>) -> AnyElement {
+        div().debug_selector(||"chat-pane".into()).flex_1().size_full().min_w(px(0.)).min_h(px(0.)).flex().flex_col().relative().overflow_hidden()
+            .child(self.tabs(cx)).child(div().flex_1().min_h(px(0.)).child(self.ninjas_panel(window,cx))).into_any_element()
+    }
     pub(super) fn ninjas_panel(&self, window: &Window, cx: &Context<Self>) -> AnyElement {
         let compact = f32::from(window.viewport_size().width) < 640.;
         let Some(p) = &self.ninjas.panel else {
             return div().into_any_element();
         };
         if let Some(desktop)=&self.ninjas.desktop {
-            return div().absolute().inset_0().p_4().bg(rgba(appearance::MENU_SURFACE)).flex().flex_col().gap_2()
+            return div().id("ninja-desktop-viewer").debug_selector(||"ninja-desktop-viewer".into()).relative().size_full().min_h(px(0.)).p_4().bg(rgba(0x171b20ed)).occlude().flex().flex_col().gap_2().on_mouse_down(MouseButton::Left,|_,_,cx|cx.stop_propagation()).on_click(|_,_,cx|cx.stop_propagation())
                 .child(div().flex().gap_2()
-                    .child(chip("desktop-observe","Watch",false,cx,|app,_,cx|{if let Some(v)=&app.ninjas.desktop{v.update(cx,|v,cx|v.controlling(false,cx));}}))
-                    .child(chip("desktop-takeover","Take over",false,cx,|app,w,cx|app.ninja_screen(true,w,cx)))
+                    .child(chip("desktop-observe","Watch",!desktop.read(cx).is_controlling(),cx,|app,_,cx|{if let Some(v)=&app.ninjas.desktop{v.update(cx,|v,cx|v.controlling(false,cx));}cx.notify();}))
+                    .child(chip("desktop-takeover","Take over",desktop.read(cx).is_controlling(),cx,|app,w,cx|app.ninja_screen(true,w,cx)))
                     .child(chip("desktop-close","Close viewer",false,cx,|app,_,cx|{app.ninjas.desktop=None;cx.notify();})))
                 .child(desktop.clone()).into_any_element();
         }
@@ -2046,6 +2048,7 @@ impl Orbit {
                 cx,
                 |app, _, cx| app.ninja_submit_task(cx),
             ));
+        let inline=p.profile.revision>0;
         let width = (f32::from(window.viewport_size().width) - 24.).clamp(280., 1060.);
         let height = (f32::from(window.viewport_size().height) - 24.).clamp(280., 850.);
         let host_name = self
@@ -2057,12 +2060,9 @@ impl Orbit {
             .unwrap_or("Host");
         div()
             .id("personal-ninjas-scrim")
-            .absolute()
-            .inset_0()
+            .relative().size_full().min_h(px(0.))
+            .when(!inline,|s|s.absolute().inset_0().items_center().justify_center().bg(rgba(0x00000035)))
             .flex()
-            .items_center()
-            .justify_center()
-            .bg(rgba(0x00000035))
             .on_click(cx.listener(|app, _, _, cx| {
                 app.remember_ninja_draft(cx);app.ninjas.desktop=None;app.ninjas.panel = None;
                 cx.notify();
@@ -2070,15 +2070,11 @@ impl Orbit {
             .child(
                 div()
                     .id("personal-ninjas-panel")
-                    .debug_selector(|| "personal-ninjas-panel".into())
-                    .w(px(width))
-                    .h(px(height))
+                    .debug_selector(|| "personal-ninjas-panel".into()).relative().overflow_hidden()
+                    .when(inline,|s|s.size_full().min_h(px(0.)).relative().overflow_hidden())
+                    .when(!inline,|s|s.w(px(width)).h(px(height)).rounded_xl().border_1().border_color(rgba(0xffffff20)).bg(rgba(appearance::MENU_SURFACE)).shadow_lg())
                     .p_4()
-                    .rounded_xl()
-                    .border_1()
-                    .border_color(rgba(0xffffff20))
-                    .bg(rgba(appearance::MENU_SURFACE))
-                    .shadow_lg()
+                    .child(crate::ninja_art::wallpaper(&p.profile.style,self.motion && !native::reduced_motion() && window.is_window_active()))
                     .occlude()
                     .opacity(progress)
                     .flex()
@@ -2166,7 +2162,7 @@ impl Orbit {
                                     div()
                                         .id("ninja-persona-fields")
                                         .debug_selector(|| "ninja-persona-fields".into())
-                                        .w(px(if compact { width - 32. } else { (width - 48.) * 0.45 }))
+                                        .w(px(if compact { width - 32. } else if inline { 300. } else { (width - 48.) * 0.45 }))
                                         .flex_none()
                                         .min_w(px(0.))
                                         .p_3()
@@ -2185,10 +2181,7 @@ impl Orbit {
                                     .flex_1()
                                     .h_full()
                                     .p_3()
-                                    .rounded_lg()
-                                    .border_1()
-                                    .border_color(rgba(0xffffff14))
-                                    .bg(rgba(GLASS_SURFACE)),
+                                    .when(!inline,|s|s.rounded_lg().border_1().border_color(rgba(0xffffff14)).bg(rgba(GLASS_SURFACE))),
                             )),
                     ),
             )
@@ -2268,9 +2261,14 @@ mod tests {
             app.ninjas.snapshots.insert("local".into(),json!({"profiles":[],"tasks":[{"id":"one","profile":id,"chat":"chat-one","prompt":"First chat","brief":"Done","state":"completed"},{"id":"two","profile":id,"chat":"chat-two","prompt":"Other chat","brief":"Other","state":"completed"}]}));
         }));
         crate::ui_tests::draw_frame(&view, cx);
-        assert!(cx.debug_bounds("ninja-work-card").unwrap().size.width > px(750.));
+        let pane=cx.debug_bounds("chat-pane").unwrap();let chat=cx.debug_bounds("ninja-work-card").unwrap();
+        assert!(chat.origin.x>=pane.origin.x && chat.size.width>=pane.size.width-px(64.),"Ninja chat must fill its normal chat column: {chat:?} in {pane:?}");
+        assert!(cx.debug_bounds("ninja-wallpaper").is_some());
         crate::ui_tests::click_selector(cx, "ninja-settings");
         crate::ui_tests::draw_frame(&view, cx);
+        let scroll=cx.debug_bounds("ninja-persona-fields").unwrap();
+        let effort=cx.debug_bounds("ninja-effort-high").unwrap();
+        if effort.bottom()>scroll.bottom(){cx.simulate_event(ScrollWheelEvent{position:scroll.center(),delta:ScrollDelta::Pixels(point(px(0.),-(effort.bottom()-scroll.bottom()+px(80.)))),modifiers:Modifiers::none(),touch_phase:TouchPhase::Moved});crate::ui_tests::draw_frame(&view,cx);}
         crate::ui_tests::click_selector(cx, "ninja-effort-high");
         view.update(cx, |app, _| {
             let p = app.ninjas.panel.as_ref().unwrap();

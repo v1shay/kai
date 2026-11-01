@@ -7,7 +7,7 @@ Personal Ninjas are durable identities in the sidebar, separate from the Ninja i
 1. Click the Ninja **+** beside **Ninjas**. An already configured remote host is preferred; This Mac remains an explicit choice. The workspace path always belongs to the chosen execution host.
 2. Name it, choose its character and workspace on that host, select an installed provider and its model, then save it.
 3. Assign a task now, tonight at 22:00, or daily. Submitting a task captures the current settings. Later changes cannot change permissions or providers underneath an already queued/running task.
-4. Saved Ninjas open as message conversations. The gear toggles their separate settings card; character choices are icon-only, and intensity choices use the shared finite tile shimmer. Recent conversation chips select chats; New chat starts empty. Compatible chats resume their native session; a provider/harness change starts a new native session with memory and bounded recent-work context.
+4. Saved Ninjas open as inline message conversations in the normal chat column, alongside Code tabs. The gear toggles their separate settings card; character choices are icon-only, and intensity choices use the shared finite tile shimmer. Recent conversation chips select chats; New chat starts empty. Compatible chats resume their native session; a provider/harness change starts a new native session with memory and bounded recent-work context.
 
 The worker reuses the normal native providers, including their shell, editing, MCP and delegation mechanisms. It is not a second chatbot implementation. Native requests retain their task, request ID, and delegated child owner; they can be answered through Kai's existing notch approval/question controls.
 
@@ -45,7 +45,7 @@ The viewer starts in **Watch** mode. It sends no keyboard, mouse, clipboard, or 
 
 Saved personal Ninjas supply their own owner token, conversation, model, permission state, draft, and submit/stop path to the extended notch. Their history is distinct from the underlying Code chat. Native menu-bar clicks open the selected identity in the existing mini Code surface, anchored to the menu-bar item; click again or click away to collapse it. Right-click or Option-click retains the settings menu. The selected provider opens its current/recent chat; a pinned personal Ninja opens its own conversation.
 
-Activity uses the Ninja's character rather than the user's selected pet, including the floating task view. Six generated transparent pixel-art GIF loops are reused in Code, mini Code and the extended notch. The native thinking shimmer uses each Ninja's color, and message text uses the existing bounded glyph decode animation. GIF assets total under 200 KiB, are cached, and are replaced with a static character under Reduced Motion. Personal drafts are kept separately from ordinary Code drafts.
+Activity uses the Ninja's character rather than the user's selected pet, including the floating task view. Six generated transparent pixel-art running loops are reused in Code, mini Code and the extended notch, with a low-opacity runner crossing the conversation background. The shared conversation pet is hidden on personal-Ninja surfaces; clicking their character does not cycle ordinary pets or recolor the UI. The native thinking shimmer uses each Ninja's color, and message text uses the existing bounded glyph decode animation. GIF assets total under 353 KiB, are cached, and are replaced with a static character under Reduced Motion. Personal drafts are kept separately from ordinary Code drafts.
 
 ## Workspace and app permissions
 
@@ -56,6 +56,15 @@ macOS privacy grants (Accessibility, Screen Recording, protected folders) and pr
 ## Reference files
 
 **Send reference** uses Taildrop for explicitly selected files. It appends their host Downloads names to the message draft. It does not transfer a local project, change the Ninja's workspace, or make laptop files its execution root. The old workspace-import RPC and handoff button are retired. Protected host folders keep their normal macOS permission requirements.
+
+## Verification for 0.12.33
+
+- The original menu-bar handler reproduces a GPUI entity-lease panic. The regression test returns that lease before opening mini Code; the signed native status-item probe opens and closes mini Code three times.
+- The viewer password-field test renders the real chat column, enters text, and verifies that the GitHub panel behind it remains closed. Canvas input reaches the session; Watch cancels stale takeover callbacks and releases held inputs. Reconnection starts in Watch.
+- The final transport received the Studio's actual desktop and delivered a click to the disposable native field plus the exact text `kai-control-ok`. The Studio wrote `REMOTE_KEYBOARD_AND_MOUSE_OK`. No desktop pixels were saved, and the fixture was removed.
+- ARD now retains its zeroized authentication key for encrypted native keystrokes. The RFB version and VNC decoder remain unchanged; no proxy, native-protocol fallback, new host service, or additional dependency is used. The vendored MIT patch and its provenance are documented in `integrations/Code/vendor/rv-session/KAI-PATCH.md`.
+- Saved Ninja chats fill their normal chat column. All six running GIFs decode to twenty-four transparent frames and remain below 80 KiB each; cached backgrounds stop animating when hidden or under Reduced Motion.
+- Manual animation review is not claimed by automated checks.
 
 ## Verification for 0.12.32
 

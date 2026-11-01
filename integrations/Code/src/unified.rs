@@ -186,6 +186,22 @@ pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Resul
         );
         if std::env::args().any(|arg|matches!(arg.as_str(),"--unified-latency-probe"|"--unified-background-idle-probe")){
             anyhow::ensure!(std::env::args().any(|arg|arg=="--unified-smoke-test"),"Performance probes require isolated data");
+        }else if std::env::args().any(|arg|arg=="--unified-menu-bar-probe"){
+            anyhow::ensure!(std::env::args().any(|arg|arg=="--unified-smoke-test"),"Menu probe requires isolated app data");
+            let diagnostics=unsafe{libc::dlsym(library,c"kai_unified_diagnostics".as_ptr())};anyhow::ensure!(!diagnostics.is_null(),"No native diagnostics");let diagnostics:unsafe extern "C" fn()->u32=unsafe{std::mem::transmute(diagnostics)};
+            reveal();
+            cx.spawn(async move|cx|{
+                Timer::after(Duration::from_millis(600)).await;
+                for _ in 0..3 {
+                    let _=cx.update(|_|emit(&json!({"type":"probeMenuBarClick"})));
+                    Timer::after(Duration::from_millis(700)).await;
+                    assert_ne!(unsafe{diagnostics()}&128,0,"The actual status-item handler did not open mini Code");
+                    let _=cx.update(|_|emit(&json!({"type":"probeMenuBarClick"})));
+                    Timer::after(Duration::from_millis(700)).await;
+                    assert_eq!(unsafe{diagnostics()}&128,0,"A repeated status-item click did not close mini Code");
+                }
+                eprintln!("KAI_MENU_BAR_PROBE_OK");let _=cx.update(|cx|cx.quit());
+            }).detach();
         }else if std::env::args().any(|arg|arg=="--unified-startup-probe"){
             anyhow::ensure!(std::env::args().any(|arg|arg=="--unified-smoke-test"),"Startup probe requires isolated data");
             let diagnostics=unsafe{libc::dlsym(library,c"kai_unified_diagnostics".as_ptr())};anyhow::ensure!(!diagnostics.is_null(),"No native diagnostics");let diagnostics:unsafe extern "C" fn()->u32=unsafe{std::mem::transmute(diagnostics)};

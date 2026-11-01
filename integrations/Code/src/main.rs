@@ -2519,6 +2519,7 @@ impl Orbit {
         self.composer.update(cx, |input, cx| input.set_text("", cx));
     }
     fn new_conversation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.ninja_surface_owner().is_some(){self.remember_ninja_draft(cx);self.ninjas.desktop=None;self.ninjas.panel=None;}
         self.orchestrator_new=false;
         self.orchestrator_transition=None;
         if !self.unified_navigating{if let Some(old)=self.active.as_ref().and_then(|id|self.sessions.iter().find(|s|&s.id==id)).cloned(){self.unified_back.push(old);if self.unified_back.len()>100{self.unified_back.remove(0);}self.unified_forward.clear();}}
@@ -2551,6 +2552,7 @@ impl Orbit {
             eprintln!("KAI_ORCHESTRATOR_SELECTION from={:?} to={} caller={}",self.active,session.id,std::panic::Location::caller());
         }
         self.performance.begin(&session.id);
+        if self.ninja_surface_owner().is_some(){self.remember_ninja_draft(cx);self.ninjas.desktop=None;self.ninjas.panel=None;}
         if !self.unified_navigating && self.active.as_ref()!=Some(&session.id){
             if let Some(old)=self.active.as_ref().and_then(|id|self.sessions.iter().find(|s|&s.id==id)).cloned(){
                 self.unified_back.push(old);if self.unified_back.len()>100{self.unified_back.remove(0);}
@@ -4725,7 +4727,7 @@ impl Orbit {
             .children(tabs.into_iter().enumerate().map(|(ix, session)| {
                 let session = session.clone();
                 let id = session.id.clone();
-                let selected = self.active.as_deref() == Some(&id);
+                let selected = self.ninja_surface_owner().is_none() && self.active.as_deref() == Some(&id);
                 let closing_id = id.clone();
                 let tab = div()
                     .id(("tab", ix))
@@ -4781,6 +4783,7 @@ impl Orbit {
                     tab.into_any_element()
                 }
             }))
+            .when_some(self.ninjas.panel.as_ref().filter(|p|p.profile.revision>0),|s,p|s.child(div().h(px(30.)).px_3().flex().items_center().gap_2().rounded_md().bg(rgba((ninja_art::color(&p.profile.style)<<8)|0x24)).child(icon(ninja_art::glyph(&p.profile.style),14.,ninja_art::color(&p.profile.style))).child(p.profile.name.clone())))
             .child(div().debug_selector(||"workspace-window-drag-space".into()).flex_1().h_full().min_w(px(12.)).on_mouse_down(MouseButton::Left,|_,window,_|native::drag(window)))
     }
     fn home(&self, _cx: &Context<Self>) -> impl IntoElement {
@@ -5764,7 +5767,7 @@ impl Render for Orbit {
                 },
             )
             .child(self.docked_conversation(adaptive_ui::panel!(self,"chat",window,
-                div()
+                if self.ninja_surface_owner().is_some(){self.ninjas_conversation(window,cx)}else{div()
                     .flex_1()
                     .min_w(px(0.))
                     .h_full()
@@ -6027,7 +6030,7 @@ impl Render for Orbit {
                         )
                     })
                     .child(entrance.container(WorkspacePart::Composer).flex_none().child(self.composer(window, cx)))
-                    .into_any_element()),window,cx)
+                    .into_any_element()}),window,cx)
             )
             .when(self.files_visible, |s| {
                 s.when_some(self.file_browser.clone(), |s, browser| {
@@ -6115,7 +6118,7 @@ impl Render for Orbit {
                                 .child(div().flex_1().min_h(px(0.)).child(review)),
                         ).into_any_element(),window,cx)))
             })
-            .when(self.ninjas.panel.is_some() && self.owns_overlays(window),|s|s.child(self.ninjas_panel(window,cx)))
+            .when(self.ninjas.panel.as_ref().is_some_and(|p|p.profile.revision==0) && self.owns_overlays(window),|s|s.child(self.ninjas_panel(window,cx)))
             .when(self.github.panel.is_some() && self.owns_overlays(window),|s|s.child(self.github_panel_view(window,cx)))
             .when(self.attachment_preview.is_some(), |s| {
                 s.child(self.attachment_preview_view(window, cx))

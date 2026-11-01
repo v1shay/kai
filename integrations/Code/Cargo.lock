@@ -5066,7 +5066,6 @@ dependencies = [
 [[package]]
 name = "rv-session"
 version = "0.2.0"
-source = "git+https://github.com/madeye/rv?rev=87055e205fa88803213337846b4d2f59a7a525ee#87055e205fa88803213337846b4d2f59a7a525ee"
 dependencies = [
  "image",
  "openssl",

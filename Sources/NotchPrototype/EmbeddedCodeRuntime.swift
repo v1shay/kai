@@ -77,6 +77,7 @@ enum UnifiedDraftHandoff {
         case "launchCompact":app?.showUnifiedNotchOnLaunch();return
         case "workspaceDismiss":app?.dismissUnifiedSurface();return
         case "probeDoubleCommand":if CommandLine.arguments.contains("--unified-smoke-test"){app?.probeDoubleCommand()};return
+        case "probeMenuBarClick":if CommandLine.arguments.contains("--unified-smoke-test"){app?.probeMenuBarClick()};return
         case "quickVisibility":if let visible=packet.visible{app?.setQuickChatVisible(visible)};return
         case "workspacePetSlot":if let frame=packet.rect,frame.count==4{app?.workspacePetGeometry(CGRect(x:frame[0],y:frame[1],width:frame[2],height:frame[3]))};return
         case "quickPetSlot":if let frame=packet.rect,frame.count==4{app?.quickPetGeometry(CGRect(x:frame[0],y:frame[1],width:frame[2],height:frame[3]))};return

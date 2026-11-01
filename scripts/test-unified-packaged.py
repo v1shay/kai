@@ -5,7 +5,7 @@ from pathlib import Path
 
 def main():
     parser=argparse.ArgumentParser()
-    parser.add_argument('mode',choices=['wallpaper','glass','startup-workspace','startup-extended','startup-compact','performance','latency','background-idle'])
+    parser.add_argument('mode',choices=['menu-bar','wallpaper','glass','startup-workspace','startup-extended','startup-compact','performance','latency','background-idle'])
     args=parser.parse_args();mode=args.mode
     root=Path(__file__).resolve().parent.parent
     source=root/'.build/unified/Kai Unified.app'
@@ -13,7 +13,9 @@ def main():
     log=report/(mode+'.log')
     env=os.environ.copy();env['KAI_PERFORMANCE_LOG']='1'
     flags=['--unified-smoke-test']
-    if mode=='latency':
+    if mode=='menu-bar':
+        flags+=['--unified-menu-bar-probe'];marker='KAI_MENU_BAR_PROBE_OK';env['KAI_STARTUP_SURFACE']='workspace'
+    elif mode=='latency':
         flags+=['--unified-latency-probe'];marker='KAI_LATENCY_PROBE_OK';env['KAI_STARTUP_SURFACE']='workspace'
     elif mode=='background-idle':
         # A visible extended chat is foreground UI work. Measure the actual

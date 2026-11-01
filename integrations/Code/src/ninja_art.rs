@@ -22,17 +22,16 @@ fn images() -> &'static [Arc<Image>; 6] {
         .map(|bytes| Arc::new(Image::from_bytes(ImageFormat::Gif, bytes.to_vec())))
     })
 }
+pub(super) fn glyph(style:&str)->&'static str { match style {"lightning"=>"ninja-lightning","earth"=>"ninja-earth","ice"=>"ninja-ice","energy"=>"ninja-energy","water"=>"ninja-water",_=>"ninja-fire"} }
+pub(super) fn wallpaper(style:&str,animated:bool)->AnyElement {
+    let runner=div().absolute().bottom(px(112.)).opacity(0.12).child(art(style,192.,animated));
+    let runner=if animated {runner.with_animation(SharedString::from(format!("ninja-wallpaper-{style}")),Animation::new(Duration::from_secs(18)).repeat(),|v,t|v.left(gpui::relative(-0.22+t*1.44))).into_any_element()}else{runner.right_4().into_any_element()};
+    div().id("ninja-wallpaper").debug_selector(||"ninja-wallpaper".into()).absolute().inset_0().overflow_hidden().child(runner).into_any_element()
+}
 pub(super) fn art(style: &str, size: f32, animated: bool) -> AnyElement {
     if !animated {
         return icon(
-            match style {
-                "lightning" => "ninja-lightning",
-                "earth" => "ninja-earth",
-                "ice" => "ninja-ice",
-                "energy" => "ninja-energy",
-                "water" => "ninja-water",
-                _ => "ninja-fire",
-            },
+            glyph(style),
             size,
             color(style),
         )
@@ -85,20 +84,19 @@ mod tests {
     use super::*;
     use image::AnimationDecoder;
     use std::prelude::v1::test;
-    use std::sync::Arc;
     #[test]
     fn generated_loops_are_complete_transparent_and_small() {
         for style in ninjas::styles() {
             let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join(format!("assets/ninja-{}.gif", style.0));
             let bytes = std::fs::read(path).unwrap();
-            assert!(bytes.len() < 40_000);
+            assert!(bytes.len() < 80_000);
             let frames = image::codecs::gif::GifDecoder::new(std::io::Cursor::new(bytes))
                 .unwrap()
                 .into_frames()
                 .collect_frames()
                 .unwrap();
-            assert_eq!(frames.len(), 12);
+            assert_eq!(frames.len(), 24);
             assert_eq!(frames[0].buffer().dimensions(), (48, 56));
             assert_eq!(frames[0].buffer().get_pixel(0, 0).0[3], 0);
             assert_ne!(frames[0].buffer(), frames[4].buffer());

@@ -89,10 +89,13 @@ impl Orbit {
                 _ => {}
             }
             if cx.has_global::<quick_chat::Controller>() {
-                cx.update_global::<quick_chat::Controller, _>(|controller, cx| {
-                    controller.toggle(cx)
-                })
-                .map_err(|e| e.to_string())?;
+                let owner=cx.weak_entity();
+                // QuickChat::new/show reads Orbit. Return this entity's lease
+                // before opening the second surface over the same entity.
+                cx.defer(move |cx| {
+                    let result=cx.update_global::<quick_chat::Controller,_>(|controller,cx|controller.toggle(cx));
+                    if let Err(error)=result { let _=owner.update(cx,|app,cx|{app.notice=Some(error.to_string());cx.notify();}); }
+                });
             }
             return Ok(true);
         }
@@ -387,6 +390,16 @@ impl Orbit {
 mod tests {
     use super::*;
     use std::prelude::v1::test;
+    #[gpui::test]
+    fn menu_bar_opens_mini_code_after_returning_the_shared_entity_lease(cx:&mut TestAppContext){
+        let(view,cx)=crate::ui_tests::fixture(cx);
+        cx.update(|w,cx|{
+            cx.set_global(quick_chat::Controller::new(view.clone()));
+            view.update(cx,|app,cx|{app.unified_command(&json!({"action":"menu_bar_open","kind":"kai"}),w,cx).unwrap();});
+        });
+        cx.run_until_parked();
+        cx.update(|_,cx|{cx.update_global::<quick_chat::Controller,_>(|c,cx|c.dismiss(cx));});
+    }
     #[gpui::test]
     fn notch_owns_the_selected_ninja_history_and_draft(cx: &mut TestAppContext) {
         let (view, cx) = crate::ui_tests::fixture(cx);

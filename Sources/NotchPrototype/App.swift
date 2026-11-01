@@ -249,6 +249,8 @@ private final class NotchSurfaceHost:NSView {
     private var reviewedFinished=[String]()
     private let glassBackground=NotchGlassBackground(frame:.zero)
     private let workspaceBackground=NotchWorkspaceBackground(frame:.zero)
+    private let ninjaBackdrop=CALayer(),ninjaWallpaper=CALayer()
+    private var ninjaWallpaperStyle:String?
     private var codeWallpaperEnabled=UserDefaults.standard.bool(forKey:"notchCodeWallpaper") || CommandLine.arguments.contains("--unified-wallpaper-probe"),codeWallpaperItem:NSMenuItem?
     private var codeConnectionItem:NSMenuItem?
     private var glassSliders=[String:NSSlider](),glassLabels=[String:NSTextField](),glassChoiceItems=[NSMenuItem]()
@@ -1080,6 +1082,7 @@ private final class NotchSurfaceHost:NSView {
         guard commandDismissGesture.update(down:down,eligible:bare && (open || (workspaceMorph.expanded && workspaceIsForeground) || workspaceMorph.transitioning || quickChatVisible),at:time) else{return false}
         cancelShortcutHold();cancelWorkspaceHold();holdWork?.cancel();dismissNotchView();return true
     }
+    func probeMenuBarClick(){guard CommandLine.arguments.contains("--unified-smoke-test") else{return};menuBarClicked(nil)}
     func probeDoubleCommand(){
         guard CommandLine.arguments.contains("--unified-smoke-test") else{return}
         if workspaceMorph.expanded,let window=EmbeddedCodeRuntime.shared.workspaceWindow{
@@ -1613,6 +1616,7 @@ private final class NotchSurfaceHost:NSView {
     func workspacePetGeometry(_ frame:CGRect){workspacePetSlot=frame;syncWorkspacePet()}
     func quickPetGeometry(_ frame:CGRect){quickPetSlot=frame;syncWorkspacePet()}
     private func syncWorkspacePet(){
+        if latestState?.personalNinja != nil {workspacePet.isHidden=true;return}
         guard quickChatVisible || (workspaceMorph.expanded && !workspaceNotchOverlay),let host=(quickChatVisible ? quickWindow:EmbeddedCodeRuntime.shared.workspaceWindow)?.contentView else{return}
         if workspacePet.superview !== host{workspacePet.removeFromSuperview();host.addSubview(workspacePet)}
         // Notch travel uses notch coordinates; the same layer now belongs to a local header slot.
@@ -1640,6 +1644,7 @@ private final class NotchSurfaceHost:NSView {
         }
         let topTarget=NotchInputRegion.nearestTarget(at:point,frames:topFrames)
         if topTarget == 0 {
+            if latestState?.personalNinja != nil || ninjaSpriteStyle != nil {return}
             if count >= 2 {petClickWork?.cancel();petClickWork=nil;petGalleryVisible ? hidePetGallery():showPetGallery()}
             else if !petGalleryVisible {petClickWork?.cancel();let work=DispatchWorkItem{[weak self] in self?.randomizePet()};petClickWork=work;DispatchQueue.main.asyncAfter(deadline:.now()+0.22,execute:work)}
             return
@@ -1945,7 +1950,7 @@ private final class NotchSurfaceHost:NSView {
         miniUI.finishPending(requestID:state.completedRequestId)
         if let pendingFilesRequestID,state.completedRequestId == pendingFilesRequestID {self.pendingFilesRequestID=nil;indicator.setFileLoading(false)}
         if !state.approval{updateCompactApproval(state)}
-        renderInputIndicator();syncWorkspacePet();reviewNextFloatingTask()
+        renderInputIndicator();syncWorkspacePet();updateNinjaWallpaper();reviewNextFloatingTask()
         if (legacyCompletion || confirmedCompletion),!state.approval,!dictating,!compactVoiceMode,!voicePrompt.active,!quickChatVisible {
             completionIndicatorWork?.cancel();currentScene="success";indicator.showScene("success",looping:false)
             let finish=DispatchWorkItem{[weak self] in guard let self,self.currentScene == "success",let state=self.latestState else{return};self.currentScene="";self.showActivity(self.displayActivity(state))}
@@ -2437,7 +2442,7 @@ private final class NotchSurfaceHost:NSView {
         sprite.removeAnimation(forKey:"spriteFrames");sprite.removeAnimation(forKey:"ninjaLoop")
         ninjaSpriteStyle=style;playToken += 1;CATransaction.begin();CATransaction.setDisableActions(true);sprite.contents=cg;sprite.contentsRect=CGRect(x:0,y:0,width:1,height:1);sprite.isHidden=false;sprite.opacity=1;CATransaction.commit()
         if animate {
-            if ninjaFrames[style]==nil,let url=Bundle.main.resourceURL?.appendingPathComponent("providers/ninja-"+style+".gif"),let source=CGImageSourceCreateWithURL(url as CFURL,nil){ninjaFrames[style]=(0..<min(12,CGImageSourceGetCount(source))).compactMap{CGImageSourceCreateImageAtIndex(source,$0,nil)}}
+            if ninjaFrames[style]==nil,let url=Bundle.main.resourceURL?.appendingPathComponent("providers/ninja-"+style+".gif"),let source=CGImageSourceCreateWithURL(url as CFURL,nil){ninjaFrames[style]=(0..<min(24,CGImageSourceGetCount(source))).compactMap{CGImageSourceCreateImageAtIndex(source,$0,nil)}}
             if let frames=ninjaFrames[style],frames.count>1{let loop=CAKeyframeAnimation(keyPath:"contents");loop.values=frames;loop.duration=Double(frames.count)*0.08;loop.repeatCount = .infinity;loop.calculationMode = .discrete;sprite.add(loop,forKey:"ninjaLoop")}
         }
     }
@@ -2600,7 +2605,22 @@ private final class NotchSurfaceHost:NSView {
     @objc private func toggleBottomGlass(){if codeWallpaperEnabled{codeWallpaperEnabled=false;UserDefaults.standard.set(false,forKey:"notchCodeWallpaper");glassEnabled=true}else{glassEnabled.toggle()};UserDefaults.standard.set(glassEnabled,forKey:"notchBottomGlass");placePanel();refreshChecks()}
     @objc private func toggleCodeWallpaper(){codeWallpaperEnabled.toggle();UserDefaults.standard.set(codeWallpaperEnabled,forKey:"notchCodeWallpaper");placePanel();refreshChecks()}
     func setWorkspaceWallpaper(_ image:CGImage?,opacity:Float){workspaceBackground.setImage(image,opacity:opacity);AdaptiveTextBackdrop.shared.nativeBackgroundChanged()}
+    private func updateNinjaWallpaper(){
+        guard let host=scalableUI.layer else{return}
+        guard miniOpen,showsNotchSurface,let ninja=latestState?.personalNinja else{ninjaBackdrop.isHidden=true;ninjaWallpaper.removeAllAnimations();ninjaWallpaperStyle=nil;return}
+        if ninjaBackdrop.superlayer !== host{ninjaBackdrop.masksToBounds=true;host.insertSublayer(ninjaBackdrop,at:0);ninjaBackdrop.addSublayer(ninjaWallpaper)}
+        CATransaction.begin();CATransaction.setDisableActions(true);ninjaBackdrop.frame=scalableUI.bounds;ninjaBackdrop.isHidden=false;ninjaWallpaper.opacity=0.12;ninjaWallpaper.frame=CGRect(x:-96,y:90,width:96,height:112);ninjaWallpaper.contentsGravity = .resizeAspect;ninjaWallpaper.magnificationFilter = .nearest;CATransaction.commit()
+        let motion=workspaceMorph.motionEnabled && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        if ninjaWallpaperStyle==ninja.style,ninjaWallpaper.animation(forKey:"run") != nil,motion{return}
+        ninjaWallpaper.removeAllAnimations();ninjaWallpaperStyle=ninja.style
+        if ninjaFrames[ninja.style]==nil,let url=Bundle.main.resourceURL?.appendingPathComponent("providers/ninja-"+ninja.style+".gif"),let source=CGImageSourceCreateWithURL(url as CFURL,nil){ninjaFrames[ninja.style]=(0..<min(24,CGImageSourceGetCount(source))).compactMap{CGImageSourceCreateImageAtIndex(source,$0,nil)}}
+        guard let frames=ninjaFrames[ninja.style],let first=frames.first else{return};ninjaWallpaper.contents=first
+        guard motion else{ninjaWallpaper.position.x=max(48,scalableUI.bounds.width-60);return}
+        let loop=CAKeyframeAnimation(keyPath:"contents");loop.values=frames;loop.duration=Double(frames.count)*0.08;loop.repeatCount = .infinity;loop.calculationMode = .discrete;ninjaWallpaper.add(loop,forKey:"frames")
+        let run=CABasicAnimation(keyPath:"transform.translation.x");run.fromValue=0;run.toValue=scalableUI.bounds.width+192;run.duration=18;run.repeatCount = .infinity;ninjaWallpaper.add(run,forKey:"run")
+    }
     private func updateGlassBackground(){
+        updateNinjaWallpaper()
         guard let root=panel?.contentView?.layer else{return}
         let wallpaper=codeWallpaperEnabled && EmbeddedCodeRuntime.shared.active
         let visible=open && miniOpen && !experimentalWebMode
