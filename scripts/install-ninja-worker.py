@@ -2,7 +2,35 @@
 """Install an explicitly selected Kai build as a headless, user-owned Ninja host.
 Run on the destination Mac. Uses its existing Tailscale and provider logins.
 """
-import argparse,hashlib,json,os,pathlib,plistlib,shutil,socket,subprocess,tempfile,time
+import argparse,hashlib,json,os,pathlib,plistlib,shutil,socket,subprocess,tempfile,time,signal
+
+def worker_state(address):
+    try:
+        with socket.socket(socket.AF_UNIX) as client:
+            client.settimeout(5);client.connect(address);client.sendall(b'{"action":"snapshot"}\n')
+            with client.makefile('rb') as stream:line=stream.readline(8*1024*1024)
+            return json.loads(line) if line else None
+    except (FileNotFoundError,ConnectionRefusedError,ConnectionResetError):return None
+
+def retire_idle_worker(address):
+    state=worker_state(address)
+    if state is None:return
+    if any(t['state'] in ('queued','running','approval') for t in state.get('tasks',[])):
+        raise ValueError('Finish or stop assigned tasks before replacing the worker process')
+    # The inference host may have spawned a detached worker before launchd was
+    # installed. Restarting only the launch agent leaves that process serving
+    # its old protocol forever. Retire the exact idle socket owner instead.
+    result=subprocess.run(['/usr/sbin/lsof','-t','-a','-U',address],capture_output=True,text=True,check=False)
+    owners={int(pid) for pid in result.stdout.split() if pid.isdigit()}
+    if not owners:raise ValueError('Could not identify the old worker socket owner')
+    for pid in owners:
+        command=subprocess.check_output(['ps','-ww','-p',str(pid),'-o','args='],text=True)
+        if '--ninja-worker' not in command:raise ValueError('Socket belongs to a different process; left it running')
+    for pid in owners:os.kill(pid,signal.SIGTERM)
+    for _ in range(50):
+        if worker_state(address) is None:return
+        time.sleep(.1)
+    raise ValueError('Old worker did not release its socket')
 
 def install(bundle,keep_reachable,worker_only=False):
     source=bundle.resolve(strict=True);binary=source/'Contents/MacOS/kai-unified'
@@ -28,9 +56,10 @@ def install(bundle,keep_reachable,worker_only=False):
         destination=root/'Worker.app';backup=root/('worker-backup-'+str(int(time.time()))+'.app')
         if destination.exists():destination.rename(backup)
         shutil.move(str(staged),str(destination))
+    retire_idle_worker(address)
     executable=destination/'Contents/MacOS/kai-unified'
     subprocess.run([str(executable),'--install-ninja-worker']+(['--keep-reachable'] if keep_reachable else []),check=True)
-    subprocess.run(['launchctl','kickstart','-k','gui/'+str(os.getuid())+'/com.kai.ninjas.worker'],check=True)
+    subprocess.run(['launchctl','kickstart','gui/'+str(os.getuid())+'/com.kai.ninjas.worker'],check=True)
     if worker_only:
         print('Updated headless Ninja worker; inference host left running:',destination)
         return

@@ -163,7 +163,7 @@ fn launch_mode(request: RunRequest, maintenance: Option<(String, Value)>) -> Res
     let codex_root = std::env::var_os("CODEX_HOME").filter(|p| !p.is_empty()).map(PathBuf::from)
         .map(|p| if p.is_absolute() { p } else { request.project.join(p) })
         .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".codex"));
-    configure_transport(&mut command, &codex_root, request.resume_id.as_deref().filter(|_| request.ninja.is_none()));
+    configure_transport(&mut command, &codex_root, request.resume_id.as_deref().filter(|_| request.ninja.is_none()), builtin_transport_override(&request.executable));
     let ninja_lease=request.ninja.as_ref().map(|selection|crate::ninja::configure_codex(&mut command,selection)).transpose()?;
     let mut child = command
         .spawn()
@@ -313,9 +313,24 @@ fn thread_params(request: &RunRequest) -> Value {
 // Keep the durable provider ID shared with the originating app. HTTP/SSE is a
 // transport setting, not a separate identity. The old Kai alias remains defined
 // so already-saved Kai threads resume without rewriting any thread metadata.
-fn configure_transport(command: &mut Command, root: &std::path::Path, resume: Option<&str>) {
+fn version_allows_builtin_override(version:&str)->bool {
+    let Some(version)=version.split_whitespace().find(|v|v.as_bytes().first().is_some_and(u8::is_ascii_digit))else{return false};
+    let mut parts=version.split('.').filter_map(|v|v.split('-').next()?.parse::<u32>().ok());
+    matches!((parts.next(),parts.next()),(Some(major),Some(minor)) if major>0||minor>=166)
+}
+fn builtin_transport_override(executable:&std::path::Path)->bool {
+    static CACHE:std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf,bool>>>=std::sync::OnceLock::new();
+    let cache=CACHE.get_or_init(Default::default);
+    if let Some(value)=cache.lock().unwrap_or_else(|e|e.into_inner()).get(executable).copied(){return value}
+    let mut command=Command::new(executable);crate::process_env::apply(&mut command);command.arg("--version");
+    let supported=crate::ninja::http::run(command,None,Duration::from_secs(2)).ok().is_some_and(|v|version_allows_builtin_override(&String::from_utf8_lossy(&v)));
+    let mut cached=cache.lock().unwrap_or_else(|e|e.into_inner());if cached.len()>=8{cached.clear();}cached.insert(executable.to_path_buf(),supported);supported
+}
+fn configure_transport(command: &mut Command, root: &std::path::Path, resume: Option<&str>, builtin_override:bool) {
+    // Older Codex releases reject any reserved `openai` provider entry. Keep
+    // their native route intact; the saved HTTPS alias still has its own flag.
+    if builtin_override{command.args(["-c","model_providers.openai.supports_websockets=false"]);}
     command.args([
-        "-c", "model_providers.openai.supports_websockets=false",
         "-c", "model_providers.kai-openai-https.name=\"OpenAI\"",
         "-c", "model_providers.kai-openai-https.wire_api=\"responses\"",
         "-c", "model_providers.kai-openai-https.requires_openai_auth=true",
@@ -3420,18 +3435,24 @@ send({'method':'thread/realtime/closed','params':{'threadId':'12345678-1234-4234
         state.calls.insert(10,"turn/start".into());assert!(state.launch_pending());
     }
     #[test]
+    fn older_codex_does_not_receive_a_reserved_builtin_provider_override(){
+        for (version,expected)in[("codex-cli 0.164.0",false),("codex-cli 0.166.0",true),("codex-cli 1.0.0",true),("unknown",false)]{assert_eq!(version_allows_builtin_override(version),expected);}
+        let root=std::env::temp_dir();let mut command=Command::new("codex");configure_transport(&mut command,&root,None,false);
+        let args=command.get_args().map(|v|v.to_string_lossy()).collect::<Vec<_>>();assert!(!args.iter().any(|v|v.starts_with("model_providers.openai.")));assert!(args.iter().any(|v|v.as_ref()=="model_providers.kai-openai-https.supports_websockets=false"));
+    }
+    #[test]
     fn saved_thread_provider_is_selected_at_process_start_and_kept_in_resume_params(){
         let root=std::env::temp_dir().join(format!("kai-provider-route-{}",uuid::Uuid::new_v4()));std::fs::create_dir_all(&root).unwrap();
         let db=rusqlite::Connection::open(root.join("state_5.sqlite")).unwrap();db.execute_batch("CREATE TABLE threads(id TEXT PRIMARY KEY,model_provider TEXT);").unwrap();
         for provider in ["openai","kai-openai-https","custom-provider"]{
             db.execute("INSERT INTO threads VALUES(?1,?2)",rusqlite::params![provider,provider]).unwrap();
-            let mut command=Command::new("codex");configure_transport(&mut command,&root,Some(provider));let args=command.get_args().map(|a|a.to_string_lossy().into_owned()).collect::<Vec<_>>();
+            let mut command=Command::new("codex");configure_transport(&mut command,&root,Some(provider),true);let args=command.get_args().map(|a|a.to_string_lossy().into_owned()).collect::<Vec<_>>();
             assert!(args.contains(&format!("model_provider=\"{provider}\"")));assert!(args.contains(&"model_providers.openai.supports_websockets=false".to_owned()));
             let mut r=request(std::path::Path::new("/fixture"));r.resume_id=Some(provider.into());
             let params=routed_thread_params(&r,&json!({"model_provider":provider}));assert_eq!(params["threadId"],provider);
             if provider!="custom-provider"{assert_eq!(params["modelProvider"],provider);}else{assert!(params["modelProvider"].is_null());}
         }
-        let mut fresh=Command::new("codex");configure_transport(&mut fresh,&root,None);assert!(!fresh.get_args().any(|a|a.to_string_lossy().starts_with("model_provider=")),"Fresh chats must retain project provider configuration");
+        let mut fresh=Command::new("codex");configure_transport(&mut fresh,&root,None,true);assert!(!fresh.get_args().any(|a|a.to_string_lossy().starts_with("model_provider=")),"Fresh chats must retain project provider configuration");
         drop(db);std::fs::remove_dir_all(root).unwrap();
     }
     #[test]

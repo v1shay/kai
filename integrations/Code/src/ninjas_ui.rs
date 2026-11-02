@@ -246,6 +246,9 @@ pub(super) fn call(host: &Host, value: &Value) -> anyhow::Result<Value> {
         }
         Ok(v)
     } else {
+        #[cfg(test)]
+        anyhow::bail!("UI fixtures must not start the user's persistent worker");
+        #[cfg(not(test))]
         ninjas::call_local(&ninjas::root(), value, true)
     }
 }
