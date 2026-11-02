@@ -327,7 +327,7 @@ fn bounded(text: &str, limit: usize) -> String {
     text.chars().take(limit).collect()
 }
 const HISTORY_BYTES:usize=512*1024;
-fn budget_history(mut rows:Vec<Value>)->Vec<Value>{
+pub(super) fn budget_history(mut rows:Vec<Value>)->Vec<Value>{
     let mut bytes=2;let mut kept=0;
     for row in rows.iter().rev(){let size=serde_json::to_vec(row).map_or(0,|v|v.len()+1);if bytes+size>HISTORY_BYTES{break}bytes+=size;kept+=1;}
     rows.drain(..rows.len().saturating_sub(kept));rows

@@ -112,7 +112,7 @@ pub(super) fn scoped_file(
         json!({"path":path,"offset":offset,"total_bytes":total,"base64":encoded,"next_offset":(next<total).then_some(next)}),
     )
 }
-fn base64_bytes(bytes: &[u8]) -> String {
+pub(super) fn base64_bytes(bytes: &[u8]) -> String {
     const C: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {

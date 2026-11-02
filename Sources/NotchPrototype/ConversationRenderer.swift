@@ -4,6 +4,7 @@ import AppKit
 /// its message. AppKit layout is deferred until the complete batch is applied.
 @MainActor final class ConversationRenderer {
     private static let pathRegex=try? NSRegularExpression(pattern:#"(?:file://)?(?:/Users/|Users/|~/)[^\s\]\[\)\(>,]+"#)
+    private static let previews=NSCache<NSString,NSImage>()
     private let mathRenderer:MathRenderer
     private var renderedThreadID:String?,renderedBlocks=[KaiMessage](),renderedRanges=[NSRange]()
     private var renderedMessageIDs=[String]()
@@ -81,7 +82,13 @@ import AppKit
             // Message formatters add empty separators; use one measured gap instead.
             while visualLines.last?.text.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty == true {visualLines.removeLast()}
             while visualLines.first?.text.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty == true {visualLines.removeFirst()}
-            let displayed=visualLines.map{ $0.style != "code" ? displayCitations(in:$0.text) : ($0.text,[(NSRange,URL)]())}
+            let displayed=visualLines.map{ line -> (String,[(NSRange,URL)]) in
+                if let links=line.links,!links.isEmpty {
+                    let count=(line.text as NSString).length
+                    return (line.text,links.compactMap{link in guard link.location>=0,link.length>0,link.location<=count,link.length<=count-link.location,let url=URL(string:link.target) else{return nil};return (NSRange(location:link.location,length:link.length),url)})
+                }
+                return line.style != "code" ? displayCitations(in:line.text) : (line.text,[])
+            }
             let totalCharacters=max(1,displayed.reduce(0){$0+$1.0.count+1})
             var characterOffset=0
             for (lineIndex,pair) in zip(visualLines,displayed).enumerated() {
@@ -97,8 +104,23 @@ import AppKit
             if block.kind == "user"{paragraph.alignment = .right;paragraph.headIndent=40;paragraph.firstLineHeadIndent=40}
             paragraph.paragraphSpacing=lineIndex == visualLines.count-1 ? 5:0
             if block.kind == "activity" {paragraph.headIndent=17}
+            // The host bridge supplies an off-thread, 280 px normalized PNG.
+            // Cache only the small preview, never decode the original on AppKit.
+            if let png=line.previewPNG,png.utf8.count<512*1024 {
+                let key=png as NSString
+                let image=Self.previews.object(forKey:key) ?? Data(base64Encoded:png).flatMap{NSImage(data:$0)}
+                if let image,image.size.width>0,image.size.height>0 {
+                    Self.previews.countLimit=12;Self.previews.setObject(image,forKey:key)
+                    let width=min(280,max(80,scroll.contentSize.width-48)),scale=min(1,width/image.size.width)
+                    let attachment=NSTextAttachment();attachment.image=image;attachment.bounds=CGRect(x:0,y:0,width:image.size.width*scale,height:image.size.height*scale)
+                    let preview=NSMutableAttributedString(attachment:attachment)
+                    if let link=line.linkTarget.flatMap(URL.init(string:)){preview.addAttribute(.link,value:link,range:NSRange(location:0,length:preview.length))}
+                    content.append(preview);content.append(NSAttributedString(string:"\n"))
+                }
+            }
             let start=content.length
             var attributes:[NSAttributedString.Key:Any]=[.font:font,.paragraphStyle:paragraph]
+            if let link=line.linkTarget.flatMap(URL.init(string:)){attributes[.link]=link;attributes[.toolTip]=link.absoluteString}
             if card {
                 paragraph.headIndent=12;paragraph.firstLineHeadIndent=12;paragraph.tailIndent = -12
                 paragraph.paragraphSpacing=["answer","document"].contains(cardRole) ? 12:4

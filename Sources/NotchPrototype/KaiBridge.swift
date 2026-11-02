@@ -3,12 +3,16 @@ import Darwin
 
 struct KaiProject: Decodable, Equatable { let path: String; let name: String }
 struct KaiChat: Decodable, Equatable { let id: String; let name: String; let status: String; var agent:String?=nil }
+struct KaiInlineLink:Decodable,Equatable {let location:Int;let length:Int;let target:String}
 struct KaiLine: Decodable, Equatable {
     let text: String
     let style: String
     let mathEnabled: Bool?
-    init(text: String, style: String, mathEnabled: Bool? = nil) {
-        self.text = text; self.style = style; self.mathEnabled = mathEnabled
+    let previewPNG:String?
+    let linkTarget:String?
+    let links:[KaiInlineLink]?
+    init(text: String, style: String, mathEnabled: Bool? = nil, previewPNG:String? = nil, linkTarget:String? = nil, links:[KaiInlineLink]? = nil) {
+        self.text = text; self.style = style; self.mathEnabled = mathEnabled; self.previewPNG=previewPNG; self.linkTarget=linkTarget; self.links=links
     }
 }
 struct KaiMessage: Decodable, Equatable { let id: String; let kind: String; let lines: [KaiLine]; let speechText: String?; let activityIcon: String?; var agent:String?=nil; var detailId:String?=nil;var childId:String?=nil }

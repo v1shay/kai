@@ -155,6 +155,8 @@ impl Orbit {
                 | "interrupt"
                 | "history_more"
                 | "history_latest"
+                | "composer_command"
+                | "ninja_artifact"
         ) {
             return Ok(false);
         }
@@ -162,6 +164,21 @@ impl Orbit {
             return Err("The selected Ninja conversation changed; your draft is preserved".into());
         }
         match action {
+            "ninja_artifact"=>{let path=v["path"].as_str().ok_or("Missing generated file")?;self.ninja_request_artifact(path.into(),true,cx);},
+            "composer_command"=>{
+                let name=v["name"].as_str().filter(|n|crate::ninja_chat::COMMANDS.iter().any(|(known,_)|n==known)).ok_or("Unknown Ninja command")?;
+                let p=self.ninjas.panel.as_ref().unwrap();
+                let draft=v["draft"].as_str().filter(|s|s.len()<=input::MAX_DRAFT_BYTES&&!s.contains('\0')).ok_or("Invalid Ninja draft")?;
+                let caret=v["caret"].as_u64().ok_or("Missing caret")? as usize;
+                let input=p.fields[3].clone();input.update(cx,|i,cx|i.set_text(draft,cx));
+                if !input.update(cx,|i,cx|i.set_command_caret_utf16(caret,cx)){return Err("Invalid caret".into())}
+                input.update(cx,|i,cx|{if let Some(span)=i.command_span(){let mut text=i.text().to_string();text.replace_range(span,"");i.set_text(&text,cx);}});
+                self.ninja_command(name,window,cx)?;
+                // Native model selection stays in the notch picker. Other host
+                // controls reveal their actual shared chat instead of Code settings.
+                if matches!(name,"model"|"agent"|"thinking")&&v["pickerSurface"]=="notch"{if let Some(p)=&mut self.ninjas.panel{p.control=None;}}
+                else if self.ninjas.panel.as_ref().is_some_and(|p|p.control.is_some()){crate::unified::reveal();}
+            },
             "send" | "draft" => {
                 let text = v["text"]
                     .as_str()
@@ -186,7 +203,7 @@ impl Orbit {
                 p.fields[3].update(cx, |i, cx| i.set_text("", cx));
             }
             "attachments"=>{let paths=v["paths"].as_array().ok_or("Missing reference files")?.iter().filter_map(Value::as_str).map(PathBuf::from).collect::<Vec<_>>();if !paths.is_empty(){self.ninja_reference_paths(paths,cx);}},
-            "orchestrator"=>{let p=self.ninjas.panel.as_mut().unwrap();p.profile.orchestrator=!p.profile.orchestrator;},
+            "orchestrator"=>{let p=self.ninjas.panel.as_mut().unwrap();p.profile.orchestrator=!p.profile.orchestrator;p.control_at=Instant::now();self.ninja_persist_controls(cx);},
             "agent" => {
                 let p = self.ninjas.panel.as_ref().unwrap();
                 let requested = v["agent"].as_str().ok_or("Missing provider")?;
@@ -208,8 +225,7 @@ impl Orbit {
                 p.profile.ninja = ninja;
                 p.models.clear();
                 p.models_requested = false;
-                let profile = p.profile.clone();
-                self.ninja_operation(json!({"action":"save_profile","profile":profile}), cx);
+                self.ninja_persist_controls(cx);
             }
             "settings" => {
                 let model = v["model"].as_str().ok_or("Missing model")?;
@@ -229,10 +245,12 @@ impl Orbit {
                 }) {
                     return Err("Unsupported thinking level".into());
                 }
+                p.effort_preview=effort.map(|s|(s.to_owned(),Instant::now()));
+                p.control_at=Instant::now();
                 p.profile.model = Some(model.into());
                 p.profile.effort = effort.map(str::to_owned);
-                let profile = p.profile.clone();
-                self.ninja_operation(json!({"action":"save_profile","profile":profile}), cx);
+                if let Some(n)=&mut p.profile.ninja{n.model=model.into();n.thinking=effort.map(str::to_owned);}
+                self.ninja_persist_controls(cx);
             }
             "workspace_permissions" => {
                 let p = self.ninjas.panel.as_mut().unwrap();
@@ -255,8 +273,7 @@ impl Orbit {
                         _ => return Err("Unknown approval policy".into()),
                     };
                 }
-                let profile = p.profile.clone();
-                self.ninja_operation(json!({"action":"save_profile","profile":profile}), cx);
+                self.ninja_persist_controls(cx);
             }
             "interrupt" => {
                 if self.ninjas.call.take().is_none() {
@@ -349,14 +366,26 @@ impl Orbit {
                 }
             } else {
                 history.push(json!({"id":format!("{id}-user"),"kind":"user","lines":[{"text":t["prompt"],"style":"plain"}],"agent":"ninja"}));
-                let text = crate::ninjas::readable_brief(t["brief"].as_str().unwrap_or(""));
-                if !text.is_empty() {
-                    history.push(json!({"id":format!("{id}-reply"),"kind":"assistant","lines":[{"text":text,"style":"plain"}],"agent":"ninja"}));
+                for(i,block)in presentation::message_blocks("assistant",t["brief"].as_str().unwrap_or("")).iter().enumerate(){
+                    let (kind,text,style,preview)=match block{
+                        MessageBlock::Paragraph(s)|MessageBlock::Quote(s)=>("assistant",s.clone(),"text",None),
+                        MessageBlock::Heading(s)=>("assistant",s.clone(),"heading",None),
+                        MessageBlock::RichParagraph{text,..}|MessageBlock::ListItem{text,..}=>("assistant",text.clone(),"text",None),
+                        MessageBlock::Code{text,..}=>("assistant",text.clone(),"code",None),
+                        MessageBlock::Attachment{name,target}=>{("assistant",name.clone(),"text",self.ninja_native_preview(target))},
+                        MessageBlock::Activity{label,details}=>("activity",format!("{label}\n{details}"),"code",None),
+                        MessageBlock::Interaction(chat_interactions::ChatInteraction::Status{title,details,..}|chat_interactions::ChatInteraction::Delegation{title,details,..})=>("activity",format!("{title}\n{details}"),"code",None),
+                        MessageBlock::TableRow{cells,..}=>("assistant",cells.join(" | "),"text",None),
+                        MessageBlock::Voice{text,..}=>("assistant",text.clone(),"voice",None),
+                        MessageBlock::Interaction(_)=>continue,
+                    };
+                    let link=if let MessageBlock::Attachment{target,..}=block{Some(self.ninja_native_url(target))}else{None};
+                    history.push(json!({"id":format!("{id}-reply-{i}"),"kind":kind,"lines":[{"text":text,"style":style,"previewPNG":preview,"linkTarget":link,"links":self.ninja_native_links(block)}],"agent":"ninja","speechText":if kind=="activity"||style=="code"{""}else{&text}}));
                 }
             }
         }
         let active = tasks.iter().rev().find(|t| {
-            ["running", "approval", "queued"].contains(&t["state"].as_str().unwrap_or(""))
+            crate::ninja_chat::live(t)
         });
         let thread = format!(
             "ninja-chat:{}:{}:{}",
@@ -365,10 +394,16 @@ impl Orbit {
             p.chat.as_deref().unwrap_or("draft")
         );
         let models=p.models.iter().map(|m|json!({"model":m["id"],"displayName":m["label"],"supportedReasoningEfforts":m["efforts"].as_array().into_iter().flatten().map(|e|json!({"reasoningEffort":e})).collect::<Vec<_>>()})).collect::<Vec<_>>();
-        let override_ = json!({"orchestratorMode":p.profile.orchestrator,"orchestratorAvailable":true,"personalNinja":{"id":p.profile.id,"name":p.profile.name,"style":p.profile.style,"host":p.host},"threadId":thread,"threadName":p.chat.as_ref().map(|chat|self.lifecycle.chat_names.get(&Self::ninja_chat_key(&p.host,&p.profile.id,chat)).cloned().or_else(||self.ninja_chat_seed(&Self::ninja_chat_key(&p.host,&p.profile.id,chat))).unwrap_or_else(||p.profile.name.clone())).unwrap_or_else(||p.profile.name.clone()),"ownerToken":self.ninja_surface_owner(),"project":p.profile.project,"composerDraft":p.fields[3].read(cx).text(),"history":history,"historyLoading":p.history_loading,"modelsLoading":p.models_loading.is_some(),"historyHasMore":false,"historyEarlier":false,"readOnly":false,"composerBusy":p.busy,"selectedAgent":p.profile.agent.command(),"selectedModel":p.profile.model,"effectiveModel":active.and_then(|t|t["model"].as_str()).or(p.profile.model.as_deref()),"reasoningEffort":p.profile.effort,"models":models,"chats":chats,"activeTurnId":active.and_then(|t|t["id"].as_str()),"sessionActivity":{"scene":active.map(crate::ninjas_ui::task_scene).unwrap_or("off"),"text":active.and_then(|t|t["status"].as_str()).unwrap_or("")},"attachments":[]});
+        let override_ = json!({"orchestratorMode":p.profile.orchestrator,"orchestratorAvailable":true,"personalNinja":{"id":p.profile.id,"name":p.profile.name,"style":p.profile.style,"host":p.host},"threadId":thread,"threadName":p.chat.as_ref().map(|chat|self.lifecycle.chat_names.get(&Self::ninja_chat_key(&p.host,&p.profile.id,chat)).cloned().or_else(||self.ninja_chat_seed(&Self::ninja_chat_key(&p.host,&p.profile.id,chat))).unwrap_or_else(||p.profile.name.clone())).unwrap_or_else(||p.profile.name.clone()),"ownerToken":self.ninja_surface_owner(),"project":p.profile.project,"composerDraft":p.fields[3].read(cx).text(),"history":crate::unified::budget_history(history),"historyLoading":p.history_loading,"modelsLoading":p.models_loading.is_some(),"historyHasMore":false,"historyEarlier":false,"readOnly":false,"composerBusy":p.busy,"selectedAgent":p.profile.agent.command(),"selectedModel":p.profile.model,"effectiveModel":active.and_then(|t|t["model"].as_str()).or(p.profile.model.as_deref()),"reasoningEffort":p.profile.effort,"models":models,"chats":chats,"activeTurnId":active.and_then(|t|t["id"].as_str()),"sessionActivity":{"scene":active.map(crate::ninjas_ui::task_scene).unwrap_or("off"),"text":active.and_then(|t|t["status"].as_str()).unwrap_or("")},"attachments":[]});
         for (key, value) in override_.as_object().unwrap() {
             s[key] = value.clone();
         }
+        let usage=tasks.iter().rev().find_map(|t|crate::ninja_chat::usage_label(&t["usage"]));
+        let context=tasks.iter().rev().find_map(|t|t["usage"]["context_used"].as_u64().zip(t["usage"]["context_limit"].as_u64()).filter(|(_,limit)|*limit>0));
+        s["usageSummary"]=json!(usage.unwrap_or_default());
+        s["contextWindow"]=json!(context.map(|(used,limit)|json!({"used":used,"limit":limit,"fraction":(used as f64/limit as f64).clamp(0.,1.)})));
+        s["usageWindows"]=json!([]);s["usageAccount"]=Value::Null;
+        s["slashCommands"]=json!(crate::ninja_chat::COMMANDS.iter().map(|(name,description)|json!({"name":name,"description":description})).collect::<Vec<_>>());
         s["agents"]=json!(snapshot.into_iter().flat_map(|v|v["providers"].as_array().into_iter().flatten()).filter_map(|p|serde_json::from_value::<AgentKind>(p["agent"].clone()).ok().map(|a|json!({"id":a.command(),"name":a.name(),"available":p["installed"]==true}))).collect::<Vec<_>>());
         s["workspaceAccess"] = json!(if !p.profile.edits {
             "read-only"

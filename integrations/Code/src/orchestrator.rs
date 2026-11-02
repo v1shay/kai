@@ -40,7 +40,7 @@ pub fn session_tools(orchestrator:bool)->Value{
     json!(tools)
 }
 pub fn tools_for_request(request:&RunRequest)->Value {
-    let mut tools=if request.identity.is_some()&&!request.orchestrator{vec![]}else{session_tools(request.orchestrator).as_array().cloned().unwrap_or_default()};
+    let mut tools=session_tools(request.orchestrator).as_array().cloned().unwrap_or_default();
     if request.identity.is_some(){tools.push(json!({"name":"ninja_memory","description":"Read or update this Ninja's persistent personal memory across its chats. Store durable preferences, decisions and useful project facts; never store credentials. Updates replace the memory document and require its current revision.","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["read","write"]},"content":{"type":"string"},"revision":{"type":"integer"}},"required":["action"],"additionalProperties":false}}));}
     json!(tools)
 }

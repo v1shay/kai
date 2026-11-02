@@ -35,14 +35,14 @@ enum ConversationInteraction {
             else if cursor<ns.length {output += ordinary(NSRange(location:cursor,length:ns.length-cursor))}
             run.removeAll()
         }
-        for line in source {if line.style == "code"{flush();output.append(line)}else{run.append(line)}}
+        for line in source {if line.style == "code" || line.previewPNG != nil || line.linkTarget != nil || line.links != nil{flush();output.append(line)}else{run.append(line)}}
         flush();return citationCards(voiceLines(output))
     }
     private static func voiceLines(_ lines:[KaiLine])->[KaiLine]{
         var result=[KaiLine](),voice=false,group=0,section="",role=""
         let tags=try! NSRegularExpression(pattern:"</?(?:realtime_delegation|input|transcript_delta)>")
         for line in lines {
-            guard line.style != "code",!line.style.hasPrefix("interaction:") else{result.append(line);continue}
+            guard line.style != "code",line.previewPNG == nil,line.linkTarget == nil,line.links == nil,!line.style.hasPrefix("interaction:") else{result.append(line);continue}
             var text=line.text
             let opening=text.contains("<realtime_delegation>"),closing=text.contains("</realtime_delegation>")
             if opening {voice=true;section="";group += 1}
@@ -68,7 +68,7 @@ enum ConversationInteraction {
     private static func citationCards(_ lines:[KaiLine])->[KaiLine]{
         var result=[KaiLine]()
         for (index,line) in lines.enumerated(){
-            guard line.style != "code",!line.style.hasPrefix("interaction:") else{result.append(line);continue}
+            guard line.style != "code",line.previewPNG == nil,line.linkTarget == nil,line.links == nil,!line.style.hasPrefix("interaction:") else{result.append(line);continue}
             let citations=fileCitations(in:line.text),source=line.text as NSString
             guard !citations.isEmpty else{result.append(line);continue}
             var cursor=0

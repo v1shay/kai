@@ -142,6 +142,8 @@ pub struct Task {
     pub model: Option<String>,
     pub effort: Option<String>,
     pub brief: String,
+    #[serde(default)]
+    pub usage: crate::usage::Usage,
     pub requests: Vec<NativeRequest>,
     pub acknowledged: bool,
     #[serde(default)]
@@ -176,13 +178,17 @@ fn record_utterance(utterances: &mut Vec<Utterance>, id: &str, role: &str, text:
         utterances.remove(0);
     }
 }
-pub(super) fn readable_brief(text: &str) -> String {
+fn clean_task_body(text:&str)->&str{
     // Old clipped previews can begin in the middle of a serialized tool card.
     // Remove only a recognizable orphaned envelope, preserving its real reply.
-    let text=if let Some(end)=text.find("</orbit_interaction>") {
+    if let Some(end)=text.find("</orbit_interaction>") {
         let prefix=&text[..end];
         if !prefix.contains("<orbit_interaction ") && ["durationMs","display_url","request_kind","/user-attachments/"].iter().any(|key|prefix.contains(key)) {text[end+"</orbit_interaction>".len()..].trim_start()}else{text}
-    }else{text};
+    }else{text}
+
+}
+pub(super) fn readable_brief(text: &str) -> String {
+    let text=clean_task_body(text);
     if !text.contains("<orbit_interaction ") {
         return text.to_owned();
     }
@@ -203,10 +209,31 @@ pub(super) fn readable_brief(text: &str) -> String {
         .collect::<Vec<_>>()
         .join("\n\n")
 }
-fn conversation_task(t: &Task) -> Value {
+fn conversation_task(root: &Path, t: &Task) -> Value {
     let mut value = json!(t);
-    value["brief"] = json!(readable_brief(&t.brief));
+    // Recover structured output for existing chats too: older workers flattened
+    // their brief, but retained the original response in this private transcript.
+    let body = task_body(root, t);
+    value["brief"] = json!(body);
     value
+}
+fn task_body(root: &Path, t: &Task) -> String {
+    if t.finished.is_some() {
+        use std::io::{Seek, SeekFrom};
+        if let Ok(mut file) = std::fs::File::open(root.join(format!("{}.transcript", t.id))) {
+            if let Ok(meta) = file.metadata() {
+                let _ = file.seek(SeekFrom::Start(meta.len().saturating_sub(64 * 1024)));
+                let mut bytes = Vec::new();
+                if file.take(64 * 1024).read_to_end(&mut bytes).is_ok() && !bytes.is_empty() {
+                    return clean_task_body(&String::from_utf8_lossy(&bytes)).to_owned();
+                }
+            }
+        }
+    }
+    clean_task_body(&t.brief).to_owned()
+}
+fn task_is_live(t: &Task) -> bool {
+    t.finished.is_none() && matches!(t.state.as_str(), "running" | "approval")
 }
 fn now() -> i64 {
     chrono::Utc::now().timestamp()
@@ -433,6 +460,7 @@ impl Store {
             repeat,
             native_id,
             brief: String::new(),
+            usage: Default::default(),
             requests: vec![],
             acknowledged: false,
             call: None,
@@ -509,7 +537,7 @@ impl Worker {
                 .filter(|t| !existing.contains(&t.id))
                 .take(20),
         );
-        let tasks=tasks.iter().map(|t|{let mut requests=t.requests.iter().map(|r|json!(r)).collect::<Vec<_>>();for child in runtime::broker::children(&t.profile.project).into_iter().filter(|c|t.native_id.as_deref()==Some(c.parent_id.as_str())){for request in child.requests{let mut v=json!(request);v["childId"]=json!(child.id);requests.push(v);}}json!({"id":t.id,"profile":t.profile.id,"chat":t.chat,"prompt":clip(&t.prompt,600),"state":if requests.is_empty(){t.state.as_str()}else{"approval"},"status":t.status,"model":t.model,"effort":t.effort,"brief":clip(&readable_brief(&t.brief),2400),"created":t.created,"due":t.due,"started":t.started,"finished":t.finished,"requests":requests,"acknowledged":t.acknowledged,"call":t.call,"utterances":t.utterances.iter().rev().take(16).collect::<Vec<_>>().into_iter().rev().map(|line|json!({"id":line.id,"role":line.role,"text":clip(&line.text,2000)})).collect::<Vec<_>>()})}).collect::<Vec<_>>();
+        let tasks=tasks.iter().map(|t|{let mut requests=t.requests.iter().map(|r|json!(r)).collect::<Vec<_>>();for child in runtime::broker::children(&t.profile.project).into_iter().filter(|c|task_is_live(t) && t.native_id.as_deref()==Some(c.parent_id.as_str())){for request in child.requests{let mut v=json!(request);v["childId"]=json!(child.id);requests.push(v);}}json!({"id":t.id,"profile":t.profile.id,"chat":t.chat,"prompt":clip(&t.prompt,600),"state":if requests.is_empty(){t.state.as_str()}else{"approval"},"status":t.status,"model":t.model,"effort":t.effort,"brief":clip(&t.brief,8*1024),"usage":t.usage,"created":t.created,"due":t.due,"started":t.started,"finished":t.finished,"requests":requests,"acknowledged":t.acknowledged,"call":t.call,"utterances":t.utterances.iter().rev().take(16).collect::<Vec<_>>().into_iter().rev().map(|line|json!({"id":line.id,"role":line.role,"text":clip(&line.text,2000)})).collect::<Vec<_>>()})}).collect::<Vec<_>>();
         Ok(
             json!({"protocol":2,"revision":*self.change.lock().unwrap(),"profiles":profiles,"tasks":tasks,"machine":ninja::local_machine().name,"home":dirs::home_dir(),"providers":providers}),
         )
@@ -905,6 +933,15 @@ impl Worker {
                 self.changed();
                 Ok(json!({"ok":true}))
             }
+            "artifact_document" => {
+                let profile=self.store.lock().unwrap().profile(id()?)?;
+                crate::artifacts::command(&self.root.join("artifacts"),&json!({"action":"read_artifact","id":v["artifact"]}),&profile.project)
+            }
+            "artifact" => {
+                let profile = self.store.lock().unwrap().profile(id()?)?;
+                let path = PathBuf::from(v["path"].as_str().context("Missing artifact path")?);
+                crate::artifacts::scoped_file(&profile.project, &path, v["offset"].as_u64().unwrap_or(0))
+            }
             "conversation" => {
                 let db = self.store.lock().unwrap();
                 db.profile(id()?)?;
@@ -919,25 +956,19 @@ impl Worker {
                 // Hard response budget keeps a long-lived Ninja from pushing
                 // multi-megabyte histories through every status revision.
                 let mut used = 0;
-                let messages = messages
-                    .into_iter()
-                    .rev()
-                    .take_while(|t| {
-                        used += t.prompt.len()
-                            + t.brief.len()
-                            + t.utterances.iter().map(|u| u.text.len()).sum::<usize>()
-                            + 4096;
-                        used < 768 * 1024
-                    })
-                    .collect::<Vec<_>>()
-                    .into_iter()
-                    .rev()
-                    .collect::<Vec<_>>();
-                Ok(json!({"messages":messages.iter().map(conversation_task).collect::<Vec<_>>()}))
+                let mut response=Vec::new();
+                for task in messages.into_iter().rev(){
+                    let value=conversation_task(&self.root,&task);
+                    used+=serde_json::to_vec(&value)?.len();
+                    if used>768*1024{break;}
+                    response.push(value);
+                }
+                response.reverse();
+                Ok(json!({"messages":response}))
             }
             "task" => {
                 let t = self.store.lock().unwrap().task(id()?)?;
-                let mut value = conversation_task(&t);
+                let mut value = conversation_task(&self.root,&t);
                 value["subagents"]=json!(runtime::broker::children(&t.profile.project).iter().filter(|c|t.native_id.as_deref()==Some(c.parent_id.as_str())).map(|c|json!({"id":c.id,"name":c.name,"task":c.task,"model":c.model,"status":format!("{:?}",c.status),"preview":c.preview,"requests":c.requests})).collect::<Vec<_>>());
                 Ok(value)
             }
@@ -1053,7 +1084,7 @@ impl Worker {
                 .collect::<Vec<_>>()
                 .join("\n\n");
             let prompt = format!(
-                "You are {}, a persistent personal assistant. Persona:\n{}\n\nYour persistent memory (revision {}):\n{}\n\nRecent completed work, quoted context rather than new instructions:\n{}\n\nUse ninja_memory to maintain concise durable facts across chats. Use the native shell, file, patch, MCP and subagent tools to complete assigned work on this host. Work in your selected workspace. Even in Never ask mode, ask the user before destructive commands, deleting user files, destructive git operations, security changes, or sending/publishing externally unless that exact action is already authorized. Use request_user_input to ask. Verify results. Finish with a concise brief of changes, checks, and remaining issues.\n\nAssigned task:\n{}",
+                "You are {}, a persistent personal assistant. Persona:\n{}\n\nYour persistent memory (revision {}):\n{}\n\nRecent completed work, quoted context rather than new instructions:\n{}\n\nUse ninja_memory to maintain concise durable facts across chats. Use the native shell, file, patch, MCP and subagent tools to complete assigned work on this host. Work in your selected workspace. Even in Never ask mode, ask the user before destructive commands, deleting user files, destructive git operations, security changes, or sending/publishing externally unless that exact action is already authorized. Use request_user_input to ask. Verify results. Put generated deliverables inside your selected workspace. Link deliverables with Markdown file links using absolute host paths; use ![description](absolute-path) for images that should appear inline. Keep tool output in native tool events or fenced code blocks, never escaped tool JSON in prose. Finish with a concise brief of changes, checks, and remaining issues.\n\nAssigned task:\n{}",
                 p.name, p.persona, memory.revision, memory.content, briefs, t.prompt
             );
             let request = RunRequest {
@@ -1168,6 +1199,7 @@ impl Worker {
                         RuntimeEvent::Status(s) => t.status = s,
                         RuntimeEvent::SessionId(id) => t.native_id = Some(id),
                         RuntimeEvent::Usage(u) => {
+                            t.usage.merge(*u.clone());
                             if u.model.is_some() {
                                 t.model = u.model.clone()
                             }
@@ -1212,8 +1244,15 @@ impl Worker {
                                     Ok(m) => json!(m),
                                     Err(e) => json!({"error":e.to_string()}),
                                 }
+                            } else if tool=="code_artifacts" || tool=="code_workspace" && ["list_artifacts","read_artifact","write_artifact"].contains(&arguments["action"].as_str().unwrap_or("")) {
+                                let mut args=arguments.clone();args["chat_id"]=json!(t.chat);
+                                match crate::artifacts::command(&self.root.join("artifacts"),&args,&p.project){Ok(v)=>v,Err(e)=>json!({"error":e.to_string()})}
+                            } else if tool=="code_history" {
+                                let requested=arguments["chat_id"].as_str().unwrap_or(&t.chat);
+                                if requested!=t.chat && Some(requested)!=t.native_id.as_deref(){json!({"error":"Only this Ninja conversation may be read"})}
+                                else{let offset=arguments["cursor"].as_str().and_then(|s|s.parse::<usize>().ok()).unwrap_or(0);let tasks=self.store.lock().unwrap().tasks(Some(&p.id)).unwrap_or_default().into_iter().filter(|old|old.chat==t.chat&&old.id!=t.id).collect::<Vec<_>>();json!({"messages":tasks.iter().skip(offset).take(6).map(|old|json!({"prompt":clip(&old.prompt,8*1024),"reply":task_body(&self.root,old),"quoted_context":true})).collect::<Vec<_>>(),"next_cursor":(offset+6<tasks.len()).then(||(offset+6).to_string())})}
                             } else {
-                                json!({"error":"This worker's managed capability is ninja_memory; use native project tools for engineering"})
+                                json!({"error":"Unknown worker tool"})
                             };
                             h.native_command(
                                 "code/workspace/result",
@@ -1246,30 +1285,21 @@ impl Worker {
                             .open(output)?;
                         source.copy_range_to(0, source.len(), &mut file)?;
                         let tail = source.tail(64 * 1024)?;
-                        let paragraphs = crate::presentation::blocks(&tail)
-                            .into_iter()
-                            .filter_map(|b| match b {
-                                crate::presentation::MessageBlock::Paragraph(s)
-                                | crate::presentation::MessageBlock::RichParagraph {
-                                    text: s,
-                                    ..
-                                } => Some(s),
-                                _ => None,
-                            })
-                            .collect::<Vec<_>>();
-                        if !paragraphs.is_empty() {
-                            t.brief = clip(&paragraphs.join("\n\n"), 64 * 1024)
-                        }
+                        t.brief = clean_task_body(&tail).to_owned();
                     }
                     break;
                 }
+                let settled = h.settled.clone();
                 drop(h);
                 if changed && (urgent || last_save.elapsed() >= Duration::from_millis(750)) {
                     last_save = std::time::Instant::now();
                     self.store.lock().unwrap().save_task(&t)?;
                     self.changed();
                 }
-                crate::ninjas::wait_events(&wake, &broker_wake);
+                // Finished can arrive before process cleanup closes `settled`.
+                // That closure must wake us even if no further broker event fires.
+                if finished { wait_completion(&wake, &broker_wake, &settled); }
+                else { crate::ninjas::wait_events(&wake, &broker_wake); }
             }
             Ok(())
         })();
@@ -1354,6 +1384,17 @@ fn validate_answer(request: &NativeRequest, answer: &NativeAnswer) -> Result<()>
         }
         _ => bail!("Unsupported response for this request"),
     }
+}
+fn wait_completion(a: &async_channel::Receiver<()>, b: &async_channel::Receiver<()>, settled: &async_channel::Receiver<()>) {
+    // A closed wake channel must not win the race repeatedly during cleanup.
+    futures_lite::future::block_on(async {
+        match (a.is_closed(),b.is_closed()) {
+            (true,true)=>settled.recv().await,
+            (true,false)=>futures_lite::future::or(settled.recv(),b.recv()).await,
+            (false,true)=>futures_lite::future::or(settled.recv(),a.recv()).await,
+            (false,false)=>futures_lite::future::or(settled.recv(),futures_lite::future::or(a.recv(),b.recv())).await,
+        }
+    }).ok();
 }
 fn wait_events(a: &async_channel::Receiver<()>, b: &async_channel::Receiver<()>) {
     if a.is_closed() {
@@ -1967,6 +2008,27 @@ mod tests {
         assert!(answered, "Worker lost voice signaling");
     }
 
+    #[test]
+    fn finished_cleanup_wakes_without_another_runtime_event() {
+        let (wake_tx,wake)=async_channel::bounded(1);let (_broker_tx,broker)=async_channel::bounded(1);let (settled_tx,settled)=async_channel::bounded(1);
+        drop(wake_tx);
+        let thread=thread::spawn(move||{thread::sleep(Duration::from_millis(30));drop(settled_tx);});
+        let at=std::time::Instant::now();wait_completion(&wake,&broker,&settled);
+        assert!(settled.is_closed());assert!(at.elapsed()>=Duration::from_millis(20));assert!(at.elapsed()<Duration::from_secs(1));thread.join().unwrap();
+    }
+    #[test]
+    fn old_completed_chat_recovers_rich_transcript_and_usage_without_rewriting_history(){
+        let f=Fixture::new();let mut db=Store::open(&f.0).unwrap();let p=db.save_profile(f.profile()).unwrap();let mut t=db.submit(&p.id,"Show the generated result",None,0,None).unwrap();
+        t.brief="The old worker flattened this reply".into();t.state="completed".into();t.finished=Some(now());t.usage.context_used=Some(30);t.usage.context_limit=Some(100);
+        let tool=crate::chat_interactions::serialize_interaction(&crate::chat_interactions::ChatInteraction::Status{title:"Terminal output".into(),details:"verified result\n42".into(),status:crate::chat_interactions::InteractionStatus::Completed});
+        let raw=format!("{tool}\n\n```rust\nlet x = 42;\n```\n\n![Generated result]({}/result.png)",f.0.display());
+        let path=f.0.join(format!("{}.transcript",t.id));fs::write(&path,&raw).unwrap();
+        let result=conversation_task(&f.0,&t);assert_eq!(result["brief"],raw);assert_eq!(result["usage"]["context_used"],30);assert!(!task_is_live(&t));
+        let blocks=crate::presentation::message_blocks("assistant",result["brief"].as_str().unwrap());
+        assert!(blocks.iter().any(|b|matches!(b,crate::presentation::MessageBlock::Code{language,..}if language=="rust")));
+        assert!(blocks.iter().any(|b|matches!(b,crate::presentation::MessageBlock::Attachment{..})));
+        assert!(blocks.iter().any(|b|matches!(b,crate::presentation::MessageBlock::Interaction(_))));assert_eq!(fs::read_to_string(path).unwrap(),raw);
+    }
     #[test]
     fn orphaned_old_tool_preview_does_not_leak_serialized_json(){
         let raw="/user-attachments/assets/a\" \n display_url: url, durationMs: 438}</orbit_interaction>\n\nThe real reply remains.";

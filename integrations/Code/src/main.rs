@@ -1,5 +1,6 @@
 mod ninjas;
 mod ninjas_ui;
+mod ninja_chat;
 mod ninja_call_ui;
 mod ninja_surfaces;
 mod ninja_art;
@@ -4913,8 +4914,6 @@ impl Orbit {
             .transcript_reveal
             .as_ref()
             .and_then(|r| r.geometry_probe(ix));
-        let link_owner = cx.weak_entity();
-        let list_link_owner = link_owner.clone();
         let timing=self.row_timing(ix).cloned();
         let timestamp=timing.as_ref().and_then(|t|if row.role.as_deref()==Some("user"){Some(t.submitted_ms)}else{t.first_output_ms.or(t.finished_ms)}).and_then(chrono::DateTime::from_timestamp_millis).map(|at|at.with_timezone(&chrono::Local).format("%-I:%M %p").to_string());
         let user = chat_flow::user(row);
@@ -4932,181 +4931,7 @@ impl Orbit {
         if !user&&row_has_header(row.role.as_deref())&&self.row_timing(ix).is_some_and(|t|t.finished_ms.is_none()){
             if let Some(elapsed)=self.elapsed_label(){content=content.child(div().mb_3().pb_2().border_b_1().border_color(rgba(0xebebeb12)).text_size(theme::ui_px(11.)).text_color(rgb(MUTED)).child(format!("Working for {elapsed}")));}
         }
-        if let Some(span)=command{let(details,status)=chat_flow::grouped_command(&self.rows,span);content=content.child(self.interaction_card(ix,&chat_interactions::ChatInteraction::Status{title:if matches!(status,chat_interactions::InteractionStatus::Working|chat_interactions::InteractionStatus::Started){"Running commands"}else{"Ran commands"}.into(),details,status},row_agent,cx));}else{content = match &row.block {
-            MessageBlock::Voice {
-                speaker:_,
-                text,
-                highlights,
-            } => content.child(
-                div()
-                    .child(
-                        div()
-                            .text_size(theme::ui_px(14.))
-                            .line_height(theme::ui_line_height(23.))
-                            .child(rich_text(
-                                ("voice", ix),
-                                decoded.as_deref().unwrap_or(text),
-                                highlights,
-                                move |url, window, cx| {
-                                    let _ = link_owner
-                                        .update(cx, |this, cx| this.open_citation(url, window, cx));
-                                },
-                            )),
-                    ),
-            ),
-            MessageBlock::Interaction(card) => {
-                content.child(self.interaction_card(ix, card, row_agent, cx))
-            }
-            MessageBlock::Attachment { name, target } => {
-                content.child(self.attachment_history_card(ix, name, target, cx))
-            }
-            MessageBlock::Paragraph(text) => content.child(
-                div()
-                    .text_size(theme::ui_px(14.))
-                    .line_height(theme::ui_line_height(24.))
-                    .text_color(rgb(TEXT))
-                    .child(decoded.clone().unwrap_or_else(||text.clone())),
-            ),
-            MessageBlock::RichParagraph { text, highlights } => content.child(
-                div()
-                    .text_size(theme::ui_px(14.))
-                    .line_height(theme::ui_line_height(23.))
-                    .child(rich_text(
-                        ("markdown", ix),
-                        decoded.as_deref().unwrap_or(text),
-                        highlights,
-                        move |url, window, cx| {
-                            let _ = link_owner
-                                .update(cx, |this, cx| this.open_citation(url, window, cx));
-                        },
-                    )),
-            ),
-            MessageBlock::ListItem {
-                marker,
-                text,
-                highlights,
-            } => content.child(
-                div()
-                    .flex()
-                    .gap_2()
-                    .text_size(theme::ui_px(14.))
-                    .line_height(theme::ui_line_height(23.))
-                    .child(
-                        div()
-                            .w(px(24.))
-                            .flex_none()
-                            .text_color(rgb(MUTED))
-                            .child(marker.clone()),
-                    )
-                    .child(div().flex_1().min_w(px(0.)).child(rich_text(
-                        ("list-text", ix),
-                        decoded.as_deref().unwrap_or(text),
-                        highlights,
-                        move |url, window, cx| {
-                            let _ = list_link_owner
-                                .update(cx, |this, cx| this.open_citation(url, window, cx));
-                        },
-                    ))),
-            ),
-            MessageBlock::TableRow { cells, header } => content.child(
-                div()
-                    .flex()
-                    .w_full()
-                    .border_b_1()
-                    .border_color(rgba(0xebebeb12))
-                    .when(*header, |s| {
-                        s.font_weight(FontWeight::SEMIBOLD).bg(rgba(0xffffff08))
-                    })
-                    .children(cells.iter().map(|cell| {
-                        div()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .px_3()
-                            .py_2()
-                            .text_size(theme::ui_px(13.))
-                            .line_height(theme::ui_line_height(21.))
-                            .child(cell.clone())
-                    })),
-            ),
-            MessageBlock::Activity { label, details } => content.child(self.activity_card(ix,label,details,cx)),
-            MessageBlock::Heading(text) => content.child(
-                div()
-                    .text_size(theme::ui_px(20.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(decoded.clone().unwrap_or_else(||text.clone())),
-            ),
-            MessageBlock::Quote(text) => content.child(
-                div()
-                    .border_l_2()
-                    .border_color(rgb(0x565f50))
-                    .pl_4()
-                    .text_size(theme::ui_px(14.))
-                    .text_color(rgb(MUTED))
-                    .child(decoded.clone().unwrap_or_else(||text.clone())),
-            ),
-            MessageBlock::Code {
-                language,
-                text,
-                highlights,
-            } => {
-                let copy = text.clone();
-                content.child(
-                    div()
-                        .debug_selector(move || format!("code-card-{ix}"))
-                        .w_full()
-                        .min_w(px(0.))
-                        .rounded_lg()
-                        .overflow_hidden()
-                        .bg(rgba(self.appearance.tint(GLASS_SURFACE)))
-                        .border_1()
-                        .border_color(rgba(0xebebeb12))
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .justify_between()
-                                .px_4()
-                                .h(px(32.))
-                                .border_b_1()
-                                .border_color(rgba(0xebebeb12))
-                                .text_size(theme::ui_px(10.))
-                                .text_color(rgb(MUTED))
-                                .child(if language.is_empty() {
-                                    "code".to_string()
-                                } else {
-                                    language.clone()
-                                })
-                                .child(
-                                    copy_control::CopyControl::text(format!("code-copy-{ix}"), copy).label("Copy").scope(self.active.clone().unwrap_or_default()).motion(self.motion),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .id(("code", ix))
-                                .w_full()
-                                .min_w(px(0.))
-                                .overflow_x_scroll()
-                                .px_4()
-                                .py_3()
-                                .font_family(theme::mono_font())
-                                .text_size(theme::mono_px(12.))
-                                .line_height(theme::mono_line_height(20.))
-                                .text_color(rgb(TEXT))
-                                .child(StyledText::new(text.clone()).with_highlights(
-                                    highlights.iter().map(|(range, color)| {
-                                        (
-                                            range.clone(),
-                                            HighlightStyle {
-                                                color: Some(rgb(*color).into()),
-                                                ..Default::default()
-                                            },
-                                        )
-                                    }),
-                                )),
-                        ),
-                )
-            }
-        };
+        if let Some(span)=command{let(details,status)=chat_flow::grouped_command(&self.rows,span);content=content.child(self.interaction_card(ix,&chat_interactions::ChatInteraction::Status{title:if matches!(status,chat_interactions::InteractionStatus::Working|chat_interactions::InteractionStatus::Started){"Running commands"}else{"Ran commands"}.into(),details,status},row_agent,cx));}else{content = self.render_message_block(content, ix, &row.block, decoded.as_deref(), row_agent, cx);
         }
         if let Some(range) = self.flow_index.message_ends.get(ix).cloned().flatten() {
             if !user && !self.theme.compact_diff && self.flow_index.completion_ends.get(ix).is_some_and(Option::is_some){if let (Some(target),Some(summary))=(self.completion_target(ix),self.completion_summary(ix).filter(|s|s.total>0)){content=content.child(self.completion_changes_card(ix,target,summary,cx));}}
@@ -5159,6 +4984,187 @@ impl Orbit {
                     .top(px(5. * offset))
             }).when(work.is_some()&&work_reveal<1.,|s|s.max_h(Self::estimated_row_height(row,px(800.))*work_reveal).overflow_hidden().opacity(work_reveal)))))
             .into_any_element()
+    }
+    // Both ordinary agent chats and personal Ninjas use the same rich blocks.
+    fn render_message_block(&self, content: Div, ix: usize, block: &MessageBlock,
+        decoded: Option<&str>, row_agent: AgentKind, cx: &Context<Self>) -> Div {
+        let link_owner = cx.weak_entity();
+        let list_link_owner = link_owner.clone();
+        match block {
+            MessageBlock::Voice {
+                speaker:_,
+                text,
+                highlights,
+            } => content.child(
+                div()
+                    .child(
+                        div()
+                            .text_size(theme::ui_px(14.))
+                            .line_height(theme::ui_line_height(23.))
+                            .child(rich_text(
+                                ("voice", ix),
+                                decoded.unwrap_or(text),
+                                highlights,
+                                move |url, window, cx| {
+                                    let _ = link_owner
+                                        .update(cx, |this, cx| this.open_citation(url, window, cx));
+                                },
+                            )),
+                    ),
+            ),
+            MessageBlock::Interaction(card) => {
+                content.child(self.interaction_card(ix, card, row_agent, cx))
+            }
+            MessageBlock::Attachment { name, target } => {
+                content.child(if self.ninja_surface_owner().is_some(){self.ninja_artifact_card(ix,name,target,cx)}else{self.attachment_history_card(ix, name, target, cx)})
+            }
+            MessageBlock::Paragraph(text) => content.child(
+                div()
+                    .text_size(theme::ui_px(14.))
+                    .line_height(theme::ui_line_height(24.))
+                    .text_color(rgb(TEXT))
+                    .child(decoded.map(str::to_owned).unwrap_or_else(||text.clone())),
+            ),
+            MessageBlock::RichParagraph { text, highlights } => content.child(
+                div()
+                    .text_size(theme::ui_px(14.))
+                    .line_height(theme::ui_line_height(23.))
+                    .child(rich_text(
+                        ("markdown", ix),
+                        decoded.unwrap_or(text),
+                        highlights,
+                        move |url, window, cx| {
+                            let _ = link_owner
+                                .update(cx, |this, cx| this.open_citation(url, window, cx));
+                        },
+                    )),
+            ),
+            MessageBlock::ListItem {
+                marker,
+                text,
+                highlights,
+            } => content.child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .text_size(theme::ui_px(14.))
+                    .line_height(theme::ui_line_height(23.))
+                    .child(
+                        div()
+                            .w(px(24.))
+                            .flex_none()
+                            .text_color(rgb(MUTED))
+                            .child(marker.clone()),
+                    )
+                    .child(div().flex_1().min_w(px(0.)).child(rich_text(
+                        ("list-text", ix),
+                        decoded.unwrap_or(text),
+                        highlights,
+                        move |url, window, cx| {
+                            let _ = list_link_owner
+                                .update(cx, |this, cx| this.open_citation(url, window, cx));
+                        },
+                    ))),
+            ),
+            MessageBlock::TableRow { cells, header } => content.child(
+                div()
+                    .flex()
+                    .w_full()
+                    .border_b_1()
+                    .border_color(rgba(0xebebeb12))
+                    .when(*header, |s| {
+                        s.font_weight(FontWeight::SEMIBOLD).bg(rgba(0xffffff08))
+                    })
+                    .children(cells.iter().map(|cell| {
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .px_3()
+                            .py_2()
+                            .text_size(theme::ui_px(13.))
+                            .line_height(theme::ui_line_height(21.))
+                            .child(cell.clone())
+                    })),
+            ),
+            MessageBlock::Activity { label, details } => content.child(self.activity_card(ix,label,details,cx)),
+            MessageBlock::Heading(text) => content.child(
+                div()
+                    .text_size(theme::ui_px(20.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(decoded.map(str::to_owned).unwrap_or_else(||text.clone())),
+            ),
+            MessageBlock::Quote(text) => content.child(
+                div()
+                    .border_l_2()
+                    .border_color(rgb(0x565f50))
+                    .pl_4()
+                    .text_size(theme::ui_px(14.))
+                    .text_color(rgb(MUTED))
+                    .child(decoded.map(str::to_owned).unwrap_or_else(||text.clone())),
+            ),
+            MessageBlock::Code {
+                language,
+                text,
+                highlights,
+            } => {
+                let copy = text.clone();
+                content.child(
+                    div()
+                        .debug_selector(move || format!("code-card-{ix}"))
+                        .w_full()
+                        .min_w(px(0.))
+                        .rounded_lg()
+                        .overflow_hidden()
+                        .bg(rgba(self.appearance.tint(GLASS_SURFACE)))
+                        .border_1()
+                        .border_color(rgba(0xebebeb12))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .px_4()
+                                .h(px(32.))
+                                .border_b_1()
+                                .border_color(rgba(0xebebeb12))
+                                .text_size(theme::ui_px(10.))
+                                .text_color(rgb(MUTED))
+                                .child(if language.is_empty() {
+                                    "code".to_string()
+                                } else {
+                                    language.clone()
+                                })
+                                .child(
+                                    copy_control::CopyControl::text(format!("code-copy-{ix}"), copy).label("Copy").scope(self.ninja_surface_owner().or_else(||self.active.clone()).unwrap_or_default()).motion(self.motion),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .id(("code", ix))
+                                .w_full()
+                                .min_w(px(0.))
+                                .overflow_x_scroll()
+                                .px_4()
+                                .py_3()
+                                .font_family(theme::mono_font())
+                                .text_size(theme::mono_px(12.))
+                                .line_height(theme::mono_line_height(20.))
+                                .text_color(rgb(TEXT))
+                                .child(StyledText::new(text.clone()).with_highlights(
+                                    highlights.iter().map(|(range, color)| {
+                                        (
+                                            range.clone(),
+                                            HighlightStyle {
+                                                color: Some(rgb(*color).into()),
+                                                ..Default::default()
+                                            },
+                                        )
+                                    }),
+                                )),
+                        ),
+                )
+            }
+        }
     }
     fn composer(&self, window: &Window, cx: &Context<Self>) -> impl IntoElement {
         let running = self
