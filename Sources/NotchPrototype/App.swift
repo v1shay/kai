@@ -1807,7 +1807,6 @@ private final class NotchSurfaceHost:NSView {
         if approvalPopout,approvalUI.request?.matches(state) == true{
             approvalUI.show(request);approvalUI.receive(state);return
         }
-        if miniOpen{lastApproval=request;return}
         guard request.id != lastApproval?.id || request.thread != lastApproval?.thread else{return}
         lastApproval=request;presentCompactApproval(request,automatic:true)
     }

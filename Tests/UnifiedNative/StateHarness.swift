@@ -208,6 +208,8 @@ private func member(_ object:Any,_ name:String)->Any?{Mirror(reflecting:object).
     let folded=Date().addingTimeInterval(0.8);while Date()<folded{RunLoop.current.run(until:Date().addingTimeInterval(0.01))}
     precondition(!window.isVisible && window.level==originalLevel,"Windowed collapse left a floating window or lost its original level")
     app.revealWorkspace();let restored=Date().addingTimeInterval(1);while Date()<restored{RunLoop.current.run(until:Date().addingTimeInterval(0.01))}
+    _=app.perform(NSSelectorFromString("toggleFromMenu"))
+    precondition(member(app,"miniOpen") as? Bool == true,"Fixture did not open the extended notch")
     var approval=try JSONSerialization.jsonObject(with:packet(scene:"permission",run:"5")) as! [String:Any]
     approval["composerDraft"]="Keep this draft"
     approval["approval"]=true;approval["approvalThreadId"]="code:fixture";approval["approvalRequestId"]="5:opaque";approval["approvalSummary"]="Run cargo test";approval["approvalCount"]=2
@@ -218,6 +220,10 @@ private func member(_ object:Any,_ name:String)->Any?{Mirror(reflecting:object).
     foreground=false;NotificationCenter.default.post(name:NSApplication.didResignActiveNotification,object:NSApp)
     RunLoop.current.run(until:Date().addingTimeInterval(0.03))
     precondition(controls.window?.isVisible == true && controls.window?.ignoresMouseEvents == false,"Background approval never reached Kai")
+    precondition(member(app,"approvalPopout") as? Bool == true && member(app,"miniOpen") as? Bool == false,"Extended notch swallowed the confirmation")
+    runtime.receive(packet(scene:"off",run:nil))
+    precondition(member(app,"approvalPopout") as? Bool == false && member(app,"miniOpen") as? Bool == true,"Resolving the confirmation did not restore the extended chat")
+    runtime.receive(try JSONSerialization.data(withJSONObject:approval))
     foreground=true;app.workspaceFocusChanged()
     settled{!workspaceMorph.transitioning}
     precondition(member(app,"approvalPopout") as? Bool == false,"Returning to Code left a duplicate notch approval")
