@@ -28,7 +28,13 @@ def retire_idle_worker(address):
         if '--ninja-worker' not in command:raise ValueError('Socket belongs to a different process; left it running')
     for pid in owners:os.kill(pid,signal.SIGTERM)
     for _ in range(50):
-        if worker_state(address) is None:return
+        # KeepAlive may immediately start the replacement at the same socket.
+        # Wait for the original owners, not for an empty socket pathname.
+        alive=False
+        for pid in owners:
+            try:os.kill(pid,0);alive=True
+            except ProcessLookupError:pass
+        if not alive or worker_state(address) is None:return
         time.sleep(.1)
     raise ValueError('Old worker did not release its socket')
 
