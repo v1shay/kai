@@ -155,17 +155,15 @@ fn launch_mode(request: RunRequest, maintenance: Option<(String, Value)>) -> Res
     crate::process_env::apply(&mut command);
     command
         .args(["app-server", "--listen", "stdio://"])
-        // This app's first-party Codex route uses HTTPS/SSE directly. Realtime
-        // voice still uses its independent native WebRTC transport.
-        .args(["-c","model_providers.kai-openai-https.name=\"OpenAI\"",
-               "-c","model_providers.kai-openai-https.wire_api=\"responses\"",
-               "-c","model_providers.kai-openai-https.requires_openai_auth=true",
-               "-c","model_providers.kai-openai-https.supports_websockets=false"])
         .current_dir(&request.project)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .process_group(0);
+    let codex_root = std::env::var_os("CODEX_HOME").filter(|p| !p.is_empty()).map(PathBuf::from)
+        .map(|p| if p.is_absolute() { p } else { request.project.join(p) })
+        .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".codex"));
+    configure_transport(&mut command, &codex_root, request.resume_id.as_deref().filter(|_| request.ninja.is_none()));
     let ninja_lease=request.ninja.as_ref().map(|selection|crate::ninja::configure_codex(&mut command,selection)).transpose()?;
     let mut child = command
         .spawn()
@@ -312,17 +310,34 @@ fn thread_params(request: &RunRequest) -> Value {
     params
 }
 
-// Read Codex's effective per-project configuration before choosing transport.
-// Custom providers retain their native route; only built-in OpenAI uses our
-// first-party HTTPS profile. No user configuration or credentials are changed.
-fn routed_thread_params(request:&RunRequest,config:&Value)->Value{
-    let mut params=thread_params(request);
-    if request.ninja.is_some(){
-        params["modelProvider"]=json!("kai-ninja");
-        params["config"]["model_reasoning_summary"]=json!("detailed");
-    }else if config["model_provider"].as_str().is_none_or(|p|p=="openai"){
-        params["modelProvider"]=json!("kai-openai-https");
-        params["config"]["model_reasoning_summary"]=json!("detailed");
+// Keep the durable provider ID shared with the originating app. HTTP/SSE is a
+// transport setting, not a separate identity. The old Kai alias remains defined
+// so already-saved Kai threads resume without rewriting any thread metadata.
+fn configure_transport(command: &mut Command, root: &std::path::Path, resume: Option<&str>) {
+    command.args([
+        "-c", "model_providers.openai.supports_websockets=false",
+        "-c", "model_providers.kai-openai-https.name=\"OpenAI\"",
+        "-c", "model_providers.kai-openai-https.wire_api=\"responses\"",
+        "-c", "model_providers.kai-openai-https.requires_openai_auth=true",
+        "-c", "model_providers.kai-openai-https.supports_websockets=false",
+    ]);
+    // App Server validates resume against its startup provider, even when the
+    // RPC supplies modelProvider. Select the saved route before spawning it.
+    if let Some(provider) = resume.and_then(|id| crate::discovery::codex_model_provider_in(root, id)) {
+        command.arg("-c").arg(format!("model_provider={}", serde_json::to_string(&provider).unwrap()));
+    }
+}
+fn routed_thread_params(request: &RunRequest, config: &Value) -> Value {
+    let mut params = thread_params(request);
+    if request.ninja.is_some() {
+        params["modelProvider"] = json!("kai-ninja");
+        params["config"]["model_reasoning_summary"] = json!("detailed");
+    } else {
+        let provider = config["model_provider"].as_str().unwrap_or("openai");
+        if matches!(provider, "openai" | "kai-openai-https") {
+            params["modelProvider"] = json!(provider);
+            params["config"]["model_reasoning_summary"] = json!("detailed");
+        }
     }
     params
 }
@@ -3405,11 +3420,27 @@ send({'method':'thread/realtime/closed','params':{'threadId':'12345678-1234-4234
         state.calls.insert(10,"turn/start".into());assert!(state.launch_pending());
     }
     #[test]
+    fn saved_thread_provider_is_selected_at_process_start_and_kept_in_resume_params(){
+        let root=std::env::temp_dir().join(format!("kai-provider-route-{}",uuid::Uuid::new_v4()));std::fs::create_dir_all(&root).unwrap();
+        let db=rusqlite::Connection::open(root.join("state_5.sqlite")).unwrap();db.execute_batch("CREATE TABLE threads(id TEXT PRIMARY KEY,model_provider TEXT);").unwrap();
+        for provider in ["openai","kai-openai-https","custom-provider"]{
+            db.execute("INSERT INTO threads VALUES(?1,?2)",rusqlite::params![provider,provider]).unwrap();
+            let mut command=Command::new("codex");configure_transport(&mut command,&root,Some(provider));let args=command.get_args().map(|a|a.to_string_lossy().into_owned()).collect::<Vec<_>>();
+            assert!(args.contains(&format!("model_provider=\"{provider}\"")));assert!(args.contains(&"model_providers.openai.supports_websockets=false".to_owned()));
+            let mut r=request(std::path::Path::new("/fixture"));r.resume_id=Some(provider.into());
+            let params=routed_thread_params(&r,&json!({"model_provider":provider}));assert_eq!(params["threadId"],provider);
+            if provider!="custom-provider"{assert_eq!(params["modelProvider"],provider);}else{assert!(params["modelProvider"].is_null());}
+        }
+        let mut fresh=Command::new("codex");configure_transport(&mut fresh,&root,None);assert!(!fresh.get_args().any(|a|a.to_string_lossy().starts_with("model_provider=")),"Fresh chats must retain project provider configuration");
+        drop(db);std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
     fn direct_https_transport_preserves_custom_native_provider_configuration(){
         let r=request(std::path::Path::new("/fixture"));
         for config in [json!({}),json!({"model_provider":"openai"})]{
-            assert_eq!(routed_thread_params(&r,&config)["modelProvider"],"kai-openai-https");
+            assert_eq!(routed_thread_params(&r,&config)["modelProvider"],"openai");
         }
+        assert_eq!(routed_thread_params(&r,&json!({"model_provider":"kai-openai-https"}))["modelProvider"],"kai-openai-https");
         assert!(routed_thread_params(&r,&json!({"model_provider":"my-provider"}))["modelProvider"].is_null());
     }
     #[test]

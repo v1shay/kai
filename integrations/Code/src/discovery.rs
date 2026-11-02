@@ -531,29 +531,22 @@ pub fn codex_transcript_path(home: &Path, id: &str) -> Option<PathBuf> {
     codex_transcript_in(&home.join(".codex"), id)
 }
 fn codex_transcript_in(root: &Path, id: &str) -> Option<PathBuf> {
+    codex_thread_field(root, id, "SELECT rollout_path FROM threads WHERE id=?1 LIMIT 1").map(PathBuf::from)
+}
+/// Provider identity is durable thread metadata, independent of HTTP vs WS.
+/// Reuse the same bounded, read-only index lookup as transcript discovery.
+pub(crate) fn codex_model_provider_in(root: &Path, id: &str) -> Option<String> {
+    codex_thread_field(root, id, "SELECT model_provider FROM threads WHERE id=?1 LIMIT 1")
+        .filter(|p| p.len() <= 512 && !p.chars().any(char::is_control))
+}
+fn codex_thread_field(root: &Path, id: &str, query: &str) -> Option<String> {
     use rusqlite::{Connection, OpenFlags, OptionalExtension};
-    if id.is_empty() {
-        return None;
-    }
+    if id.is_empty() { return None; }
     for database in codex_databases_in(root) {
-        let Ok(connection) = Connection::open_with_flags(
-            database,
-            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        ) else {
-            continue;
-        };
+        let Ok(connection) = Connection::open_with_flags(database, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX) else { continue; };
         let _ = connection.busy_timeout(std::time::Duration::from_millis(100));
-        let path = connection
-            .query_row(
-                "SELECT rollout_path FROM threads WHERE id=?1 LIMIT 1",
-                [id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
-            .ok()
-            .flatten();
-        if let Some(path) = path.filter(|p| !p.is_empty()) {
-            return Some(PathBuf::from(path));
+        if let Some(value) = connection.query_row(query, [id], |row| row.get::<_, String>(0)).optional().ok().flatten().filter(|v| !v.is_empty()) {
+            return Some(value);
         }
     }
     None
@@ -1047,6 +1040,17 @@ mod tests {
         let root = std::env::temp_dir().join(format!("orbit-discovery-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         root.canonicalize().unwrap()
+    }
+
+    #[test]
+    fn codex_provider_metadata_is_indexed_exact_and_read_only(){
+        let root=std::env::temp_dir().join(format!("kai-provider-index-{}",uuid::Uuid::new_v4()));std::fs::create_dir_all(&root).unwrap();
+        let db=rusqlite::Connection::open(root.join("state_5.sqlite")).unwrap();db.execute_batch("CREATE TABLE threads(id TEXT PRIMARY KEY,model_provider TEXT,rollout_path TEXT);").unwrap();
+        for(id,provider)in [("app-chat","openai"),("kai-chat","kai-openai-https"),("custom-chat","custom-provider")]{db.execute("INSERT INTO threads VALUES(?1,?2,?3)",rusqlite::params![id,provider,format!("/{id}.jsonl")]).unwrap();}
+        let before=std::fs::read(root.join("state_5.sqlite")).unwrap();
+        for(id,provider)in [("app-chat","openai"),("kai-chat","kai-openai-https"),("custom-chat","custom-provider")]{assert_eq!(codex_model_provider_in(&root,id).as_deref(),Some(provider));assert_eq!(codex_transcript_in(&root,id),Some(PathBuf::from(format!("/{id}.jsonl"))));}
+        assert!(codex_model_provider_in(&root,"unknown").is_none());assert!(codex_model_provider_in(&root,"").is_none());assert_eq!(std::fs::read(root.join("state_5.sqlite")).unwrap(),before);
+        drop(db);std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
