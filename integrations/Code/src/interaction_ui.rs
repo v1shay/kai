@@ -318,9 +318,11 @@ impl Orbit {
         let expanded = self.expanded_tools.contains(&ix);
         let reveal = self.interaction_reveal(ix);
         div()
+            .w_full().min_w(px(0.))
             .overflow_hidden()
             .child(
                 div()
+                    .w_full()
                     .id(("interaction", ix))
                     .debug_selector(move || format!("interaction-{ix}"))
                     .min_h(px(24.))
@@ -335,6 +337,7 @@ impl Orbit {
                     .child(agent.and_then(|id|self.unified_children.iter().find(|c|c.id==id)).and_then(|child|self.task_pet(&unified::child_id(child),18.,child.connected&&matches!(child.status,InteractionStatus::Started|InteractionStatus::Working))).unwrap_or_else(||icon(symbol,14.,color).into_any_element()))
                     .child(
                         div()
+                            .debug_selector(move||format!("interaction-title-{ix}"))
                             .flex_1()
                             .min_w(px(0.))
                             .text_ellipsis()
@@ -351,6 +354,7 @@ impl Orbit {
                     .child(
                         div()
                             .debug_selector(move || format!("completion-label-{ix}"))
+                            .flex_none()
                             .text_size(crate::theme::ui_px(10.))
                             .text_color(rgb(color))
                             .child(label),

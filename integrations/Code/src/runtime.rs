@@ -1630,7 +1630,7 @@ impl StreamParser {
     fn replacement(&mut self) -> RuntimeEvent {
         match self.rendered_source().and_then(|source| {
             let large = source.len() > 64 * 1024;
-            source.tail(64 * 1024).map(|text| (text, large))
+            source.presentation_tail(64 * 1024).map(|text| (text, large))
         }) {
             Ok((text, false)) => RuntimeEvent::ReplaceText(text),
             Ok((text, true)) => RuntimeEvent::ReplacePreview(text),

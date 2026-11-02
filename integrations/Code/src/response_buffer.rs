@@ -100,6 +100,9 @@ impl ResponseSource {
             }
         }
     }
+    pub(crate) fn presentation_tail(&self,budget:usize)->Result<String>{
+        coherent_tail(self.len(),budget,|n|self.tail(n))
+    }
     pub(crate) fn copy_range_to(
         &self,
         start: usize,
@@ -113,6 +116,17 @@ impl ResponseSource {
             }
         }
     }
+}
+
+fn coherent_tail(len:usize,budget:usize,mut read:impl FnMut(usize)->Result<String>)->Result<String>{
+    let mut bytes=budget;let mut text=read(bytes)?;
+    while text.find("</orbit_interaction>").is_some_and(|close|text.find("<orbit_interaction").is_none_or(|open|close<open))&&text.len()<len&&bytes<2*1024*1024+512{
+        bytes=(bytes*2).min(2*1024*1024+512);text=read(bytes)?;
+    }
+    Ok(crate::presentation::compact_transcript(&text,budget))
+}
+pub(crate) fn file_presentation_tail(file:&File,len:usize,budget:usize)->Result<String>{
+    coherent_tail(len,budget,|n|file_range(file,len,tail_start(file,len.saturating_sub(n),len)?..len))
 }
 
 enum Storage {
@@ -556,6 +570,12 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 
+    #[test]
+    fn presentation_tail_expands_to_record_boundary_and_retains_the_final_reply(){
+        let card=crate::chat_interactions::ChatInteraction::Delegation{title:"Terminal output".into(),details:"escaped output \n".repeat(12000),status:crate::chat_interactions::InteractionStatus::Completed,agent:None};
+        let source=ResponseSource::Memory(format!("{}\n\nThe final reply",crate::chat_interactions::serialize_interaction(&card)));
+        let text=source.presentation_tail(8192).unwrap();assert!(text.ends_with("The final reply"));assert!(text.len()<=8192);let blocks=crate::presentation::blocks(&text);assert!(blocks.iter().any(|b|matches!(b,crate::presentation::MessageBlock::Interaction(_))));assert!(!blocks.iter().any(|b|matches!(b,crate::presentation::MessageBlock::Paragraph(s)if s.contains("\\n"))));
+    }
     #[test]
     fn giant_unicode_response_spills_and_publishes_without_resident_body() {
         let chunk = "let 🌸 = 日本語;\n".repeat(1024);

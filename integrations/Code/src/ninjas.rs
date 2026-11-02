@@ -221,18 +221,11 @@ fn conversation_task(root: &Path, t: &Task) -> Value {
 }
 fn task_body(root: &Path, t: &Task) -> String {
     if t.finished.is_some() {
-        use std::io::{Seek, SeekFrom};
-        if let Ok(mut file) = std::fs::File::open(root.join(format!("{}.transcript", t.id))) {
-            if let Ok(meta) = file.metadata() {
-                let _ = file.seek(SeekFrom::Start(meta.len().saturating_sub(64 * 1024)));
-                let mut bytes = Vec::new();
-                if file.take(64 * 1024).read_to_end(&mut bytes).is_ok() && !bytes.is_empty() {
-                    return clean_task_body(&String::from_utf8_lossy(&bytes)).to_owned();
-                }
-            }
+        if let Ok(file)=std::fs::File::open(root.join(format!("{}.transcript",t.id))){
+            if let Ok(meta)=file.metadata(){if let Ok(text)=crate::response_buffer::file_presentation_tail(&file,meta.len()as usize,64*1024){return text}}
         }
     }
-    clean_task_body(&t.brief).to_owned()
+    crate::presentation::compact_transcript(clean_task_body(&t.brief),64*1024)
 }
 fn task_is_live(t: &Task) -> bool {
     t.finished.is_none() && matches!(t.state.as_str(), "running" | "approval")
@@ -264,6 +257,7 @@ fn call_params(mut offer: Value, context: String) -> Value {
     offer
 }
 pub fn root() -> PathBuf {
+    if std::env::args().any(|arg|arg=="--unified-smoke-test"){return std::env::temp_dir().join(format!("kai-unified-smoke-{}",std::process::id())).join("ninjas")}
     dirs::data_local_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join("Kai Unified/ninjas")
@@ -554,7 +548,7 @@ impl Worker {
                 .filter(|t| !existing.contains(&t.id))
                 .take(20),
         );
-        let tasks=tasks.iter().map(|t|{let mut requests=t.requests.iter().map(|r|json!(r)).collect::<Vec<_>>();for child in runtime::broker::children(&t.profile.project).into_iter().filter(|c|task_is_live(t) && t.native_id.as_deref()==Some(c.parent_id.as_str())){for request in child.requests{let mut v=json!(request);v["childId"]=json!(child.id);requests.push(v);}}json!({"id":t.id,"profile":t.profile.id,"chat":t.chat,"prompt":clip(&t.prompt,600),"state":if requests.is_empty(){t.state.as_str()}else{"approval"},"status":t.status,"model":t.model,"effort":t.effort,"brief":clip(&t.brief,8*1024),"usage":t.usage,"created":t.created,"due":t.due,"started":t.started,"finished":t.finished,"requests":requests,"acknowledged":t.acknowledged,"call":t.call,"utterances":t.utterances.iter().rev().take(16).collect::<Vec<_>>().into_iter().rev().map(|line|json!({"id":line.id,"role":line.role,"text":clip(&line.text,2000)})).collect::<Vec<_>>()})}).collect::<Vec<_>>();
+        let tasks=tasks.iter().map(|t|{let mut requests=t.requests.iter().map(|r|json!(r)).collect::<Vec<_>>();for child in runtime::broker::children(&t.profile.project).into_iter().filter(|c|task_is_live(t) && t.native_id.as_deref()==Some(c.parent_id.as_str())){for request in child.requests{let mut v=json!(request);v["childId"]=json!(child.id);requests.push(v);}}json!({"id":t.id,"profile":t.profile.id,"chat":t.chat,"prompt":clip(&t.prompt,600),"state":if requests.is_empty(){t.state.as_str()}else{"approval"},"status":t.status,"model":t.model,"effort":t.effort,"brief":crate::presentation::compact_transcript(&t.brief,8*1024),"usage":t.usage,"created":t.created,"due":t.due,"started":t.started,"finished":t.finished,"requests":requests,"acknowledged":t.acknowledged,"call":t.call,"utterances":t.utterances.iter().rev().take(16).collect::<Vec<_>>().into_iter().rev().map(|line|json!({"id":line.id,"role":line.role,"text":clip(&line.text,2000)})).collect::<Vec<_>>()})}).collect::<Vec<_>>();
         Ok(
             json!({"protocol":2,"revision":*self.change.lock().unwrap(),"profiles":profiles,"tasks":tasks,"machine":ninja::local_machine().name,"home":dirs::home_dir(),"providers":providers}),
         )
@@ -1192,7 +1186,7 @@ impl Worker {
                     match event {
                         RuntimeEvent::Text(text) => {
                             t.brief.push_str(&text);
-                            t.brief = clip(&t.brief, 64 * 1024);
+                            t.brief = crate::presentation::compact_transcript(&t.brief,64*1024);
                         }
                         RuntimeEvent::ReplaceText(text) | RuntimeEvent::ReplacePreview(text) => {
                             t.brief = clip(&text, 64 * 1024)
@@ -1307,7 +1301,7 @@ impl Worker {
                             .mode(0o600)
                             .open(output)?;
                         source.copy_range_to(0, source.len(), &mut file)?;
-                        let tail = source.tail(64 * 1024)?;
+                        let tail = source.presentation_tail(64 * 1024)?;
                         t.brief = clean_task_body(&tail).to_owned();
                     }
                     break;
@@ -1662,6 +1656,13 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+    #[test]
+    fn existing_large_transcript_recovers_cards_and_final_markdown_without_raw_escapes(){
+        let f=Fixture::new();let mut db=Store::open(&f.0).unwrap();let profile=db.save_profile(f.profile()).unwrap();let mut task=db.submit(&profile.id,"Render the saved result",None,0,None).unwrap();task.finished=Some(now());task.state="completed".into();task.brief="orphaned old preview".into();
+        let card=crate::chat_interactions::ChatInteraction::Delegation{title:"Terminal output".into(),details:"diff --git a/file b/file\n+ change\n".repeat(10000),status:crate::chat_interactions::InteractionStatus::Completed,agent:None};
+        fs::write(f.0.join(format!("{}.transcript",task.id)),format!("{}\n\n## Finished\n\n![Preview](/tmp/image.png)\n\n```rust\nlet result = 42;\n```",crate::chat_interactions::serialize_interaction(&card))).unwrap();
+        let value=conversation_task(&f.0,&task);let text=value["brief"].as_str().unwrap();let blocks=crate::presentation::message_blocks("assistant",text);assert!(blocks.iter().any(|b|matches!(b,crate::presentation::MessageBlock::Heading(s)if s=="Finished")));assert!(blocks.iter().any(|b|matches!(b,crate::presentation::MessageBlock::Attachment{..})));assert!(blocks.iter().any(|b|matches!(b,crate::presentation::MessageBlock::Code{..})));assert_eq!(blocks.iter().filter(|b|matches!(b,crate::presentation::MessageBlock::Interaction(_))).count(),1);assert!(!blocks.iter().any(|b|matches!(b,crate::presentation::MessageBlock::Paragraph(s)if s.contains("\\n")||s.contains("diff --git"))));
     }
     #[test]
     fn response_receipt_waits_for_native_resolution_and_reports_rejection(){

@@ -55,6 +55,26 @@ pub(super) fn usage_label(value: &Value) -> Option<String> {
         .map(|(i, o)| format!("{i} in · {o} out"))
 }
 impl Orbit {
+    pub(super) fn ninja_blocks(&self,user:bool,text:&str,task:&str)->Arc<Vec<MessageBlock>>{
+        let p=self.ninjas.panel.as_ref().unwrap();
+        let key=format!("{task}:{user}");
+        if let Some((source,blocks))=p.blocks.borrow().get(&key){if source==text{return blocks.clone()}}
+        let mut cache = p.blocks.borrow_mut();
+            if cache.get(&key).is_none_or(|(source, _)| source != text) {
+                if cache.len() >= 64 {
+                    if let Some(old)=cache.keys().find(|k|*k!=&key).cloned(){cache.remove(&old);}
+                }
+                cache.insert(
+                    key.clone(),
+                    (
+                        text.to_owned(),
+                        Arc::new(if user{presentation::message_blocks("user",text)}else{presentation::live_page_blocks(text)}),
+                    ),
+                );
+            }
+            cache[&key].1.clone()
+
+    }
     pub(super) fn ninja_bubble(
         &self,
         user: bool,
@@ -64,28 +84,16 @@ impl Orbit {
         cx: &Context<Self>,
     ) -> Div {
         let p = self.ninjas.panel.as_ref().unwrap();
-        let blocks = {
-            let mut cache = p.blocks.borrow_mut();
-            let key = format!("{task}:{user}");
-            if cache.get(&key).is_none_or(|(source, _)| source != &text) {
-                if cache.len() >= 64 {
-                    cache.clear();
-                }
-                cache.insert(
-                    key.clone(),
-                    (
-                        text.clone(),
-                        Arc::new(presentation::message_blocks(
-                            if user { "user" } else { "assistant" },
-                            &text,
-                        )),
-                    ),
-                );
-            }
-            cache[&key].1.clone()
-        };
-        let mut body = div().flex_1().min_w(px(0.)).flex().flex_col().gap_2();
+        let blocks=self.ninja_blocks(user,&text,task);
+        let mut body = div().w_full().min_w(px(0.)).flex().flex_col().gap_2();
+        let mut grouped_until=0;
         for (i, block) in blocks.iter().enumerate() {
+            if i<grouped_until{continue}
+            let activity=|b:&MessageBlock|matches!(b,MessageBlock::Activity{..}|MessageBlock::Interaction(chat_interactions::ChatInteraction::Status{..}|chat_interactions::ChatInteraction::Delegation{..}));
+            if !user&&activity(block){
+                grouped_until=i+blocks[i..].iter().take_while(|b|activity(b)).count();
+                body=body.child(self.ninja_work_group(task,blocks.clone(),i..grouped_until,cx));continue
+            }
             let ix = block_key(&format!("{task}:{user}"), i);
             let decoded =
                 if !user && self.motion && self.unified_text_morph && !native::reduced_motion() {
@@ -120,7 +128,7 @@ impl Orbit {
         if !text.is_empty() {
             body = body.child(
                 div().mt_1().flex().when(user, |s| s.justify_end()).child(
-                    copy_control::CopyControl::text(format!("ninja-copy-{task}-{user}"), text)
+                    copy_control::CopyControl::source(format!("ninja-copy-{task}-{user}"),move |_|if user{text.clone()}else{ninjas::readable_brief(&text)})
                         .scope(self.ninja_surface_owner().unwrap_or_default())
                         .motion(self.motion),
                 ),
@@ -137,9 +145,11 @@ impl Orbit {
             })
             .child(
                 div()
-                    .max_w(relative(if user { 0.82 } else { 0.94 }))
+                    .debug_selector({let task=task.to_owned();move||format!("ninja-bubble-{task}-{user}")})
+                    .flex().flex_col()
+                    .when(user,|s|s.w(relative(0.82)).flex_none())
+                    .when(!user,|s|s.flex_1())
                     .min_w(px(0.))
-                    .when(!user, |s| s.w_full())
                     .px_3()
                     .py_2()
                     .rounded_lg()
@@ -147,6 +157,23 @@ impl Orbit {
                     .text_size(theme::ui_px(13.))
                     .child(body),
             )
+    }
+    fn ninja_work_group(&self,task:&str,blocks:Arc<Vec<MessageBlock>>,range:std::ops::Range<usize>,cx:&Context<Self>)->Div{
+        let p=self.ninjas.panel.as_ref().unwrap();let ix=block_key(&format!("{task}:work"),range.start);let expanded=self.expanded_tools.contains(&ix);let reveal=self.interaction_reveal(ix);
+        let tasks=p.history_tasks.borrow();let current=tasks.iter().find(|t|t["id"]==task);let running=current.is_some_and(live);
+        let elapsed=current.and_then(|t|t["started"].as_i64().zip(t["finished"].as_i64())).map(|(a,b)|chat_timing::duration(b.saturating_sub(a)as u64*1000));
+        let label=if running{"Working".to_owned()}else if let Some(elapsed)=elapsed{format!("Worked for {elapsed}")}else{"Worked".into()};
+        let motion=self.motion&&!native::reduced_motion();
+        let mut group=div().w_full().min_w(px(0.)).flex().flex_col().child(div().id(("ninja-work",ix)).debug_selector(move||format!("ninja-work-{ix}")).w_full().h(px(28.)).flex_none().flex().items_center().gap_2().text_size(theme::ui_px(11.)).text_color(rgb(MUTED)).cursor_pointer()
+            .child(icon("chevron-right",12.,MUTED).with_transformation(Transformation::rotate(radians(reveal*std::f32::consts::FRAC_PI_2))))
+            .child(ninja_art::status(&p.profile.style,if running{"thinking"}else{"success"},false)).child(label).child(format!("· {} steps",range.len()))
+            .on_click(cx.listener(move|app,_,_,cx|{cx.stop_propagation();let from=app.interaction_reveal(ix);let open=if app.expanded_tools.remove(&ix){false}else{app.expanded_tools.insert(ix);true};if motion{app.interaction_animations.insert(ix,(Instant::now(),open,from));}cx.notify();})));
+        if expanded||reveal>0.{
+            let mut details=div().id(("ninja-work-details",ix)).w_full().min_w(px(0.)).max_h(px(640.)).overflow_y_scroll().flex().flex_col().gap_1();
+            for i in range{details=details.child(self.render_message_block(div().w_full().min_w(px(0.)),block_key(&format!("{task}:false"),i),&blocks[i],None,p.profile.agent,cx));}
+            group=group.child(div().w_full().max_h(px(640.*reveal)).overflow_hidden().opacity(reveal).child(details));
+        }
+        group
     }
     pub(super) fn ninja_toggle_control(&mut self, control: Control, cx: &mut Context<Self>) {
         let Some(p) = &mut self.ninjas.panel else {
@@ -1201,6 +1228,21 @@ mod tests {
         assert!(decode64("!!!!").is_err());
     }
     #[gpui::test]
+    fn long_ninja_turns_keep_readable_width_and_virtualize_offscreen_work(cx:&mut TestAppContext){
+        let(view,cx)=crate::ui_tests::fixture(cx);
+        cx.update(|w,cx|view.update(cx,|app,cx|{
+            app.motion=false;app.sidebar_split=false;app.sidebar_layout_transition=None;app.open_ninjas(Some("local".into()),None,w,cx);let p=app.ninjas.panel.as_mut().unwrap();p.profile.revision=1;p.settings=false;p.chat=Some("rendering".into());
+            let tool=chat_interactions::serialize_interaction(&chat_interactions::ChatInteraction::Delegation{title:"Terminal output".into(),details:"line one\nline two\n".repeat(300),status:chat_interactions::InteractionStatus::Completed,agent:None});
+            p.messages=(0..24).map(|i|json!({"id":format!("turn-{i}"),"profile":p.profile.id,"chat":"rendering","created":i,"prompt":"Please update the terminal and verify the finished result. ".repeat(8),"brief":format!("{tool}\n\n## Finished\n\n**Verified** the result with a readable response."),"state":"completed","finished":i+1})).collect();
+        }));
+        crate::ui_tests::draw_frame(&view,cx);crate::ui_tests::draw_frame(&view,cx);
+        let user=cx.debug_bounds("ninja-bubble-turn-23-true").unwrap();let reply=cx.debug_bounds("ninja-bubble-turn-23-false").unwrap();
+        assert!(user.size.width>px(400.)&&user.size.height<px(350.),"User content collapsed into a vertical strip: {user:?}");assert!(reply.size.width>px(400.),"Assistant content lost its flex width: {reply:?}");
+        let work=block_key("turn-23:work",0);let button=Box::leak(format!("ninja-work-{work}").into_boxed_str());crate::ui_tests::click_selector(cx,button);crate::ui_tests::draw_frame(&view,cx);
+        let ix=block_key("turn-23:false",0);let selector=Box::leak(format!("interaction-title-{ix}").into_boxed_str());assert!(cx.debug_bounds(selector).unwrap().size.width>px(150.),"Terminal title was clipped to Ter");
+        view.update(cx,|app,cx|{let p=app.ninjas.panel.as_ref().unwrap();assert!(p.blocks.borrow().len()<16,"Offscreen turns were still being built for each frame");let before=app.ninja_blocks(false,p.messages[23]["brief"].as_str().unwrap(),"turn-23");let snapshot=app.unified_snapshot(cx);let after=app.ninja_blocks(false,p.messages[23]["brief"].as_str().unwrap(),"turn-23");assert!(Arc::ptr_eq(&before,&after),"Native snapshots must reuse the same parsed document");assert!(!snapshot["history"].to_string().contains("orbit_interaction"));});
+    }
+    #[gpui::test]
     fn ninja_rich_reply_uses_normal_code_and_tool_cards_without_touching_code_history(
         cx: &mut TestAppContext,
     ) {
@@ -1245,6 +1287,8 @@ mod tests {
                     .contains("orbit_interaction")
             );
             assert!(snapshot["activeTurnId"].is_null());
+            assert!(!snapshot["history"].to_string().contains("cargo check passed"),"Collapsed native work leaked raw tool output");
+
         });
     }
     #[gpui::test]

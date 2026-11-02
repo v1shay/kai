@@ -5,7 +5,7 @@ from pathlib import Path
 
 def main():
     parser=argparse.ArgumentParser()
-    parser.add_argument('mode',choices=['menu-bar','wallpaper','glass','startup-workspace','startup-extended','startup-compact','performance','latency','background-idle'])
+    parser.add_argument('mode',choices=['ninja-chat','menu-bar','wallpaper','glass','startup-workspace','startup-extended','startup-compact','performance','latency','background-idle'])
     parser.add_argument('--bundle',type=Path,help='Verify another signed bundle, including an installed baseline')
     args=parser.parse_args();mode=args.mode
     root=Path(__file__).resolve().parent.parent
@@ -14,7 +14,9 @@ def main():
     log=report/(mode+'.log')
     env=os.environ.copy();env['KAI_PERFORMANCE_LOG']='1'
     flags=['--unified-smoke-test']
-    if mode=='menu-bar':
+    if mode=='ninja-chat':
+        flags+=['--unified-ninja-render-probe'];marker='KAI_NINJA_RENDER_PROBE_OK';env['KAI_STARTUP_SURFACE']='workspace'
+    elif mode=='menu-bar':
         flags+=['--unified-menu-bar-probe'];marker='KAI_MENU_BAR_PROBE_OK';env['KAI_STARTUP_SURFACE']='workspace'
     elif mode=='latency':
         flags+=['--unified-latency-probe'];marker='KAI_LATENCY_PROBE_OK';env['KAI_STARTUP_SURFACE']='workspace'
@@ -86,9 +88,14 @@ os.execve(sys.argv[1],sys.argv[1:],os.environ)
         if mode in {'performance','background-idle'} and len(samples)<6:raise RuntimeError('Insufficient process samples; run the isolated probe with process-inspection access')
         native_commands=re.findall(r'KAI_NATIVE_COMMAND (\S+)',text)
         interactions=[name for name in native_commands if name not in {'pet_visuals','workspace_presentation','workspace_wallpaper_visibility'}]
-        result={'mode':mode,'version':info.get('CFBundleShortVersionString'),'elapsed_seconds':round(time.monotonic()-launched,2),'launch_milliseconds':timings,'samples':samples,'native_commands':native_commands,'idle_interactions':interactions,'metrics':{name:[float(ms) for key,ms in re.findall(r'KAI_METRIC (\S+) ([0-9.]+)',text) if key==name] for name in ['warm_chat_switch','cold_chat_switch','warm_reveal','root_render']},'log':str(log)}
+        result={'mode':mode,'version':info.get('CFBundleShortVersionString'),'elapsed_seconds':round(time.monotonic()-launched,2),'launch_milliseconds':timings,'samples':samples,'native_commands':native_commands,'idle_interactions':interactions,'metrics':{name:[float(ms) for key,ms in re.findall(r'KAI_METRIC (\S+) ([0-9.]+)',text) if key==name] for name in ['warm_chat_switch','cold_chat_switch','warm_reveal','root_render','ninja_frame']},'log':str(log)}
         if samples:
             result['idle_average']={'cpu_percent_from_time_delta':100*(samples[-1]['cpu_seconds']-samples[0]['cpu_seconds'])/(samples[-1]['seconds']-samples[0]['seconds']),'cpu_percent':sum(s['cpu_percent'] for s in samples)/len(samples),'rss_mib':sum(s['rss_kib'] for s in samples)/len(samples)/1024,'threads':sum(s['threads'] for s in samples)/len(samples)}
+        if mode=='ninja-chat':
+            frames=sorted(result['metrics']['ninja_frame']);assert len(frames)>=100,'Insufficient real-window frame samples'
+            result['frame_p95_ms']=frames[int((len(frames)-1)*.95)]
+            result['frame_median_ms']=frames[len(frames)//2]
+            result['smooth_frame_budget_passed']=result['frame_p95_ms']<34
         (report/(mode+'.json')).write_text(json.dumps(result,indent=2))
         if mode in {'performance','background-idle'} and interactions:
             raise RuntimeError(f'Idle measurement received native input ({interactions}); evidence saved, but this run cannot certify idle CPU')

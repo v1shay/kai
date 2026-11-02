@@ -157,6 +157,7 @@ impl Orbit {
                 | "history_latest"
                 | "composer_command"
                 | "ninja_artifact"
+                | "interaction_details"
         ) {
             return Ok(false);
         }
@@ -164,6 +165,12 @@ impl Orbit {
             return Err("The selected Ninja conversation changed; your draft is preserved".into());
         }
         match action {
+            "interaction_details"=>{
+                let raw=v["id"].as_str().and_then(|id|id.strip_prefix("ninja-work:")).ok_or("Missing Ninja work group")?;
+                let(task,index)=raw.rsplit_once(':').ok_or("Invalid Ninja work group")?;let index=index.parse::<usize>().map_err(|_|"Invalid Ninja work group")?;
+                let p=self.ninjas.panel.as_ref().unwrap();let owner=p.messages.iter().chain(p.history_tasks.borrow().iter()).any(|t|t["id"]==task&&t["chat"].as_str()==p.chat.as_deref());if !owner{return Err("This work belongs to another conversation".into())}
+                let key=crate::ninja_chat::block_key(&format!("{task}:work"),index);if !self.expanded_tools.remove(&key){self.expanded_tools.insert(key);}cx.notify();
+            },
             "ninja_artifact"=>{let path=v["path"].as_str().ok_or("Missing generated file")?;self.ninja_request_artifact(path.into(),true,cx);},
             "composer_command"=>{
                 let name=v["name"].as_str().filter(|n|crate::ninja_chat::COMMANDS.iter().any(|(known,_)|n==known)).ok_or("Unknown Ninja command")?;
@@ -366,7 +373,14 @@ impl Orbit {
                 }
             } else {
                 history.push(json!({"id":format!("{id}-user"),"kind":"user","lines":[{"text":t["prompt"],"style":"plain"}],"agent":"ninja"}));
-                for(i,block)in presentation::message_blocks("assistant",t["brief"].as_str().unwrap_or("")).iter().enumerate(){
+                let blocks=self.ninja_blocks(false,t["brief"].as_str().unwrap_or(""),id);let mut grouped_until=0;let mut show_work=false;
+                for(i,block)in blocks.iter().enumerate(){
+                    let activity=|b:&MessageBlock|matches!(b,MessageBlock::Activity{..}|MessageBlock::Interaction(chat_interactions::ChatInteraction::Status{..}|chat_interactions::ChatInteraction::Delegation{..}));
+                    if activity(block){
+                        if i>=grouped_until{grouped_until=i+blocks[i..].iter().take_while(|b|activity(b)).count();let key=crate::ninja_chat::block_key(&format!("{id}:work"),i);show_work=self.expanded_tools.contains(&key);history.push(json!({"id":format!("{id}-work-{i}"),"kind":"activity","lines":[{"text":format!("{} · {} steps",if show_work{"Hide work"}else{"Show work"},grouped_until-i),"style":"activity"}],"detailId":format!("ninja-work:{id}:{i}"),"agent":"ninja","speechText":""}));}
+                        if !show_work{continue}
+                    }
+
                     let (kind,text,style,preview)=match block{
                         MessageBlock::Paragraph(s)|MessageBlock::Quote(s)=>("assistant",s.clone(),"text",None),
                         MessageBlock::Heading(s)=>("assistant",s.clone(),"heading",None),
@@ -424,6 +438,19 @@ impl Orbit {
 mod tests {
     use super::*;
     use std::prelude::v1::test;
+    #[gpui::test]
+    fn native_work_disclosure_uses_the_same_group_and_rejects_a_changed_owner(cx:&mut TestAppContext){
+        let(view,cx)=crate::ui_tests::fixture(cx);
+        cx.update(|w,cx|view.update(cx,|app,cx|{
+            app.open_ninjas(Some("local".into()),None,w,cx);let p=app.ninjas.panel.as_mut().unwrap();p.profile.revision=1;p.chat=Some("chat".into());
+            let tool=crate::chat_interactions::serialize_interaction(&crate::chat_interactions::ChatInteraction::Delegation{title:"Terminal output".into(),details:"Verified fixture output".into(),status:crate::chat_interactions::InteractionStatus::Completed,agent:None});
+            p.messages=vec![json!({"id":"turn","profile":p.profile.id,"chat":"chat","brief":format!("{tool}\n\nDone"),"prompt":"Check","state":"completed","finished":2})];
+            let owner=app.ninja_surface_owner().unwrap();let before=app.unified_snapshot(cx);let detail=before["history"].as_array().unwrap().iter().find_map(|v|v["detailId"].as_str()).unwrap().to_owned();assert!(!before["history"].to_string().contains("Verified fixture output"));
+            app.unified_command(&json!({"action":"interaction_details","ownerToken":owner,"id":detail}),w,cx).unwrap();assert!(app.unified_snapshot(cx)["history"].to_string().contains("Verified fixture output"));
+            app.unified_command(&json!({"action":"interaction_details","ownerToken":owner,"id":detail}),w,cx).unwrap();assert!(!app.unified_snapshot(cx)["history"].to_string().contains("Verified fixture output"));
+            app.ninjas.panel.as_mut().unwrap().chat=Some("other".into());assert!(app.unified_command(&json!({"action":"interaction_details","ownerToken":owner,"id":detail}),w,cx).is_err());
+        }));
+    }
     #[gpui::test]
     fn mini_and_menu_hotkey_destinations_switch_the_same_shared_window(cx:&mut TestAppContext){
         let(view,cx)=crate::ui_tests::fixture(cx);

@@ -387,6 +387,43 @@ fn approval_decision(text: &str) -> bool {
         && value.get("rationale").and_then(Value::as_str).is_some()
 }
 
+/// Bound transport previews at native record boundaries. Native tool payloads
+/// remain typed cards; JSON escaping never becomes visible transcript prose.
+/// Full details remain in the immutable source for history/review.
+pub(crate) fn compact_transcript(text:&str,budget:usize)->String{
+    let protected=code_protected_ranges(text);let literal=|at|protected.iter().any(|r|r.contains(&at));
+    let mut out=String::new();let mut cursor=0;let mut search=0;
+    // Older byte tails can begin inside an app-owned record. Its closing tag
+    // identifies the end without interpreting arbitrary JSON or source code.
+    if let Some(close)=text.find("</orbit_interaction>"){
+        if !literal(close)&&text[..close].find("<orbit_interaction").is_none(){cursor=close+"</orbit_interaction>".len();search=cursor;}
+    }
+    while let Some(at)=text[search..].find("<orbit_interaction").map(|i|i+search){
+        search=at+1;if literal(at){continue}
+        let Some(("orbit_interaction",body))=opening_tag(text,at)else{continue};if !text[at..body].contains("version=\"1\""){continue}
+        let Some(close)=text[body..].find("</orbit_interaction>").map(|i|i+body)else{break};
+        let Some((mut card,context))=chat_interactions::decode_with_context(&text[body..close])else{continue};
+        let limit=(budget/4).clamp(256,4096);
+        match &mut card{ChatInteraction::Status{details,..}|ChatInteraction::Delegation{details,..}=>{if details.len()>limit{let mut end=limit;while !details.is_char_boundary(end){end-=1}details.truncate(end);details.push_str("\n…");}},_=>{}}
+        out.push_str(&text[cursor..at]);
+        out.push_str(&format!("<orbit_interaction version=\"1\">{}</orbit_interaction>",chat_interactions::encode_with_context(&card,context.as_deref()).replace('<',"\\u003c")));
+        cursor=close+"</orbit_interaction>".len();search=cursor;
+    }
+    out.push_str(&text[cursor..]);
+    if out.len()<=budget{return out}
+    let mut start=out.len()-budget;while !out.is_char_boundary(start){start+=1}
+    // Retain a whole native record, or start after it; never emit its suffix.
+    if let Some(close)=out[start..].find("</orbit_interaction>"){
+        if out[start..start+close].find("<orbit_interaction").is_none(){start+=close+"</orbit_interaction>".len();}
+    }
+    if let Some(range)=code_protected_ranges(&out).iter().find(|r|r.contains(&start)){
+        if let Some(header)=out[range.start..].lines().next().filter(|s|s.trim_start().starts_with("```")||s.trim_start().starts_with("~~~")){
+            return format!("{header}\n{}",out[start..].trim_start());
+        }
+    }
+    out[start..].trim_start().to_owned()
+}
+
 pub fn message_blocks(role: &str, text: &str) -> Vec<MessageBlock> {
     let Some(text) = sanitize_transcript_text(role, text) else {
         return Vec::new();
@@ -1256,22 +1293,6 @@ fn bounded_interaction(card: ChatInteraction) -> Vec<MessageBlock> {
                 })
                 .collect()
         }
-        ChatInteraction::Delegation {
-            title,
-            details,
-            status,
-            agent,
-        } if details.len() > 1500 => chunks(&details)
-            .into_iter()
-            .map(|details| {
-                MessageBlock::Interaction(ChatInteraction::Delegation {
-                    title: title.clone(),
-                    details: details.to_owned(),
-                    status,
-                    agent: agent.clone(),
-                })
-            })
-            .collect(),
         card => vec![MessageBlock::Interaction(card)],
     }
 }
@@ -1958,6 +1979,19 @@ fn chunks(text: &str) -> Vec<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn bounded_transcripts_preserve_native_records_and_code_instead_of_json_fragments(){
+        let details="terminal output \n".repeat(10000);
+        let card=ChatInteraction::Delegation{title:"Terminal output".into(),details:details.clone(),status:InteractionStatus::Completed,agent:None};
+        let native=chat_interactions::serialize_interaction(&card);
+        assert_eq!(blocks(&native).iter().filter(|b|matches!(b,MessageBlock::Interaction(_))).count(),1,"One tool call must remain one expandable item");
+        let raw=format!("## Starting\n\n{native}\n\n## Done\n\nThe final answer.");
+        let compact=compact_transcript(&raw,8192);assert!(compact.len()<=8192);assert!(compact.ends_with("The final answer."));
+        assert!(blocks(&compact).iter().any(|b|matches!(b,MessageBlock::Interaction(_))));assert!(!blocks(&compact).iter().any(|b|matches!(b,MessageBlock::Paragraph(s)if s.contains("orbit_interaction")||s.contains("\\n"))));
+        let orphan=format!("escaped \\n \\t payload</orbit_interaction>\nThe real reply");assert_eq!(compact_transcript(&orphan,8192),"\nThe real reply");
+        let code=format!("```rust\n{}\n```\nDone","let x = 1;\n".repeat(2000));let clipped=compact_transcript(&code,4096);assert!(matches!(blocks(&clipped).first(),Some(MessageBlock::Code{..})),"A clipped code block lost its fence");
+        let literal=format!("```xml\n{native}\n```");assert_eq!(compact_transcript(&literal,literal.len()+1),literal);
+    }
     #[test]
     fn inline_sweep_preserves_overlap_order_and_scales_to_many_links() {
         let spans = vec![

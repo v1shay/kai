@@ -186,7 +186,7 @@ pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Resul
             "Kai unified: native layer and owner state ready in process {}",
             std::process::id()
         );
-        if std::env::args().any(|arg|matches!(arg.as_str(),"--unified-latency-probe"|"--unified-background-idle-probe")){
+        if std::env::args().any(|arg|matches!(arg.as_str(),"--unified-latency-probe"|"--unified-background-idle-probe"|"--unified-ninja-render-probe")){
             anyhow::ensure!(std::env::args().any(|arg|arg=="--unified-smoke-test"),"Performance probes require isolated data");
         }else if std::env::args().any(|arg|arg=="--unified-menu-bar-probe"){
             anyhow::ensure!(std::env::args().any(|arg|arg=="--unified-smoke-test"),"Menu probe requires isolated app data");
@@ -277,7 +277,7 @@ pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Resul
             }).detach();
         }
         emit(&json!({"type":"keyboardCatalog","commands":keyboard::catalog()}));
-        if !std::env::args().any(|arg|arg=="--unified-smoke-test") || std::env::args().any(|arg|matches!(arg.as_str(),"--unified-startup-probe"|"--unified-latency-probe"|"--unified-background-idle-probe")) {
+        if !std::env::args().any(|arg|arg=="--unified-smoke-test") || std::env::args().any(|arg|matches!(arg.as_str(),"--unified-startup-probe"|"--unified-latency-probe"|"--unified-background-idle-probe"|"--unified-ninja-render-probe")) {
             let surface=entity.read(cx).startup_surface;
             // The native owner already has a state packet. Present immediately;
             // discovery and provider catalogs continue independently.

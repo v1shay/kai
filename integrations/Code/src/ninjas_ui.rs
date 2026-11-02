@@ -45,7 +45,9 @@ pub(super) struct Panel {
     delete_confirm:bool,
     pub messages: Vec<Value>,
     pub history_loading: bool,
-    history_scroll:ScrollHandle,
+    pub history_scroll:ListState,
+    pub history_follow:std::cell::Cell<bool>,
+    pub history_tasks:std::cell::RefCell<std::sync::Arc<Vec<Value>>>,
     history_scroll_owner:std::cell::RefCell<Option<String>>,
     pub models_requested: bool,
     pub models_loading:Option<uuid::Uuid>,
@@ -879,7 +881,8 @@ impl Orbit {
             delete_confirm:false,
             messages: vec![],
             history_loading: false,
-            history_scroll:ScrollHandle::new(),
+            history_scroll:ListState::new(0,ListAlignment::Bottom,px(200.)),
+            history_follow:std::cell::Cell::new(true),history_tasks:Default::default(),
             history_scroll_owner:Default::default(),
             models_requested: false,
             models_loading:None,
@@ -890,6 +893,7 @@ impl Orbit {
             at: Instant::now(),
             token: uuid::Uuid::new_v4(),
         });
+        if let Some(p)=&self.ninjas.panel{let token=p.token;p.history_scroll.set_scroll_handler(cx.listener(move|app,event:&ListScrollEvent,_,_|{if let Some(p)=app.ninjas.panel.as_ref().filter(|p|p.token==token){p.history_follow.set(!event.is_scrolled);}}));}
         if let Some(p)=&self.ninjas.panel {let key=format!("{}:{}:{}",p.host,p.profile.id,p.chat.as_deref().unwrap_or("draft"));if let Some(draft)=self.ninjas.drafts.get(&key){p.fields[3].update(cx,|input,cx|input.set_text(draft,cx));}}
         self.modal = None;
         self.agent_picker = None;
@@ -1069,7 +1073,7 @@ impl Orbit {
                                     panel.profile.revision = revision;
                                 }
                                 panel.chat = value["chat"].as_str().map(str::to_owned);
-                                panel.history_scroll.scroll_to_bottom();
+                                panel.history_follow.set(true);panel.history_scroll.scroll_to(ListOffset{item_ix:panel.history_scroll.item_count(),offset_in_item:px(0.)});
                                 panel.task = Some(value);
                                 if submitted_prompt.as_deref()
                                     == Some(panel.fields[3].read(cx).text().as_str())
@@ -1327,6 +1331,94 @@ impl Orbit {
         div().debug_selector(||"chat-pane".into()).flex_1().size_full().min_w(px(0.)).min_h(px(0.)).flex().flex_col().relative().overflow_hidden()
             .child(self.tabs(cx)).child(div().flex_1().min_h(px(0.)).child(self.ninjas_panel(window,cx))).into_any_element()
     }
+    fn ninja_task_row(&self,t:&Value,window:&Window,cx:&Context<Self>)->AnyElement{
+        let p=self.ninjas.panel.as_ref().unwrap();
+
+                        let id = t["id"].as_str().unwrap_or("").to_owned();
+                        let selected = p
+                            .task
+                            .as_ref()
+                            .filter(|v| v["id"] == id && v["finished"] == t["finished"]);
+                        let prompt = selected
+                            .and_then(|v| v["prompt"].as_str())
+                            .or_else(|| t["prompt"].as_str())
+                            .unwrap_or("")
+                            .to_owned();
+                        let brief = selected
+                            .filter(|_| {
+                                !["running", "approval"]
+                                    .contains(&t["state"].as_str().unwrap_or(""))
+                            })
+                            .and_then(|v| v["brief"].as_str())
+                            .or_else(|| t["brief"].as_str())
+                            .unwrap_or("")
+                            .to_owned();
+                        let running = crate::ninja_chat::live(&t);
+                        let scene = task_scene(&t);
+                        let mut row = div()
+                            .id(SharedString::from(format!("ninja-task-{id}")))
+                            .debug_selector({let id=id.clone();move||format!("ninja-task-{id}")})
+                            .w_full()
+                            .flex_none()
+                            .flex()
+                            .flex_col()
+                            .gap_2();
+                        if t["call"].is_string() {
+                            row = row.child(
+                                div()
+                                    .text_size(theme::ui_px(10.))
+                                    .text_color(rgb(MUTED))
+                                    .child("Call"),
+                            );
+                            for line in t["utterances"].as_array().into_iter().flatten() {
+                                row = row.child(self.ninja_bubble(line["role"] == "user",line["text"].as_str().unwrap_or("").to_owned(),&format!("{id}-{}",line["id"]),window,cx));
+                            }
+                        } else {
+                            row = row
+                                .child(self.ninja_bubble(true, prompt, &id,window,cx))
+                                .child(self.ninja_bubble(false, brief, &id,window,cx));
+                        }
+                        row = row.child(
+                            div()
+                                .pl(px(32.))
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(crate::ninja_art::status(&p.profile.style,scene,running && self.motion && !native::reduced_motion() && window.is_window_active()))
+                                .child(
+                                    div()
+                                        .text_size(theme::ui_px(10.))
+                                        .text_color(rgb(MUTED))
+                                        .child(t["status"].as_str().unwrap_or("").to_owned()),
+                                ),
+                        );
+                        if running {
+                            let stop = id.clone();
+                            row = row.child(chip(
+                                SharedString::from(format!("ninja-stop-{id}")),
+                                "Stop",
+                                false,
+                                cx,
+                                move |app, _, cx| {
+                                    app.ninja_operation(json!({"action":"stop","id":stop}), cx)
+                                },
+                            ));
+                        }
+                        if self.motion && !native::reduced_motion() {
+                            row.with_animation(
+                                SharedString::from(format!(
+                                    "ninja-message-{}",
+                                    t["id"].as_str().unwrap_or("")
+                                )),
+                                Animation::new(Duration::from_millis(220)),
+                                |s, t| s.opacity(t).relative().top(px((1. - t) * 5.)),
+                            )
+                            .into_any_element()
+                        } else {
+                            row.into_any_element()
+                        }
+
+    }
     pub(super) fn ninjas_panel(&self, window: &Window, cx: &Context<Self>) -> AnyElement {
         let compact = f32::from(window.viewport_size().width) < 640.;
         let Some(p) = &self.ninjas.panel else {
@@ -1363,6 +1455,7 @@ impl Orbit {
             .and_then(|m| m["efforts"].as_array())
             .cloned()
             .unwrap_or_default();
+        let setup=if p.settings||p.profile.revision==0{
         let mut setup = div()
             .w_full()
             .flex()
@@ -1703,6 +1796,8 @@ impl Orbit {
         if p.profile.revision > 0 {
             setup=setup.child(div().text_size(theme::ui_px(11.)).child("Personal memory")).child(field(&p.fields[4],"file").min_h(px(90.))).child(chip("ninja-save-memory","Save memory",false,cx,|app,_,cx|{if let Some(p)=&app.ninjas.panel{let v=json!({"action":"memory","id":p.profile.id,"revision":p.memory_revision,"content":p.fields[4].read(cx).text()});app.ninja_operation(v,cx);}}));
         }
+        setup
+        }else{div()};
         let summaries = snapshot
             .and_then(|v| v["tasks"].as_array())
             .into_iter()
@@ -1731,9 +1826,17 @@ impl Orbit {
         tasks.sort_by_key(|t| t["created"].as_i64().unwrap_or(0));
         let history_owner=format!("{}:{}:{}",p.host,p.profile.id,p.chat.as_deref().unwrap_or("draft"));
         let changed=p.history_scroll_owner.borrow().as_ref()!=Some(&history_owner);
-        // Follow new layout/streaming only while already at the bottom. A user
-        // reading earlier messages keeps their position until changing chats.
-        if changed || p.history_scroll.max_offset().height+p.history_scroll.offset().y<px(24.){p.history_scroll.scroll_to_bottom();}
+        let mut cached=p.history_tasks.borrow_mut();
+        if changed || cached.as_ref()!=&tasks{
+            let old=cached.len();
+            if changed{p.history_scroll.reset(tasks.len());p.history_follow.set(true);}else{
+                let first=cached.iter().zip(&tasks).position(|(a,b)|a!=b).unwrap_or(old.min(tasks.len()));
+                p.history_scroll.splice(first..old,tasks.len()-first);
+            }
+            *cached=std::sync::Arc::new(tasks);
+            if p.history_follow.get(){p.history_scroll.scroll_to(ListOffset{item_ix:cached.len(),offset_in_item:px(0.)});}
+        }
+        let tasks=cached.clone();drop(cached);
         *p.history_scroll_owner.borrow_mut()=Some(history_owner.clone());
         let held = snapshot
             .and_then(|v| v["profiles"].as_array())
@@ -1822,95 +1925,11 @@ impl Orbit {
                     .min_h(px(0.))
                     .id(SharedString::from(format!("ninja-task-history-{history_owner}")))
                     .debug_selector(||"ninja-task-history".into())
-                    .overflow_y_scroll()
-                    .track_scroll(&p.history_scroll)
-                    .flex().flex_col().gap_2()
-                    .child(div().flex_1().min_h(px(0.)))
-                    .children(tasks.into_iter().map(|t| {
-                        let id = t["id"].as_str().unwrap_or("").to_owned();
-                        let selected = p
-                            .task
-                            .as_ref()
-                            .filter(|v| v["id"] == id && v["finished"] == t["finished"]);
-                        let prompt = selected
-                            .and_then(|v| v["prompt"].as_str())
-                            .or_else(|| t["prompt"].as_str())
-                            .unwrap_or("")
-                            .to_owned();
-                        let brief = selected
-                            .filter(|_| {
-                                !["running", "approval"]
-                                    .contains(&t["state"].as_str().unwrap_or(""))
-                            })
-                            .and_then(|v| v["brief"].as_str())
-                            .or_else(|| t["brief"].as_str())
-                            .unwrap_or("")
-                            .to_owned();
-                        let running = crate::ninja_chat::live(&t);
-                        let scene = task_scene(&t);
-                        let mut row = div()
-                            .id(SharedString::from(format!("ninja-task-{id}")))
-                            .debug_selector({let id=id.clone();move||format!("ninja-task-{id}")})
-                            .w_full()
-                            .flex_none()
-                            .flex()
-                            .flex_col()
-                            .gap_2();
-                        if t["call"].is_string() {
-                            row = row.child(
-                                div()
-                                    .text_size(theme::ui_px(10.))
-                                    .text_color(rgb(MUTED))
-                                    .child("Call"),
-                            );
-                            for line in t["utterances"].as_array().into_iter().flatten() {
-                                row = row.child(self.ninja_bubble(line["role"] == "user",line["text"].as_str().unwrap_or("").to_owned(),&format!("{id}-{}",line["id"]),window,cx));
-                            }
-                        } else {
-                            row = row
-                                .child(self.ninja_bubble(true, prompt, &id,window,cx))
-                                .child(self.ninja_bubble(false, brief, &id,window,cx));
-                        }
-                        row = row.child(
-                            div()
-                                .pl(px(32.))
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .child(crate::ninja_art::status(&p.profile.style,scene,running && self.motion && !native::reduced_motion() && window.is_window_active()))
-                                .child(
-                                    div()
-                                        .text_size(theme::ui_px(10.))
-                                        .text_color(rgb(MUTED))
-                                        .child(t["status"].as_str().unwrap_or("").to_owned()),
-                                ),
-                        );
-                        if running {
-                            let stop = id.clone();
-                            row = row.child(chip(
-                                SharedString::from(format!("ninja-stop-{id}")),
-                                "Stop",
-                                false,
-                                cx,
-                                move |app, _, cx| {
-                                    app.ninja_operation(json!({"action":"stop","id":stop}), cx)
-                                },
-                            ));
-                        }
-                        if self.motion && !native::reduced_motion() {
-                            row.with_animation(
-                                SharedString::from(format!(
-                                    "ninja-message-{}",
-                                    t["id"].as_str().unwrap_or("")
-                                )),
-                                Animation::new(Duration::from_millis(220)),
-                                |s, t| s.opacity(t).relative().top(px((1. - t) * 5.)),
-                            )
-                            .into_any_element()
-                        } else {
-                            row.into_any_element()
-                        }
-                    })),
+                    .min_w(px(0.))
+                    .child(list(p.history_scroll.clone(),cx.processor(|app,index,window,cx|{
+                        let task=app.ninjas.panel.as_ref().unwrap().history_tasks.borrow().get(index).cloned();
+                        task.map(|t|app.ninja_task_row(&t,window,cx)).unwrap_or_else(||div().into_any_element())
+                    })).size_full()),
             );
         for task in snapshot.and_then(|v|v["tasks"].as_array()).into_iter().flatten().filter(|t|t["profile"]==p.profile.id&&t["chat"].as_str()==p.chat.as_deref()&&crate::ninja_chat::live(t)){
             for request in task["requests"].as_array().into_iter().flatten(){
@@ -2279,15 +2298,15 @@ mod tests {
             p.messages=(0..24).map(|i|json!({"id":format!("long-{i}"),"chat":"long","profile":p.profile.id,"created":i,"prompt":"User request. ".repeat(15),"brief":"The completed response. ".repeat(24),"state":"completed","finished":i+1})).collect();
         }));
         crate::ui_tests::draw_frame(&view,cx);crate::ui_tests::draw_frame(&view,cx);
-        view.update(cx,|app,_|{let p=app.ninjas.panel.as_ref().unwrap();assert!(p.history_scroll.max_offset().height>px(100.));assert!((p.history_scroll.offset().y+p.history_scroll.max_offset().height).abs()<px(1.));p.history_scroll.set_offset(point(px(0.),px(0.)));});
+        view.update(cx,|app,_|{let p=app.ninjas.panel.as_ref().unwrap();assert_eq!(p.history_scroll.item_count(),24);assert!(p.history_scroll.logical_scroll_top().item_ix>0);p.history_follow.set(false);p.history_scroll.scroll_to(ListOffset{item_ix:0,offset_in_item:px(0.)});});
         crate::ui_tests::draw_frame(&view,cx);
-        view.update(cx,|app,_|{let p=app.ninjas.panel.as_mut().unwrap();assert_eq!(p.history_scroll.offset().y,px(0.));p.messages.last_mut().unwrap()["brief"]=json!("More streaming text. ".repeat(80));});
+        view.update(cx,|app,_|{let p=app.ninjas.panel.as_mut().unwrap();assert_eq!(p.history_scroll.logical_scroll_top().item_ix,0);p.messages.last_mut().unwrap()["brief"]=json!("More streaming text. ".repeat(80));});
         crate::ui_tests::draw_frame(&view,cx);
-        view.update(cx,|app,_|{let p=app.ninjas.panel.as_mut().unwrap();assert_eq!(p.history_scroll.offset().y,px(0.),"Streaming must not yank a reader back down");p.chat=Some("short".into());p.messages=vec![json!({"id":"short-last","profile":p.profile.id,"chat":"short","created":1,"prompt":"Quick question","brief":"Quick reply","state":"completed","finished":2})];});
+        view.update(cx,|app,_|{let p=app.ninjas.panel.as_mut().unwrap();assert_eq!(p.history_scroll.logical_scroll_top().item_ix,0,"Streaming must not yank a reader back down");p.chat=Some("short".into());p.messages=vec![json!({"id":"short-last","profile":p.profile.id,"chat":"short","created":1,"prompt":"Quick question","brief":"Quick reply","state":"completed","finished":2})];});
         crate::ui_tests::draw_frame(&view,cx);crate::ui_tests::draw_frame(&view,cx);
         let viewport=cx.debug_bounds("ninja-task-history").unwrap();let row=cx.debug_bounds("ninja-task-short-last").unwrap();
         assert!((viewport.bottom()-row.bottom()).abs()<px(3.),"Short history must sit above the composer: {row:?} in {viewport:?}");
-        view.update(cx,|app,_|{let p=app.ninjas.panel.as_ref().unwrap();assert!((p.history_scroll.offset().y+p.history_scroll.max_offset().height).abs()<px(1.));});
+        view.update(cx,|app,_|{let p=app.ninjas.panel.as_ref().unwrap();assert_eq!(p.history_scroll.item_count(),1);assert!(p.history_follow.get());});
     }
     #[gpui::test]
     fn ninja_deletion_is_explicit_cancelable_and_cleans_only_its_own_surface(cx:&mut TestAppContext){

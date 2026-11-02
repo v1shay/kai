@@ -6306,7 +6306,7 @@ fn main() {
                 });
             }
         }
-        if std::env::args().any(|a|matches!(a.as_str(),"--unified-latency-probe"|"--unified-background-idle-probe")){performance::start_probe(main_window,cx);}
+        if std::env::args().any(|a|matches!(a.as_str(),"--unified-latency-probe"|"--unified-background-idle-probe"|"--unified-ninja-render-probe")){performance::start_probe(main_window,cx);}
         cx.activate(true);
     });
 }

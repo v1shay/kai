@@ -74,6 +74,7 @@ pub(super) fn start_probe(window: WindowHandle<Orbit>, cx: &mut App) {
     if !std::env::args().any(|a| a == "--unified-smoke-test") {
         return;
     }
+    if std::env::args().any(|a|a=="--unified-ninja-render-probe"){start_ninja_probe(window,cx);return}
     cx.spawn(async move |cx| {
         if std::env::args().any(|a|a=="--unified-background-idle-probe"){
             Timer::after(Duration::from_millis(1800)).await;let _=window.update(cx,|_,_,_|unified::collapse());
@@ -159,4 +160,34 @@ pub(super) fn start_probe(window: WindowHandle<Orbit>, cx: &mut App) {
         let _ = cx.update(|cx| cx.quit());
     })
     .detach();
+}
+
+// Render the same production widgets with an isolated, deliberately long chat.
+// No provider, workspace files, saved identities, or live worker are involved.
+fn start_ninja_probe(owner:WindowHandle<Orbit>,cx:&mut App){
+    fn frames(window:&mut Window,left:usize,at:Instant){
+        window.refresh();window.on_next_frame(move|window,_|{
+            sample("ninja_frame",at.elapsed());if left>1{frames(window,left-1,Instant::now());}
+        });
+    }
+    cx.spawn(async move|cx|{
+        Timer::after(Duration::from_secs(3)).await;
+        let _=owner.update(cx,|app,window,cx|{
+            app.ninjas=crate::ninjas_ui::State{started:true,..Default::default()};app.ninja.draft.node=false;
+            app.open_ninjas(Some("validation".into()),None,window,cx);
+            let p=app.ninjas.panel.as_mut().unwrap();p.profile.revision=1;p.profile.name="rendering validation".into();p.profile.style="ice".into();p.chat=Some("fixture".into());p.settings=false;
+            let tool=chat_interactions::serialize_interaction(&chat_interactions::ChatInteraction::Delegation{title:"Terminal output".into(),details:"$ cargo check\nChecking project\nFinished successfully\n".repeat(100),status:chat_interactions::InteractionStatus::Completed,agent:None});
+            let thought=chat_interactions::serialize_interaction(&chat_interactions::ChatInteraction::Status{title:"Thinking".into(),details:"Checking the changes and verifying the result.".into(),status:chat_interactions::InteractionStatus::Completed});
+            p.messages=(0..24).map(|i|serde_json::json!({"id":format!("fixture-{i}"),"profile":p.profile.id,"chat":"fixture","created":i,"prompt":"Update the terminal and verify the result. Keep messages readable as the window changes size.","brief":format!("{thought}\n\n{tool}\n\n## Verified\n\nThe **terminal update** is ready. The full command output is available above.\n\n```rust\nlet result = verify_changes()?;\n```\n\n- readable messages\n- one tool result per command\n- smooth scrolling"),"state":"completed","finished":i+1})).collect();
+            app.sidebar_split=false;app.sidebar_layout_transition=None;app.conversations_visible=false;
+            window.activate_window();cx.activate(true);frames(window,120,Instant::now());cx.notify();
+        });
+        for phase in ["wide","compact"]{
+            if phase=="compact"{let _=owner.update(cx,|_,window,_|window.resize(size(px(620.),px(720.))));}
+            Timer::after(Duration::from_secs(4)).await;
+            let id=owner.update(cx,|_,window,_|native::window_number(window)).unwrap_or(0);
+            if id>0{let destination=format!("/private/tmp/kai048-ninja-{phase}.png");let result=cx.background_executor().spawn(async move{std::process::Command::new("/usr/sbin/screencapture").args(["-x","-l",&id.to_string(),&destination]).status()}).await;if !result.is_ok_and(|s|s.success()){eprintln!("KAI_NINJA_RENDER_PROBE_FAILED capture");}}
+        }
+        eprintln!("KAI_NINJA_RENDER_PROBE_OK");let _=cx.update(|cx|cx.quit());
+    }).detach();
 }
