@@ -21,12 +21,18 @@ import AppKit
         contact.setFillColor(NSColor(srgbRed:0.065,green:0.072,blue:0.08,alpha:1).cgColor);contact.fill(CGRect(x:0,y:0,width:768,height:actions.count*112))
         for (row,action) in actions.enumerated(){var frames=Set<Data>();for i in 0..<8{let image=NinjaPixelActor.frame(style:"fire",action:action,step:i);frames.insert(image.dataProvider!.data! as Data);contact.draw(image,in:CGRect(x:i*96,y:(actions.count-1-row)*112,width:96,height:112))};precondition(frames.count>1,"Every action needs articulated movement")}
         let sheet=NSBitmapImageRep(cgImage:contact.makeImage()!);try! sheet.representation(using:.png,properties:[:])!.write(to:URL(fileURLWithPath:"/private/tmp/kai-ninja-actions.png"))
-        for size in [CGSize(width:420,height:96),CGSize(width:1000,height:210)]{
+        for size in [CGSize(width:420,height:96),CGSize(width:620,height:140),CGSize(width:1000,height:210)]{
             for working in [false,true]{
                 let plan=NinjaMotionPlan(size:size,working:working,finished:false)
                 precondition(plan.samples.contains{$0.action == .climb} && plan.samples.contains{$0.action == .tuck})
                 let ys=plan.samples.map{$0.position.y};precondition(ys.max()!-ys.min()!>15,"Route must move vertically, not just animate limbs")
-                precondition(plan.samples.allSatisfy{$0.position.y>=18 && $0.position.y<size.height && $0.position.x>=0 && $0.position.x<=size.width})
+                let sprite=NinjaAtmosphereView.spriteSize(fieldHeight:size.height),radius=hypot(sprite.width,sprite.height)/2
+                for sample in plan.samples {
+                    let lowerEdge=sample.position.y+radius
+                    precondition(lowerEdge<=size.height*0.60,"Even a rotated/jumping sprite must stay above the faded-out dots")
+                    precondition(sample.position.y-radius>=0,"The full sprite must also stay below the top edge")
+                    precondition(sample.position.x-radius>=0 && sample.position.x+radius<=size.width)
+                }
                 precondition(hypot(plan.samples.first!.position.x-plan.samples.last!.position.x,plan.samples.first!.position.y-plan.samples.last!.position.y)<0.1,"Loop must close without a position jump")
                 for (a,b) in zip(plan.samples,plan.samples.dropFirst()){precondition(hypot(a.position.x-b.position.x,a.position.y-b.position.y)<35,"Motion samples must remain continuous")}
             }
@@ -90,7 +96,8 @@ import AppKit
         func position()->CGPoint{
             guard let p=scene.diagnosticPosition else{preconditionFailure("WindowServer must provide a live actor presentation: \(scene.diagnosticPlayback)")}
             let size=scene.layer!.sublayers!.first!.bounds.size
-            let pad=min(146,max(48,size.width*0.26)),top=min(56,size.height*0.35),bottom=max(top+12,size.height-28)
+            let pad=min(146,max(48,size.width*0.26)),sprite=NinjaAtmosphereView.spriteSize(fieldHeight:size.height)
+            let radius=hypot(sprite.width,sprite.height)/2,top=radius+6,bottom=max(top,NinjaAtmosphereView.dotTravelDepth(fieldHeight:size.height)-radius-2)
             return CGPoint(x:(p.x-pad)/max(1,size.width-2*pad),y:(p.y-top)/(bottom-top))
         }
         func configure(_ working:Bool){scene.configure(identity:"studio:ice:conversation",name:"ice",style:"ice",working:working,motion:true,visible:true)}

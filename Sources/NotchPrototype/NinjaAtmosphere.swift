@@ -57,10 +57,11 @@ import QuartzCore
         let scale=window?.backingScaleFactor ?? 2
         let key="\(Int(bounds.width*scale)):\(Int(height*scale)):\(style)"
         if key != rasterKey {rasterKey=key;grid.frame=field.bounds;grid.contentsScale=scale;grid.contents=makeGrid(size:field.bounds.size,scale:scale);sceneKey=""}
-        portrait.frame=CGRect(x:-16,y:-19,width:32,height:38);portrait.contentsGravity = .resizeAspect;portrait.magnificationFilter = .nearest
+        let spriteSize=Self.spriteSize(fieldHeight:height)
+        portrait.frame=CGRect(x:-spriteSize.width/2,y:-spriteSize.height/2,width:spriteSize.width,height:spriteSize.height);portrait.contentsGravity = .resizeAspect;portrait.magnificationFilter = .nearest
         portrait.contents=NinjaPixelActor.frame(style:style,action:.rest,step:0)
         let captionWidth=min(260,max(96,bounds.width*0.52-16))
-        caption.frame=CGRect(x:-captionWidth/2,y:-49,width:captionWidth,height:28);caption.contentsScale=scale;caption.foregroundColor=Self.color(style).withAlphaComponent(0.8).cgColor
+        caption.frame=CGRect(x:-captionWidth/2,y:hypot(spriteSize.width,spriteSize.height)/2+4,width:captionWidth,height:28);caption.contentsScale=scale;caption.foregroundColor=Self.color(style).withAlphaComponent(0.8).cgColor
         for (i,tile) in tiles.enumerated(){
             let x=CGFloat((i*137+61)%997)/997*max(1,bounds.width-14)+7
             let y=CGFloat((i*53+19)%173)/173*(height-28)+6
@@ -102,7 +103,6 @@ import QuartzCore
         let gait=CAKeyframeAnimation(keyPath:"contents")
         gait.values=plan.samples.map{NinjaPixelActor.frame(style:style,action:$0.action,step:$0.step,left:$0.left)};gait.duration=plan.duration;gait.repeatCount = .infinity;gait.calculationMode = .discrete;gait.beginTime=sceneEpoch!;portrait.add(gait,forKey:"actions")
         let tumble=CAKeyframeAnimation(keyPath:"transform.rotation.z");tumble.values=plan.samples.map{$0.rotation};tumble.duration=plan.duration;tumble.repeatCount = .infinity;tumble.calculationMode = .discrete;tumble.beginTime=sceneEpoch!;portrait.add(tumble,forKey:"tumble")
-        let label=CAKeyframeAnimation(keyPath:"position.y");label.values=plan.samples.map{max(14,min(field.bounds.height-14,$0.position.y-35))-$0.position.y};label.duration=plan.duration;label.repeatCount = .infinity;label.beginTime=sceneEpoch!;caption.add(label,forKey:"placement")
         let depth=CAKeyframeAnimation(keyPath:"opacity");depth.values=plan.samples.map{Self.actorOpacity(y:$0.position.y,height:field.bounds.height)};depth.duration=plan.duration;depth.repeatCount = .infinity;depth.beginTime=sceneEpoch!;actor.add(depth,forKey:"depth")
         let target=CAKeyframeAnimation(keyPath:"position");target.values=plan.samples.map{NSValue(point:CGPoint(x:floor(($0.position.x+12)/7)*7+3.5,y:floor(($0.position.y+12)/7)*7+3.5))};target.duration=plan.duration;target.repeatCount = .infinity;target.calculationMode = .discrete;target.beginTime=sceneEpoch!;actionTile.add(target,forKey:"target")
         let tap=CAKeyframeAnimation(keyPath:"opacity");tap.values=plan.samples.map{sample -> Float in let contact=sample.action == .inspect || sample.action == .climb;return contact ? Self.actorOpacity(y:sample.position.y,height:field.bounds.height)*(sample.step%4<2 ? 0.8:0.3):0};tap.duration=plan.duration;tap.repeatCount = .infinity;tap.calculationMode = .discrete;tap.beginTime=sceneEpoch!;actionTile.add(tap,forKey:"glow")
@@ -112,6 +112,9 @@ import QuartzCore
             let drift=CABasicAnimation(keyPath:"transform.translation.y");drift.fromValue=2;drift.toValue = -3;drift.autoreverses=true;drift.duration=Double(4+i%5);drift.repeatCount = .infinity;drift.beginTime=sceneEpoch!;tile.add(drift,forKey:"drift")
         }
     }
+    static func spriteSize(fieldHeight:CGFloat)->CGSize{let height=min(38,fieldHeight/4);return CGSize(width:height*32/38,height:height)}
+    // The lower part of the field is only a feather, not a walking surface.
+    static func dotTravelDepth(fieldHeight:CGFloat)->CGFloat{fieldHeight*0.60}
     static func actorOpacity(y:CGFloat,height:CGFloat)->Float{Float(0.42*pow(max(0.24,1-y/max(1,height)),1.15))}
     private func say(_ text:String,opening:Bool){
         caption.string=text
@@ -159,7 +162,10 @@ import QuartzCore
     let samples:[Sample],duration:Double
     init(size:CGSize,working:Bool,finished:Bool){
         let padding=min(146,max(48,size.width*0.26)),targetLeft=padding,targetRight=max(targetLeft,size.width-padding)
-        let targetTop=min(56,size.height*0.35),targetBottom=max(targetTop+12,size.height-28)
+        let sprite=NinjaAtmosphereView.spriteSize(fieldHeight:size.height)
+        let radius=hypot(sprite.width,sprite.height)/2
+        // Reserve the whole rotated sprite, including a landing/pose margin.
+        let targetTop=radius+6,targetBottom=max(targetTop,NinjaAtmosphereView.dotTravelDepth(fieldHeight:size.height)-radius-2)
         // One design-space score: resizing changes its coordinates, never its
         // clock, leg boundaries, jump phase or which side the actor is on.
         let left:CGFloat=146,right:CGFloat=854,top:CGFloat=56,bottom:CGFloat=182
