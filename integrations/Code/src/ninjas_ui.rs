@@ -1206,21 +1206,58 @@ impl Orbit {
         if let Some(p)=&mut self.ninjas.panel{p.chat=Some(chat);p.task=None;p.messages.clear();let key=format!("{}:{}:{}",p.host,p.profile.id,p.chat.as_deref().unwrap());let draft=self.ninjas.drafts.get(&key).cloned().unwrap_or_default();p.fields[3].update(cx,|input,cx|input.set_text(&draft,cx));}
         self.ninja_conversation(cx);cx.notify();
     }
-    pub(super) fn ninja_chat_sidebar(&self,cx:&Context<Self>)->AnyElement{
-        let Some(p)=self.ninjas.panel.as_ref()else{return div().into_any_element()};
-        let tasks=self.ninja_chat_rows();let fraction=self.sidebar_section_fraction(project_tree::SidebarSection::Chats);let count=if fraction>0.{tasks.len()}else{0};
-        div().id("ninja-chat-sidebar").debug_selector(||"ninja-chat-sidebar".into()).size_full().min_h(px(0.)).flex().flex_col().gap(px(4.*fraction))
-            .child(div().id("ninja-chat-section-header").debug_selector(||"ninja-chat-section-header".into()).h(px(40.)).flex_none().px_3().flex().items_center().gap_2().cursor_pointer().hover(|s|s.bg(rgba(GLASS_HOVER))).on_click(cx.listener(|app,_,_,cx|{cx.stop_propagation();app.toggle_sidebar_section(project_tree::SidebarSection::Chats,cx);})).child(self.sidebar_section_chevron(project_tree::SidebarSection::Chats)).child(crate::ninja_art::art(&p.profile.style,18.,false)).child(p.profile.name.clone()).child(div().flex_1()).child(tasks.len().to_string()))
-            .child(uniform_list("ninja-chat-list",count,cx.processor(move|app,range:std::ops::Range<usize>,_,cx|{
-                let p=app.ninjas.panel.as_ref().unwrap();range.map(|i|{let t=&tasks[i];let chat=t["chat"].as_str().unwrap_or("").to_owned();let label=app.ninja_chat_label(&p.host,&p.profile.id,t);let selected=p.chat.as_deref()==Some(&chat);let active=["queued","running","approval"].contains(&t["state"].as_str().unwrap_or(""));let selector=format!("ninja-chat-{chat}");
-                    div().id(SharedString::from(selector.clone())).debug_selector(move||selector.clone()).h(px(56.)).px_3().flex().items_center().gap_2().rounded_md().when(selected,|v|v.bg(rgba(0xffffff14))).hover(|v|v.bg(rgba(GLASS_HOVER))).cursor_pointer()
-                        .child(div().flex_1().min_w(px(0.)).text_size(theme::ui_px(12.)).child(app.animated_ninja_chat_title(&Self::ninja_chat_key(&p.host,&p.profile.id,&chat),label)))
-                        .when(active,|v|v.child(crate::ninja_art::status(&p.profile.style,task_scene(t),app.motion && !native::reduced_motion())))
-                        .on_click(cx.listener(move|app,_,_,cx|{cx.stop_propagation();app.open_ninja_chat(chat.clone(),cx);})).into_any_element()
-                }).collect()
-            })).flex_1().min_h(px(0.)).px_2().map(|mut v|{v.style().flex_grow=Some(fraction);v}).flex_basis(px(0.)).opacity(fraction))
-            .child(div().map(|mut v|{v.style().flex_grow=Some(1.-fraction);v}).flex_basis(px(0.)))
-            .child(div().h(px(28.*fraction)).flex_none().overflow_hidden().opacity(fraction).child(chip("ninja-sidebar-new-chat","New conversation",false,cx,|app,_,cx|{app.remember_ninja_draft(cx);if let Some(p)=&mut app.ninjas.panel{p.chat=None;p.task=None;p.messages.clear();p.fields[3].update(cx,|i,cx|i.set_text("",cx));}cx.notify();}))).into_any_element()
+    pub(super) fn ninja_chat_sidebar(&self, inline: bool, cx: &Context<Self>) -> AnyElement {
+        if self.ninjas.panel.is_none() { return div().into_any_element() }
+        let tasks = self.ninja_chat_rows();
+        let fraction = self.sidebar_section_fraction(project_tree::SidebarSection::Chats);
+        let count = if fraction > 0. { tasks.len() } else { 0 };
+        let body_height = tasks.len().min(6) as f32 * 32. * fraction;
+        let rows = uniform_list("ninja-chat-list", count, cx.processor(move |app, range: std::ops::Range<usize>, _, cx| {
+            let p = app.ninjas.panel.as_ref().unwrap();
+            range.map(|i| {
+                let t = &tasks[i];
+                let chat = t["chat"].as_str().unwrap_or("").to_owned();
+                let label = app.ninja_chat_label(&p.host, &p.profile.id, t);
+                let selected = p.chat.as_deref() == Some(&chat);
+                let active = ["queued", "running", "approval"].contains(&t["state"].as_str().unwrap_or(""));
+                let selector = format!("ninja-chat-{chat}");
+                div().id(SharedString::from(selector.clone())).debug_selector(move || selector.clone())
+                    .h(px(32.)).w_full().px_2().flex().items_center().gap_2().rounded_md()
+                    .when(selected, |v| v.bg(rgba(0xffffff14)))
+                    .hover(|v| v.bg(rgba(GLASS_HOVER))).cursor_pointer()
+                    .child(div().flex_1().min_w(px(0.)).text_size(theme::ui_px(12.))
+                        .child(app.animated_ninja_chat_title(&Self::ninja_chat_key(&p.host, &p.profile.id, &chat), label)))
+                    .when(active, |v| v.child(crate::ninja_art::status(&p.profile.style, task_scene(t), app.motion && !native::reduced_motion())))
+                    .on_click(cx.listener(move |app, _, _, cx| { cx.stop_propagation(); app.open_ninja_chat(chat.clone(), cx); }))
+                    .into_any_element()
+            }).collect()
+        })).size_full().min_h(px(0.)).px_1();
+        let body = div().debug_selector(|| "ninja-chat-viewport".into()).w_full().min_h(px(0.)).overflow_hidden().opacity(fraction)
+            .when(inline, |v| v.h(px(body_height)).flex_none())
+            .when(!inline, |v| v.flex_1().flex_basis(px(0.)).map(|mut v| { v.style().flex_grow = Some(fraction); v }))
+            .child(rows);
+        div().id("ninja-chat-sidebar").debug_selector(|| "ninja-chat-sidebar".into()).w_full().min_h(px(0.)).flex().flex_col()
+            .when(inline, |v| v.flex_none())
+            .when(!inline, |v| v.h_full())
+            .child(div().id("ninja-chat-section-header").debug_selector(|| "ninja-chat-section-header".into())
+                .h(px(if inline { 28. } else { 36. })).flex_none().px_2().flex().items_center().gap_2()
+                .text_size(theme::ui_px(11.)).text_color(rgb(MUTED)).cursor_pointer()
+                .on_click(cx.listener(|app, _, _, cx| { cx.stop_propagation(); app.toggle_sidebar_section(project_tree::SidebarSection::Chats, cx); }))
+                .child(self.sidebar_section_chevron(project_tree::SidebarSection::Chats))
+                .child("Chats").child(div().flex_1())
+                .child(div().id("ninja-sidebar-new-chat").debug_selector(|| "ninja-sidebar-new-chat".into())
+                    .size(px(24.)).flex_none().flex().items_center().justify_center().rounded_md().cursor_pointer()
+                    .hover(|v| v.bg(rgba(GLASS_HOVER)).text_color(rgb(TEXT))).child(icon("plus", 14., MUTED))
+                    .on_click(cx.listener(|app, _, _, cx| {
+                        cx.stop_propagation();
+                        if app.ninjas.panel.as_ref().is_some_and(|p| p.busy) { return }
+                        app.remember_ninja_draft(cx);
+                        if let Some(p) = &mut app.ninjas.panel { p.chat = None; p.task = None; p.messages.clear(); p.fields[3].update(cx, |i, cx| i.set_text("", cx)); }
+                        cx.notify();
+                    }))))
+            .child(body)
+            .when(!inline, |v| v.child(div().flex_basis(px(0.)).map(|mut v| { v.style().flex_grow = Some(1. - fraction); v })))
+            .into_any_element()
     }
     pub(super) fn ninjas_sidebar(&self, cx: &Context<Self>) -> AnyElement {
         let rows = self
@@ -1335,7 +1372,7 @@ impl Orbit {
                             }))
                     })),
             )
-            .when(!(self.sidebar_split && self.conversations_visible) && self.ninjas.panel.as_ref().is_some_and(|p|p.profile.revision>0),|v|v.child(div().h(px(40.+180.*self.sidebar_section_fraction(project_tree::SidebarSection::Chats))).overflow_hidden().child(self.ninja_chat_sidebar(cx))))
+            .when(!(self.sidebar_split && self.conversations_visible) && self.ninjas.panel.as_ref().is_some_and(|p|p.profile.revision>0),|v|v.child(self.ninja_chat_sidebar(true,cx)))
             .into_any_element()
     }
     pub(super) fn ninjas_conversation(&self, window: &Window, cx: &Context<Self>) -> AnyElement {
@@ -2190,6 +2227,24 @@ impl Orbit {
 mod tests {
     use super::*;
     use std::prelude::v1::test;
+    #[gpui::test]
+    fn ninja_chat_sidebar_fits_two_compact_rows_and_keeps_new_chat_in_header(cx:&mut TestAppContext){
+        let(view,cx)=crate::ui_tests::fixture(cx);
+        cx.update(|w,cx|view.update(cx,|app,cx|{
+            app.sidebar_split=false;app.sidebar_width=280.;app.motion=false;app.open_ninjas(Some("local".into()),None,w,cx);
+            let p=app.ninjas.panel.as_mut().unwrap();p.profile.revision=1;p.profile.name="SWE".into();p.profile.style="water".into();p.settings=false;p.chat=Some("one".into());p.fields[3].update(cx,|i,cx|i.set_text("keep this draft",cx));
+            app.ninjas.snapshots.insert("local".into(),json!({"profiles":[p.profile],"tasks":[{"id":"a","profile":p.profile.id,"chat":"one","prompt":"Casual greeting conversation","state":"completed","created":2},{"id":"b","profile":p.profile.id,"chat":"two","prompt":"Review project setup","state":"completed","created":1}]}));
+        }));
+        crate::ui_tests::draw_frame(&view,cx);
+        let list=cx.debug_bounds("ninja-chat-sidebar").unwrap();let header=cx.debug_bounds("ninja-chat-section-header").unwrap();let one=cx.debug_bounds("ninja-chat-one").unwrap();let two=cx.debug_bounds("ninja-chat-two").unwrap();let plus=cx.debug_bounds("ninja-sidebar-new-chat").unwrap();
+        assert!((list.size.height-px(92.)).abs()<px(1.),"Two chats must fit their content, not a fixed-height box: {list:?}");
+        assert_eq!(header.size.height,px(28.));assert_eq!(one.size.height,px(32.));assert_eq!(two.size.height,px(32.));assert!((two.top()-one.bottom()).abs()<px(1.),"No empty row spacing");
+        assert!((one.top()-header.bottom()).abs()<px(1.));assert!(plus.left()>=header.left() && plus.right()<=header.right());assert!((plus.center().y-header.center().y).abs()<px(1.));assert_eq!(plus.size.width,px(24.));
+        crate::ui_tests::click_selector(cx,"ninja-sidebar-new-chat");
+        view.update(cx,|app,cx|{let p=app.ninjas.panel.as_ref().unwrap();assert!(p.chat.is_none());assert!(p.fields[3].read(cx).text().is_empty());assert!(!app.project_tree.chats_collapsed,"The plus must not fold the section");assert!(app.ninjas.drafts.values().any(|d|d=="keep this draft"));});
+        crate::ui_tests::click_selector(cx,"ninja-chat-section-header");crate::ui_tests::draw_frame(&view,cx);assert_eq!(cx.debug_bounds("ninja-chat-sidebar").unwrap().size.height,px(28.));
+        crate::ui_tests::click_selector(cx,"ninja-chat-section-header");crate::ui_tests::draw_frame(&view,cx);assert_eq!(cx.debug_bounds("ninja-chat-sidebar").unwrap().size.height,px(92.));
+    }
     #[gpui::test]
     fn ninja_sidebars_own_only_their_chats_names_and_drafts(cx:&mut TestAppContext){
         let(view,cx)=crate::ui_tests::fixture(cx);

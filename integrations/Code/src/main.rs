@@ -4295,7 +4295,7 @@ impl Orbit {
             )
     }
     fn workspace(&self, cx: &Context<Self>) -> AnyElement {
-        if self.ninjas.panel.as_ref().is_some_and(|p|p.profile.revision>0){return div().id("workspace-layout-panel").debug_selector(||"workspace-pane".into()).w(px(260.)).h_full().flex_none().bg(gpui::rgba(self.resolved_theme.sidebar_rgba())).border_r_1().border_color(rgba(0xebebeb12)).child(self.ninja_chat_sidebar(cx)).into_any_element()}
+        if self.ninjas.panel.as_ref().is_some_and(|p|p.profile.revision>0){return div().id("workspace-layout-panel").debug_selector(||"workspace-pane".into()).w(px(260.)).h_full().flex_none().bg(gpui::rgba(self.resolved_theme.sidebar_rgba())).border_r_1().border_color(rgba(0xebebeb12)).child(self.ninja_chat_sidebar(false,cx)).into_any_element()}
         let name = if self.all_projects {
             "Workspace".to_owned()
         } else {
