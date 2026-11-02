@@ -1355,7 +1355,6 @@ impl Orbit {
                             .unwrap_or("")
                             .to_owned();
                         let running = crate::ninja_chat::live(&t);
-                        let scene = task_scene(&t);
                         let mut row = div()
                             .id(SharedString::from(format!("ninja-task-{id}")))
                             .debug_selector({let id=id.clone();move||format!("ninja-task-{id}")})
@@ -1379,20 +1378,20 @@ impl Orbit {
                                 .child(self.ninja_bubble(true, prompt, &id,window,cx))
                                 .child(self.ninja_bubble(false, brief, &id,window,cx));
                         }
-                        row = row.child(
+                        if t["call"].is_string(){row = row.child(
                             div()
                                 .pl(px(32.))
                                 .flex()
                                 .items_center()
                                 .gap_2()
-                                .child(crate::ninja_art::status(&p.profile.style,scene,running && self.motion && !native::reduced_motion() && window.is_window_active()))
+                                .child(crate::ninja_art::status(&p.profile.style,task_scene(t),running && self.motion && !native::reduced_motion() && window.is_window_active()))
                                 .child(
                                     div()
                                         .text_size(theme::ui_px(10.))
                                         .text_color(rgb(MUTED))
                                         .child(t["status"].as_str().unwrap_or("").to_owned()),
                                 ),
-                        );
+                        );}
                         if running {
                             let stop = id.clone();
                             row = row.child(chip(

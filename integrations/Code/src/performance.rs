@@ -182,7 +182,10 @@ fn start_ninja_probe(owner:WindowHandle<Orbit>,cx:&mut App){
             if let Ok(endpoint)=std::env::var("KAI_NINJA_IMAGE_PROBE_ENDPOINT"){
                 for i in 0..6{p.messages[17+i]["brief"]=serde_json::json!(format!("![preview](/fixture/preview-{i}.svg)"));}
                 p.messages[23]["prompt"]=serde_json::json!("hi");
-                p.messages[23]["brief"]=serde_json::json!("here’s the image from your host.\n\n![generated preview](/fixture/preview-6.png)\n\n[vector preview](/fixture/preview-7.svg)");
+                let approval=chat_interactions::serialize_interaction(&chat_interactions::ChatInteraction::NativeRequest(runtime::NativeRequest{id:"fixture-approval".into(),method:"tool/approval".into(),title:"Approved shell command".into(),detail:"echo preview".into(),kind:runtime::NativeRequestKind::Unsupported}));
+                let completed=chat_interactions::serialize_interaction(&chat_interactions::ChatInteraction::Status{title:"Completed".into(),details:"".into(),status:chat_interactions::InteractionStatus::Completed});
+                p.messages[23]["brief"]=serde_json::json!(format!("starting the build\n\n{thought}\n\nprogress update\n\n{tool}\n\n{approval}\n\n{tool}\n\nhere’s the image from your host.\n\n![generated preview](/fixture/preview-6.png)\n\n[vector preview](/fixture/preview-7.svg)\n\n{completed}"));
+                p.messages[23]["started"]=serde_json::json!(1);p.messages[23]["status"]=serde_json::json!("Completed");
                 app.ninjas.hosts.push(crate::ninjas_ui::Host{id:"validation".into(),name:"Preview fixture".into(),endpoint:Some(endpoint)});
                 app.ninja_prefetch_images(cx);
             }
@@ -193,7 +196,7 @@ fn start_ninja_probe(owner:WindowHandle<Orbit>,cx:&mut App){
             if phase=="compact"{let _=owner.update(cx,|_,window,_|window.resize(size(px(620.),px(720.))));}
             Timer::after(Duration::from_secs(4)).await;
             let id=owner.update(cx,|_,window,_|native::window_number(window)).unwrap_or(0);
-            if id>0{let destination=format!("/private/tmp/kai049-ninja-{phase}.png");let result=cx.background_executor().spawn(async move{std::process::Command::new("/usr/sbin/screencapture").args(["-x","-l",&id.to_string(),&destination]).status()}).await;if !result.is_ok_and(|s|s.success()){eprintln!("KAI_NINJA_RENDER_PROBE_FAILED capture");}}
+            if id>0{let destination=format!("/private/tmp/kai050-ninja-{phase}.png");let result=cx.background_executor().spawn(async move{std::process::Command::new("/usr/sbin/screencapture").args(["-x","-l",&id.to_string(),&destination]).status()}).await;if !result.is_ok_and(|s|s.success()){eprintln!("KAI_NINJA_RENDER_PROBE_FAILED capture");}}
         }
         if std::env::var_os("KAI_NINJA_IMAGE_PROBE_ENDPOINT").is_some(){
             let count=owner.update(cx,|app,_,_|app.ninjas.artifacts.values().filter(|a|a.as_ref().is_ok_and(|a|a.image.is_some()&&a.native_preview.is_some())).count()).unwrap_or(0);

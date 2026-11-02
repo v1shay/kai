@@ -373,14 +373,17 @@ impl Orbit {
                 }
             } else {
                 history.push(json!({"id":format!("{id}-user"),"kind":"user","lines":[{"text":t["prompt"],"style":"plain"}],"agent":"ninja"}));
-                let blocks=self.ninja_blocks(false,t["brief"].as_str().unwrap_or(""),id);let mut grouped_until=0;let mut show_work=false;
-                for(i,block)in blocks.iter().enumerate(){
-                    let activity=|b:&MessageBlock|matches!(b,MessageBlock::Activity{..}|MessageBlock::Interaction(chat_interactions::ChatInteraction::Status{..}|chat_interactions::ChatInteraction::Delegation{..}));
-                    if activity(block){
-                        if i>=grouped_until{grouped_until=i+blocks[i..].iter().take_while(|b|activity(b)).count();let key=crate::ninja_chat::block_key(&format!("{id}:work"),i);show_work=self.expanded_tools.contains(&key);history.push(json!({"id":format!("{id}-work-{i}"),"kind":"activity","lines":[{"text":format!("{} · {} steps",if show_work{"Hide work"}else{"Show work"},grouped_until-i),"style":"activity"}],"detailId":format!("ninja-work:{id}:{i}"),"agent":"ninja","speechText":""}));}
-                        if !show_work{continue}
-                    }
-
+                let blocks=self.ninja_blocks(false,t["brief"].as_str().unwrap_or(""),id);
+                let answer=crate::ninja_chat::answer_range(&blocks);
+                let show_work=self.expanded_tools.contains(&crate::ninja_chat::block_key(&format!("{id}:work"),0));
+                if blocks.iter().enumerate().any(|(i,b)|!crate::ninja_chat::response_block(b,i,&answer)){
+                    let steps=blocks.iter().filter(|b|crate::ninja_chat::work_block(b)).count();
+                    history.push(json!({"id":format!("{id}-work"),"kind":"activity","lines":[{"text":format!("{} · {steps} steps",crate::ninja_chat::work_label(t)),"style":"activity"}],"detailId":format!("ninja-work:{id}:0"),"agent":"ninja","speechText":""}));
+                }
+                let work=(0..blocks.len()).filter(|i|!crate::ninja_chat::response_block(&blocks[*i],*i,&answer)&&show_work);
+                let response=(0..blocks.len()).filter(|i|crate::ninja_chat::response_block(&blocks[*i],*i,&answer));
+                for i in work.chain(response){
+                    let block=&blocks[i];
                     let (kind,text,style,preview)=match block{
                         MessageBlock::Paragraph(s)|MessageBlock::Quote(s)=>("assistant",s.clone(),"text",None),
                         MessageBlock::Heading(s)=>("assistant",s.clone(),"heading",None),
@@ -391,7 +394,10 @@ impl Orbit {
                         MessageBlock::Interaction(chat_interactions::ChatInteraction::Status{title,details,..}|chat_interactions::ChatInteraction::Delegation{title,details,..})=>("activity",format!("{title}\n{details}"),"code",None),
                         MessageBlock::TableRow{cells,..}=>("assistant",cells.join(" | "),"text",None),
                         MessageBlock::Voice{text,..}=>("assistant",text.clone(),"voice",None),
-                        MessageBlock::Interaction(_)=>continue,
+                        MessageBlock::Interaction(chat_interactions::ChatInteraction::NativeRequest(r))=>("activity",format!("{}\n{}",r.title,r.detail),"code",None),
+                        MessageBlock::Interaction(chat_interactions::ChatInteraction::Question(q))=>("activity",format!("{}\n{}",q.prompt,q.answer.as_deref().unwrap_or("")),"text",None),
+                        MessageBlock::Interaction(chat_interactions::ChatInteraction::Answer{question,answer})=>("activity",format!("{question}\n{answer}"),"text",None),
+                        MessageBlock::Interaction(chat_interactions::ChatInteraction::Speaker{text,..})=>("assistant",text.clone(),"text",None),
                     };
                     let link=if let MessageBlock::Attachment{target,..}=block{Some(self.ninja_native_url(target))}else{None};
                     history.push(json!({"id":format!("{id}-reply-{i}"),"kind":kind,"lines":[{"text":text,"style":style,"previewPNG":preview,"linkTarget":link,"links":self.ninja_native_links(block)}],"agent":"ninja","speechText":if kind=="activity"||style=="code"{""}else{&text}}));

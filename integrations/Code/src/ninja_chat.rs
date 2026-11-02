@@ -54,6 +54,28 @@ pub(super) fn usage_label(value: &Value) -> Option<String> {
         .zip(u.output)
         .map(|(i, o)| format!("{i} in · {o} out"))
 }
+// Runtime records delimit the final response. Keep the latest uninterrupted
+// answer visible; earlier commentary, tools, and resolved requests share one fold.
+pub(super) fn work_block(block:&MessageBlock)->bool{
+    match block{MessageBlock::Activity{..}=>true,MessageBlock::Interaction(chat_interactions::ChatInteraction::Question(q)) if !q.historical&&q.answer.is_none()=>false,MessageBlock::Interaction(card)=>!matches!(card,chat_interactions::ChatInteraction::Speaker{..}),_=>false}
+}
+pub(super) fn answer_range(blocks:&[MessageBlock])->std::ops::Range<usize>{
+    let Some(last)=blocks.iter().rposition(|b|!work_block(b))else{return 0..0};
+    let start=blocks[..last].iter().rposition(work_block).map_or(0,|i|i+1);
+    start..last+1
+}
+pub(super) fn response_block(block:&MessageBlock,index:usize,answer:&std::ops::Range<usize>)->bool{
+    // Generated images remain visible even if the agent attached them mid-task.
+    answer.contains(&index)||matches!(block,MessageBlock::Attachment{..})
+}
+pub(super) fn work_label(task:&Value)->String{
+    if live(task){return "Working".into()}
+    task["started"].as_i64().zip(task["finished"].as_i64()).map(|(a,b)|format!("Worked for {}",chat_timing::duration(b.saturating_sub(a)as u64*1000))).unwrap_or_else(||"Worked".into())
+}
+fn answer_text(blocks:&[MessageBlock])->String{
+    let answer=answer_range(blocks);
+    copy_control::message_text(&blocks.iter().enumerate().filter(|(i,b)|response_block(b,*i,&answer)).map(|(_,b)|b.clone()).map(|block|Row{role:Some("assistant".into()),block}).collect::<Vec<_>>())
+}
 impl Orbit {
     pub(super) fn ninja_blocks(&self,user:bool,text:&str,task:&str)->Arc<Vec<MessageBlock>>{
         let p=self.ninjas.panel.as_ref().unwrap();
@@ -86,14 +108,9 @@ impl Orbit {
         let p = self.ninjas.panel.as_ref().unwrap();
         let blocks=self.ninja_blocks(user,&text,task);
         let mut body = div().when(!user,|s|s.w_full()).min_w(px(0.)).flex().flex_col().gap_2();
-        let mut grouped_until=0;
-        for (i, block) in blocks.iter().enumerate() {
-            if i<grouped_until{continue}
-            let activity=|b:&MessageBlock|matches!(b,MessageBlock::Activity{..}|MessageBlock::Interaction(chat_interactions::ChatInteraction::Status{..}|chat_interactions::ChatInteraction::Delegation{..}));
-            if !user&&activity(block){
-                grouped_until=i+blocks[i..].iter().take_while(|b|activity(b)).count();
-                body=body.child(self.ninja_work_group(task,blocks.clone(),i..grouped_until,cx));continue
-            }
+        let answer=if user{0..blocks.len()}else{answer_range(&blocks)};
+        if blocks.iter().enumerate().any(|(i,b)|!response_block(b,i,&answer)){body=body.child(self.ninja_work_group(task,blocks.clone(),answer.clone(),cx));}
+        for (i, block) in blocks.iter().enumerate().filter(|(i,b)|user||response_block(b,*i,&answer)) {
             let ix = block_key(&format!("{task}:{user}"), i);
             let decoded =
                 if !user && self.motion && self.unified_text_morph && !native::reduced_motion() {
@@ -125,32 +142,37 @@ impl Orbit {
                 cx,
             ));
         }
+        let tasks=p.history_tasks.borrow();let current=(!user).then(||tasks.iter().find(|t|t["id"]==task)).flatten();
+        let copy_blocks=blocks.clone();
         let column=div().min_w(px(0.)).flex().flex_col().gap_1()
             .when(user,|s|s.max_w(relative(0.82)).flex_none().items_end())
             .when(!user,|s|s.flex_1())
             .child(div().debug_selector({let task=task.to_owned();move||format!("ninja-bubble-{task}-{user}")})
                 .min_w(px(0.)).when(!user,|s|s.w_full()).px_3().py_2().rounded_lg()
                 .bg(rgba(if user{0x9380ff32}else{0xffffff0b})).text_size(theme::ui_px(13.)).child(body))
-            .when(!text.is_empty(),|s|s.child(div().debug_selector({let task=task.to_owned();move||format!("ninja-actions-{task}-{user}")}).w_full().flex().when(user,|s|s.justify_end()).child(
-                copy_control::CopyControl::source(format!("ninja-copy-{task}-{user}"),move |_|if user{text.clone()}else{ninjas::readable_brief(&text)})
-                    .scope(self.ninja_surface_owner().unwrap_or_default()).motion(self.motion))));
+            .when(!text.is_empty()||current.is_some(),|s|s.child(div().debug_selector({let task=task.to_owned();move||format!("ninja-actions-{task}-{user}")}).w_full().flex().items_center().gap_2().when(user,|s|s.justify_end()).child(
+                copy_control::CopyControl::source(format!("ninja-copy-{task}-{user}"),move |_|if user{text.clone()}else{answer_text(&copy_blocks)})
+                    .scope(self.ninja_surface_owner().unwrap_or_default()).motion(self.motion))
+                .when_some(current,|s,t|s.child(div().debug_selector({let task=task.to_owned();move||format!("ninja-status-{task}")}).flex().items_center().gap_2().text_size(theme::ui_px(10.)).text_color(rgb(MUTED))
+                    .child(ninja_art::status(&p.profile.style,ninjas_ui::task_scene(t),live(t)&&self.motion&&!native::reduced_motion()&&window.is_window_active()))
+                    .child(t["status"].as_str().filter(|s|!s.is_empty()).unwrap_or(match t["state"].as_str(){Some("completed")=>"Completed",Some("failed"|"interrupted")=>"Failed",Some("approval")=>"Waiting",Some("stopped")=>"Stopped",_=>"Working"}).to_owned())))));
         div().w_full().flex().gap_2().items_start().when(user,|s|s.justify_end())
             .when(!user,|s|s.child(div().size(px(24.)).flex_none().child(ninja_art::art(&p.profile.style,24.,false))))
             .child(column)
     }
-    fn ninja_work_group(&self,task:&str,blocks:Arc<Vec<MessageBlock>>,range:std::ops::Range<usize>,cx:&Context<Self>)->Div{
-        let p=self.ninjas.panel.as_ref().unwrap();let ix=block_key(&format!("{task}:work"),range.start);let expanded=self.expanded_tools.contains(&ix);let reveal=self.interaction_reveal(ix);
+    fn ninja_work_group(&self,task:&str,blocks:Arc<Vec<MessageBlock>>,answer:std::ops::Range<usize>,cx:&Context<Self>)->Div{
+        let p=self.ninjas.panel.as_ref().unwrap();let ix=block_key(&format!("{task}:work"),0);let expanded=self.expanded_tools.contains(&ix);let reveal=self.interaction_reveal(ix);
         let tasks=p.history_tasks.borrow();let current=tasks.iter().find(|t|t["id"]==task);let running=current.is_some_and(live);
-        let elapsed=current.and_then(|t|t["started"].as_i64().zip(t["finished"].as_i64())).map(|(a,b)|chat_timing::duration(b.saturating_sub(a)as u64*1000));
-        let label=if running{"Working".to_owned()}else if let Some(elapsed)=elapsed{format!("Worked for {elapsed}")}else{"Worked".into()};
+        let label=current.map(work_label).unwrap_or_else(||"Worked".into());
+        let steps=blocks.iter().filter(|b|work_block(b)).count();
         let motion=self.motion&&!native::reduced_motion();
         let mut group=div().w_full().min_w(px(0.)).flex().flex_col().child(div().id(("ninja-work",ix)).debug_selector(move||format!("ninja-work-{ix}")).w_full().h(px(28.)).flex_none().flex().items_center().gap_2().text_size(theme::ui_px(11.)).text_color(rgb(MUTED)).cursor_pointer()
             .child(icon("chevron-right",12.,MUTED).with_transformation(Transformation::rotate(radians(reveal*std::f32::consts::FRAC_PI_2))))
-            .child(ninja_art::status(&p.profile.style,if running{"thinking"}else{"success"},false)).child(label).child(format!("· {} steps",range.len()))
+            .child(ninja_art::status(&p.profile.style,if running{"thinking"}else{"success"},false)).child(label).child(format!("· {} steps",steps))
             .on_click(cx.listener(move|app,_,_,cx|{cx.stop_propagation();let from=app.interaction_reveal(ix);let open=if app.expanded_tools.remove(&ix){false}else{app.expanded_tools.insert(ix);true};if motion{app.interaction_animations.insert(ix,(Instant::now(),open,from));}cx.notify();})));
         if expanded||reveal>0.{
             let mut details=div().id(("ninja-work-details",ix)).w_full().min_w(px(0.)).max_h(px(640.)).overflow_y_scroll().flex().flex_col().gap_1();
-            for i in range{details=details.child(self.render_message_block(div().w_full().min_w(px(0.)),block_key(&format!("{task}:false"),i),&blocks[i],None,p.profile.agent,cx));}
+            for i in (0..blocks.len()).filter(|i|!response_block(&blocks[*i],*i,&answer)){details=details.child(self.render_message_block(div().w_full().min_w(px(0.)),block_key(&format!("{task}:false"),i),&blocks[i],None,p.profile.agent,cx));}
             group=group.child(div().w_full().max_h(px(640.*reveal)).overflow_hidden().opacity(reveal).child(details));
         }
         group
@@ -1207,6 +1229,34 @@ mod tests {
         assert_eq!(usage_label(&json!({})), None);
         assert_eq!(decode64("aGVsbG8=").unwrap(), b"hello");
         assert!(decode64("!!!!").is_err());
+    }
+    fn interleaved_reply()->String{
+        use chat_interactions::{ChatInteraction as C,InteractionStatus as S,serialize_interaction as wire};
+        let tool=wire(&C::Status{title:"Terminal output".into(),details:"build log".into(),status:S::Completed});
+        let approval=wire(&C::NativeRequest(runtime::NativeRequest{id:"old".into(),method:"tool/approval".into(),title:"Approve shell command".into(),detail:"echo test".into(),kind:runtime::NativeRequestKind::Unsupported}));
+        let done=wire(&C::Status{title:"Completed".into(),details:"".into(),status:S::Completed});
+        format!("starting the build\n\n{tool}\n\nprogress update\n\n{approval}\n\nretrying the build\n\n{tool}\n\n## result\n\nall done.\n\n{done}")
+    }
+    #[test]
+    fn a_turn_has_one_final_response_and_retains_its_work_and_images(){
+        let blocks=presentation::live_page_blocks(&interleaved_reply());let answer=answer_range(&blocks);
+        assert_eq!(answer_text(&blocks),"## result\n\nall done.");
+        assert_eq!(blocks.iter().filter(|b|work_block(b)).count(),4);
+        assert!(blocks[..answer.start].iter().any(|b|matches!(b,MessageBlock::RichParagraph{text,..}|MessageBlock::Paragraph(text) if text=="progress update")));
+        let image=MessageBlock::Attachment{name:"result".into(),target:"/tmp/result.png".into()};assert!(response_block(&image,0,&(3..4)));
+        let plain=presentation::message_blocks("assistant","a paragraph\n\nanother paragraph");assert_eq!(answer_range(&plain),0..plain.len());
+        let request=MessageBlock::Interaction(chat_interactions::ChatInteraction::Question(chat_interactions::QuestionCard{id:"live".into(),header:"".into(),prompt:"choose one".into(),options:vec![],answer:None,historical:false}));assert!(!work_block(&request),"An unanswered live question must stay visible");
+    }
+    #[gpui::test]
+    fn one_work_fold_is_shared_with_notch_and_footer_stays_on_one_line(cx:&mut TestAppContext){
+        let(view,cx)=crate::ui_tests::fixture(cx);
+        cx.update(|w,cx|view.update(cx,|app,cx|{app.motion=false;app.sidebar_split=false;app.sidebar_layout_transition=None;app.open_ninjas(Some("local".into()),None,w,cx);let p=app.ninjas.panel.as_mut().unwrap();p.profile.revision=1;p.settings=false;p.chat=Some("chat".into());p.messages=vec![json!({"id":"fold","profile":p.profile.id,"chat":"chat","created":1,"prompt":"finish the build","brief":interleaved_reply(),"state":"completed","started":1,"finished":958,"status":"Completed"})];}));
+        crate::ui_tests::draw_frame(&view,cx);crate::ui_tests::draw_frame(&view,cx);
+        let footer=cx.debug_bounds("ninja-actions-fold-false").unwrap();let copy=cx.debug_bounds("ninja-copy-fold-false").unwrap();let status=cx.debug_bounds("ninja-status-fold").unwrap();assert!(copy.left()<status.left());assert!((copy.center().y-status.center().y).abs()<px(1.));assert!(footer.size.height<px(35.));
+        view.update(cx,|app,cx|{let snapshot=app.unified_snapshot(cx);let rows=snapshot["history"].as_array().unwrap();assert_eq!(rows.iter().filter(|m|m["detailId"].as_str().is_some_and(|s|s.starts_with("ninja-work:"))).count(),1);let text=snapshot["history"].to_string();assert!(text.contains("all done."));assert!(!text.contains("progress update")&&!text.contains("Approve shell command")&&!text.contains("retrying the build"));});
+        let work=block_key("fold:work",0);let selector=Box::leak(format!("ninja-work-{work}").into_boxed_str());crate::ui_tests::click_selector(cx,selector);crate::ui_tests::draw_frame(&view,cx);
+        view.update(cx,|app,cx|{let snapshot=app.unified_snapshot(cx);let text=snapshot["history"].to_string();assert!(text.contains("progress update")&&text.contains("Approve shell command")&&text.contains("all done."));});
+        cx.update(|w,cx|view.update(cx,|app,cx|{let owner=app.ninja_surface_owner();app.ninja_surface_command(&json!({"action":"interaction_details","id":"ninja-work:fold:0","ownerToken":owner}),w,cx).unwrap();assert!(!app.expanded_tools.contains(&work));}));
     }
     #[gpui::test]
     fn short_bubbles_fit_their_text_and_keep_actions_below_the_background(cx:&mut TestAppContext){
