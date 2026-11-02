@@ -264,9 +264,11 @@ private final class NotchSurfaceHost:NSView {
     private let defaultModelMenu=DefaultModelMenu(),shortcutTimingMenu=ShortcutTimingMenu()
     private let voicePrompt:HoldToVoiceController
     private let modifierFlags:()->NSEvent.ModifierFlags
+    private let keyDownCount:()->UInt32
+    private var shortcutKeyCount:UInt32?
     private let contextCapture:((Bool,@escaping(ApplicationContext)->Void)->Void)?
-    init(voiceRecorder:VoicePromptRecording?=nil,shortcutDefaults:UserDefaults = .standard,modifierFlags:@escaping()->NSEvent.ModifierFlags={NSEvent.modifierFlags},capture:((Bool,@escaping(ApplicationContext)->Void)->Void)?=nil){
-        shortcutPreferences=ShortcutPreferences(defaults:shortcutDefaults);voicePrompt=HoldToVoiceController(recorder:voiceRecorder);self.modifierFlags=modifierFlags;contextCapture=capture;super.init()
+    init(voiceRecorder:VoicePromptRecording?=nil,shortcutDefaults:UserDefaults = .standard,modifierFlags:@escaping()->NSEvent.ModifierFlags={NSEvent.modifierFlags},keyDownCount:@escaping()->UInt32={CGEventSource.counterForEventType(.combinedSessionState,eventType:.keyDown)},capture:((Bool,@escaping(ApplicationContext)->Void)->Void)?=nil){
+        shortcutPreferences=ShortcutPreferences(defaults:shortcutDefaults);voicePrompt=HoldToVoiceController(recorder:voiceRecorder);self.modifierFlags=modifierFlags;self.keyDownCount=keyDownCount;contextCapture=capture;super.init()
     }
     private var compactVoiceMode=false,compactVoiceError:String?
     private var voiceShortcutArmed=false
@@ -651,17 +653,16 @@ private final class NotchSurfaceHost:NSView {
             localMonitor = NSEvent.addLocalMonitorForEvents(matching:[.flagsChanged,.keyDown]) { [weak self] e in
                 if e.type == .flagsChanged {self?.flags(e)}
                 else {
+                    self?.cancelModifierShortcut()
                     if self?.performApprovalKey(e) == true{return nil}
                     if self?.performNativeKeyboardCommand(e) == true{return nil}
-                    self?.cancelShortcutHold();self?.cancelWorkspaceHold();self?.commandDismissGesture.cancel();self?.lastControlTap=0
                     if e.keyCode == 53,self?.panel.isKeyWindow == true,self?.open == true {self?.dismissNotchView();return nil}
-                    self?.cancelVoicePromptForKeypress()
                 }
                 return e
             }
             globalMonitor = NSEvent.addGlobalMonitorForEvents(matching:[.flagsChanged,.keyDown]) { [weak self] e in
                 if e.type == .flagsChanged {self?.flags(e)}
-                else {if self?.performApprovalKey(e) == true{return};self?.cancelShortcutHold();self?.cancelWorkspaceHold();self?.commandDismissGesture.cancel();self?.lastControlTap=0;self?.cancelVoicePromptForKeypress()}
+                else {self?.cancelModifierShortcut();if self?.performApprovalKey(e) == true{return}}
             }
         }
         for name in [NSWindow.didBecomeKeyNotification,NSWindow.didResignKeyNotification,NSApplication.didBecomeActiveNotification,NSApplication.didResignActiveNotification]{NotificationCenter.default.addObserver(self,selector:#selector(scheduleWorkspaceFocusRefresh),name:name,object:nil)}
@@ -689,7 +690,7 @@ private final class NotchSurfaceHost:NSView {
         if flags.contains(.command){
             // A Command shortcut is not a bare Command tap. Repeated Cmd-W
             // must never also trigger the double-Command surface dismissal.
-            commandChordActive=true;commandDismissGesture.cancel();cancelShortcutHold();cancelWorkspaceHold();lastControlTap=0;cancelVoicePromptForKeypress()
+            cancelModifierShortcut()
         }
         if command.id == "composer"{panel.makeFirstResponder(composerField)}
         else if miniUI.performKeyboardCommand(command.id){}
@@ -885,7 +886,7 @@ private final class NotchSurfaceHost:NSView {
     }
     func toggleMenuBarPanel(){
         guard let button=status?.button else{return}
-        consumeQuickShortcutChord()
+        cancelModifierShortcut()
         guard EmbeddedCodeRuntime.shared.active else{toggleFromMenu();return}
         if quickChatVisible,menuQuickAnchor != nil{EmbeddedCodeRuntime.shared.sendAction("quick_dismiss");return}
         guard let host=button.window else{return};let anchor=host.convertToScreen(button.convert(button.bounds,to:nil));menuQuickAnchor=anchor
@@ -1026,6 +1027,9 @@ private final class NotchSurfaceHost:NSView {
         defer {commandDown=down;optionDown=option;controlDown=control;functionDown=function}
         let uptime=ProcessInfo.processInfo.systemUptime
         let now=event.timestamp>0 && event.timestamp<=uptime ? event.timestamp:uptime
+        // Key equivalents in another app may bypass our AppKit key monitor.
+        // The system counter still invalidates that entire modifier hold.
+        if let count=shortcutKeyCount,count != keyDownCount(){cancelModifierShortcut()}
         // A release can reach AppKit before an overdue main-queue timer. Honor
         // the actual key duration once, before release cleanup cancels the hold.
         if event.modifierFlags.intersection([.command,.option,.control,.function,.shift]).isEmpty {
@@ -1048,6 +1052,7 @@ private final class NotchSurfaceHost:NSView {
         if change != .unchanged {
             cancelShortcutHold()
             if case .begin(let trigger)=change {
+                shortcutKeyCount=keyDownCount()
                 holdWork?.cancel();holdWork=nil
                 let expanded=miniOpen
                 guard let action=shortcutPreferences.action(for:trigger,expanded:expanded) else{return}
@@ -1142,6 +1147,7 @@ private final class NotchSurfaceHost:NSView {
         }else{closeNotch()}
     }
     private func armVoiceShortcutSurface(){
+        if let count=shortcutKeyCount,count != keyDownCount(){cancelModifierShortcut();return}
         guard compactVoiceMode,!voiceShortcutArmed else{return};voiceShortcutArmed=true
         revealNotchForInput();setOpen(true,mini:false);renderCompactVoice()
     }
@@ -1508,12 +1514,12 @@ private final class NotchSurfaceHost:NSView {
         if let state=latestState{updateCompactApproval(state)}
     }
     private var suppressFloatingTasks:Bool{quickChatVisible || workspaceMorph.expanded || workspaceMorph.transitioning || approvalPopout}
-    private func consumeQuickShortcutChord(){
-        commandChordActive=commandChordActive || modifierFlags().contains(.command)
-        commandDismissGesture.cancel();shortcutGesture=ShortcutGesture();cancelShortcutHold();cancelWorkspaceHold();cancelVoicePromptForKeypress()
+    func cancelModifierShortcut(){
+        commandChordActive=commandChordActive || commandDown || modifierFlags().contains(.command)
+        commandDismissGesture.cancel();shortcutGesture=ShortcutGesture();cancelShortcutHold();cancelWorkspaceHold();holdWork?.cancel();lastControlTap=0;cancelVoicePromptForKeypress()
     }
     func prepareMiniOpening(){
-        consumeQuickShortcutChord()
+        cancelModifierShortcut()
         guard menuQuickAnchor != nil else{prepareQuickOpening();return}
         let source=quickWindow?.frame ?? menuQuickAnchor!
         menuQuickAnchor=nil
@@ -1524,7 +1530,7 @@ private final class NotchSurfaceHost:NSView {
         quickPrepared=(false,source,.hidden)
     }
     func prepareQuickOpening(){
-        consumeQuickShortcutChord()
+        cancelModifierShortcut()
         guard quickPrepared == nil,!(quickChatVisible && quickWindow?.isVisible == true),let panel else{return}
         let fromWorkspace=workspaceMorph.expanded && workspaceIsForeground && EmbeddedCodeRuntime.shared.workspaceWindow?.isVisible == true
         let width=open ? expandedWidth:notchWidth,height=open ? popoutHeight:notchHeight
@@ -2004,9 +2010,10 @@ private final class NotchSurfaceHost:NSView {
         }
     }
     private func cancelShortcutHold(){
-        shortcutWork?.cancel();shortcutWork=nil;pendingShortcutHold=nil;shortcutGeneration=UUID()
+        shortcutWork?.cancel();shortcutWork=nil;pendingShortcutHold=nil;shortcutKeyCount=nil;shortcutGeneration=UUID()
     }
     private func completeShortcutHold(at time:TimeInterval){
+        if let count=shortcutKeyCount,count != keyDownCount(){cancelModifierShortcut();return}
         guard let hold=pendingShortcutHold,time>=hold.deadline,
               hold.generation == shortcutGeneration,miniOpen == hold.expanded,
               shortcutPreferences.action(for:hold.trigger,expanded:hold.expanded) == hold.action else{return}

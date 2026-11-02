@@ -25,8 +25,8 @@ private func command(_ bytes:UnsafePointer<UInt8>?,_ count:Int)->Bool{
         defer{preferences.removePersistentDomain(forName:suite)}
         let defaults=UserDefaults.standard
         for (key,value) in ["unifiedPreferencesSeeded":true,"soundsEnabled":false,"speakResponses":false,"youtubeMedia":false,"spotifyMedia":false]{defaults.set(value,forKey:key)}
-        let recorder=HeldRecorder();var held=NSEvent.ModifierFlags(),captureCount=0
-        let app=KaiPetApp(voiceRecorder:recorder,shortcutDefaults:preferences,modifierFlags:{held},capture:{_,done in captureCount+=1;done(ApplicationContext(text:"Captured fixture editor",imagePath:nil))})
+        let recorder=HeldRecorder();var held=NSEvent.ModifierFlags(),captureCount=0,keyDowns:UInt32=0
+        let app=KaiPetApp(voiceRecorder:recorder,shortcutDefaults:preferences,modifierFlags:{held},keyDownCount:{keyDowns},capture:{_,done in captureCount+=1;done(ApplicationContext(text:"Captured fixture editor",imagePath:nil))})
         let runtime=EmbeddedCodeRuntime.shared;runtime.makeApp={app};runtime.workspaceFocusProvider={false}
         let window=NSWindow(contentRect:CGRect(x:100,y:100,width:1000,height:700),styleMask:[.titled],backing:.buffered,defer:false);window.isReleasedWhenClosed=false
         runtime.start(window:window,command:command)
@@ -90,6 +90,18 @@ private func command(_ bytes:UnsafePointer<UInt8>?,_ count:Int)->Bool{
             precondition(!live,"Original stop shortcut did not stop the native call")
         }
         }
+        // Cmd-Q/Cmd-C/Cmd-W must cancel even when a different app consumes
+        // keyDown before Kai's local/global event monitor can see it.
+        for action in [ShortcutAction.sendActiveChat,.realtimeVoice]{
+            prefs.set(action,for:.command);let before=commands.count,starts=recorder.starts
+            modifiers(.command);keyDowns &+= 1;pump(0.15);modifiers([]);pump(0.1)
+            precondition(!commands.dropFirst(before).contains{["workspace_voice_prompt","voice_stop","submit"].contains($0["action"] as? String ?? "")},"A Command chord fired a modifier shortcut")
+            precondition(member(app,"pendingShortcutHold") == nil,"Chord left a hold armed")
+            if action.isVoice{precondition(recorder.starts==starts+1 && member(app,"compactVoiceMode") as? Bool == false,"Chord left voice pre-roll visible")}
+        }
+        // The real keyDown handler latches cancellation until Command is up.
+        prefs.set(.sendActiveChat,for:.command);modifiers(.command);app.cancelModifierShortcut();pump(0.15)
+        precondition(member(app,"pendingShortcutHold") == nil);modifiers([])
         // Ordinary Command-key combinations cancel pre-roll without closing an
         // already extended chat. This is the actual keyDown monitor's handler.
         live=false;scene="off";thread="code:existing";request=nil;publish();pump(0.4)
