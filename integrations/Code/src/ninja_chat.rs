@@ -68,7 +68,7 @@ impl Orbit {
                     key.clone(),
                     (
                         text.to_owned(),
-                        Arc::new(if user{presentation::message_blocks("user",text)}else{presentation::live_page_blocks(text)}),
+                        Arc::new(if user{presentation::message_blocks("user",text)}else{image_blocks(presentation::live_page_blocks(text))}),
                     ),
                 );
             }
@@ -85,7 +85,7 @@ impl Orbit {
     ) -> Div {
         let p = self.ninjas.panel.as_ref().unwrap();
         let blocks=self.ninja_blocks(user,&text,task);
-        let mut body = div().w_full().min_w(px(0.)).flex().flex_col().gap_2();
+        let mut body = div().when(!user,|s|s.w_full()).min_w(px(0.)).flex().flex_col().gap_2();
         let mut grouped_until=0;
         for (i, block) in blocks.iter().enumerate() {
             if i<grouped_until{continue}
@@ -115,7 +115,7 @@ impl Orbit {
                 } else {
                     None
                 };
-            let content = div().min_w(px(0.)).w_full();
+            let content = div().min_w(px(0.)).when(!user,|s|s.w_full());
             body = body.child(self.render_message_block(
                 content,
                 ix,
@@ -125,38 +125,18 @@ impl Orbit {
                 cx,
             ));
         }
-        if !text.is_empty() {
-            body = body.child(
-                div().mt_1().flex().when(user, |s| s.justify_end()).child(
-                    copy_control::CopyControl::source(format!("ninja-copy-{task}-{user}"),move |_|if user{text.clone()}else{ninjas::readable_brief(&text)})
-                        .scope(self.ninja_surface_owner().unwrap_or_default())
-                        .motion(self.motion),
-                ),
-            );
-        }
-        div()
-            .w_full()
-            .flex()
-            .gap_2()
-            .items_start()
-            .when(user, |s| s.justify_end())
-            .when(!user, |s| {
-                s.child(ninja_art::art(&p.profile.style, 24., false))
-            })
-            .child(
-                div()
-                    .debug_selector({let task=task.to_owned();move||format!("ninja-bubble-{task}-{user}")})
-                    .flex().flex_col()
-                    .when(user,|s|s.w(relative(0.82)).flex_none())
-                    .when(!user,|s|s.flex_1())
-                    .min_w(px(0.))
-                    .px_3()
-                    .py_2()
-                    .rounded_lg()
-                    .bg(rgba(if user { 0x9380ff32 } else { 0xffffff0b }))
-                    .text_size(theme::ui_px(13.))
-                    .child(body),
-            )
+        let column=div().min_w(px(0.)).flex().flex_col().gap_1()
+            .when(user,|s|s.max_w(relative(0.82)).flex_none().items_end())
+            .when(!user,|s|s.flex_1())
+            .child(div().debug_selector({let task=task.to_owned();move||format!("ninja-bubble-{task}-{user}")})
+                .min_w(px(0.)).when(!user,|s|s.w_full()).px_3().py_2().rounded_lg()
+                .bg(rgba(if user{0x9380ff32}else{0xffffff0b})).text_size(theme::ui_px(13.)).child(body))
+            .when(!text.is_empty(),|s|s.child(div().debug_selector({let task=task.to_owned();move||format!("ninja-actions-{task}-{user}")}).w_full().flex().when(user,|s|s.justify_end()).child(
+                copy_control::CopyControl::source(format!("ninja-copy-{task}-{user}"),move |_|if user{text.clone()}else{ninjas::readable_brief(&text)})
+                    .scope(self.ninja_surface_owner().unwrap_or_default()).motion(self.motion))));
+        div().w_full().flex().gap_2().items_start().when(user,|s|s.justify_end())
+            .when(!user,|s|s.child(div().size(px(24.)).flex_none().child(ninja_art::art(&p.profile.style,24.,false))))
+            .child(column)
     }
     fn ninja_work_group(&self,task:&str,blocks:Arc<Vec<MessageBlock>>,range:std::ops::Range<usize>,cx:&Context<Self>)->Div{
         let p=self.ninjas.panel.as_ref().unwrap();let ix=block_key(&format!("{task}:work"),range.start);let expanded=self.expanded_tools.contains(&ix);let reveal=self.interaction_reveal(ix);
@@ -822,9 +802,19 @@ fn decode64(text: &str) -> anyhow::Result<Vec<u8>> {
     }
     Ok(out)
 }
+fn image_blocks(blocks:Vec<MessageBlock>)->Vec<MessageBlock>{
+    let mut seen=blocks.iter().filter_map(|b|if let MessageBlock::Attachment{target,..}=b{Some(target.clone())}else{None}).collect::<HashSet<_>>();
+    let mut result=vec![];
+    for block in blocks{
+        let targets=match &block{MessageBlock::RichParagraph{highlights,..}|MessageBlock::ListItem{highlights,..}|MessageBlock::Voice{highlights,..}=>highlights.iter().filter_map(|(_,style)|if let presentation::InlineStyle::Link(target)=style{image_target(target).then(||target.to_string())}else{None}).collect::<Vec<_>>(),_=>vec![]};
+        result.push(block);
+        for target in targets{if seen.insert(target.clone()){let name=target.split(['?','#']).next().unwrap_or(&target).rsplit('/').next().unwrap_or("Image").to_owned();result.push(MessageBlock::Attachment{name,target});}}
+    }
+    result
+}
 fn image_target(target: &str) -> bool {
     target.split(['?', '#']).next().is_some_and(|p| {
-        ["png", "jpg", "jpeg", "gif", "webp", "bmp", "tiff"].contains(
+        ["png", "jpg", "jpeg", "gif", "webp", "bmp", "tiff", "svg"].contains(
             &p.rsplit('.')
                 .next()
                 .unwrap_or("")
@@ -873,7 +863,7 @@ fn fetch_artifact(
                 format!("{title}.")
             }
         ))
-    } else if target.starts_with("https://") && image_target(target) {
+    } else if target.starts_with("https://") {
         // Public image URLs render as images too, with bounded HTTPS-only reads.
         let result = std::process::Command::new("/usr/bin/curl")
             .args([
@@ -961,9 +951,10 @@ fn fetch_artifact(
         .mode(0o600)
         .open(&path)?;
     file.write_all(&data)?;
-    let cancel = std::sync::atomic::AtomicBool::new(false);
-    let image = if image_target(target) {
-        Some(attachments::preview(&path, &cancel)?)
+    let image = if image_target(target)||attachments::supported_content(&data)||String::from_utf8_lossy(&data[..data.len().min(4096)]).contains("<svg") {
+        let mut pixels=background::attachment_thumbnail(&data,768)?;
+        for pixel in pixels.pixels_mut(){pixel.0.swap(0,2);}
+        Some(Arc::new(RenderImage::new(vec![image::Frame::new(pixels)])))
     } else {
         None
     };
@@ -988,33 +979,16 @@ fn fetch_artifact(
     })
 }
 impl Orbit {
-    pub(super) fn ninja_prefetch_images(&mut self, cx: &mut Context<Self>) {
-        if cfg!(test) {
-            return;
+    fn ninja_image_targets(&self)->Vec<String>{
+        let Some(p)=&self.ninjas.panel else{return vec![]};let mut targets=vec![];
+        for task in p.messages.iter().chain(self.ninjas.snapshots.get(&p.host).into_iter().flat_map(|s|s["tasks"].as_array().into_iter().flatten())).chain(p.task.iter()).filter(|t|t["chat"].as_str()==p.chat.as_deref()){
+            for block in self.ninja_blocks(false,task["brief"].as_str().unwrap_or(""),task["id"].as_str().unwrap_or("")).iter(){if let MessageBlock::Attachment{target,..}=block{targets.push(target.clone());}}
         }
-        let Some(p) = &self.ninjas.panel else { return };
-        let targets = p
-            .messages
-            .iter()
-            .chain(
-                self.ninjas
-                    .snapshots
-                    .get(&p.host)
-                    .into_iter()
-                    .flat_map(|s| s["tasks"].as_array().into_iter().flatten()),
-            )
-            .filter(|t| t["chat"].as_str() == p.chat.as_deref())
-            .flat_map(|t| {
-                presentation::message_blocks("assistant", t["brief"].as_str().unwrap_or(""))
-            })
-            .filter_map(|b| match b {
-                MessageBlock::Attachment { target, .. } if image_target(&target) => Some(target),
-                _ => None,
-            })
-            .collect::<HashSet<_>>();
-        for target in targets.into_iter().take(8) {
-            self.ninja_request_artifact(target, false, cx);
-        }
+        let mut seen=HashSet::new();targets.into_iter().rev().filter(|t|seen.insert(t.clone())).take(8).collect()
+    }
+    pub(super) fn ninja_prefetch_images(&mut self,cx:&mut Context<Self>){
+        if cfg!(test){return}
+        for target in self.ninja_image_targets(){self.ninja_request_artifact(target,false,cx);}
     }
     pub(super) fn ninja_request_artifact(
         &mut self,
@@ -1027,6 +1001,7 @@ impl Orbit {
             return;
         };
         let key = artifact_key(&p.host, &p.profile.id, &target);
+        if open&&self.ninjas.artifacts.get(&key).is_some_and(Result::is_err){self.ninjas.artifacts.remove(&key);}
         if let Some(result) = self.ninjas.artifacts.get(&key) {
             if open {
                 match result {
@@ -1058,8 +1033,13 @@ impl Orbit {
                         Err(e) => app.notice = Some(e.clone()),
                     }
                 }
+                let needed=app.ninjas.panel.as_ref().map(|p|{let host=p.host.clone();let profile=p.profile.id.clone();app.ninja_image_targets().iter().map(|t|artifact_key(&host,&profile,t)).collect::<HashSet<_>>()}).unwrap_or_default();
+                if !open&&!needed.contains(&key){
+                    if let Ok(a)=result{cx.background_executor().spawn(async move{if let Some(parent)=a.path.parent(){let _=std::fs::remove_dir_all(parent);}}).detach();}
+                    app.ninja_prefetch_images(cx);return;
+                }
                 if app.ninjas.artifacts.len() >= 8 {
-                    if let Some(old) = app.ninjas.artifacts.keys().next().cloned() {
+                    if let Some(old) = app.ninjas.artifacts.keys().find(|k|!needed.contains(*k)).or_else(||app.ninjas.artifacts.keys().next()).cloned() {
                         if let Some(Ok(a)) = app.ninjas.artifacts.remove(&old) {
                             cx.background_executor()
                                 .spawn(async move {
@@ -1072,6 +1052,7 @@ impl Orbit {
                     }
                 }
                 app.ninjas.artifacts.insert(key, result);
+                app.ninja_prefetch_images(cx);
                 cx.notify();
             });
         })
@@ -1228,6 +1209,19 @@ mod tests {
         assert!(decode64("!!!!").is_err());
     }
     #[gpui::test]
+    fn short_bubbles_fit_their_text_and_keep_actions_below_the_background(cx:&mut TestAppContext){
+        let(view,cx)=crate::ui_tests::fixture(cx);
+        cx.update(|w,cx|view.update(cx,|app,cx|{app.motion=false;app.sidebar_split=false;app.sidebar_layout_transition=None;app.open_ninjas(Some("local".into()),None,w,cx);let p=app.ninjas.panel.as_mut().unwrap();p.settings=false;p.profile.revision=1;p.chat=Some("chat".into());p.messages=vec![json!({"id":"tiny","profile":p.profile.id,"chat":"chat","created":1,"prompt":"hi","brief":"hello","state":"completed","finished":2})];}));
+        crate::ui_tests::draw_frame(&view,cx);crate::ui_tests::draw_frame(&view,cx);
+        for (bubble,actions)in [("ninja-bubble-tiny-true","ninja-actions-tiny-true"),("ninja-bubble-tiny-false","ninja-actions-tiny-false")]{let b=cx.debug_bounds(bubble).unwrap();let a=cx.debug_bounds(actions).unwrap();assert!(b.size.height<px(50.),"Copy row stretched the bubble: {b:?}");assert!(a.top()>=b.bottom(),"Actions must be outside the message background");}
+        assert!(cx.debug_bounds("ninja-bubble-tiny-true").unwrap().size.width<px(100.),"Short text should not span most of the window");
+    }
+    #[test]
+    fn image_citations_become_deduplicated_inline_previews_without_changing_code_examples(){
+        let rows=image_blocks(presentation::message_blocks("assistant","[render](</tmp/result image.svg>)\n\n![existing](/tmp/existing.png)\n\n[again](/tmp/existing.png)\n\n`[literal](/tmp/code.png)`"));
+        let targets=rows.iter().filter_map(|b|if let MessageBlock::Attachment{target,..}=b{Some(target.as_str())}else{None}).collect::<Vec<_>>();assert_eq!(targets,vec!["/tmp/result image.svg","/tmp/existing.png"]);assert!(image_target("https://example.com/render.svg?download=1"));
+    }
+    #[gpui::test]
     fn long_ninja_turns_keep_readable_width_and_virtualize_offscreen_work(cx:&mut TestAppContext){
         let(view,cx)=crate::ui_tests::fixture(cx);
         cx.update(|w,cx|view.update(cx,|app,cx|{
@@ -1350,10 +1344,12 @@ mod tests {
         image::RgbaImage::from_pixel(64, 32, image::Rgba([40, 90, 220, 255]))
             .save(&path)
             .unwrap();
+        let svg=project.join("vector preview.svg");std::fs::write(&svg,br##"<svg xmlns="http://www.w3.org/2000/svg" width="900" height="300"><rect width="900" height="300" fill="#278acd"/></svg>"##).unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let server_project = project.clone();
         let server = std::thread::spawn(move || {
+            for _ in 0..2{
             let (mut stream, _) = listener.accept().unwrap();
             let mut bytes = Vec::new();
             let mut buffer = [0; 4096];
@@ -1395,12 +1391,14 @@ mod tests {
             )
             .unwrap();
             stream.write_all(&body).unwrap();
+            }
         });
         let host = Host {
             id: "fixture".into(),
             name: "Remote host".into(),
             endpoint: Some(format!("http://{address}")),
         };
+        for path in [&path,&svg]{
         let result = fetch_artifact(
             &host,
             "profile",
@@ -1414,6 +1412,7 @@ mod tests {
             std::fs::read(&path).unwrap(),
             std::fs::read(result.path).unwrap()
         );
+        }
         server.join().unwrap();
         assert!(artifacts::scoped_file(&project, &root.join("outside.txt"), 0).is_err());
         std::os::unix::fs::symlink("/etc/hosts", project.join("escape")).unwrap();

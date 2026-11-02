@@ -1801,10 +1801,14 @@ fn worker(data: PathBuf, rx: mpsc::Receiver<Command>, events: async_channel::Sen
 }
 
 fn static_pixels(bytes: &[u8]) -> std::io::Result<RgbaImage> {
+    thumbnail_pixels(bytes, STATIC_SIDE)
+}
+fn thumbnail_pixels(bytes: &[u8], side:u32) -> std::io::Result<RgbaImage> {
+    let side=side.clamp(1,STATIC_SIDE);
     // Raster metadata may contain an SVG thumbnail. Classify the actual file
     // signature first so an embedded XML fragment cannot misroute a PNG.
     if image::guess_format(bytes).is_ok() {
-        return native_image::thumbnail(bytes, STATIC_SIDE);
+        return native_image::thumbnail(bytes, side);
     }
     let head = String::from_utf8_lossy(&bytes[..bytes.len().min(4096)]);
     if bytes.starts_with(&[0x1f, 0x8b]) {
@@ -1819,11 +1823,11 @@ fn static_pixels(bytes: &[u8]) -> std::io::Result<RgbaImage> {
         let options = svg_options();
         let tree = resvg::usvg::Tree::from_data(bytes, &options).map_err(std::io::Error::other)?;
         let size = tree.size();
-        let scale = (STATIC_SIDE as f32 / size.width())
-            .min(STATIC_SIDE as f32 / size.height())
+        let scale = (side as f32 / size.width())
+            .min(side as f32 / size.height())
             .min(1.);
-        let width = (size.width() * scale).ceil().clamp(1., STATIC_SIDE as f32) as u32;
-        let height = (size.height() * scale).ceil().clamp(1., STATIC_SIDE as f32) as u32;
+        let width = (size.width() * scale).ceil().clamp(1., side as f32) as u32;
+        let height = (size.height() * scale).ceil().clamp(1., side as f32) as u32;
         let mut pixmap = resvg::tiny_skia::Pixmap::new(width, height)
             .ok_or_else(|| std::io::Error::other("SVG has invalid dimensions"))?;
         resvg::render(
@@ -1836,7 +1840,7 @@ fn static_pixels(bytes: &[u8]) -> std::io::Result<RgbaImage> {
         return RgbaImage::from_raw(width, height, pixels)
             .ok_or_else(|| std::io::Error::other("SVG raster conversion failed"));
     }
-    native_image::thumbnail(bytes, STATIC_SIDE)
+    native_image::thumbnail(bytes, side)
 }
 fn svg_options() -> resvg::usvg::Options<'static> {
     let embedded_pixels = std::sync::atomic::AtomicU64::new(0);
@@ -3351,7 +3355,7 @@ mod tests {
 
 /// Bounded native decode shared with explicit composer image imports.
 pub(crate) fn attachment_thumbnail(bytes: &[u8], side: u32) -> std::io::Result<RgbaImage> {
-    native_image::thumbnail(bytes, side)
+    thumbnail_pixels(bytes, side)
 }
 
 #[cfg(target_os = "macos")]

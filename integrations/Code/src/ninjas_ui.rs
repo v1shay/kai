@@ -978,6 +978,7 @@ impl Orbit {
                         match result {
                             Ok(v) => {
                                 p.messages = v["messages"].as_array().cloned().unwrap_or_default();
+                                let prefix=format!("{}:{}:",p.host,p.profile.id);app.ninjas.artifacts.retain(|key,result|!key.starts_with(&prefix)||result.is_ok());
                             }
                             Err(e) => p.error = Some(e.to_string()),
                         }

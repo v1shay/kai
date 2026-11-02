@@ -179,6 +179,13 @@ fn start_ninja_probe(owner:WindowHandle<Orbit>,cx:&mut App){
             let tool=chat_interactions::serialize_interaction(&chat_interactions::ChatInteraction::Delegation{title:"Terminal output".into(),details:"$ cargo check\nChecking project\nFinished successfully\n".repeat(100),status:chat_interactions::InteractionStatus::Completed,agent:None});
             let thought=chat_interactions::serialize_interaction(&chat_interactions::ChatInteraction::Status{title:"Thinking".into(),details:"Checking the changes and verifying the result.".into(),status:chat_interactions::InteractionStatus::Completed});
             p.messages=(0..24).map(|i|serde_json::json!({"id":format!("fixture-{i}"),"profile":p.profile.id,"chat":"fixture","created":i,"prompt":"Update the terminal and verify the result. Keep messages readable as the window changes size.","brief":format!("{thought}\n\n{tool}\n\n## Verified\n\nThe **terminal update** is ready. The full command output is available above.\n\n```rust\nlet result = verify_changes()?;\n```\n\n- readable messages\n- one tool result per command\n- smooth scrolling"),"state":"completed","finished":i+1})).collect();
+            if let Ok(endpoint)=std::env::var("KAI_NINJA_IMAGE_PROBE_ENDPOINT"){
+                for i in 0..6{p.messages[17+i]["brief"]=serde_json::json!(format!("![preview](/fixture/preview-{i}.svg)"));}
+                p.messages[23]["prompt"]=serde_json::json!("hi");
+                p.messages[23]["brief"]=serde_json::json!("here’s the image from your host.\n\n![generated preview](/fixture/preview-6.png)\n\n[vector preview](/fixture/preview-7.svg)");
+                app.ninjas.hosts.push(crate::ninjas_ui::Host{id:"validation".into(),name:"Preview fixture".into(),endpoint:Some(endpoint)});
+                app.ninja_prefetch_images(cx);
+            }
             app.sidebar_split=false;app.sidebar_layout_transition=None;app.conversations_visible=false;
             window.activate_window();cx.activate(true);frames(window,120,Instant::now());cx.notify();
         });
@@ -186,7 +193,12 @@ fn start_ninja_probe(owner:WindowHandle<Orbit>,cx:&mut App){
             if phase=="compact"{let _=owner.update(cx,|_,window,_|window.resize(size(px(620.),px(720.))));}
             Timer::after(Duration::from_secs(4)).await;
             let id=owner.update(cx,|_,window,_|native::window_number(window)).unwrap_or(0);
-            if id>0{let destination=format!("/private/tmp/kai048-ninja-{phase}.png");let result=cx.background_executor().spawn(async move{std::process::Command::new("/usr/sbin/screencapture").args(["-x","-l",&id.to_string(),&destination]).status()}).await;if !result.is_ok_and(|s|s.success()){eprintln!("KAI_NINJA_RENDER_PROBE_FAILED capture");}}
+            if id>0{let destination=format!("/private/tmp/kai049-ninja-{phase}.png");let result=cx.background_executor().spawn(async move{std::process::Command::new("/usr/sbin/screencapture").args(["-x","-l",&id.to_string(),&destination]).status()}).await;if !result.is_ok_and(|s|s.success()){eprintln!("KAI_NINJA_RENDER_PROBE_FAILED capture");}}
+        }
+        if std::env::var_os("KAI_NINJA_IMAGE_PROBE_ENDPOINT").is_some(){
+            let count=owner.update(cx,|app,_,_|app.ninjas.artifacts.values().filter(|a|a.as_ref().is_ok_and(|a|a.image.is_some()&&a.native_preview.is_some())).count()).unwrap_or(0);
+            eprintln!("KAI_NINJA_IMAGE_PREVIEWS {count}");
+            if count!=8{eprintln!("KAI_NINJA_RENDER_PROBE_FAILED image queue");let _=cx.update(|cx|cx.quit());return;}
         }
         eprintln!("KAI_NINJA_RENDER_PROBE_OK");let _=cx.update(|cx|cx.quit());
     }).detach();

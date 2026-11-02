@@ -1,7 +1,39 @@
 #!/usr/bin/env python3
 """Run an isolated signed bundle through its purpose-built native probes."""
-import argparse,json,os,plistlib,re,shutil,signal,subprocess,tempfile,time
+import argparse,base64,contextlib,http.server,json,os,plistlib,re,shutil,signal,struct,subprocess,tempfile,threading,time,zlib
 from pathlib import Path
+
+
+@contextlib.contextmanager
+def image_fixture(env,enabled):
+    """Exercise the real host download queue without touching a user worker."""
+    downloaded=set()
+    if not enabled:
+        yield downloaded
+        return
+    def chunk(kind,data):
+        return struct.pack('>I',len(data))+kind+data+struct.pack('>I',zlib.crc32(kind+data))
+    pixels=b''.join(b'\0'+bytes([47,133+y//3,184,255])*320 for y in range(100))
+    png=b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR',struct.pack('>IIBBBBB',320,100,8,6,0,0,0))+chunk(b'IDAT',zlib.compress(pixels))+chunk(b'IEND',b'')
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self,*args):pass
+        def do_POST(self):
+            length=int(self.headers.get('Content-Length','0'))
+            if self.path!='/agents' or not 0<length<=4096:
+                self.send_error(400);return
+            request=json.loads(self.rfile.read(length));path=request.get('path','')
+            if request.get('action')!='artifact' or not re.fullmatch(r'/fixture/preview-[0-7]\.(svg|png)',path) or request.get('offset')!=0:
+                self.send_error(400);return
+            data=png if path.endswith('.png') else b'<svg xmlns="http://www.w3.org/2000/svg" width="320" height="100"><rect width="320" height="100" rx="16" fill="#23576e"/><circle cx="50" cy="50" r="24" fill="#79d4df"/><text x="92" y="57" font-family="sans-serif" font-size="18" fill="white">inline svg preview</text></svg>'
+            downloaded.add(path)
+            body=json.dumps({'total_bytes':len(data),'offset':0,'next_offset':None,'base64':base64.b64encode(data).decode()}).encode()
+            self.send_response(200);self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
+    server=http.server.ThreadingHTTPServer(('127.0.0.1',0),Handler)
+    env['KAI_NINJA_IMAGE_PROBE_ENDPOINT']='http://127.0.0.1:'+str(server.server_port)
+    thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+    try:yield downloaded
+    finally:server.shutdown();server.server_close();thread.join()
+
 
 def main():
     parser=argparse.ArgumentParser()
@@ -32,7 +64,7 @@ def main():
         if mode!='performance':env['KAI_STARTUP_SURFACE']=mode.removeprefix('startup-')
         else:env['KAI_STARTUP_WAIT_MS']='30000'
     samples=[];sampled=False
-    with tempfile.TemporaryDirectory(prefix='kai-packaged-'+mode+'-') as scratch:
+    with image_fixture(env,mode=='ninja-chat') as downloads,tempfile.TemporaryDirectory(prefix='kai-packaged-'+mode+'-') as scratch:
         app=Path(scratch)/'Kai Validation.app'
         subprocess.run(['ditto','--norsrc','--noextattr',str(source),str(app)],check=True)
         info_path=app/'Contents/Info.plist';info=plistlib.loads(info_path.read_bytes())
@@ -92,6 +124,9 @@ os.execve(sys.argv[1],sys.argv[1:],os.environ)
         if samples:
             result['idle_average']={'cpu_percent_from_time_delta':100*(samples[-1]['cpu_seconds']-samples[0]['cpu_seconds'])/(samples[-1]['seconds']-samples[0]['seconds']),'cpu_percent':sum(s['cpu_percent'] for s in samples)/len(samples),'rss_mib':sum(s['rss_kib'] for s in samples)/len(samples)/1024,'threads':sum(s['threads'] for s in samples)/len(samples)}
         if mode=='ninja-chat':
+            loaded=re.search(r'KAI_NINJA_IMAGE_PREVIEWS (\d+)',text)
+            assert loaded and int(loaded[1])==8 and len(downloads)==8,'Image queue did not finish all eight previews'
+            result['inline_previews_loaded']=int(loaded[1])
             frames=sorted(result['metrics']['ninja_frame']);assert len(frames)>=100,'Insufficient real-window frame samples'
             result['frame_p95_ms']=frames[int((len(frames)-1)*.95)]
             result['frame_median_ms']=frames[len(frames)//2]
