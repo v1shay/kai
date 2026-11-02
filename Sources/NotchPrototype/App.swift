@@ -876,6 +876,11 @@ private final class NotchSurfaceHost:NSView {
     @objc private func menuBarClicked(_ sender:Any?){
         guard let button=status?.button else{return}
         if let event=NSApp.currentEvent,event.type == .rightMouseUp || event.modifierFlags.contains(.option){if let menu=statusContextMenu{NSMenu.popUpContextMenu(menu,with:event,for:button)};return}
+        toggleMenuBarPanel()
+    }
+    func toggleMenuBarPanel(){
+        guard let button=status?.button else{return}
+        consumeQuickShortcutChord()
         guard EmbeddedCodeRuntime.shared.active else{toggleFromMenu();return}
         if quickChatVisible,menuQuickAnchor != nil{EmbeddedCodeRuntime.shared.sendAction("quick_dismiss");return}
         guard let host=button.window else{return};let anchor=host.convertToScreen(button.convert(button.bounds,to:nil));menuQuickAnchor=anchor
@@ -1501,6 +1506,17 @@ private final class NotchSurfaceHost:NSView {
         commandChordActive=commandChordActive || modifierFlags().contains(.command)
         commandDismissGesture.cancel();shortcutGesture=ShortcutGesture();cancelShortcutHold();cancelWorkspaceHold();cancelVoicePromptForKeypress()
     }
+    func prepareMiniOpening(){
+        consumeQuickShortcutChord()
+        guard menuQuickAnchor != nil else{prepareQuickOpening();return}
+        let source=quickWindow?.frame ?? menuQuickAnchor!
+        menuQuickAnchor=nil
+        if let window=quickWindow,let screen=window.screen ?? NSScreen.main{
+            let size=CGSize(width:min(680,screen.visibleFrame.width-24),height:min(520,screen.visibleFrame.height-24))
+            window.setFrame(CGRect(x:screen.visibleFrame.midX-size.width/2,y:screen.visibleFrame.midY-size.height/2,width:size.width,height:size.height),display:false)
+        }
+        quickPrepared=(false,source,.hidden)
+    }
     func prepareQuickOpening(){
         consumeQuickShortcutChord()
         guard quickPrepared == nil,!(quickChatVisible && quickWindow?.isVisible == true),let panel else{return}
@@ -2123,11 +2139,17 @@ private final class NotchSurfaceHost:NSView {
     private func dismissMedia(closeNotch:Bool=true){
         guard mediaVisible else{return};mediaVisible=false;currentScene="";media.capture(false);presentedMediaKey=nil;visualTransition.hideArtwork(mediaArtwork);sprite.isHidden=false;visualTransition.reveal(sprite,visible:true);play();if let state=latestState{showActivity(displayActivity(state))};if closeNotch && !miniOpen && !compactWhileWorking && !dictating && !finalizingDictation{setOpen(false)}
     }
+    private var activeNinjaStyle:String?{
+        guard let state=latestState else{return nil}
+        if miniOpen || compactVoiceMode || quickChatVisible || workspaceIsForeground{return state.personalNinja?.style}
+        return state.activeTasks.first{$0.id == (floatingFocus ?? compactPetCycleID ?? state.focusThreadId)}?.ninjaStyle
+    }
     private func syncConversationTheme(){
-        let id=ConversationTheme.petID(expanded:miniOpen || compactVoiceMode,viewedThread:latestState?.threadId,taskPets:taskPets,indicatorPet:petID,fallback:userPetID)
-        guard conversationPetID != id,let profile=gradientCatalog.profileByPetID[id] else{return}
+        let style=activeNinjaStyle
+        let id=style.map{"ninja:"+$0} ?? ConversationTheme.petID(expanded:miniOpen || compactVoiceMode,viewedThread:latestState?.threadId,taskPets:taskPets,indicatorPet:petID,fallback:userPetID)
+        guard conversationPetID != id,let profile=style.map({PetGradientProfile.ninja($0)}) ?? gradientCatalog.profileByPetID[id] else{return}
         conversationPetID=id;indicator.setProfile(profile,wave:true);miniUI.setProfile(profile,animated:true)
-        assistantPalette=assistantGradientColors(for:id)
+        assistantPalette=style.map{let c=NinjaAtmosphereView.color($0);return [c.blended(withFraction:0.45,of:.white)!,c,c.blended(withFraction:0.38,of:.black)!]} ?? assistantGradientColors(for:id)
         if let storage=conversationText?.textStorage{ConversationTheme.recolor(storage,palette:assistantPalette)}
         updateGlassBackground()
         syncInlinePets()
@@ -2626,7 +2648,7 @@ private final class NotchSurfaceHost:NSView {
         }else{ninjaScene.suspend();return}
         guard let host,rect.width>0,rect.height>0 else{ninjaScene.suspend();return}
         ninjaScene.mount(in:host,frame:rect)
-        ninjaScene.configure(identity:ninja.host+":"+ninja.id+":"+(state.threadId ?? ""),name:ninja.name,style:ninja.style,working:state.activeTurnId != nil || state.workspaceVoiceActive == true,motion:workspaceMorph.motionEnabled,visible:true)
+        ninjaScene.configure(identity:ninja.host+":"+ninja.id+":"+(state.threadId ?? ""),name:ninja.name,style:ninja.style,working:state.activeTurnId != nil || state.workspaceVoiceActive == true,motion:workspaceMorph.motionEnabled,visible:true,bottomAnchored:miniOpen && showsNotchSurface && !quickChatVisible)
     }
     private func updateGlassBackground(){
         updateNinjaWallpaper()

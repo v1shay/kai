@@ -28,6 +28,15 @@ final class FileGlyphLayer: CAShapeLayer {
 
 struct GradientCatalog: Decodable { var profileByPetID: [String: PetGradientProfile] }
 struct PetGradientProfile: Codable { let palette: PetPalette; let gradients: PetGradients }
+extension PetGradientProfile {
+    @MainActor static func ninja(_ style:String)->PetGradientProfile{
+        let c=NinjaAtmosphereView.color(style)
+        func hex(_ color:NSColor)->String{let v=color.usingColorSpace(.sRGB)!;return String(format:"#%02X%02X%02X",Int(v.redComponent*255),Int(v.greenComponent*255),Int(v.blueComponent*255))}
+        let light=hex(c.blended(withFraction:0.45,of:.white)!),base=hex(c),dark=hex(c.blended(withFraction:0.38,of:.black)!)
+        let recipe=GradientRecipe(angleDegrees:35,cycleDurationMs:4200,stops:[GradientStop(location:0,color:light),GradientStop(location:0.5,color:base),GradientStop(location:1,color:dark)])
+        return PetGradientProfile(palette:PetPalette(shadow:dark,primary:base,secondary:light,accent:base,highlight:light,foreground:light),gradients:PetGradients(ambient:recipe,thinking:recipe,working:recipe,success:recipe,warning:recipe,error:recipe))
+    }
+}
 struct PetPalette: Codable { let shadow, primary, secondary, accent, highlight, foreground: String }
 struct PetGradients: Codable { let ambient, thinking, working, success, warning, error: GradientRecipe }
 struct GradientRecipe: Codable { let angleDegrees: Double, cycleDurationMs: Int, stops: [GradientStop] }

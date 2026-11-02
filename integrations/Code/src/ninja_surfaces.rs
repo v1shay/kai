@@ -93,7 +93,7 @@ impl Orbit {
                 // QuickChat::new/show reads Orbit. Return this entity's lease
                 // before opening the second surface over the same entity.
                 cx.defer(move |cx| {
-                    let result=cx.update_global::<quick_chat::Controller,_>(|controller,cx|controller.toggle(cx));
+                    let result=cx.update_global::<quick_chat::Controller,_>(|controller,cx|controller.toggle_menu(cx));
                     if let Err(error)=result { let _=owner.update(cx,|app,cx|{app.notice=Some(error.to_string());cx.notify();}); }
                 });
             }
@@ -113,12 +113,7 @@ impl Orbit {
                 {
                     self.open_ninjas(Some(host.into()), Some(id.into()), window, cx);
                 }
-                if let Some(p) = &mut self.ninjas.panel {
-                    p.chat = Some(chat.into());
-                    p.messages.clear();
-                    p.task = None;
-                }
-                self.ninja_conversation(cx);
+                self.open_ninja_chat(chat.into(),cx);
                 return Ok(true);
             }
         }
@@ -310,7 +305,7 @@ impl Orbit {
                         })
                         .take(12)
                     {
-                        chats.push(json!({"id":format!("ninja-chat:{}:{}:{}",h.id,id,t["chat"].as_str().unwrap_or("")),"name":format!("{} · {}",p["name"].as_str().unwrap_or("Ninja"),t["prompt"].as_str().unwrap_or("Chat").chars().take(45).collect::<String>()),"status":t["state"],"agent":"ninja"}));
+                        chats.push(json!({"id":format!("ninja-chat:{}:{}:{}",h.id,id,t["chat"].as_str().unwrap_or("")),"name":format!("{} · {}",p["name"].as_str().unwrap_or("Ninja"),self.ninja_chat_label(&h.id,id,t)),"status":t["state"],"agent":"ninja"}));
                     }
                 }
             }
@@ -370,7 +365,7 @@ impl Orbit {
             p.chat.as_deref().unwrap_or("draft")
         );
         let models=p.models.iter().map(|m|json!({"model":m["id"],"displayName":m["label"],"supportedReasoningEfforts":m["efforts"].as_array().into_iter().flatten().map(|e|json!({"reasoningEffort":e})).collect::<Vec<_>>()})).collect::<Vec<_>>();
-        let override_ = json!({"orchestratorMode":p.profile.orchestrator,"orchestratorAvailable":true,"personalNinja":{"id":p.profile.id,"name":p.profile.name,"style":p.profile.style,"host":p.host},"threadId":thread,"threadName":p.profile.name,"ownerToken":self.ninja_surface_owner(),"project":p.profile.project,"composerDraft":p.fields[3].read(cx).text(),"history":history,"historyLoading":p.history_loading,"modelsLoading":p.models_loading.is_some(),"historyHasMore":false,"historyEarlier":false,"readOnly":false,"composerBusy":p.busy,"selectedAgent":p.profile.agent.command(),"selectedModel":p.profile.model,"effectiveModel":active.and_then(|t|t["model"].as_str()).or(p.profile.model.as_deref()),"reasoningEffort":p.profile.effort,"models":models,"chats":chats,"activeTurnId":active.and_then(|t|t["id"].as_str()),"sessionActivity":{"scene":active.map(crate::ninjas_ui::task_scene).unwrap_or("off"),"text":active.and_then(|t|t["status"].as_str()).unwrap_or("")},"attachments":[]});
+        let override_ = json!({"orchestratorMode":p.profile.orchestrator,"orchestratorAvailable":true,"personalNinja":{"id":p.profile.id,"name":p.profile.name,"style":p.profile.style,"host":p.host},"threadId":thread,"threadName":p.chat.as_ref().map(|chat|self.lifecycle.chat_names.get(&Self::ninja_chat_key(&p.host,&p.profile.id,chat)).cloned().or_else(||self.ninja_chat_seed(&Self::ninja_chat_key(&p.host,&p.profile.id,chat))).unwrap_or_else(||p.profile.name.clone())).unwrap_or_else(||p.profile.name.clone()),"ownerToken":self.ninja_surface_owner(),"project":p.profile.project,"composerDraft":p.fields[3].read(cx).text(),"history":history,"historyLoading":p.history_loading,"modelsLoading":p.models_loading.is_some(),"historyHasMore":false,"historyEarlier":false,"readOnly":false,"composerBusy":p.busy,"selectedAgent":p.profile.agent.command(),"selectedModel":p.profile.model,"effectiveModel":active.and_then(|t|t["model"].as_str()).or(p.profile.model.as_deref()),"reasoningEffort":p.profile.effort,"models":models,"chats":chats,"activeTurnId":active.and_then(|t|t["id"].as_str()),"sessionActivity":{"scene":active.map(crate::ninjas_ui::task_scene).unwrap_or("off"),"text":active.and_then(|t|t["status"].as_str()).unwrap_or("")},"attachments":[]});
         for (key, value) in override_.as_object().unwrap() {
             s[key] = value.clone();
         }
@@ -394,6 +389,11 @@ impl Orbit {
 mod tests {
     use super::*;
     use std::prelude::v1::test;
+    #[gpui::test]
+    fn mini_and_menu_hotkey_destinations_switch_the_same_shared_window(cx:&mut TestAppContext){
+        let(view,cx)=crate::ui_tests::fixture(cx);
+        cx.update(|_,cx|{cx.set_global(quick_chat::Controller::new(view));cx.update_global::<quick_chat::Controller,_>(|c,cx|{c.toggle_menu(cx).unwrap();assert!(c.is_menu_surface());c.toggle(cx).unwrap();assert!(!c.is_menu_surface());c.toggle_menu(cx).unwrap();assert!(c.is_menu_surface());c.dismiss(cx);});});
+    }
     #[gpui::test]
     fn menu_bar_opens_mini_code_after_returning_the_shared_entity_lease(cx:&mut TestAppContext){
         let(view,cx)=crate::ui_tests::fixture(cx);

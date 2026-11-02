@@ -18,6 +18,7 @@ pub(super) struct State {
     pub errors: HashMap<String, String>,
     pub drafts: HashMap<String,String>,
     pub started: bool,
+    pub title_attempted:HashSet<String>,
     pub call: Option<crate::ninja_call_ui::Call>,
     pub desktop: Option<Entity<crate::remote_desktop::RemoteDesktop>>,
 }
@@ -686,6 +687,7 @@ impl Orbit {
                                 if app.ninjas.snapshots.get(&host.id) != Some(&value) {
                                     app.ninjas.snapshots.insert(host.id.clone(), value);
                                     app.ninjas.save();
+                                    app.queue_ninja_titles(cx);
                                 }
                                 if refresh_history {
                                     app.ninja_conversation(cx);
@@ -900,6 +902,7 @@ impl Orbit {
                 cx,
             );
         }
+        self.queue_ninja_titles(cx);
         // Device inventory is metadata only and never probes provider logins.
         if cfg!(test) {
             cx.notify();
@@ -1182,6 +1185,42 @@ impl Orbit {
         let request = json!({"action":"submit","id":profile.id,"profile":profile,"prompt":prompt,"chat":p.chat,"due":due,"repeat":repeat});
         self.ninja_operation(request, cx);
     }
+    pub(super) fn ninja_chat_rows(&self)->Vec<Value>{
+        let Some(p)=self.ninjas.panel.as_ref().filter(|p|p.profile.revision>0)else{return vec![]};
+        let mut tasks=self.ninjas.snapshots.get(&p.host).into_iter().flat_map(|s|s["tasks"].as_array().into_iter().flatten()).filter(|t|t["profile"]==p.profile.id).cloned().collect::<Vec<_>>();
+        for t in p.messages.iter().chain(p.task.iter()){if t["profile"]["id"]==p.profile.id || t["profile"]==p.profile.id {if !tasks.iter().any(|v|v["id"]==t["id"]){tasks.push(t.clone());}}}
+        tasks.sort_by_key(|t|std::cmp::Reverse(t["created"].as_i64().unwrap_or(0)));
+        let mut seen=HashSet::new();tasks.retain(|t|t["chat"].is_string() && seen.insert(t["chat"].clone().to_string()));tasks
+    }
+    pub(super) fn ninja_chat_key(host:&str,profile:&str,chat:&str)->String{format!("ninja-chat:{host}:{profile}:{chat}")}
+    pub(super) fn ninja_chat_seed(&self,id:&str)->Option<String>{
+        let raw=id.strip_prefix("ninja-chat:")?;let mut parts=raw.rsplitn(3,':');let chat=parts.next()?;let profile=parts.next()?;let host=parts.next()?;
+        self.ninjas.snapshots.get(host)?["tasks"].as_array()?.iter().filter(|t|t["profile"]==profile && t["chat"]==chat).min_by_key(|t|t["created"].as_i64().unwrap_or(0)).and_then(|t|t["prompt"].as_str()).map(str::to_owned)
+    }
+    pub(super) fn ninja_chat_label(&self,host:&str,profile:&str,t:&Value)->String{
+        let key=Self::ninja_chat_key(host,profile,t["chat"].as_str().unwrap_or(""));
+        self.lifecycle.chat_names.get(&key).cloned().or_else(||self.ninja_chat_seed(&key)).unwrap_or_else(||t["prompt"].as_str().unwrap_or("New conversation").into())
+    }
+    pub(super) fn open_ninja_chat(&mut self,chat:String,cx:&mut Context<Self>){
+        self.remember_ninja_draft(cx);
+        if let Some(p)=&mut self.ninjas.panel{p.chat=Some(chat);p.task=None;p.messages.clear();let key=format!("{}:{}:{}",p.host,p.profile.id,p.chat.as_deref().unwrap());let draft=self.ninjas.drafts.get(&key).cloned().unwrap_or_default();p.fields[3].update(cx,|input,cx|input.set_text(&draft,cx));}
+        self.ninja_conversation(cx);cx.notify();
+    }
+    pub(super) fn ninja_chat_sidebar(&self,cx:&Context<Self>)->AnyElement{
+        let Some(p)=self.ninjas.panel.as_ref()else{return div().into_any_element()};
+        let tasks=self.ninja_chat_rows();let count=tasks.len();
+        div().id("ninja-chat-sidebar").debug_selector(||"ninja-chat-sidebar".into()).size_full().min_h(px(0.)).flex().flex_col().gap_1()
+            .child(div().h(px(40.)).px_3().flex().items_center().gap_2().child(crate::ninja_art::art(&p.profile.style,18.,false)).child(p.profile.name.clone()).child(div().flex_1()).child(count.to_string()))
+            .child(uniform_list("ninja-chat-list",count,cx.processor(move|app,range:std::ops::Range<usize>,_,cx|{
+                let p=app.ninjas.panel.as_ref().unwrap();range.map(|i|{let t=&tasks[i];let chat=t["chat"].as_str().unwrap_or("").to_owned();let label=app.ninja_chat_label(&p.host,&p.profile.id,t);let selected=p.chat.as_deref()==Some(&chat);let active=["queued","running","approval"].contains(&t["state"].as_str().unwrap_or(""));let selector=format!("ninja-chat-{chat}");
+                    div().id(SharedString::from(selector.clone())).debug_selector(move||selector.clone()).h(px(56.)).px_3().flex().items_center().gap_2().rounded_md().when(selected,|v|v.bg(rgba(0xffffff14))).hover(|v|v.bg(rgba(GLASS_HOVER))).cursor_pointer()
+                        .child(div().flex_1().min_w(px(0.)).text_size(theme::ui_px(12.)).child(app.animated_ninja_chat_title(&Self::ninja_chat_key(&p.host,&p.profile.id,&chat),label)))
+                        .when(active,|v|v.child(crate::ninja_art::status(&p.profile.style,task_scene(t),app.motion && !native::reduced_motion())))
+                        .on_click(cx.listener(move|app,_,_,cx|{cx.stop_propagation();app.open_ninja_chat(chat.clone(),cx);})).into_any_element()
+                }).collect()
+            })).flex_1().min_h(px(0.)).px_2())
+            .child(chip("ninja-sidebar-new-chat","New conversation",false,cx,|app,_,cx|{app.remember_ninja_draft(cx);if let Some(p)=&mut app.ninjas.panel{p.chat=None;p.task=None;p.messages.clear();p.fields[3].update(cx,|i,cx|i.set_text("",cx));}cx.notify();})).into_any_element()
+    }
     pub(super) fn ninjas_sidebar(&self, cx: &Context<Self>) -> AnyElement {
         let rows = self
             .ninjas
@@ -1278,7 +1317,7 @@ impl Orbit {
                                                 .contains(&t["state"].as_str().unwrap_or(""))
                                     })
                                     .unwrap();
-                                v.child(self.sidebar_status_mark(
+                                v.child(crate::ninja_art::status(p["style"].as_str().unwrap_or("fire"),
                                     if task["state"] == "approval" {
                                         "permission"
                                     } else {
@@ -1286,7 +1325,7 @@ impl Orbit {
                                             task["status"].as_str().unwrap_or("Working"),
                                         )
                                     },
-                                    cx.active_window().is_some(),
+                                    self.motion && !native::reduced_motion() && cx.active_window().is_some(),
                                 ))
                             })
                             .on_click(cx.listener(move |app, _, w, cx| {
@@ -1295,6 +1334,7 @@ impl Orbit {
                             }))
                     })),
             )
+            .when(!(self.sidebar_split && self.conversations_visible) && self.ninjas.panel.as_ref().is_some_and(|p|p.profile.revision>0),|v|v.child(div().h(px(220.)).child(self.ninja_chat_sidebar(cx))))
             .into_any_element()
     }
     pub(super) fn ninjas_conversation(&self, window: &Window, cx: &Context<Self>) -> AnyElement {
@@ -1791,44 +1831,6 @@ impl Orbit {
             )
             .child(
                 div()
-                    .id("ninja-conversations")
-                    .w_full()
-                    .flex_none()
-                    .overflow_x_scroll()
-                    .flex()
-                    .gap_1()
-                    .children({
-                        let mut seen = HashSet::new();
-                        summaries
-                            .iter()
-                            .filter(|t| seen.insert(t["chat"].clone().to_string()))
-                            .take(12)
-                            .map(|t| {
-                                let chat = t["chat"].as_str().unwrap_or("").to_owned();
-                                let selected = p.chat.as_deref() == Some(&chat);
-                                let id = chat.clone();
-                                chip(
-                                    SharedString::from(format!("ninja-conversation-{chat}")),
-                                    short(t["prompt"].as_str().unwrap_or("Chat"), 26),
-                                    selected,
-                                    cx,
-                                    move |app, _, cx| {
-                                        if let Some(p) = &mut app.ninjas.panel {
-                                            p.chat = Some(id.clone());
-                                            p.task = None;
-                                            p.messages.clear();
-                                        }
-                                        app.ninja_conversation(cx);
-                                        cx.notify();
-                                    },
-                                )
-                                .flex_none()
-                            })
-                            .collect::<Vec<_>>()
-                    }),
-            )
-            .child(
-                div()
                     .flex_1()
                     .min_h(px(0.))
                     .id(SharedString::from(format!("ninja-task-history-{history_owner}")))
@@ -1897,10 +1899,7 @@ impl Orbit {
                                 .flex()
                                 .items_center()
                                 .gap_2()
-                                .child(self.sidebar_status_mark(
-                                    scene,
-                                    running && window.is_window_active(),
-                                ))
+                                .child(crate::ninja_art::status(&p.profile.style,scene,running && self.motion && !native::reduced_motion() && window.is_window_active()))
                                 .child(
                                     div()
                                         .text_size(theme::ui_px(10.))
@@ -1968,7 +1967,7 @@ impl Orbit {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(self.sidebar_status_mark(call.scene(), true))
+                    .child(crate::ninja_art::status(&p.profile.style,call.scene(),self.motion && !native::reduced_motion() && window.is_window_active()))
                     .child(div().flex_1().text_size(theme::ui_px(12.)).child(format!(
                         "{} · {} · {}",
                         call.name,
@@ -2190,6 +2189,36 @@ impl Orbit {
 mod tests {
     use super::*;
     use std::prelude::v1::test;
+    #[gpui::test]
+    fn ninja_sidebars_own_only_their_chats_names_and_drafts(cx:&mut TestAppContext){
+        let(view,cx)=crate::ui_tests::fixture(cx);
+        cx.update(|w,cx|view.update(cx,|app,cx|{
+            app.sidebar_split=true;app.conversations_visible=true;app.sidebar=true;
+            app.open_ninjas(Some("local".into()),None,w,cx);
+            let p=app.ninjas.panel.as_mut().unwrap();p.profile.id="ice-personal".into();p.profile.revision=1;p.profile.name="zane".into();p.profile.style="ice".into();p.settings=false;p.chat=Some("one".into());
+            p.fields[3].update(cx,|i,cx|i.set_text("unsent first",cx));
+            app.ninjas.drafts.insert("local:ice-personal:two".into(),"second draft".into());
+            app.ninjas.snapshots.insert("local".into(),json!({"profiles":[{"id":"ice-personal","name":"zane","style":"ice"},{"id":"fire-personal","name":"kai","style":"fire"}],"tasks":[
+                {"id":"a","profile":"ice-personal","chat":"one","prompt":"Fix the renderer alignment","state":"completed","created":1},
+                {"id":"b","profile":"ice-personal","chat":"one","prompt":"Second turn must not rename chat","state":"completed","created":4},
+                {"id":"c","profile":"ice-personal","chat":"two","prompt":"Review animation performance","state":"running","status":"Terminal","created":3},
+                {"id":"other","profile":"fire-personal","chat":"unrelated","prompt":"Wrong Ninja","state":"completed","created":8}]}));
+            assert_eq!(app.ninja_chat_rows().len(),2);
+            assert_eq!(app.ninja_chat_rows()[0]["chat"],"one");
+            assert_eq!(app.ninja_chat_label("local","ice-personal",&app.ninja_chat_rows()[0]),"Fix the renderer alignment");
+            assert!(app.apply_chat_title("ninja-chat:local:ice-personal:one","Fix the renderer alignment","Renderer alignment repair",cx));
+            let snapshot=app.unified_snapshot(cx);assert_eq!(snapshot["threadName"],"Renderer alignment repair");
+            assert!(snapshot["chats"].as_array().unwrap().iter().any(|c|c["name"]=="zane · Renderer alignment repair"),"Native surfaces must use generated Ninja chat names");
+        }));
+        crate::ui_tests::draw_frame(&view,cx);
+        let pane=cx.debug_bounds("workspace-pane").unwrap();let row=cx.debug_bounds("ninja-chat-two").unwrap();assert!(row.left()>=pane.left() && row.right()<=pane.right());
+        view.update(cx,|app,_|assert!(app.ninja_chat_rows().iter().all(|t|t["profile"]=="ice-personal")));assert!(cx.debug_bounds("ninja-conversations").is_none(),"No duplicate in-conversation chat strip");assert!(cx.debug_bounds("ninja-chat-unrelated").is_none());
+        crate::ui_tests::click_selector(cx,"ninja-chat-two");
+        view.update(cx,|app,cx|{let p=app.ninjas.panel.as_ref().unwrap();assert_eq!(p.chat.as_deref(),Some("two"));assert_eq!(p.fields[3].read(cx).text(),"second draft");assert_eq!(app.ninjas.drafts["local:ice-personal:one"],"unsent first");app.sidebar_split=false;});
+        crate::ui_tests::draw_frame(&view,cx);assert!(cx.debug_bounds("ninja-chat-sidebar").is_some());assert!(cx.debug_bounds("ninja-chat-two").is_some());
+        view.update(cx,|app,cx|{app.open_ninja_chat("one".into(),cx);assert_eq!(app.ninjas.panel.as_ref().unwrap().fields[3].read(cx).text(),"unsent first");app.ninjas.panel=None;app.sidebar_split=true;});
+        crate::ui_tests::draw_frame(&view,cx);assert!(cx.debug_bounds("session-0").is_some(),"Project sessions return outside Ninja");
+    }
     #[gpui::test]
     fn closing_code_tab_preserves_the_independent_ninja_and_compact_composer(cx:&mut TestAppContext){
         let(view,cx)=crate::ui_tests::fixture(cx);

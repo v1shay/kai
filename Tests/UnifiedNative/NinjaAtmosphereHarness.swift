@@ -49,6 +49,11 @@ import AppKit
             let rep=NSBitmapImageRep(cgImage:c.makeImage()!)
             try! rep.representation(using:.png,properties:[:])!.write(to:URL(fileURLWithPath:"/private/tmp/kai-atmosphere-\(style).png"))
         }
+        scene.configure(identity:"bottom",style:"ice",working:false,motion:false,visible:true,bottomAnchored:true);scene.layoutSubtreeIfNeeded()
+        let field=scene.layer!.sublayers!.first!,actor=scene.layer!.sublayers!.last!
+        precondition(abs(field.frame.maxY-scene.bounds.height)<0.01,"Notch dots must begin at bottom edge")
+        precondition(actor.position.y>scene.bounds.height-field.bounds.height*0.6,"Whole actor must stay inside bottom dot band")
+        precondition(actor.sublayers!.first!.transform.m22>0,"Ninja must remain upright when dot fade reverses")
         scene.configure(identity:"motion",style:"fire",working:true,motion:true,visible:true)
         precondition(scene.diagnosticAnimationCount>0,"Working scene must animate")
         scene.configure(identity:"motion",style:"fire",working:false,motion:false,visible:true)
@@ -124,6 +129,14 @@ import AppKit
         configure(true);render(0.05);let after=position()
         precondition(hypot(after.x-before.x,after.y-before.y)<0.15,"Resuming a hidden surface restarted the actor")
         precondition(scene.hitTest(CGPoint(x:100,y:50))==nil)
+        scene.configure(identity:"studio:ice:conversation",style:"ice",working:true,motion:true,visible:true,bottomAnchored:true);scene.layoutSubtreeIfNeeded();render(0.1)
+        for _ in 0..<240{
+            render(0.08)
+            let p=scene.diagnosticPosition!,field=scene.layer!.sublayers!.first!,sprite=NinjaAtmosphereView.spriteSize(fieldHeight:field.bounds.height),radius=hypot(sprite.width,sprite.height)/2
+            precondition(p.y-radius>=scene.bounds.height-NinjaAtmosphereView.dotTravelDepth(fieldHeight:field.bounds.height)-1,"Bottom actor left visible dot band")
+            precondition(p.y+radius<=scene.bounds.height+1,"Bottom actor escaped below dots")
+            precondition(scene.diagnosticEpoch==epoch,"Bottom placement must preserve the same scene timeline")
+        }
         print("NINJA_CONTINUITY_OK live WindowServer presentation over a full loop, repeated state/layout updates, idle/work transitions, four surface hosts, non-key notch animation, hidden/resume, click-through; largest normalized step \(largest)")
     }
 

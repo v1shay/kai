@@ -1995,6 +1995,8 @@ impl Orbit {
                 launch_metrics::mark("discovery-ready");
                 self.invalidate_project_branches();
                 self.agents = discovery.agents;
+                self.queue_ninja_titles(cx);
+                self.advance_chat_titles(cx);
                 self.source_projects = discovery.projects;
                 self.rebuild_projects();
                 let previous = std::mem::take(&mut self.sessions);
@@ -4290,7 +4292,8 @@ impl Orbit {
                     ),
             )
     }
-    fn workspace(&self, cx: &Context<Self>) -> impl IntoElement {
+    fn workspace(&self, cx: &Context<Self>) -> AnyElement {
+        if self.ninjas.panel.as_ref().is_some_and(|p|p.profile.revision>0){return div().id("workspace-layout-panel").debug_selector(||"workspace-pane".into()).w(px(260.)).h_full().flex_none().bg(gpui::rgba(self.resolved_theme.sidebar_rgba())).border_r_1().border_color(rgba(0xebebeb12)).child(self.ninja_chat_sidebar(cx)).into_any_element()}
         let name = if self.all_projects {
             "Workspace".to_owned()
         } else {
@@ -4556,7 +4559,7 @@ impl Orbit {
                         cx.stop_propagation();
                         this.new_conversation(window, cx)
                     })),
-            )
+            ).into_any_element()
     }
     fn session_item(
         &self,
@@ -6283,7 +6286,7 @@ fn main() {
             let (entity, shortcut) = orbit;
             cx.set_global(quick_chat::Controller::new(entity.clone()));
             let result = cx.update_global::<quick_chat::Controller, _>(|controller, cx| {
-                controller.bind(shortcut, cx)
+                controller.bind(shortcut, cx).and_then(|_|controller.bind_menu(cx))
             });
             if let Err(error) = result {
                 entity.update(cx, |app, cx| {

@@ -71,6 +71,8 @@ enum UnifiedDraftHandoff {
         if let object=try? JSONSerialization.jsonObject(with:data) as? [String:Any],object["type"] as? String == "ninjaAtmosphereSlot",let rect=object["rect"] as? [Double],rect.count==4{app?.ninjaAtmosphereGeometry(CGRect(x:rect[0],y:rect[1],width:rect[2],height:rect[3]));return}
         switch packet.type {
         case "keyboardCatalog":keyboardCommands=packet.commands ?? [];return
+        case "menuBarToggle":app?.toggleMenuBarPanel();return
+        case "quickMiniPrepare":app?.prepareMiniOpening();return
         case "quickPrepare":app?.prepareQuickOpening();return
         case "workspaceReveal":app?.revealWorkspace();return
         case "launchWorkspace":app?.launchUnifiedWorkspace();return

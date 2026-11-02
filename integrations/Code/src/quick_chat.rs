@@ -7,6 +7,8 @@ pub struct Controller {
     orbit: Entity<Orbit>,
     window: Option<WindowHandle<QuickChat>>,
     hotkey: Option<GlobalHotkey>,
+    menu_hotkey: Option<GlobalHotkey>,
+    menu_surface:bool,
 }
 impl gpui::Global for Controller {}
 impl Controller {
@@ -14,7 +16,7 @@ impl Controller {
         Self {
             orbit,
             window: None,
-            hotkey: None,
+            hotkey: None,menu_hotkey:None,menu_surface:false,
         }
     }
     /// Install after placing this Controller in App globals. Rebinding preserves
@@ -67,7 +69,23 @@ impl Controller {
         .detach();
         Ok(())
     }
+    #[cfg(test)] pub(super) fn is_menu_surface(&self)->bool{self.menu_surface}
+    pub fn bind_menu(&mut self,cx:&mut App)->anyhow::Result<()>{
+        if self.menu_hotkey.is_some(){return Ok(())}
+        let hotkey=GlobalHotkey::new(Shortcut{key:"j".into(),command:true,control:false,alt:false,shift:false,key_code:None})?;
+        let events=hotkey.events.clone();self.menu_hotkey=Some(hotkey);
+        cx.spawn(async move|cx|{while events.recv().await.is_ok(){if cx.update(|_|unified::emit(&serde_json::json!({"type":"menuBarToggle"}))).is_err(){break}}}).detach();Ok(())
+    }
+    pub fn toggle_menu(&mut self,cx:&mut App)->anyhow::Result<()>{
+        let switching=!self.menu_surface;self.menu_surface=true;
+        if switching{self.open(cx)}else{self.toggle_surface(cx)}
+    }
     pub fn toggle(&mut self, cx: &mut App) -> anyhow::Result<()> {
+        unified::emit(&serde_json::json!({"type":"quickMiniPrepare"}));
+        let switching=self.menu_surface;self.menu_surface=false;
+        if switching{self.open(cx)}else{self.toggle_surface(cx)}
+    }
+    fn toggle_surface(&mut self, cx: &mut App) -> anyhow::Result<()> {
         unified::quick_prepare();
         if let Some(window) = self.window {
             if window
@@ -564,7 +582,7 @@ impl Render for ShortcutRecorder {
                     .child(
                         div()
                             .text_size(theme::ui_px(12.))
-                            .child("Quick Chat shortcut"),
+                            .child("Mini Code shortcut · menu bar: ⌘J"),
                     )
                     .child(
                         div()
