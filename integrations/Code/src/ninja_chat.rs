@@ -168,7 +168,7 @@ impl Orbit {
         let motion=self.motion&&!native::reduced_motion();
         let mut group=div().w_full().min_w(px(0.)).flex().flex_col().child(div().id(("ninja-work",ix)).debug_selector(move||format!("ninja-work-{ix}")).w_full().h(px(28.)).flex_none().flex().items_center().gap_2().text_size(theme::ui_px(11.)).text_color(rgb(MUTED)).cursor_pointer()
             .child(icon("chevron-right",12.,MUTED).with_transformation(Transformation::rotate(radians(reveal*std::f32::consts::FRAC_PI_2))))
-            .child(ninja_art::status(&p.profile.style,if running{"thinking"}else{"success"},false)).child(label).child(format!("· {} steps",steps))
+            .when(running,|s|s.child(ninja_art::status(&p.profile.style,"thinking",false))).child(label).child(format!("· {} steps",steps))
             .on_click(cx.listener(move|app,_,_,cx|{cx.stop_propagation();let from=app.interaction_reveal(ix);let open=if app.expanded_tools.remove(&ix){false}else{app.expanded_tools.insert(ix);true};if motion{app.interaction_animations.insert(ix,(Instant::now(),open,from));}cx.notify();})));
         if expanded||reveal>0.{
             let mut details=div().id(("ninja-work-details",ix)).w_full().min_w(px(0.)).max_h(px(640.)).overflow_y_scroll().flex().flex_col().gap_1();
