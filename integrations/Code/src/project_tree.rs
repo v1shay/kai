@@ -382,6 +382,8 @@ impl Orbit {
     }
 
     pub(super) fn tick_project_tree(&mut self, window: &Window, cx: &mut Context<Self>) {
+        self.ninjas.fold_motions.retain(|_,(at,_)|self.motion&&!native::reduced_motion()&&at.elapsed()<Duration::from_millis(240));
+        if !self.ninjas.fold_motions.is_empty()&&window.is_window_active(){request_motion_frame(window,cx);}
         if let Some((at,_))=self.conversations_transition{if !self.motion||native::reduced_motion()||at.elapsed()>=Duration::from_millis(320){self.conversations_transition=None;}else if window.is_window_active(){request_motion_frame(window,cx);}}
         if let Some((start, _)) = self.sidebar_layout_transition {
             if !self.motion || start.elapsed() >= Duration::from_millis(650) {

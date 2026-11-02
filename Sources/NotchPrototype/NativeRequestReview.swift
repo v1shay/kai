@@ -119,8 +119,8 @@ struct KaiNativeReview:Decodable,Equatable {
     func update(_ state:KaiState){
         guard let review else{return}
         if state.nativeReview?.token != review.token || state.nativeReview?.owner != review.owner{dismiss();onResolution?();return}
-        if let pending,state.completedRequestId == pending {
-            if let error=state.completedRequestError{self.pending=nil;buttons.forEach{$0.isEnabled=true};fields.values.forEach{$0.isEnabled=true};options.values.flatMap{$0}.forEach{$0.1.isEnabled=true};status.stringValue=error;refreshLayout()}
+        if let pending,let result=state.requestResult(pending) {
+            if let error=result.error{self.pending=nil;buttons.forEach{$0.isEnabled=true};fields.values.forEach{$0.isEnabled=true};options.values.flatMap{$0}.forEach{$0.1.isEnabled=true};status.stringValue=error;refreshLayout()}
             else{dismiss();onResolution?()}
         }
     }

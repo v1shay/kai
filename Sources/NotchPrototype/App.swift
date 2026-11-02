@@ -341,6 +341,7 @@ private final class NotchSurfaceHost:NSView {
     private var modeBeforeExperimental=(open:false,mini:false,pinned:false)
     private var compactWhileWorking=false,presentedCompact=false,compactThreadID:String?,compactStartHistoryCount=0
     private let approvalUI=CompactApprovalView()
+    private var approvalDismissal=ApprovalDismissal()
     private var approvalPopout=false,presentedApproval=false,lastApproval:CompactApprovalRequest?
     private var presentedApprovalHeight:CGFloat=0
     private var beforeApproval=(open:false,mini:false,pinned:false,automatic:false)
@@ -650,6 +651,7 @@ private final class NotchSurfaceHost:NSView {
             localMonitor = NSEvent.addLocalMonitorForEvents(matching:[.flagsChanged,.keyDown]) { [weak self] e in
                 if e.type == .flagsChanged {self?.flags(e)}
                 else {
+                    if self?.performApprovalKey(e) == true{return nil}
                     if self?.performNativeKeyboardCommand(e) == true{return nil}
                     self?.cancelShortcutHold();self?.cancelWorkspaceHold();self?.commandDismissGesture.cancel();self?.lastControlTap=0
                     if e.keyCode == 53,self?.panel.isKeyWindow == true,self?.open == true {self?.dismissNotchView();return nil}
@@ -659,7 +661,7 @@ private final class NotchSurfaceHost:NSView {
             }
             globalMonitor = NSEvent.addGlobalMonitorForEvents(matching:[.flagsChanged,.keyDown]) { [weak self] e in
                 if e.type == .flagsChanged {self?.flags(e)}
-                else {self?.cancelShortcutHold();self?.cancelWorkspaceHold();self?.commandDismissGesture.cancel();self?.lastControlTap=0;self?.cancelVoicePromptForKeypress()}
+                else {if self?.performApprovalKey(e) == true{return};self?.cancelShortcutHold();self?.cancelWorkspaceHold();self?.commandDismissGesture.cancel();self?.lastControlTap=0;self?.cancelVoicePromptForKeypress()}
             }
         }
         for name in [NSWindow.didBecomeKeyNotification,NSWindow.didResignKeyNotification,NSApplication.didBecomeActiveNotification,NSApplication.didResignActiveNotification]{NotificationCenter.default.addObserver(self,selector:#selector(scheduleWorkspaceFocusRefresh),name:name,object:nil)}
@@ -674,6 +676,9 @@ private final class NotchSurfaceHost:NSView {
         DistributedNotificationCenter.default().addObserver(self,selector:#selector(previewCompactApproval),name:NSNotification.Name("com.kai.approval.preview"),object:nil)
     }
 
+    private func performApprovalKey(_ event:NSEvent)->Bool{
+        guard approvalPopout else{return false};return approvalUI.performDecisionKey(event)
+    }
     func performNativeKeyboardCommand(_ event:NSEvent)->Bool {
         guard event.type == .keyDown,EmbeddedCodeRuntime.shared.active,miniOpen,panel.isKeyWindow else{return false}
         let flags=event.modifierFlags.intersection([.control,.shift,.command,.option])
@@ -1199,13 +1204,14 @@ private final class NotchSurfaceHost:NSView {
     }
     func dismissUnifiedSurface(){dismissNotchView()}
     private func dismissNotchView(){
+        if let request=approvalUI.request ?? latestState.flatMap(CompactApprovalRequest.init(state:)){approvalDismissal.dismiss(request)}
+        if approvalPopout{nativeReview.dismiss();approvalPopout=false;approvalUI.reset();closeNotch();return}
         cancelWorkspaceHold()
         if workspaceNotchOverlay{
             closeNotch();return
         }
         if quickChatVisible{quickReturn = workspaceNeedsStatus ? .compact:.hidden;EmbeddedCodeRuntime.shared.sendAction("quick_dismiss");return}
         if workspaceMorph.expanded || workspaceMorph.transitioning{dismissWorkspace();return}
-        if approvalPopout{dismissCompactApproval();return}
         if compactVoiceMode {setOpen(true,mini:false,userInitiated:true)}else{closeNotch()}
     }
     @objc private func reviewCompactVoiceApproval(){
@@ -1333,7 +1339,7 @@ private final class NotchSurfaceHost:NSView {
         panelRevision += 1;let revision=panelRevision
         let wasOpen=open,wasMini=miniOpen; open = desired; miniOpen = desired && mini;presentedCompact=compactWhileWorking;if desired && !wasOpen{play()}else if !desired{playToken += 1;sprite.removeAnimation(forKey:"spriteFrames")}; panel.ignoresMouseEvents = !miniOpen;composerField?.isHidden = !miniOpen;conversationScroll?.isHidden = !miniOpen;resizeHandles.isHidden = !miniOpen || experimentalWebMode;refreshChecks()
         if desired,!mini,!approvalPopout,let state=latestState,let request=CompactApprovalRequest(state:state){
-            DispatchQueue.main.async{[weak self] in guard let self,self.panelRevision==revision,self.open,!self.miniOpen,!self.approvalPopout,let state=self.latestState,request.matches(state),!self.workspaceIsForeground else{return};self.presentCompactApproval(request)}
+            DispatchQueue.main.async{[weak self] in guard let self,self.panelRevision==revision,self.open,!self.miniOpen,!self.approvalPopout,let state=self.latestState,request.matches(state),!self.workspaceIsForeground else{return};self.presentCompactApproval(request,automatic:true)}
         }
         media.setSuppressed(mediaSuppressed)
         let previousPath=forceReveal ? path(width:notchWidth,height:notchHeight):(mask.presentation()?.path ?? mask.path)
@@ -1767,7 +1773,9 @@ private final class NotchSurfaceHost:NSView {
         guard latestState?.approval != true else{featureStatusItem?.title="Review the pending approval before starting a preview";return}
         presentCompactApproval(CompactApprovalRequest(preview:true))
     }
-    private func presentCompactApproval(_ request:CompactApprovalRequest){
+    private func presentCompactApproval(_ request:CompactApprovalRequest,automatic:Bool=false){
+        guard !automatic || approvalDismissal.allows(request) else{return}
+        if !automatic{approvalDismissal.reset()}
         if experimentalWebMode{toggleExperimentalWebMode()}
         if !approvalPopout{beforeApproval=(open,miniOpen,pinned,autoCompact)}
         approvalPopout=true;autoCompact=false;compactWhileWorking=false;pinned=true
@@ -1785,6 +1793,7 @@ private final class NotchSurfaceHost:NSView {
         if !showsNotchSurface{panel.orderOut(nil);dropPanel?.orderOut(nil)}
     }
     private func updateCompactApproval(_ state:KaiState){
+        approvalDismissal.observe(CompactApprovalRequest(state:state))
         if EmbeddedCodeRuntime.shared.active,workspaceIsForeground || (quickChatVisible && EmbeddedCodeRuntime.shared.isForeground(quickWindow)){
             lastApproval=nil
             if approvalPopout,approvalUI.request?.preview != true{nativeReview.dismiss();dismissCompactApproval()}
@@ -1800,7 +1809,7 @@ private final class NotchSurfaceHost:NSView {
         }
         if miniOpen{lastApproval=request;return}
         guard request.id != lastApproval?.id || request.thread != lastApproval?.thread else{return}
-        lastApproval=request;presentCompactApproval(request)
+        lastApproval=request;presentCompactApproval(request,automatic:true)
     }
     private func decidePopout(_ action:String,request:CompactApprovalRequest){
         if request.preview{featureStatusItem?.title="Approval preview: \(action == "approve" ? "approved":action == "reject" ? "declined":"stopped") · nothing ran";dismissCompactApproval();return}

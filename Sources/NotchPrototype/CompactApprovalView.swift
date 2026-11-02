@@ -27,6 +27,7 @@ struct CompactApprovalRequest:Equatable {
     /// A form is never an approval. Preserve its exact question ID and answer type.
     func response(_ action:String)->(String,[String:Any])?{
         guard isQuestion,action != "approval_stop" else{return (action,[:])}
+        if review?.questions.isEmpty == true,action == "approve"{return ("native_answer",["answers":[String:[String]]()])}
         if let question=booleanQuestion{return ("native_answer",["answers":[question.id:[action == "approve" ? "true":"false"]]])}
         return action == "approve" ? nil:("native_cancel",[:])
     }
@@ -70,7 +71,7 @@ struct CompactApprovalRequest:Equatable {
         scroll.documentView=command;addSubview(scroll)
         nextButton.target=self;nextButton.action=#selector(cycle)
         reviewButton.target=self;reviewButton.action=#selector(openReview);reviewButton.isHidden=true
-        reviewButton.onHover={[weak self] active in guard let self else{return};if active{self.hoverClose?.cancel();self.setReviewExpanded(true,pinned:self.reviewPinned)}else{self.scheduleHoverClose()}}
+
         inlineReview.onResolution={[weak self] in self?.setReviewExpanded(false)}
         for button in buttons{button.target=self;button.action=#selector(decide(_:));addSubview(button)}
     }
@@ -150,7 +151,7 @@ struct CompactApprovalRequest:Equatable {
         buttons.forEach{$0.isEnabled=pendingID == nil;$0.alphaValue=pendingID == nil ? 1:0.45;$0.animate()};reviewButton.isEnabled=pendingID == nil;reviewButton.alphaValue=pendingID == nil ? 1:0.45;reviewButton.animate(looping:reviewExpanded);nextButton.isEnabled=pendingID == nil
         if reviewExpanded{prepareInline()};updateActionRow()
     }
-    func receive(_ state:KaiState){inlineReview.update(state);finish(state.completedRequestId,error:state.completedRequestError)}
+    func receive(_ state:KaiState){inlineReview.update(state);if let pendingID,let result=state.requestResult(pendingID){finish(result.id,error:result.error)}}
     func setProfile(_ profile:PetGradientProfile){(buttons+[reviewButton,nextButton]).forEach{$0.glyph.setProfile(profile,wave:false)};inlineReview.setProfile(profile)}
     func reset(){visibilityRevision+=1;timeout?.cancel();timeout=nil;hoverClose?.cancel();removeMonitors();reviewControls.forEach{$0.glyph.hide();$0.removeFromSuperview()};reviewControls=[];inlineReview.dismiss();inlineBody?.removeFromSuperview();inlineBody=nil;reviewExpanded=false;reviewPinned=false;request=nil;pendingID=nil;scroll.layer?.removeAllAnimations();scroll.isHidden=false;scroll.alphaValue=1;heading.isHidden=true;(buttons+[reviewButton]).forEach{$0.glyph.hide();$0.isEnabled=true;$0.alphaValue=1};nextButton.isEnabled=true;isHidden=true}
     func begin(_ id:String){
@@ -160,6 +161,17 @@ struct CompactApprovalRequest:Equatable {
     func finish(_ id:String?,error:String?){
         guard let id,pendingID == id else{return};timeout?.cancel();pendingID=nil
         heading.stringValue=error ?? "";heading.toolTip=error;heading.isHidden=error == nil;(buttons+[reviewButton]).forEach{$0.isEnabled=true;$0.alphaValue=1};nextButton.isEnabled=true;needsLayout=true
+    }
+    /// Number keys target the displayed request; arbitrary typed forms never
+    /// synthesize an answer. No key window is needed for a passive notch.
+    func performDecisionKey(_ event:NSEvent)->Bool{
+        guard !isHidden,request != nil,event.type == .keyDown,!event.isARepeat,
+              event.modifierFlags.intersection([.command,.control,.option,.shift]).isEmpty,
+              let key=event.charactersIgnoringModifiers,["1","2","3"].contains(key) else{return false}
+        if reviewExpanded,let editor=window?.firstResponder as? NSTextView,editor.isEditable{return false}
+        let index=Int(key)!-1
+        guard pendingID == nil else{return true}
+        decide(buttons[index]);return true
     }
     @objc private func cycle(){guard pendingID == nil else{return};onCycle?()}
     @objc private func openReview(){guard pendingID==nil else{return};if reviewExpanded && reviewPinned{setReviewExpanded(false)}else{setReviewExpanded(true,pinned:true)}}

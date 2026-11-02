@@ -236,6 +236,12 @@ private func member(_ object:Any,_ name:String)->Any?{Mirror(reflecting:object).
     precondition(abs(controls.window!.frame.height-approvalFrame.height)<1,"Review did not contract back to its compact geometry")
     controls.onDecision?("approve",controls.request!)
     precondition(commands.last?["action"] as? String == "approve" && commands.last?["approvalRequestId"] as? String == "5:opaque","Native UI lost exact approval token")
+    // Dismissal is a presentation action, not an answer. Repeated packets
+    // for this same request must not reopen the extended surface.
+    app.probeDoubleCommand()
+    for _ in 0..<8{runtime.receive(try JSONSerialization.data(withJSONObject:approval));RunLoop.current.run(until:Date().addingTimeInterval(0.025))}
+    RunLoop.current.run(until:Date().addingTimeInterval(0.4))
+    precondition(member(app,"approvalPopout") as? Bool == false && member(app,"miniOpen") as? Bool == false,"Dismissed approval reopened from repeated owner packets")
     approval["approvalRequestId"]="6:opaque";var review=approval["nativeReview"] as! [String:Any];review["token"]="6:opaque";approval["nativeReview"]=review
     runtime.receive(try JSONSerialization.data(withJSONObject:["type":"quickVisibility","visible":true]))
     runtime.receive(try JSONSerialization.data(withJSONObject:approval))

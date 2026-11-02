@@ -27,6 +27,7 @@ struct Host {
     last: std::sync::Arc<[u8]>,
     history:Value,
     history_owner:String,
+    pending_results:std::collections::HashMap<String,[u8;32]>,
     completed: Option<String>,
     error: Option<String>,
     results: std::collections::VecDeque<(String, [u8; 32], Option<String>)>,
@@ -142,6 +143,7 @@ pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Resul
                 last: Vec::new().into(),
                 history:Value::Null,
                 history_owner:String::new(),
+                pending_results:Default::default(),
                 completed: None,
                 error: None,
                 results: Default::default(),
@@ -386,6 +388,7 @@ impl Orbit {
         let request_id = request["requestId"].as_str().unwrap_or("").to_owned();
         let fingerprint: [u8; 32] =
             Sha256::digest(serde_json::to_vec(&request).unwrap_or_default()).into();
+        if HOST.with(|host|host.borrow().as_ref().is_some_and(|h|h.pending_results.get(&request_id)==Some(&fingerprint))){return}
         let cached = HOST.with(|host| {
             host.borrow().as_ref().and_then(|host| {
                 host.results
@@ -403,21 +406,21 @@ impl Orbit {
         } else {
             self.unified_command(&request, window, cx).err()
         };
-        HOST.with(|host| {
-            if let Some(host) = host.borrow_mut().as_mut() {
-                host.completed = (!request_id.is_empty()).then_some(request_id.clone());
-                host.error = error.clone();
-                if !request_id.is_empty()
-                    && !host.results.iter().any(|(id, _, _)| id == &request_id)
-                {
-                    if host.results.len() >= 128 {
-                        host.results.pop_front();
-                    }
-                    host.results
-                        .push_back((request_id, fingerprint, error.clone()));
-                }
-            }
-        });
+        if HOST.with(|host|host.borrow().as_ref().is_some_and(|h|h.pending_results.contains_key(&request_id))){return}
+        self.complete_unified_request(&request,error,cx);
+    }
+    pub(super) fn defer_unified_request(&self,request:&Value){
+        let id=request["requestId"].as_str().unwrap_or("");if id.is_empty(){return}
+        let fingerprint=Sha256::digest(serde_json::to_vec(request).unwrap_or_default()).into();
+        HOST.with(|host|{if let Some(h)=host.borrow_mut().as_mut(){h.pending_results.insert(id.into(),fingerprint);}});
+    }
+    pub(super) fn complete_unified_request(&mut self,request:&Value,error:Option<String>,cx:&mut Context<Self>){
+        let request_id=request["requestId"].as_str().unwrap_or("").to_owned();
+        let fingerprint=Sha256::digest(serde_json::to_vec(request).unwrap_or_default()).into();
+        HOST.with(|host|{if let Some(h)=host.borrow_mut().as_mut(){
+            h.pending_results.remove(&request_id);h.completed=(!request_id.is_empty()).then_some(request_id.clone());h.error=error.clone();
+            if !request_id.is_empty(){h.results.retain(|(id,_,_)|id!=&request_id);if h.results.len()>=128{h.results.pop_front();}h.results.push_back((request_id,fingerprint,error.clone()));}
+        }});
         if let Some(error) = error {
             self.notice = Some(error)
         }
@@ -822,7 +825,7 @@ impl Orbit {
         }
         Ok(())
     }
-    fn publish_unified(&self, cx: &App) {
+    pub(super) fn publish_unified(&self, cx: &App) {
         if !active() {
             return;
         }
@@ -849,6 +852,7 @@ impl Orbit {
                 state["finishedTasks"] = json!(host.finished);
                 state["completedRequestId"] = json!(host.completed);
                 state["completedRequestError"] = json!(host.error);
+                state["completedRequests"]=json!(host.results.iter().rev().take(32).map(|(id,_,error)|json!({"id":id,"error":error})).collect::<Vec<_>>());
                 if self.attachment_pending > 0 || self.loading_earlier {
                     state["completedRequestId"] = Value::Null;
                 } else if self
@@ -1741,7 +1745,7 @@ impl Orbit{
  impl Drop for Restore{fn drop(&mut self){HOST.with(|h|{*h.borrow_mut()=self.0.take()});}}
  #[gpui::test]fn native_state_callback_can_reenter_and_replace_cached_bytes(cx:&mut TestAppContext){
   let(view,cx)=crate::ui_tests::fixture(cx);
-  let _restore=Restore(HOST.with(|h|h.replace(Some(Host{_library:std::ptr::null_mut(),publish,levels,voice_host,wallpaper,quick_surface:surface,wallpaper_visible:false,last_wallpaper:None,collapse:noop,_toggle:noop,last:Vec::new().into(),history:Value::Null,history_owner:String::new(),completed:None,error:None,results:Default::default(),reported_successes:Default::default(),finished:vec![],pet_rect:None,quick_pet_rect:None,workspace_motion:Default::default(),publish_pending:false}))));
+  let _restore=Restore(HOST.with(|h|h.replace(Some(Host{_library:std::ptr::null_mut(),publish,levels,voice_host,wallpaper,quick_surface:surface,wallpaper_visible:false,last_wallpaper:None,collapse:noop,_toggle:noop,last:Vec::new().into(),history:Value::Null,history_owner:String::new(),completed:None,error:None,results:Default::default(),pending_results:Default::default(),reported_successes:Default::default(),finished:vec![],pet_rect:None,quick_pet_rect:None,workspace_motion:Default::default(),publish_pending:false}))));
   REENTERED.set(false);STABLE.set(false);
   view.update(cx,|app,cx|app.publish_unified(cx));
   assert!(REENTERED.get(),"State delivery held the owner borrow across AppKit reentry");

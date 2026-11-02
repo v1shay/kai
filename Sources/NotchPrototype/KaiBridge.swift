@@ -1,6 +1,7 @@
 import Foundation
 import Darwin
 
+struct KaiRequestResult:Decodable {let id:String;let error:String?}
 struct KaiProject: Decodable, Equatable { let path: String; let name: String }
 struct KaiChat: Decodable, Equatable { let id: String; let name: String; let status: String; var agent:String?=nil }
 struct KaiInlineLink:Decodable,Equatable {let location:Int;let length:Int;let target:String}
@@ -128,6 +129,8 @@ struct KaiState: Decodable {
     let notice: String
     let attachments: [String]
     let completedRequestId: String?
+    let completedRequests:[KaiRequestResult]?
+    func requestResult(_ id:String)->KaiRequestResult?{if let result=completedRequests?.last(where:{$0.id == id}){return result};return completedRequestId == id ? KaiRequestResult(id:id,error:completedRequestError):nil}
     let completedRequestError:String?
     let rateLimitRemainingPercent: Int?
 

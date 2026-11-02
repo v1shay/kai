@@ -144,6 +144,8 @@ pub struct Task {
     pub brief: String,
     #[serde(default)]
     pub usage: crate::usage::Usage,
+    #[serde(default)]
+    pub request_failure:Option<(String,String)>,
     pub requests: Vec<NativeRequest>,
     pub acknowledged: bool,
     #[serde(default)]
@@ -461,6 +463,7 @@ impl Store {
             native_id,
             brief: String::new(),
             usage: Default::default(),
+            request_failure:None,
             requests: vec![],
             acknowledged: false,
             call: None,
@@ -497,6 +500,20 @@ impl Worker {
         let mut n = self.change.lock().unwrap();
         *n += 1;
         self.wake.notify_all();
+    }
+    fn wait_response(&self,id:&str,token:&str,child:Option<&str>)->Result<()> {
+        let until=std::time::Instant::now()+Duration::from_secs(8);
+        let mut revision=*self.change.lock().unwrap();
+        loop{
+            let task=self.store.lock().unwrap().task(id)?;
+            if let Some((failed,error))=&task.request_failure{if failed==token{bail!("{error}")}}
+            let pending=if let Some(child)=child{runtime::broker::children(&task.profile.project).iter().filter(|c|c.id==child&&task.native_id.as_deref()==Some(c.parent_id.as_str())).any(|c|c.requests.iter().any(|r|r.id==token))}else{task.requests.iter().any(|r|r.id==token)};
+            if !pending{return Ok(())}
+            ensure!(task.finished.is_none(),"The task ended before accepting this response");
+            let remaining=until.saturating_duration_since(std::time::Instant::now());ensure!(!remaining.is_zero(),"The native runtime did not acknowledge the response");
+            let changed=self.change.lock().unwrap();if *changed!=revision{revision=*changed;continue}
+            let (changed,_)=self.wake.wait_timeout(changed,remaining).unwrap();revision=*changed;
+        }
     }
     fn snapshot(&self) -> Result<Value> {
         let providers = [
@@ -850,6 +867,7 @@ impl Worker {
                         }
                         .context("This request is no longer pending")?;
                         validate_answer(&request, &answer)?;
+                        {let db=self.store.lock().unwrap();let mut current=db.task(id()?)?;current.request_failure=None;db.save_task(&current)?;}
 
                         if let Some(child) = v["child"].as_str() {
                             runtime::broker::control_child(
@@ -880,6 +898,7 @@ impl Worker {
                 }
                 drop(live);
                 self.changed();
+                if action=="respond"{self.wait_response(id()?,v["request"].as_str().unwrap_or(""),v["child"].as_str())?;}
                 Ok(json!({"ok":true}))
             }
             "models" => {
@@ -1212,7 +1231,11 @@ impl Worker {
                             t.status = r.title.clone();
                             t.requests.push(*r)
                         }
+                        RuntimeEvent::RequestRejected{id,error}=>{
+                            t.request_failure=Some((id,error.clone()));t.status=error;
+                        }
                         RuntimeEvent::RequestResolved(id) => {
+                            t.request_failure=None;
                             t.requests.retain(|r| r.id != id);
                             if t.requests.is_empty() {
                                 t.state = "running".into();
@@ -1639,6 +1662,16 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+    #[test]
+    fn response_receipt_waits_for_native_resolution_and_reports_rejection(){
+        let f=Fixture::new();let mut db=Store::open(&f.0).unwrap();let profile=db.save_profile(f.profile()).unwrap();let mut task=db.submit(&profile.id,"Approval fixture",None,0,None).unwrap();
+        task.state="approval".into();task.requests=vec![NativeRequest{id:"tool-confirm".into(),method:"fixture".into(),title:"Confirm".into(),detail:String::new(),kind:runtime::NativeRequestKind::Questions{questions:vec![]}}];db.save_task(&task).unwrap();
+        let worker=Arc::new(Worker{store:Mutex::new(db),root:f.0.clone(),live:Mutex::new(HashMap::new()),calls:Mutex::new(HashMap::new()),starting:Mutex::new(Default::default()),change:Mutex::new(1),wake:Condvar::new()});
+        let (tx,rx)=std::sync::mpsc::channel();let w=worker.clone();let id=task.id.clone();let join=std::thread::spawn(move||tx.send(w.wait_response(&id,"tool-confirm",None).map_err(|e|e.to_string())).unwrap());
+        assert!(rx.recv_timeout(Duration::from_millis(60)).is_err(),"Queued controls are not delivery receipts");
+        task.request_failure=Some(("tool-confirm".into(),"Invalid response".into()));worker.store.lock().unwrap().save_task(&task).unwrap();worker.changed();assert!(rx.recv_timeout(Duration::from_secs(1)).unwrap().unwrap_err().contains("Invalid response"));join.join().unwrap();
+        task.request_failure=None;task.requests.clear();worker.store.lock().unwrap().save_task(&task).unwrap();assert!(worker.wait_response(&task.id,"tool-confirm",None).is_ok());
     }
     #[test]
     fn delete_ninja_preserves_files_and_other_identities_and_rejects_pending_work() {

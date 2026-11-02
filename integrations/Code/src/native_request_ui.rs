@@ -3,9 +3,13 @@ use super::*;
 use runtime::{NativeAnswer, NativeRequest, NativeRequestKind};
 use std::collections::BTreeMap;
 
+#[derive(Clone)]
+struct NinjaRequestRoute{host:crate::ninjas_ui::Host,task:String,token:String,child:Option<String>}
+pub(super) fn ninja_request_key(host:&str,task:&str,token:&str)->String{format!("ninja-review:{host}:{task}:{token}")}
 pub(super) struct LiveRequest {
     pub owner: String,
     pub broker: Option<broker_ui::RequestOwner>,
+    ninja:Option<NinjaRequestRoute>,
     epoch: uuid::Uuid,
     request: NativeRequest,
     inputs: HashMap<String, Entity<TextInput>>,
@@ -15,6 +19,8 @@ pub(super) struct LiveRequest {
     started: Instant,
 }
 impl LiveRequest {
+    pub(super) fn ninja_request(&self)->NativeRequest{self.request.clone()}
+    pub(super) fn matches_ninja(&self,host:&str,task:&str,token:&str)->bool{self.ninja.as_ref().is_some_and(|r|r.host.id==host&&r.task==task&&r.token==token)}
     pub(super) fn request_id(&self)->&str{&self.request.id}
     pub(super) fn remote_value(&self)->serde_json::Value{serde_json::json!({"threadId":format!("code:{}",self.owner),"approvalRequestId":format!("{}:{}",self.epoch,self.request.id),"request":self.request})}
     pub(super) fn indicator_scene(&self) -> &'static str {
@@ -32,6 +38,7 @@ impl LiveRequest {
         Self {
             owner: owner.into(),
             broker: None,
+            ninja:None,
             epoch,
             request,
             inputs: HashMap::new(),
@@ -51,6 +58,7 @@ impl LiveRequest {
         pending
     }
     pub(super) fn current(&self, runs: &HashMap<String, Running>) -> bool {
+        if self.ninja.is_some(){return true}
         if let Some(binding) = &self.broker {
             return binding.live.load(std::sync::atomic::Ordering::Acquire);
         }
@@ -532,7 +540,23 @@ impl Orbit {
         cx.notify();
     }
 
+    fn prepare_ninja_requests(&mut self,window:&mut Window,cx:&mut Context<Self>){
+        let mut keys=HashSet::new();
+        for host in &self.ninjas.hosts{
+            for task in self.ninjas.snapshots.get(&host.id).into_iter().flat_map(|s|s["tasks"].as_array().into_iter().flatten()).filter(|t|crate::ninja_chat::live(t)){
+                for value in task["requests"].as_array().into_iter().flatten().take(32){
+                    let Ok(mut request)=serde_json::from_value::<NativeRequest>(value.clone())else{continue};let task_id=task["id"].as_str().unwrap_or("").to_owned();let token=request.id.clone();let key=ninja_request_key(&host.id,&task_id,&token);keys.insert(key.clone());
+                    let pending=self.ninjas.reviews.entry(key.clone()).or_insert_with(||{request.id=key.clone();let mut pending=LiveRequest::new(&format!("ninja:{}:{task_id}",host.id),uuid::Uuid::new_v4(),request);pending.ninja=Some(NinjaRequestRoute{host:host.clone(),task:task_id,token,child:value["childId"].as_str().map(str::to_owned)});pending});
+                    let visible=self.ninjas.panel.as_ref().is_some_and(|p|p.host==host.id&&task["profile"]==p.profile.id&&task["chat"].as_str()==p.chat.as_deref());if !visible{continue}
+                    let NativeRequestKind::Questions{questions}=&pending.request.kind else{continue};
+                    for question in questions{if pending.inputs.contains_key(&question.id){continue}let input=cx.new(|cx|{let mut i=TextInput::new(window,cx);i.set_placeholder(if question.options.is_empty(){"Your answer…"}else{"Or type an answer…"},cx);i.set_secret(question.secret,cx);i});let token=key.clone();pending.subscriptions.push(cx.subscribe_in(&input,window,move|app,_,event,_,cx|{if matches!(event,InputEvent::Submit){app.submit_native_answers(&token,cx);}cx.notify();}));pending.inputs.insert(question.id.clone(),input);}
+                }
+            }
+        }
+        self.ninjas.reviews.retain(|key,_|keys.contains(key));
+    }
     pub(super) fn prepare_native_requests(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.prepare_ninja_requests(window,cx);
         let active = self.active.clone();
         self.native_pending
             .retain(|_, pending| pending.current(&self.runs));
@@ -578,6 +602,10 @@ impl Orbit {
     }
 
     fn respond_native(&mut self, token: &str, answer: NativeAnswer, cx: &mut Context<Self>) {
+        if let Some(pending)=self.ninjas.reviews.get_mut(token){
+            if pending.sending{return}let Some(route)=pending.ninja.clone()else{return};pending.sending=true;
+            self.send_ninja_response(route.host,serde_json::json!({"action":"respond","id":route.task,"request":route.token,"child":route.child,"answer":answer}),None,cx);cx.notify();return
+        }
         let Some(pending) = self.native_pending.get_mut(token) else {
             return;
         };
@@ -612,7 +640,7 @@ impl Orbit {
     }
 
     fn submit_native_answers(&mut self, token: &str, cx: &mut Context<Self>) {
-        let Some(pending) = self.native_pending.get(token) else {
+        let Some(pending) = self.native_pending.get(token).or_else(||self.ninjas.reviews.get(token)) else {
             return;
         };
         let drafts = pending
@@ -636,7 +664,7 @@ impl Orbit {
         option: &str,
         cx: &mut Context<Self>,
     ) {
-        let Some(pending) = self.native_pending.get_mut(token) else {
+        let Some(pending) = self.native_pending.get_mut(token).or_else(||self.ninjas.reviews.get_mut(token)) else {
             return;
         };
         if pending.sending || !pending.current(&self.runs) {
@@ -761,11 +789,8 @@ impl Orbit {
         interactive: bool,
         cx: &Context<Self>,
     ) -> AnyElement {
-        let pending = self
-            .native_pending
-            .get(&request.id)
-            .filter(|p| p.current(&self.runs));
-        let live = interactive && pending.is_some_and(|p| self.active.as_ref() == Some(&p.owner));
+        let pending = self.native_pending.get(&request.id).or_else(||self.ninjas.reviews.get(&request.id)).filter(|p|p.current(&self.runs));
+        let live = interactive && pending.is_some_and(|p|p.ninja.is_some()||self.active.as_ref()==Some(&p.owner));
         let sending = pending.is_some_and(|p| p.sending);
         let phase = pending
             .map(|p| {
@@ -1033,6 +1058,20 @@ mod tests {
         }
     }
 
+    #[gpui::test]
+    fn ninja_forms_use_shared_inputs_and_preserve_exact_host_task_token(cx:&mut TestAppContext){
+        let(view,cx)=crate::ui_tests::fixture(cx);
+        let request=NativeRequest{id:"mcp-question".into(),method:"mcpServer/elicitation/request".into(),title:"Connected tool needs input".into(),detail:"Confirm fixture operation".into(),kind:NativeRequestKind::Questions{questions:vec![runtime::NativeQuestion{id:"confirm".into(),header:"Confirm".into(),question:"Continue?".into(),options:vec![runtime::NativeOption{id:"true".into(),label:"Yes".into()},runtime::NativeOption{id:"false".into(),label:"No".into()}],secret:false,multiple:false,required:true}]}};
+        cx.update(|w,cx|view.update(cx,|app,cx|{
+            app.open_ninjas(Some("local".into()),None,w,cx);let p=app.ninjas.panel.as_mut().unwrap();p.profile.revision=1;p.chat=Some("current-chat".into());p.settings=false;
+            app.ninjas.snapshots.insert("local".into(),serde_json::json!({"profiles":[p.profile],"tasks":[{"id":"task-a","profile":p.profile.id,"chat":"current-chat","state":"approval","requests":[request]}]}));
+        }));
+        crate::ui_tests::draw_frame(&view,cx);assert!(cx.debug_bounds("native-option-confirm-true").is_some());assert!(cx.debug_bounds("native-question-submit").is_some());
+        crate::ui_tests::click_selector(cx,"native-option-confirm-true");
+        let key=ninja_request_key("local","task-a","mcp-question");
+        view.update(cx,|app,cx|{let pending=&app.ninjas.reviews[&key];assert!(pending.matches_ninja("local","task-a","mcp-question"));assert_eq!(question_answers(&pending.request,&pending.selected,&HashMap::new()).unwrap(),NativeAnswer::Answers(BTreeMap::from([("confirm".into(),vec!["true".into()])])));app.ninjas.panel.as_mut().unwrap().chat=Some("unrelated-chat".into());cx.notify();});
+        crate::ui_tests::draw_frame(&view,cx);let former_option=cx.debug_bounds("native-option-confirm-false").unwrap();cx.simulate_click(former_option.center(),Modifiers::none());view.update(cx,|app,_|assert_eq!(app.ninjas.reviews[&key].selected["confirm"],vec!["true"],"A background task form still receives clicks in another chat"));
+    }
     #[gpui::test]
     fn background_child_decision_survives_parent_completion_and_expires_with_ownership(
         cx: &mut TestAppContext,

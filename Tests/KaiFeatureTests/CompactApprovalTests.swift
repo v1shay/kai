@@ -87,11 +87,33 @@ final class CompactApprovalTests:XCTestCase {
         XCTAssertEqual(boolean.response("approve")?.1["answers"] as? [String:[String]],["confirm":["true"]])
         XCTAssertEqual(boolean.response("reject")?.1["answers"] as? [String:[String]],["confirm":["false"]])
         var review=object["nativeReview"] as! [String:Any];review["questions"]=[];object["nativeReview"]=review
-        let form=try request();XCTAssertTrue(form.isQuestion);XCTAssertNil(form.response("approve"));XCTAssertEqual(form.response("reject")?.0,"native_cancel")
+        let form=try request();XCTAssertTrue(form.isQuestion);XCTAssertEqual(form.response("approve")?.0,"native_answer");XCTAssertEqual(form.response("approve")?.1["answers"] as? [String:[String]],[:]);XCTAssertEqual(form.response("reject")?.0,"native_cancel")
         let view=CompactApprovalView(frame:CGRect(x:0,y:0,width:338,height:88));view.show(form)
         var opened=false,decided=false;view.onReview={_ in opened=true};view.onDecision={_,_ in decided=true}
         view.subviews.compactMap{$0 as? NSButton}.first{$0.accessibilityLabel()=="Answer question"}!.performClick(nil)
-        XCTAssertTrue(opened);XCTAssertFalse(decided)
+        XCTAssertFalse(opened);XCTAssertTrue(decided)
+    }
+    func testDismissedRequestStaysDismissedUntilNewIdentity()throws{
+        let a=try XCTUnwrap(CompactApprovalRequest(state:state())),b=try XCTUnwrap(CompactApprovalRequest(state:state(id:"next")))
+        var policy=ApprovalDismissal();XCTAssertTrue(policy.allows(a));policy.dismiss(a)
+        for _ in 0..<10{policy.observe(a);XCTAssertFalse(policy.allows(a))}
+        XCTAssertTrue(policy.allows(b));policy.observe(b);XCTAssertTrue(policy.allows(a))
+        policy.dismiss(b);policy.observe(nil);XCTAssertTrue(policy.allows(b))
+        policy.dismiss(a);policy.reset();XCTAssertTrue(policy.allows(a))
+    }
+    @MainActor func testDecisionKeysAndRetainedAcknowledgement()throws{
+        _=NSApplication.shared
+        let view=CompactApprovalView(frame:CGRect(x:0,y:0,width:338,height:88));view.show(try XCTUnwrap(CompactApprovalRequest(state:state())));view.isHidden=false
+        var decisions=[String]();view.onDecision={action,_ in decisions.append(action);view.begin("sent")}
+        func key(_ value:String,flags:NSEvent.ModifierFlags=[],repeatKey:Bool=false)->NSEvent{NSEvent.keyEvent(with:.keyDown,location:.zero,modifierFlags:flags,timestamp:0,windowNumber:0,context:nil,characters:value,charactersIgnoringModifiers:value,isARepeat:repeatKey,keyCode:18)!}
+        XCTAssertFalse(view.performDecisionKey(key("1",flags:.command)));XCTAssertFalse(view.performDecisionKey(key("1",repeatKey:true)))
+        XCTAssertTrue(view.performDecisionKey(key("1")));XCTAssertTrue(view.performDecisionKey(key("2")));XCTAssertEqual(decisions,["approve"])
+        var object=try JSONSerialization.jsonObject(with:approvalFixture()) as! [String:Any]
+        object["completedRequestId"]="unrelated";object["completedRequests"]=[["id":"sent","error":"Delivery rejected"]]
+        view.receive(try JSONDecoder().decode(KaiState.self,from:JSONSerialization.data(withJSONObject:object)));XCTAssertNil(view.pendingID)
+        XCTAssertTrue(view.performDecisionKey(key("2")));XCTAssertEqual(decisions,["approve","reject"])
+        view.finish("sent",error:nil);XCTAssertTrue(view.performDecisionKey(key("3")));XCTAssertEqual(decisions,["approve","reject","approval_stop"])
+        view.reset();XCTAssertFalse(view.performDecisionKey(key("1")))
     }
     @MainActor func testPreviewIsLocalAndGlyphAnimationsAreFinite()throws{
         _=NSApplication.shared

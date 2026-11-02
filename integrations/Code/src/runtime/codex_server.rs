@@ -2597,6 +2597,10 @@ impl Session {
                 });
             }
         }
+        if method == "mcpServer/elicitation/request" {
+            if let Some(tool)=p["_meta"]["tool_name"].as_str(){detail.insert(0,format!("{} · {}",p["serverName"].as_str().unwrap_or("Connected tool"),tool));}
+            if let Some(arguments)=p["_meta"].get("tool_params").filter(|v|!v.is_null()){detail.push(summary(arguments,4096));}
+        }
         if method == "item/permissions/requestApproval" {
             detail.push(summary(&p["permissions"], 32768));
         }
@@ -3167,7 +3171,7 @@ fn response(p: &Pending, answer: &NativeAnswer) -> Result<Value> {
                 );
             }
             if p.method == "mcpServer/elicitation/request" {
-                return Ok(json!({"action":choice,"content":null}));
+                return Ok(json!({"action":choice,"content":if choice=="accept"&&p.params["mode"]!="url"{json!({})}else{Value::Null}}));
             }
             if choice == "execpolicy" {
                 return Ok(
@@ -4742,6 +4746,13 @@ time.sleep(30)
             json!({"decision":"decline"})
         );
         p.method = "mcpServer/elicitation/request".into();
+        p.params=json!({"mode":"form","requestedSchema":{"type":"object","properties":{}}});
+        p.ui.kind=NativeRequestKind::Approval{choices:vec![option("accept","Allow"),option("decline","Decline")]};
+        assert_eq!(response(&p,&NativeAnswer::Choice("accept".into())).unwrap(),json!({"action":"accept","content":{}}));
+        assert_eq!(response(&p,&NativeAnswer::Choice("decline".into())).unwrap(),json!({"action":"decline","content":null}));
+        p.params["mode"]=json!("url");
+        assert_eq!(response(&p,&NativeAnswer::Choice("accept".into())).unwrap(),json!({"action":"accept","content":null}));
+
         p.params = json!({"requestedSchema":{"properties":{"count":{"type":"integer"}},"required":["count"]}});
         p.ui.kind = NativeRequestKind::Questions {
             questions: vec![NativeQuestion {

@@ -57,7 +57,7 @@ impl Orbit {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        if self.ninjas.panel.as_ref().is_some_and(|p|p.profile.revision>0){return self.ninjas_panel(window,cx);}
+        if self.ninjas.panel.as_ref().is_some_and(|p|p.profile.revision>0){self.prepare_native_requests(window,cx);return self.ninjas_panel(window,cx);}
         let changed=self.sync_flow_layout();
         if changed{let anchor=scroll.logical_scroll_top();scroll.reset(self.rows.len());let ix=self.flow_index.anchor(anchor.item_ix,&self.expanded_work);scroll.scroll_to(ListOffset{item_ix:ix,offset_in_item:if ix==anchor.item_ix{anchor.offset_in_item}else{px(0.)}});}
         self.advance_chat_surface(window, cx);
