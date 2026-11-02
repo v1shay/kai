@@ -25,7 +25,7 @@ fn images() -> &'static [Arc<Image>; 6] {
 pub(super) fn glyph(style:&str)->&'static str { match style {"lightning"=>"ninja-lightning","earth"=>"ninja-earth","ice"=>"ninja-ice","energy"=>"ninja-energy","water"=>"ninja-water",_=>"ninja-fire"} }
 pub(super) fn wallpaper(_style:&str,_animated:bool)->AnyElement {
     div().id("ninja-wallpaper").debug_selector(||"ninja-wallpaper".into()).absolute().inset_0()
-        .child(canvas(|bounds,_,_|unified::atmosphere_slot(bounds,false),|_,_,_,_|{}).size_full()).into_any_element()
+        .child(canvas(|bounds,_,_|unified::atmosphere_slot(bounds),|_,_,_,_|{}).size_full()).into_any_element()
 }
 pub(super) fn art(style: &str, size: f32, animated: bool) -> AnyElement {
     if !animated {

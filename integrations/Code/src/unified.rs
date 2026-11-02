@@ -1502,11 +1502,10 @@ pub(super) fn decode_enabled(motion:bool)->bool{
     #[cfg(not(test))]{active()&&motion&&!native::reduced_motion()}
     #[cfg(test)]{let _=motion;false}
 }
-pub(super) fn atmosphere_slot(bounds:Bounds<Pixels>,quick:bool){
-    thread_local!{static SLOTS:std::cell::RefCell<[Option<[f32;4]>;2]>=const{std::cell::RefCell::new([None,None])};}
+pub(super) fn atmosphere_slot(bounds:Bounds<Pixels>){
+    thread_local!{static SLOT:std::cell::Cell<Option<[f32;4]>>=const{std::cell::Cell::new(None)};}
     if !active(){return}let rect=[f32::from(bounds.origin.x),f32::from(bounds.origin.y),f32::from(bounds.size.width),f32::from(bounds.size.height)];
-    let changed=SLOTS.with(|slots|{let mut slots=slots.borrow_mut();let s=&mut slots[usize::from(quick)];if *s==Some(rect){false}else{*s=Some(rect);true}});
-    if changed{emit(&json!({"type":"ninjaAtmosphereSlot","rect":rect,"quick":quick}));}
+    if SLOT.with(|slot|slot.replace(Some(rect))!=Some(rect)){emit(&json!({"type":"ninjaAtmosphereSlot","rect":rect}));}
 }
 pub(super) fn pet_slot(bounds:Bounds<Pixels>){
     let rect=[f32::from(bounds.origin.x),f32::from(bounds.origin.y),f32::from(bounds.size.width),f32::from(bounds.size.height)];

@@ -249,8 +249,8 @@ private final class NotchSurfaceHost:NSView {
     private var reviewedFinished=[String]()
     private let glassBackground=NotchGlassBackground(frame:.zero)
     private let workspaceBackground=NotchWorkspaceBackground(frame:.zero)
-    private let ninjaNotchScene=NinjaAtmosphereView(frame:.zero),ninjaWorkspaceScene=NinjaAtmosphereView(frame:.zero),ninjaQuickScene=NinjaAtmosphereView(frame:.zero)
-    private var ninjaWorkspaceSlot=CGRect.zero,ninjaQuickSlot=CGRect.zero
+    private let ninjaScene=NinjaAtmosphereView(frame:.zero)
+    private var ninjaWorkspaceSlot=CGRect.zero
     private var codeWallpaperEnabled=UserDefaults.standard.bool(forKey:"notchCodeWallpaper") || CommandLine.arguments.contains("--unified-wallpaper-probe"),codeWallpaperItem:NSMenuItem?
     private var codeConnectionItem:NSMenuItem?
     private var glassSliders=[String:NSSlider](),glassLabels=[String:NSTextField](),glassChoiceItems=[NSMenuItem]()
@@ -1002,6 +1002,7 @@ private final class NotchSurfaceHost:NSView {
         if present{
             if (open || experimentalWebMode) && showsNotchSurface{panel.orderFrontRegardless()}else if !showsNotchSurface{panel.orderOut(nil);dropPanel?.orderOut(nil);syncWorkspacePet()}
         }
+        updateNinjaWallpaper()
     }
 
     private func path(width: CGFloat, height: CGFloat) -> CGPath {
@@ -1512,6 +1513,7 @@ private final class NotchSurfaceHost:NSView {
     }
     func transitionQuickSurface(_ window:NSWindow,show:Bool)->Bool{
         hangDiagnostics.record(show ? "mini-code/open":"mini-code/close")
+        defer{updateNinjaWallpaper()}
         guard let panel else{return false}
         quickRevision+=1;let revision=quickRevision;quickWindow=window
         quickMorph.motionEnabled=workspaceMorph.motionEnabled
@@ -1532,7 +1534,7 @@ private final class NotchSurfaceHost:NSView {
                 workspaceMorph.collapse(workspace,to:window.frame,targetNotch:false,retireContent:true,targetRadius:20,backdrop:false,completion:{})
             }
             if workspaceMorph.transitioning && !workspaceMorph.expanded{workspaceMorph.retireBackdrop()}
-            quickMorph.expand(window,from:source,replay:true,destination:window.frame,sourceNotch:!fromWorkspace && menuQuickAnchor == nil,crossfade:true,destinationRadius:20){[weak self] in self?.syncWorkspacePet()}
+            quickMorph.expand(window,from:source,replay:true,destination:window.frame,sourceNotch:!fromWorkspace && menuQuickAnchor == nil,crossfade:true,destinationRadius:20){[weak self] in self?.syncWorkspacePet();self?.updateNinjaWallpaper()}
             // Retire the existing notch through its own morph, while the shared
             // contour carries the boundary into the live mini workspace.
             setOpen(false);dropPanel?.orderOut(nil);syncWorkspacePet()
@@ -2608,21 +2610,19 @@ private final class NotchSurfaceHost:NSView {
     @objc private func toggleBottomGlass(){if codeWallpaperEnabled{codeWallpaperEnabled=false;UserDefaults.standard.set(false,forKey:"notchCodeWallpaper");glassEnabled=true}else{glassEnabled.toggle()};UserDefaults.standard.set(glassEnabled,forKey:"notchBottomGlass");placePanel();refreshChecks()}
     @objc private func toggleCodeWallpaper(){codeWallpaperEnabled.toggle();UserDefaults.standard.set(codeWallpaperEnabled,forKey:"notchCodeWallpaper");placePanel();refreshChecks()}
     func setWorkspaceWallpaper(_ image:CGImage?,opacity:Float){workspaceBackground.setImage(image,opacity:opacity);AdaptiveTextBackdrop.shared.nativeBackgroundChanged()}
-    func ninjaAtmosphereGeometry(_ rect:CGRect,quick:Bool){if quick{ninjaQuickSlot=rect}else{ninjaWorkspaceSlot=rect};updateNinjaWallpaper()}
+    func ninjaAtmosphereGeometry(_ rect:CGRect){ninjaWorkspaceSlot=rect;updateNinjaWallpaper()}
     private func updateNinjaWallpaper(){
-        guard let state=latestState,let ninja=state.personalNinja else{[ninjaNotchScene,ninjaWorkspaceScene,ninjaQuickScene].forEach{$0.suspend()};return}
-        let working=state.activeTurnId != nil || state.workspaceVoiceActive == true
-        let identity=ninja.host+":"+ninja.id+":"+(state.threadId ?? "")
-        let entries:[(NinjaAtmosphereView,NSView?,CGRect,Bool)]=[
-            (ninjaNotchScene,scalableUI,scalableUI.bounds,miniOpen&&showsNotchSurface),
-            (ninjaWorkspaceScene,EmbeddedCodeRuntime.shared.workspaceWindow?.contentView,ninjaWorkspaceSlot,!quickChatVisible&&workspaceMorph.expanded),
-            (ninjaQuickScene,quickWindow?.contentView,ninjaQuickSlot,quickChatVisible)]
-        for (scene,host,rect,visible) in entries{
-            guard let host,rect.width>0,rect.height>0 else{scene.suspend();continue}
-            if scene.superview !== host{scene.removeFromSuperview();host.addSubview(scene)}
-            scene.frame=scene === ninjaNotchScene ? rect:CGRect(x:rect.minX,y:host.bounds.height-rect.maxY,width:rect.width,height:rect.height)
-            scene.configure(identity:identity,name:ninja.name,style:ninja.style,working:working,motion:workspaceMorph.motionEnabled,visible:visible)
-        }
+        guard let state=latestState,let ninja=state.personalNinja else{ninjaScene.suspend();return}
+        let host:NSView?,rect:CGRect
+        if quickChatVisible{host=quickWindow?.contentView;rect=host?.bounds ?? .zero}
+        else if miniOpen && showsNotchSurface{host=scalableUI;rect=scalableUI.bounds}
+        else if workspaceMorph.expanded && !workspaceNotchOverlay{
+            host=EmbeddedCodeRuntime.shared.workspaceWindow?.contentView
+            rect=host?.isFlipped == true ? ninjaWorkspaceSlot:CGRect(x:ninjaWorkspaceSlot.minX,y:(host?.bounds.height ?? 0)-ninjaWorkspaceSlot.maxY,width:ninjaWorkspaceSlot.width,height:ninjaWorkspaceSlot.height)
+        }else{ninjaScene.suspend();return}
+        guard let host,rect.width>0,rect.height>0 else{ninjaScene.suspend();return}
+        ninjaScene.mount(in:host,frame:rect)
+        ninjaScene.configure(identity:ninja.host+":"+ninja.id+":"+(state.threadId ?? ""),name:ninja.name,style:ninja.style,working:state.activeTurnId != nil || state.workspaceVoiceActive == true,motion:workspaceMorph.motionEnabled,visible:true)
     }
     private func updateGlassBackground(){
         updateNinjaWallpaper()

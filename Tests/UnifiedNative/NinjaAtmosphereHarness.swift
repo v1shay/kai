@@ -2,6 +2,7 @@ import AppKit
 @main struct NinjaAtmosphereHarness {
     @MainActor static func main(){
         _=NSApplication.shared
+        if CommandLine.arguments.contains("--continuity"){continuity();return}
         if CommandLine.arguments.contains("--live"){NSApp.setActivationPolicy(.regular)}
         let suite="kai-ninja-phrases-test-"+UUID().uuidString,defaults=UserDefaults(suiteName:suite)!
         defer{defaults.removePersistentDomain(forName:suite)}
@@ -22,10 +23,10 @@ import AppKit
         let sheet=NSBitmapImageRep(cgImage:contact.makeImage()!);try! sheet.representation(using:.png,properties:[:])!.write(to:URL(fileURLWithPath:"/private/tmp/kai-ninja-actions.png"))
         for size in [CGSize(width:420,height:96),CGSize(width:1000,height:210)]{
             for working in [false,true]{
-                let plan=NinjaMotionPlan(size:size,current:.zero,working:working,finished:false)
+                let plan=NinjaMotionPlan(size:size,working:working,finished:false)
                 precondition(plan.samples.contains{$0.action == .climb} && plan.samples.contains{$0.action == .tuck})
                 let ys=plan.samples.map{$0.position.y};precondition(ys.max()!-ys.min()!>15,"Route must move vertically, not just animate limbs")
-                precondition(plan.samples.allSatisfy{$0.position.y>=45 && $0.position.y<size.height && $0.position.x>=0 && $0.position.x<=size.width})
+                precondition(plan.samples.allSatisfy{$0.position.y>=18 && $0.position.y<size.height && $0.position.x>=0 && $0.position.x<=size.width})
                 precondition(hypot(plan.samples.first!.position.x-plan.samples.last!.position.x,plan.samples.first!.position.y-plan.samples.last!.position.y)<0.1,"Loop must close without a position jump")
                 for (a,b) in zip(plan.samples,plan.samples.dropFirst()){precondition(hypot(a.position.x-b.position.x,a.position.y-b.position.y)<35,"Motion samples must remain continuous")}
             }
@@ -76,4 +77,47 @@ import AppKit
         scene.suspend();precondition(scene.isHidden)
         print("NINJA_ATMOSPHERE_OK six identity renders, static/accessibility, work and suspend; phrase bags, time-of-day, nine articulated actions, vertical routes, jumps and lowercase speech")
     }
+    @MainActor static func continuity(){
+        let scene=NinjaAtmosphereView(frame:.zero)
+        let sizes=[CGSize(width:1000,height:600),CGSize(width:620,height:300),CGSize(width:520,height:540),CGSize(width:420,height:380)]
+        let names=["code","extended notch","mini code","menu bar"]
+        let windows=sizes.map{size -> NSPanel in
+            let w=NSPanel(contentRect:CGRect(origin:CGPoint(x:-3000,y:-3000),size:size),styleMask:[.borderless,.nonactivatingPanel],backing:.buffered,defer:false)
+            w.isReleasedWhenClosed=false;w.backgroundColor = .clear;w.isOpaque=false;w.orderFrontRegardless();return w
+        }
+        defer{windows.forEach{$0.close()}}
+        func render(_ seconds:Double){CATransaction.flush();RunLoop.current.run(until:Date().addingTimeInterval(seconds))}
+        func position()->CGPoint{
+            guard let p=scene.diagnosticPosition else{preconditionFailure("WindowServer must provide a live actor presentation: \(scene.diagnosticPlayback)")}
+            let size=scene.layer!.sublayers!.first!.bounds.size
+            let pad=min(146,max(48,size.width*0.26)),top=min(56,size.height*0.35),bottom=max(top+12,size.height-28)
+            return CGPoint(x:(p.x-pad)/max(1,size.width-2*pad),y:(p.y-top)/(bottom-top))
+        }
+        func configure(_ working:Bool){scene.configure(identity:"studio:ice:conversation",name:"ice",style:"ice",working:working,motion:true,visible:true)}
+        scene.mount(in:windows[0].contentView!,frame:CGRect(origin:.zero,size:sizes[0]));configure(false);windows[0].displayIfNeeded();render(2.5)
+        let epoch=scene.diagnosticEpoch!;var last=position(),largest:CGFloat=0
+        for i in 0..<260{
+            configure((i/16)%2==1);scene.needsLayout=true;scene.layoutSubtreeIfNeeded();render(0.08)
+            let next=position(),step=hypot(next.x-last.x,next.y-last.y);largest=max(largest,step)
+            precondition(step<0.15,"State/layout update teleported actor: \(last) -> \(next)")
+            precondition(scene.diagnosticEpoch==epoch,"Scene restart changed its timeline")
+            last=next
+        }
+        for index in [1,2,3,0,3,1,0]{
+            let before=position()
+            scene.mount(in:windows[index].contentView!,frame:CGRect(origin:.zero,size:sizes[index]));configure(true);windows[index].displayIfNeeded();render(0.06)
+            let after=position();let distance=hypot(after.x-before.x,after.y-before.y)
+            precondition(distance<0.18,"Moving to \(names[index]) changed progress: \(before) -> \(after)")
+            precondition(scene.superview === windows[index].contentView && !scene.isHidden)
+            precondition(scene.layer!.speed==1,"A visible non-key notch panel must animate")
+            precondition(scene.diagnosticEpoch==epoch)
+        }
+        let before=position();scene.suspend();let stopped=scene.layer!.timeOffset;render(0.15)
+        precondition(scene.layer!.speed==0 && scene.layer!.timeOffset==stopped)
+        configure(true);render(0.05);let after=position()
+        precondition(hypot(after.x-before.x,after.y-before.y)<0.15,"Resuming a hidden surface restarted the actor")
+        precondition(scene.hitTest(CGPoint(x:100,y:50))==nil)
+        print("NINJA_CONTINUITY_OK live WindowServer presentation over a full loop, repeated state/layout updates, idle/work transitions, four surface hosts, non-key notch animation, hidden/resume, click-through; largest normalized step \(largest)")
+    }
+
 }

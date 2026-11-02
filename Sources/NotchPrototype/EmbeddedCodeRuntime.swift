@@ -68,7 +68,7 @@ enum UnifiedDraftHandoff {
             if object["type"] as? String == "quickLook",let paths=object["paths"] as? [String]{NativeWorkspaceIntegrations.shared.quickLook(paths.map{URL(fileURLWithPath:$0)});return}
             if object["type"] as? String == "artifactPreview",let artifact=object["artifact"] as? [String:Any]{NativeWorkspaceIntegrations.shared.artifact(artifact);return}
         }
-        if let object=try? JSONSerialization.jsonObject(with:data) as? [String:Any],object["type"] as? String == "ninjaAtmosphereSlot",let rect=object["rect"] as? [Double],rect.count==4{app?.ninjaAtmosphereGeometry(CGRect(x:rect[0],y:rect[1],width:rect[2],height:rect[3]),quick:object["quick"] as? Bool == true);return}
+        if let object=try? JSONSerialization.jsonObject(with:data) as? [String:Any],object["type"] as? String == "ninjaAtmosphereSlot",let rect=object["rect"] as? [Double],rect.count==4{app?.ninjaAtmosphereGeometry(CGRect(x:rect[0],y:rect[1],width:rect[2],height:rect[3]));return}
         switch packet.type {
         case "keyboardCatalog":keyboardCommands=packet.commands ?? [];return
         case "quickPrepare":app?.prepareQuickOpening();return
