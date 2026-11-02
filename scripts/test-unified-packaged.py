@@ -6,9 +6,10 @@ from pathlib import Path
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('mode',choices=['menu-bar','wallpaper','glass','startup-workspace','startup-extended','startup-compact','performance','latency','background-idle'])
+    parser.add_argument('--bundle',type=Path,help='Verify another signed bundle, including an installed baseline')
     args=parser.parse_args();mode=args.mode
     root=Path(__file__).resolve().parent.parent
-    source=root/'.build/unified/Kai Unified.app'
+    source=args.bundle or root/'.build/unified/Kai Unified.app'
     report=root/'.build/validation';report.mkdir(parents=True,exist_ok=True)
     log=report/(mode+'.log')
     env=os.environ.copy();env['KAI_PERFORMANCE_LOG']='1'

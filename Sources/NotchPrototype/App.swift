@@ -1611,7 +1611,10 @@ private final class NotchSurfaceHost:NSView {
         if dropPanel?.isVisible == true{value |= 4}
         if sprite.superlayer === workspacePet.layer && !workspacePet.isHidden{value |= 8}
         if workspaceMorph.transitioning{value |= 16}
-        if let window=EmbeddedCodeRuntime.shared.workspaceWindow,let screen=window.screen,window.frame == screen.visibleFrame{value |= 64}
+        if let window=EmbeddedCodeRuntime.shared.workspaceWindow,let screen=window.screen{
+            if window.frame == screen.visibleFrame{value |= 64}
+            if CommandLine.arguments.contains("--unified-startup-probe"){fputs("KAI_STARTUP_FRAME actual=\(window.frame) visible=\(screen.visibleFrame) transitioning=\(workspaceMorph.transitioning)\n",stderr)}
+        }
         if quickChatVisible{value |= 128}
         if !workspaceBackground.isHidden && workspaceBackground.hasImage{value |= 256}
         if indicator.mode != .off && indicator.layer.opacity>0{value |= 32}
