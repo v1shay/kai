@@ -1884,6 +1884,7 @@ private final class NotchSurfaceHost:NSView {
         }
         if let connection=state.codeConnection{codeConnectionItem?.toolTip=connection.error;codeConnectionItem?.title=EmbeddedCodeRuntime.shared.active ? "Code runtime · in this app":connection.enabled ? "Connect to Code · \(connection.connected ? "connected":"waiting")":"Connect to Code"}
         let previous=latestState,previousNotice=previous?.notice,wasFloating=floatingTasks.tracking;latestState=state
+        if (previous?.personalNinja == nil) != (state.personalNinja == nil){updateGlassBackground()}
         // Composer adoption above can render the voice indicator. Keep the
         // connecting request until its new owner snapshot is actually installed.
         if EmbeddedCodeRuntime.shared.active{
@@ -2630,7 +2631,7 @@ private final class NotchSurfaceHost:NSView {
     private func updateGlassBackground(){
         updateNinjaWallpaper()
         guard let root=panel?.contentView?.layer else{return}
-        let wallpaper=codeWallpaperEnabled && EmbeddedCodeRuntime.shared.active
+        let wallpaper=codeWallpaperEnabled && EmbeddedCodeRuntime.shared.active && latestState?.personalNinja == nil
         let visible=open && miniOpen && !experimentalWebMode
         let enabled=glassEnabled && !wallpaper && visible
         root.backgroundColor=enabled ? NSColor.clear.cgColor:NSColor.black.cgColor
