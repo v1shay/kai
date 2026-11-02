@@ -437,6 +437,7 @@ impl Orbit {
             motion: self.motion,
             sidebar: self.sidebar,
             sidebar_split: self.sidebar_split,
+            sidebar_projects_collapsed:self.project_tree.projects_collapsed,sidebar_chats_collapsed:self.project_tree.chats_collapsed,
             expanded_projects,
             conversations_visible: self.conversations_visible,
             open_tabs: self.open_tabs.clone(),
@@ -508,6 +509,7 @@ impl Orbit {
         self.sidebar_split = saved.sidebar_split;
         self.expanded_projects = saved.expanded_projects.into_iter().collect();
         self.conversations_visible = saved.conversations_visible;
+        self.restore_sidebar_sections(saved.sidebar_projects_collapsed,saved.sidebar_chats_collapsed);
         self.sidebar_width = if saved.sidebar {
             self.sidebar_target_width()
         } else {

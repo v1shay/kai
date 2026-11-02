@@ -2,6 +2,9 @@
 //! never while painting or streaming a response.
 use super::*;
 
+#[derive(Clone,Copy,PartialEq,Eq,Hash)]
+pub(super) enum SidebarSection {Projects,Chats}
+
 #[derive(Clone)]
 enum Node {
     Project(usize),
@@ -11,6 +14,9 @@ enum Node {
 }
 pub(super) struct ProjectTree {
     pub activity: Vec<usize>,
+    pub projects_collapsed:bool,
+    pub chats_collapsed:bool,
+    section_motions:HashMap<SidebarSection,(Instant,f32)>,
     rows: Vec<Node>,
     groups:Vec<std::ops::Range<usize>>,
     scroll:ListState,
@@ -29,10 +35,33 @@ pub(super) struct ProjectTree {
 }
 
 impl Default for ProjectTree {
-    fn default()->Self{Self{activity:vec![],rows:vec![],groups:vec![],scroll:ListState::new(0,ListAlignment::Top,px(160.)),loaded_at:HashMap::new(),recent_roots:vec![],pending:HashMap::new(),ready:HashSet::new(),failed:HashSet::new(),motions:HashMap::new(),sequence:0,restored:false,#[cfg(test)]rendered:0,#[cfg(test)]frame_elapsed:None}}
+    fn default()->Self{Self{activity:vec![],projects_collapsed:false,chats_collapsed:false,section_motions:HashMap::new(),rows:vec![],groups:vec![],scroll:ListState::new(0,ListAlignment::Top,px(160.)),loaded_at:HashMap::new(),recent_roots:vec![],pending:HashMap::new(),ready:HashSet::new(),failed:HashSet::new(),motions:HashMap::new(),sequence:0,restored:false,#[cfg(test)]rendered:0,#[cfg(test)]frame_elapsed:None}}
 }
 
 impl Orbit {
+    pub(super) fn sidebar_section_fraction(&self,section:SidebarSection)->f32{
+        let collapsed=match section{SidebarSection::Projects=>self.project_tree.projects_collapsed,SidebarSection::Chats=>self.project_tree.chats_collapsed};
+        let target=if collapsed{0.}else{1.};
+        self.project_tree.section_motions.get(&section).map_or(target,|(at,from)|{
+            #[cfg(test)] let elapsed=self.project_tree.frame_elapsed.unwrap_or_else(||at.elapsed());
+            #[cfg(not(test))] let elapsed=at.elapsed();
+            let t=(elapsed.as_secs_f32()/0.24).min(1.);from+(target-from)*(1.-(1.-t).powi(3))
+        }).clamp(0.,1.)
+    }
+    pub(super) fn sidebar_section_chevron(&self,section:SidebarSection)->Svg{
+        icon("chevron-right",10.,MUTED).with_transformation(Transformation::rotate(radians(self.sidebar_section_fraction(section)*std::f32::consts::FRAC_PI_2)))
+    }
+    pub(super) fn toggle_sidebar_section(&mut self,section:SidebarSection,cx:&mut Context<Self>){
+        let from=self.sidebar_section_fraction(section);
+        match section{SidebarSection::Projects=>self.project_tree.projects_collapsed=!self.project_tree.projects_collapsed,SidebarSection::Chats=>self.project_tree.chats_collapsed=!self.project_tree.chats_collapsed}
+        if self.motion && !native::reduced_motion(){self.project_tree.section_motions.insert(section,(Instant::now(),from));}else{self.project_tree.section_motions.remove(&section);}
+        if let Some(saved)=&mut self.restore_pending{saved.sidebar_projects_collapsed=self.project_tree.projects_collapsed;saved.sidebar_chats_collapsed=self.project_tree.chats_collapsed;}
+        self.rebuild_project_tree();self.queue_workspace_save(cx);cx.notify();
+    }
+    pub(super) fn restore_sidebar_sections(&mut self,projects:bool,chats:bool){
+        self.project_tree.projects_collapsed=projects;self.project_tree.chats_collapsed=chats;self.project_tree.section_motions.clear();
+    }
+
     pub(super) fn unprojected_root(&self) -> PathBuf {
         discovery::unprojected_root(&self.controls_home)
     }
@@ -179,6 +208,7 @@ impl Orbit {
             );
         } else {
             for (ix, project) in self.projects.iter().enumerate() {
+                if self.project_tree.projects_collapsed && !self.project_tree.section_motions.contains_key(&SidebarSection::Projects){break}
                 if storage_roots.contains(&project.path) {
                     continue;
                 }
@@ -203,12 +233,12 @@ impl Orbit {
                 }
             }
             rows.push(Node::RecentHeader);
-            rows.extend(
+            if !self.project_tree.chats_collapsed || self.project_tree.section_motions.contains_key(&SidebarSection::Chats){rows.extend(
                 ungrouped
                     .into_iter()
                     .enumerate()
                     .map(|(n, ix)| Node::Chat(ix, None, n)),
-            );
+            );}
         }
         let mut groups=Vec::new();let mut start=0;
         for (ix,row) in rows.iter().enumerate(){if ix>0&&matches!(row,Node::Project(_)|Node::RecentHeader){groups.push(start..ix);start=ix;}}
@@ -364,6 +394,13 @@ impl Orbit {
             self.project_tree.restored = true;
             self.rebuild_project_tree();
         }
+        let sections_before=self.project_tree.section_motions.len();
+        #[cfg(test)] let section_elapsed=self.project_tree.frame_elapsed;
+        self.project_tree.section_motions.retain(|_,(at,_)|{
+            #[cfg(test)] let elapsed=section_elapsed.unwrap_or_else(||at.elapsed());
+            #[cfg(not(test))] let elapsed=at.elapsed();
+            self.motion && !native::reduced_motion() && elapsed<Duration::from_millis(240)
+        });
         let before = self.project_tree.motions.len();
         #[cfg(test)] let frame_elapsed=self.project_tree.frame_elapsed;
         self.project_tree.motions.retain(|_,(start,_,_)|{
@@ -371,20 +408,19 @@ impl Orbit {
             #[cfg(not(test))] let elapsed=start.elapsed();
             self.motion && elapsed<Duration::from_millis(240)
         });
-        if before != self.project_tree.motions.len() {
+        if before != self.project_tree.motions.len() || sections_before != self.project_tree.section_motions.len() {
             self.rebuild_project_tree();
         }
-        if !self.project_tree.motions.is_empty() && window.is_window_active(){
+        if (!self.project_tree.motions.is_empty() || !self.project_tree.section_motions.is_empty()) && window.is_window_active(){
             for (ix,range) in self.project_tree.groups.iter().enumerate(){
-                if let Some(Node::Project(project))=self.project_tree.rows.get(range.start){if self.project_tree.motions.contains_key(&self.projects[*project].path){self.project_tree.scroll.splice(ix..ix+1,1);}}
+                if let Some(Node::Project(project))=self.project_tree.rows.get(range.start){if self.project_tree.motions.contains_key(&self.projects[*project].path) || self.project_tree.section_motions.contains_key(&SidebarSection::Projects){self.project_tree.scroll.splice(ix..ix+1,1);}}else if self.project_tree.section_motions.contains_key(&SidebarSection::Chats){self.project_tree.scroll.splice(ix..ix+1,1);}
             }
         }
         // Geometry tests paint an exact frame instead of racing the machine's
         // wall clock. Real transitions retain their normal frame scheduling.
         #[cfg(test)] if self.project_tree.frame_elapsed.is_some(){return}
-        if !self.project_tree.motions.is_empty()
-            && !self.sidebar_split
-            && self.sidebar
+        if (!self.project_tree.section_motions.is_empty() || (!self.project_tree.motions.is_empty() && !self.sidebar_split))
+            && (self.sidebar || (self.sidebar_split && self.conversations_visible))
             && window.is_window_active()
         {
             request_motion_frame(window, cx);
@@ -426,7 +462,7 @@ impl Orbit {
                 .px_2(),
             )
             .when(
-                self.archived_view && self.archive_offset < self.archive_ids.len(),
+                self.archived_view && !self.project_tree.chats_collapsed && self.archive_offset < self.archive_ids.len(),
                 |s| {
                     s.child(
                         div()
@@ -448,7 +484,7 @@ impl Orbit {
                 div()
                     .id("tree-new-chat")
                     .debug_selector(|| "tree-new-chat".into())
-                    .h(px(36.))
+                    .h(px(36.*self.sidebar_section_fraction(SidebarSection::Chats))).flex_none().overflow_hidden().opacity(self.sidebar_section_fraction(SidebarSection::Chats))
                     .mx_2()
                     .px_2()
                     .flex()
@@ -472,11 +508,14 @@ impl Orbit {
     fn project_tree_group(&mut self,ix:usize,anchor:ListOffset,window:&Window,cx:&mut Context<Self>)->AnyElement {
         let Some(range)=self.project_tree.groups.get(ix).cloned()else{return div().into_any_element()};
         let first=&self.project_tree.rows[range.start];let header=matches!(first,Node::Project(_)|Node::RecentHeader);
-        let fraction=match first{Node::Project(project)=>self.project_fold_fraction(&self.projects[*project].path).clamp(0.,1.),_=>1.};
-        let children=range.len()-usize::from(header);let header_h=if header{32.}else{0.};let height=header_h+children as f32*32.*fraction;
+        let section=if matches!(first,Node::RecentHeader){SidebarSection::Chats}else{SidebarSection::Projects};
+        let section_fraction=if self.all_projects{1.}else{self.sidebar_section_fraction(section)};
+        let fraction=match first{Node::Project(project)=>self.project_fold_fraction(&self.projects[*project].path).clamp(0.,1.),Node::RecentHeader=>section_fraction,_=>1.};
+        let children=range.len()-usize::from(header);let header_h=if header{32.}else{0.};let height=(header_h+children as f32*32.*fraction)*if matches!(first,Node::RecentHeader){1.}else{section_fraction};
         let offset=if anchor.item_ix==ix{f32::from(anchor.offset_in_item).max(0.)}else{0.};
         let start=((offset-header_h).max(0.)/32.)as usize;let end=(start+(f32::from(window.viewport_size().height)/32.).ceil()as usize+8).min(children).min((children as f32*fraction).ceil()as usize);
-        let mut group=div().id(("project-branch-group",ix)).debug_selector(move||format!("project-branch-group-{ix}")).relative().h(px(height.max(0.01))).w_full().overflow_hidden();
+        let mut group=div().id(("project-branch-group",ix)).debug_selector(move||format!("project-branch-group-{ix}")).relative().h(px(height.max(0.01))).w_full().overflow_hidden().opacity(if matches!(first,Node::RecentHeader){1.}else{section_fraction});
+        if height<0.1{return group.into_any_element()}
         if header{group=group.child(div().absolute().top_0().left_0().right_0().h(px(32.)).child(self.project_tree_row(range.start,cx)));}
         for child in start..end{group=group.child(div().absolute().left_0().right_0().top(px(header_h+child as f32*32.)).h(px(32.)).child(self.project_tree_row(range.start+usize::from(header)+child,cx)));}
         group.into_any_element()
@@ -493,7 +532,7 @@ impl Orbit {
         let row = div().h(px(32.)).w_full().min_w(px(0.));
         match node {
             Node::RecentHeader => {
-                for path in self.project_tree.recent_roots.clone() {
+                for path in if self.project_tree.chats_collapsed{vec![]}else{self.project_tree.recent_roots.clone()} {
                     if !self.project_tree.failed.contains(&path) {
                         self.request_project_branch(path);
                     }
@@ -503,7 +542,11 @@ impl Orbit {
                     .px_2()
                     .text_size(crate::theme::ui_px(11.))
                     .text_color(rgb(MUTED))
+                    .id("sidebar-recents")
                     .debug_selector(|| "sidebar-recents".into())
+                    .gap_2().cursor_pointer().rounded_md().hover(|s|s.bg(rgba(GLASS_HOVER)))
+                    .on_click(cx.listener(|this,_,_,cx|{cx.stop_propagation();this.toggle_sidebar_section(SidebarSection::Chats,cx);}))
+                    .child(self.sidebar_section_chevron(SidebarSection::Chats))
                     .child("Chats")
                     .child(div().flex_1())
                     .child(
@@ -840,6 +883,56 @@ mod tests {
         });
         draw_frame(&view, cx);
         (view, cx)
+    }
+
+    #[gpui::test]
+    fn sidebar_headers_fold_projects_and_chats_independently_without_closing_conversations(cx:&mut TestAppContext){
+        let(view,cx)=unified(cx);
+        view.update(cx,|app,cx|{
+            let mut standalone=app.sessions[0].clone();standalone.id="standalone".into();standalone.project_path=app.unprojected_root();app.sessions.push(standalone);
+            app.motion=false;let path=app.custom_projects[0].path.clone();app.toggle_project_branch(path,cx);app.rebuild_project_tree();
+        });
+        draw_frame(&view,cx);let old_top=cx.debug_bounds("sidebar-recents").unwrap().top();
+        view.update(cx,|app,_|{app.motion=true;app.project_tree.frame_elapsed=Some(Duration::from_millis(100));});
+        click_selector(cx,"sidebar-layout-header");draw_frame(&view,cx);
+        let group=cx.debug_bounds("project-branch-group-0").unwrap();assert!(group.size.height>px(0.) && group.size.height<px(64.),"Projects must animate their actual row geometry");
+        assert!(cx.debug_bounds("sidebar-recents").unwrap().top()<old_top,"Chats header must slide up with collapsing projects");
+        view.update(cx,|app,_|app.project_tree.frame_elapsed=Some(Duration::from_millis(300)));draw_frame(&view,cx);
+        view.update(cx,|app,cx|{
+            assert!(app.project_tree.projects_collapsed);assert!(!app.project_tree.chats_collapsed);assert!(app.project_tree.section_motions.is_empty());assert!(!app.project_tree.rows.iter().any(|n|matches!(n,Node::Project(_))));assert!(app.project_tree.rows.iter().any(|n|matches!(n,Node::Chat(..))));
+            assert_eq!(app.active.as_deref(),Some("chat-0"));assert_eq!(app.composer.read(cx).text(),"Draft stays here");assert_eq!(app.expanded_projects.len(),1);
+            app.motion=false;app.project_tree.frame_elapsed=None;
+        });
+        click_selector(cx,"sidebar-recents");draw_frame(&view,cx);
+        view.update(cx,|app,cx|{assert!(app.project_tree.chats_collapsed);assert_eq!(app.project_tree.rows.len(),1);assert!(matches!(app.project_tree.rows[0],Node::RecentHeader));let saved=app.workspace_snapshot(cx);let restored:workspace_state::WorkspaceState=serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap();assert!(restored.sidebar_projects_collapsed && restored.sidebar_chats_collapsed);});
+        click_selector(cx,"sidebar-recents");click_selector(cx,"sidebar-layout-header");draw_frame(&view,cx);
+        view.update(cx,|app,_|{assert!(!app.project_tree.projects_collapsed && !app.project_tree.chats_collapsed);assert_eq!(app.expanded_projects.len(),1);assert!(app.project_tree.rows.iter().any(|n|matches!(n,Node::Project(_))));});
+    }
+    #[gpui::test]
+    fn split_sidebar_sections_shrink_reopen_and_respect_reduced_motion(cx:&mut TestAppContext){
+        let(view,cx)=fixture(cx);
+        view.update(cx,|app,_|{app.sidebar_split=true;app.conversations_visible=true;app.motion=true;app.project_tree.frame_elapsed=Some(Duration::from_millis(80));});draw_frame(&view,cx);
+        let projects=cx.debug_bounds("project-section-body").unwrap().size.height;let chats=cx.debug_bounds("conversation-section-body").unwrap().size.height;
+        click_selector(cx,"sidebar-layout-header");click_selector(cx,"conversation-section-header");draw_frame(&view,cx);
+        let p=cx.debug_bounds("project-section-body").unwrap().size.height;let c=cx.debug_bounds("conversation-section-body").unwrap().size.height;
+        assert!(p>px(0.) && p<projects,"Split Projects viewport must physically shrink: {p:?} vs {projects:?}");assert!(c>px(0.) && c<chats,"Split Chats viewport must physically shrink: {c:?} vs {chats:?}");
+        view.update(cx,|app,_|app.project_tree.frame_elapsed=Some(Duration::from_millis(300)));draw_frame(&view,cx);
+        assert!(cx.debug_bounds("project-section-body").unwrap().size.height<px(1.));assert!(cx.debug_bounds("conversation-section-body").unwrap().size.height<px(1.));
+        view.update(cx,|app,_|{app.motion=false;app.project_tree.frame_elapsed=None;});click_selector(cx,"sidebar-layout-header");click_selector(cx,"conversation-section-header");draw_frame(&view,cx);
+        assert!(cx.debug_bounds("project-section-body").unwrap().size.height>px(50.));assert!(cx.debug_bounds("conversation-section-body").unwrap().size.height>px(50.));
+        view.update(cx,|app,_|{assert!(app.project_tree.section_motions.is_empty());assert!(!app.project_tree.projects_collapsed && !app.project_tree.chats_collapsed);});
+    }
+    #[gpui::test]
+    fn reversing_section_folds_preserves_progress_and_idle_has_no_animation_work(cx:&mut TestAppContext){
+        let(view,cx)=unified(cx);
+        cx.update(|window,cx|view.update(cx,|app,cx|{
+            app.motion=true;
+            for section in [SidebarSection::Projects,SidebarSection::Chats]{
+                app.toggle_sidebar_section(section,cx);app.project_tree.section_motions.insert(section,(Instant::now()-Duration::from_millis(90),1.));let before=app.sidebar_section_fraction(section);assert!(before>0. && before<1.);app.toggle_sidebar_section(section,cx);assert!((app.sidebar_section_fraction(section)-before).abs()<0.01);
+                app.project_tree.section_motions.insert(section,(Instant::now()-Duration::from_secs(1),before));
+            }
+            app.tick_project_tree(window,cx);assert!(app.project_tree.section_motions.is_empty());app.tick_project_tree(window,cx);assert!(app.project_tree.section_motions.is_empty());
+        }));
     }
 
     fn double_click(cx: &mut VisualTestContext, position: Point<Pixels>) {

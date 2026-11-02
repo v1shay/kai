@@ -1216,7 +1216,7 @@ impl Orbit {
             slash_dismissed: None,
             sidebar_split: restored.as_ref().is_some_and(|state| state.sidebar_split),
             expanded_projects: saved_expanded_projects,
-            project_tree: project_tree::ProjectTree::default(),
+            project_tree: {let mut tree=project_tree::ProjectTree::default();tree.projects_collapsed=restored.as_ref().is_some_and(|s|s.sidebar_projects_collapsed);tree.chats_collapsed=restored.as_ref().is_some_and(|s|s.sidebar_chats_collapsed);tree},
             conversations_transition:None,
             conversations_visible: restored
                 .as_ref()
@@ -4109,7 +4109,9 @@ impl Orbit {
                     .text_color(rgb(MUTED))
                     .debug_selector(|| "sidebar-layout-header".into())
                     .id("sidebar-layout-header")
-                    .on_click(cx.listener(|this,e:&ClickEvent,_,cx| { if e.click_count()==1 && this.all_projects && !this.sidebar_split { cx.stop_propagation(); this.all_projects=false; this.rebuild_workspace_sessions(); cx.notify(); }}))
+                    .cursor_pointer().gap_2().rounded_md().hover(|s|s.bg(rgba(GLASS_HOVER)))
+                    .on_click(cx.listener(|this,e:&ClickEvent,_,cx| { if e.click_count()==1 {cx.stop_propagation();if this.all_projects && !this.sidebar_split{this.all_projects=false;this.rebuild_workspace_sessions();cx.notify();}else{this.toggle_sidebar_section(project_tree::SidebarSection::Projects,cx);}} }))
+                    .when(!(self.all_projects && !self.sidebar_split),|s|s.child(self.sidebar_section_chevron(project_tree::SidebarSection::Projects)))
                     .when(self.all_projects && !self.sidebar_split, |s| s.child(icon("chevron-left",11.,MUTED)))
                     .child(if self.all_projects { "Priority" } else { "Projects" })
                     .child(div().flex_1())
@@ -4128,7 +4130,7 @@ impl Orbit {
             .when(self.sidebar_split, |s| s.child(
                 uniform_list(
                     "project-list",
-                    self.projects.len(),
+                    if self.sidebar_section_fraction(project_tree::SidebarSection::Projects)>0.{self.projects.len()}else{0},
                     cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
                         if let Some(reveal) = &mut this.project_reveal {
                             reveal.observe(range.clone());
@@ -4232,8 +4234,8 @@ impl Orbit {
                 .flex_1()
                 .min_h(px(0.))
                 .w_full()
-                .px_2(),
-            ))
+                .debug_selector(||"project-section-body".into()).px_2().map(|mut v|{v.style().flex_grow=Some(self.sidebar_section_fraction(project_tree::SidebarSection::Projects));v}).flex_basis(px(0.)).opacity(self.sidebar_section_fraction(project_tree::SidebarSection::Projects)),
+            ).child(div().map(|mut v|{v.style().flex_grow=Some(1.-self.sidebar_section_fraction(project_tree::SidebarSection::Projects));v}).flex_basis(px(0.))))
             .when(!self.sidebar_split, |s| s.child(self.project_tree_list(cx)))
             .child(
                 div()
@@ -4448,7 +4450,9 @@ impl Orbit {
                     .gap_2()
                     .text_size(theme::ui_px(12.))
                     .font_weight(FontWeight::SEMIBOLD)
-                    .child(icon("chevron-down", 12., MUTED))
+                    .id("conversation-section-header").debug_selector(||"conversation-section-header".into()).cursor_pointer().hover(|s|s.bg(rgba(GLASS_HOVER)))
+                    .on_click(cx.listener(|this,_,_,cx|{cx.stop_propagation();this.toggle_sidebar_section(project_tree::SidebarSection::Chats,cx);}))
+                    .child(self.sidebar_section_chevron(project_tree::SidebarSection::Chats))
                     .child(if self.all_projects {
                         "Recent conversations"
                     } else {
@@ -4458,7 +4462,7 @@ impl Orbit {
             .child(
                 uniform_list(
                     "sessions",
-                    self.workspace_sessions.len(),
+                    if self.sidebar_section_fraction(project_tree::SidebarSection::Chats)>0.{self.workspace_sessions.len()}else{0},
                     cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
                         if let Some(reveal) = &mut this.sessions_reveal {
                             reveal.observe(range.clone());
@@ -4499,10 +4503,11 @@ impl Orbit {
                 .flex_1()
                 .min_h(px(0.))
                 .w_full()
-                .px_2(),
+                .debug_selector(||"conversation-section-body".into()).px_2().map(|mut v|{v.style().flex_grow=Some(self.sidebar_section_fraction(project_tree::SidebarSection::Chats));v}).flex_basis(px(0.)).opacity(self.sidebar_section_fraction(project_tree::SidebarSection::Chats)),
             )
+            .child(div().map(|mut v|{v.style().flex_grow=Some(1.-self.sidebar_section_fraction(project_tree::SidebarSection::Chats));v}).flex_basis(px(0.)))
             .when(
-                self.archived_view && self.archive_offset < self.archive_ids.len(),
+                self.archived_view && !self.project_tree.chats_collapsed && self.archive_offset < self.archive_ids.len(),
                 |s| {
                     s.child(
                         div()
@@ -4539,7 +4544,7 @@ impl Orbit {
                 div()
                     .id("new-session")
                     .debug_selector(|| "new-session".into())
-                    .h(px(36.))
+                    .h(px(36.*self.sidebar_section_fraction(project_tree::SidebarSection::Chats))).overflow_hidden().opacity(self.sidebar_section_fraction(project_tree::SidebarSection::Chats))
                     .mx_2()
                     .mb_2()
                     .px_2()
