@@ -1549,7 +1549,7 @@ impl Orbit {
                         marked_chip(
                             SharedString::from(format!("ninja-provider-{}", agent.command())),
                             agent.name(),
-                            icon(agent_icon(agent), 16., agent_color(agent)),
+                            provider_icon(agent_icon(agent), 16., agent_color(agent)),
                             p.profile.agent == agent,
                             cx,
                             move |app, _, cx| {
@@ -1605,7 +1605,7 @@ impl Orbit {
                             marked_chip(
                                 SharedString::from(format!("ninja-harness-{label}")),
                                 label,
-                                icon(
+                                provider_icon(
                                     if h == ninja::Harness::Codex {
                                         "codex"
                                     } else {

@@ -279,7 +279,7 @@ impl Orbit {
                     .gap_3()
                     .cursor_pointer()
                     .hover(|s| s.bg(rgba(GLASS_HOVER)))
-                    .child(icon(provider_asset(kind), 18., agent_color(kind)))
+                    .child(provider_icon(provider_asset(kind), 18., agent_color(kind)))
                     .child(
                         div()
                             .text_size(crate::theme::ui_px(12.))

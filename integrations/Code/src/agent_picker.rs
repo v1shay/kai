@@ -492,7 +492,7 @@ impl Orbit {
                                     })
                                     .size(px(16.))
                                     .flex_none()
-                                    .child(icon(agent_icon(kind), 16., agent_color(kind))),
+                                    .child(provider_icon(agent_icon(kind), 16., agent_color(kind))),
                             )
                             .child(
                                 div()

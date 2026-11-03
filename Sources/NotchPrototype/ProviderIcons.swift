@@ -17,7 +17,7 @@ import AppKit
         let root=URL(fileURLWithPath:#filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let url=Bundle.main.resourceURL?.appendingPathComponent("providers/\(id).svg")
         guard let svg=url.flatMap(NSImage.init(contentsOf:)) ?? NSImage(contentsOf:root.appendingPathComponent("integrations/Code/assets/\(id).svg")) else{return nil}
-        let image=NSImage(size:CGSize(width:24,height:24),flipped:false){rect in svg.draw(in:rect);color.setFill();rect.fill(using:.sourceIn);return true}
+        let image=NSImage(size:CGSize(width:24,height:24),flipped:false){rect in svg.draw(in:rect);if id != "codex"{color.setFill();rect.fill(using:.sourceIn)};return true}
         cache.countLimit=48;cache.setObject(image,forKey:key);return image
     }
 }

@@ -175,6 +175,12 @@ fn icon(name: &'static str, size: f32, color: u32) -> Svg {
     };
     svg().path(name).size(px(size)).text_color(color)
 }
+// Provider artwork keeps its own colors; ordinary UI symbols remain tintable.
+fn provider_icon(name:&'static str,size:f32,color:u32)->Div{
+    div().size(px(size)).flex_none().child(if matches!(name,"codex"|"assets/providers/codex.svg"|"assets/codex.svg"){
+        img("assets/codex.svg").size_full().into_any_element()
+    }else{icon(name,size,color).into_any_element()})
+}
 fn rich_text(
     id: impl Into<ElementId>,
     text: &str,
@@ -1808,6 +1814,21 @@ impl Orbit {
                     ),
             )
     }
+    fn file_viewer_header(&self,changes:bool,cx:&Context<Self>)->Div{
+        div().h(px(40.)).flex_none().px_3().flex().items_center().gap_1().border_b_1().border_color(rgba(0xebebeb12))
+            .children([(false,"Files","folder"),(true,"Changes","branch")].into_iter().map(|(tab,label,glyph)|{
+                div().id(if tab{"file-tab-changes"}else{"file-tab-files"}).debug_selector(move||if tab{"file-tab-changes".into()}else{"file-tab-files".into()})
+                    .flex().items_center().gap_1().px_2().py_1().rounded_md().text_size(theme::ui_px(12.)).cursor_pointer()
+                    .text_color(rgb(if tab==changes{TEXT}else{MUTED})).when(tab==changes,|s|s.bg(rgba(GLASS_HOVER)))
+                    .child(icon(glyph,13.,if tab==changes{TEXT}else{MUTED})).child(label)
+                    .on_click(cx.listener(move|app,_,window,cx|{if tab==changes{return}if tab{app.open_changes(cx)}else{app.toggle_files(window,cx)}}))
+            }))
+            .child(div().flex_1())
+            .child(div().id("file-tab-github").debug_selector(||"file-tab-github".into()).p_1().rounded_md().cursor_pointer().hover(|s|s.bg(rgba(GLASS_HOVER))).child(icon("github",14.,MUTED))
+                .on_click(cx.listener(|app,_,window,cx|app.open_github(github_ui::Tab::Pulls,window,cx))))
+            .child(div().id(if changes{"close-changes"}else{"close-files"}).debug_selector(move||if changes{"close-changes".into()}else{"close-files".into()}).p_1().cursor_pointer().child(icon("close",14.,MUTED))
+                .on_click(cx.listener(move|app,_,_,cx|app.close_pane(if changes{pane_layout::Pane::Changes}else{pane_layout::Pane::Files},cx))))
+    }
     fn toggle_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.reopen_closing_pane(pane_layout::Pane::Files,cx){return}
         if self.files_visible {self.close_pane(pane_layout::Pane::Files,cx);return}
@@ -1848,12 +1869,13 @@ impl Orbit {
         if self.files_visible {
             self.broker_panel = None;
         }
-        if !self.files_visible {
-            return;
-        }
         let root = self
             .execution_root()
             .unwrap_or_else(|| self.project.clone());
+        if let Some(review)=&self.diff_view{review.update(cx,|review,cx|review.set_workspace_root(root.clone(),cx));}
+        if !self.files_visible {
+            return;
+        }
         if let Some(browser) = &self.file_browser {
             browser.update(cx, |browser, cx| {
                 browser.set_root(root, window, cx);
@@ -4267,7 +4289,7 @@ impl Orbit {
                                     .size(px(14.))
                                     .flex_none()
                                     .opacity(if agent.available { 1. } else { 0.4 })
-                                    .child(icon(agent_icon(kind), 14., agent_color(kind)))
+                                    .child(provider_icon(agent_icon(kind), 14., agent_color(kind)))
                             }))
                             .child(div().flex_1())
                             .child(icon("chevron-right", 12., MUTED))
@@ -4623,7 +4645,7 @@ impl Orbit {
                     .line_height(theme::ui_line_height(16.))
                     .text_color(rgb(MUTED))
                     .child(
-                        icon(agent_icon(session.agent), 12., agent_color(session.agent))
+                        provider_icon(agent_icon(session.agent), 12., agent_color(session.agent))
                             .flex_none(),
                     )
                     .child(
@@ -4731,7 +4753,7 @@ impl Orbit {
                         .rounded_md()
                         .bg(rgba(GLASS_HOVER))
                         .text_size(theme::ui_px(12.))
-                        .child(icon(agent_icon(self.agent), 14., agent_color(self.agent)))
+                        .child(provider_icon(agent_icon(self.agent), 14., agent_color(self.agent)))
                         .child("New session"),
                 )
             })
@@ -4752,7 +4774,7 @@ impl Orbit {
                     .cursor_pointer()
                     .when(selected, |s| s.bg(rgba(0xffffff20)))
                     .hover(|s| s.bg(rgba(GLASS_HOVER)))
-                    .child(icon(
+                    .child(provider_icon(
                         agent_icon(session.agent),
                         13.,
                         agent_color(session.agent),
@@ -4926,7 +4948,7 @@ impl Orbit {
             .py(px(4.))
             .when(user,|s|s.bg(rgba(self.appearance.tint(GLASS_SURFACE))).rounded_xl().px_4().py_3());
         if !user&&row_has_header(row.role.as_deref()){
-            content=content.child(div().debug_selector(move||format!("transcript-provider-{ix}-{}",row_agent.command())).mb_1().child(icon(agent_icon(row_agent),14.,agent_color(row_agent))));
+            content=content.child(div().debug_selector(move||format!("transcript-provider-{ix}-{}",row_agent.command())).mb_1().child(provider_icon(agent_icon(row_agent),14.,agent_color(row_agent))));
         }
         if !user&&row_has_header(row.role.as_deref())&&self.row_timing(ix).is_some_and(|t|t.finished_ms.is_none()){
             if let Some(elapsed)=self.elapsed_label(){content=content.child(div().mb_3().pb_2().border_b_1().border_color(rgba(0xebebeb12)).text_size(theme::ui_px(11.)).text_color(rgb(MUTED)).child(format!("Working for {elapsed}")));}
@@ -6060,28 +6082,7 @@ impl Render for Orbit {
                             .flex_col()
                             .border_l_1()
                             .border_color(rgba(0xebebeb12))
-                            .child(
-                                div()
-                                    .h(px(40.))
-                                    .flex_none()
-                                    .px_3()
-                                    .flex()
-                                    .items_center()
-                                    .justify_between()
-                                    .border_b_1()
-                                    .border_color(rgba(0xebebeb12))
-                                    .child("Files")
-                                    .child(
-                                        div()
-                                            .id("close-files")
-                                            .cursor_pointer()
-                                            .p_1()
-                                            .child(icon("close", 14., MUTED))
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.toggle_files(window, cx)
-                                            })),
-                                    ),
-                            )
+                            .child(self.file_viewer_header(false,cx))
                             .child(div().flex_1().min_h(px(0.)).w_full().child(browser)).into_any_element(),window,cx)))
                 })
             })
@@ -6105,32 +6106,7 @@ impl Render for Orbit {
                                 .flex()
                                 .flex_col()
                                 .opacity(diff_progress)
-                                .child(
-                                    div()
-                                        .h(px(40.))
-                                        .flex_none()
-                                        .px_3()
-                                        .flex()
-                                        .items_center()
-                                        .justify_between()
-                                        .border_b_1()
-                                        .border_color(rgba(0xebebeb12))
-                                        .text_size(theme::ui_px(12.))
-                                        .child("Changes")
-                                        .child(
-                                            div()
-                                                .id("close-changes")
-                                                .debug_selector(|| "close-changes".into())
-                                                .cursor_pointer()
-                                                .rounded_md()
-                                                .p_1()
-                                                .hover(|s| s.bg(rgba(GLASS_HOVER)))
-                                                .child(icon("close", 14., MUTED))
-                                                .on_click(cx.listener(|this, _, _, cx| {
-                                                    this.close_pane(pane_layout::Pane::Changes,cx);
-                                                })),
-                                        ),
-                                )
+                                .child(self.file_viewer_header(true,cx))
                                 .child(div().flex_1().min_h(px(0.)).child(review)),
                         ).into_any_element(),window,cx)))
             })

@@ -260,7 +260,7 @@ impl Orbit {
                                 .items_center()
                                 .justify_center()
                                 .gap_3()
-                                .child(icon(agent_icon(self.agent), 28., agent_color(self.agent)))
+                                .child(provider_icon(agent_icon(self.agent), 28., agent_color(self.agent)))
                                 .child(
                                     div()
                                         .text_size(theme::ui_px(18.))

@@ -729,7 +729,7 @@ impl Orbit {
                             s.opacity(opacity).relative().left(px(offset))
                         })
                         .child(
-                            icon(agent_icon(session.agent), 12., agent_color(session.agent))
+                            provider_icon(agent_icon(session.agent), 12., agent_color(session.agent))
                                 .flex_none(),
                         )
                         .child(

@@ -63,6 +63,6 @@ final class MenuBarIdentityTests:XCTestCase {
         let picker=MenuBarIdentityMenu(defaults:defaults);XCTAssertEqual(picker.selection,"kai");XCTAssertEqual(picker.mark,.kai)
         let shared=try XCTUnwrap(ProviderIcons.image("codex"));let originalSize=shared.size,template=shared.isTemplate
         let menu=try XCTUnwrap(MenuBarIdentityMenu.image(.provider("codex")))
-        XCTAssertTrue(menu.isTemplate);XCTAssertEqual(shared.size,originalSize);XCTAssertEqual(shared.isTemplate,template)
+        XCTAssertFalse(menu.isTemplate);XCTAssertEqual(shared.size,originalSize);XCTAssertEqual(shared.isTemplate,template)
     }
 }

@@ -102,7 +102,7 @@ struct MenuBarMark:Codable,Equatable {
     static func image(_ mark:MenuBarMark)->NSImage?{
         if mark.kind=="provider"{
             guard let original=ProviderIcons.image(mark.id),let image=original.copy() as? NSImage else{return nil}
-            image.size=CGSize(width:16,height:16);image.isTemplate=true;return image
+            image.size=CGSize(width:16,height:16);image.isTemplate=mark.id != "codex";return image
         }
         guard mark.kind=="ninja",["fire","lightning","earth","ice","energy","water"].contains(mark.style) else{return nil}
         let resource="ninja-"+mark.style

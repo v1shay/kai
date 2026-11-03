@@ -666,7 +666,7 @@ impl Orbit {
                 let colors=self.task_pet_visuals.get(&key).map(|v|v.colors.as_slice()).unwrap_or(&[0x94b8db,0x6c819c]);
                 let tint=colors[0];let (_,_,status)=crate::interaction_ui::status_appearance(child.status);
                 div().id(("child",ix)).debug_selector(move||format!("child-tab-{ix}")).w(px(168.)).flex_none().rounded_lg().border_1().border_color(rgba((tint<<8)|if selected{150}else{32})).bg(linear_gradient(135.,linear_color_stop(rgba((tint<<8)|if selected{42}else{12}),0.),linear_color_stop(rgba(0xffffff04),1.))).px_2().py_1().flex().items_center().gap_2().cursor_pointer().hover(|s|s.bg(rgba(GLASS_HOVER)))
-                .child(self.task_pet(&key,30.,selected&&child.connected&&matches!(child.status,chat_interactions::InteractionStatus::Started|chat_interactions::InteractionStatus::Working)).unwrap_or_else(||icon(agent_icon(provider),18.,agent_color(provider)).into_any_element()))
+                .child(self.task_pet(&key,30.,selected&&child.connected&&matches!(child.status,chat_interactions::InteractionStatus::Started|chat_interactions::InteractionStatus::Working)).unwrap_or_else(||provider_icon(agent_icon(provider),18.,agent_color(provider)).into_any_element()))
                 .child(div().flex_1().min_w(px(0.)).flex().flex_col().gap_1().child(div().text_ellipsis().text_size(theme::ui_px(12.)).font_weight(FontWeight::MEDIUM).child(child.name.clone().unwrap_or_else(||format!("{} {}",provider.name(),short(&id,8))))).child(div().text_size(theme::ui_px(10.)).text_color(rgb(MUTED)).child(status)))
                 .on_click(cx.listener(move|app,_,window,cx|{app.select_child(provider,id.clone(),cx);app.open_child_decisions(provider,&id,window,cx);})).into_any_element()
             })))

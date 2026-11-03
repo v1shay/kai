@@ -31,6 +31,7 @@ struct ChangedFile {
 }
 struct Changes {
     repo: PathBuf,
+    branch:Option<String>,
     head: bool,
     filters: Vec<String>,
     files: Vec<ChangedFile>,
@@ -139,6 +140,13 @@ impl DiffView {
     pub fn new(root: PathBuf, cx: &mut Context<Self>) -> Self {
         Self::with_source(root, ReviewSource::Workspace(None), cx)
     }
+    pub fn set_workspace_root(&mut self,root:PathBuf,cx:&mut Context<Self>){
+        if self.root==root||!matches!(self.source,ReviewSource::Workspace(_)){return}
+        self.root=root;self.source=ReviewSource::Workspace(None);self.source_label=None;self.restore_path=None;
+        self.file_offset=0;self.diff_position=Default::default();self.diff_previous.clear();self.collapsed.clear();self.refresh(cx);
+    }
+    #[cfg(test)]
+    pub(super) fn test_root(&self)->&Path{&self.root}
     pub fn workspace_fallback(root: PathBuf, reason: String, cx: &mut Context<Self>) -> Self {
         Self::with_source(root, ReviewSource::Workspace(Some(reason)), cx)
     }
@@ -338,6 +346,7 @@ impl DiffView {
                                     .position(|file| changes.repo.join(&file.path) == path)
                             })
                             .unwrap_or(0);
+                        if matches!(this.source,ReviewSource::Workspace(None)){this.source_label=Some(format!("{} · {} changed files",changes.branch.as_deref().unwrap_or("Detached HEAD"),changes.files.len()));}
                         this.changes = Some(changes);
                         this.rebuild_tree();
                         this.preview = preview;
@@ -667,6 +676,7 @@ fn review_changes(
             let totals=if preview.total>0{Some(repository.change_summary(id,cancel).map_err(|e|e.to_string())?)}else{None};
             let changes = Changes {
                 repo: root.to_owned(),
+                branch:None,
                 head: false,
                 filters: vec![],
                 files: preview
@@ -709,6 +719,7 @@ fn review_changes(
             Ok((
                 Changes {
                     repo: root.to_owned(),
+                    branch:None,
                     head: false,
                     filters: vec![],
                     files,
@@ -924,8 +935,10 @@ fn read_changes(root: &Path, cancel: &AtomicBool) -> Result<Changes, String> {
     let (mut files, limited) = parse_files(&bytes, scope, truncated);
     let totals=crate::github::workspace_counts(&repo,&filters,head,cancel).map_err(|e|e.to_string())?;
     for file in &mut files{file.counts=if file.untracked{crate::github::untracked_counts(&repo.join(&file.path),cancel).ok()}else{totals.get(&file.path).cloned()};}
+    let branch=output(git(&repo).args(["symbolic-ref","--quiet","--short","HEAD"]),4096,cancel,true).ok().map(|(data,_)|String::from_utf8_lossy(&data).trim().to_owned()).filter(|s|!s.is_empty());
     Ok(Changes {
         repo,
+        branch,
         head,
         filters,
         files,

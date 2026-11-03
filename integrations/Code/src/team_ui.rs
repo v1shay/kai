@@ -482,7 +482,7 @@ impl Orbit {
                             .flex()
                             .items_center()
                             .gap_2()
-                            .child(icon(
+                            .child(provider_icon(
                                 agent_icon(member.agent),
                                 14.,
                                 agent_color(member.agent),
@@ -648,7 +648,7 @@ impl Orbit {
                                 .flex()
                                 .gap_2()
                                 .items_center()
-                                .child(icon(
+                                .child(provider_icon(
                                     agent_icon(member.agent),
                                     14.,
                                     agent_color(member.agent),

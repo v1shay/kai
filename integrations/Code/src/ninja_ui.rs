@@ -527,7 +527,7 @@ impl Orbit {
                 .text_color(rgb(if selected { 0x67dab0 } else { TEXT }))
                 .when(selected, |s| s.bg(rgba(0x67dab018)))
                 .hover(|s| s.bg(rgba(GLASS_HOVER)))
-                .flex().items_center().gap_2().child(icon(glyph,16.,TEXT))
+                .flex().items_center().gap_2().child(provider_icon(glyph,16.,TEXT))
                 .child(label)
                 .on_click(cx.listener(move |app, _, _, cx| {
                     if let Err(e) = app.ninja_set(field, &value, cx) {

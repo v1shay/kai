@@ -463,7 +463,7 @@ impl Orbit {
                         .cursor_pointer()
                         .hover(|s| s.bg(rgba(GLASS_HOVER)))
                         .child(
-                            icon(agent_icon(self.agent), 14., agent_color(self.agent)).flex_none(),
+                            provider_icon(agent_icon(self.agent), 14., agent_color(self.agent)).flex_none(),
                         )
                         .when_some(composer_design::model_glyph(&label), |s, glyph| {
                             s.child(

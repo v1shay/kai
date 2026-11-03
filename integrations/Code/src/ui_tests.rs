@@ -1141,10 +1141,11 @@ fn every_installed_provider_can_be_selected_without_starting_a_process(cx: &mut 
                     available: true,
                 }];
                 app.show_modal(Modal::Agents, window, cx);
+                app.agent_picker.as_mut().unwrap().scope = agent_picker::Scope::Providers;
             })
         });
         draw_frame(&view, cx);
-        let button = cx.debug_bounds(selector).unwrap().center();
+        let button = cx.debug_bounds(selector).unwrap_or_else(|| panic!("Missing provider row: {selector}")).center();
         cx.simulate_click(button, Modifiers::none());
         cx.update(|_, cx| {
             let app = view.read(cx);

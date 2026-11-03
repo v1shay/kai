@@ -535,7 +535,7 @@ impl Orbit {
                     list = list.child(ninjas_ui::marked_chip(
                         SharedString::from(format!("ninja-pick-agent-{}", a.command())),
                         a.name(),
-                        icon(agent_icon(a), 16., TEXT),
+                        provider_icon(agent_icon(a), 16., TEXT),
                         p.profile.agent == a,
                         cx,
                         move |app, w, cx| {

@@ -516,7 +516,7 @@ impl Orbit {
                                                 .cursor_pointer()
                                                 .hover(|s| s.bg(rgba(GLASS_HOVER)))
                                                 .child(
-                                                    icon(
+                                                    provider_icon(
                                                         agent_icon(session.agent),
                                                         15.,
                                                         agent_color(session.agent),

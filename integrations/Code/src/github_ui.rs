@@ -2363,4 +2363,19 @@ mod tests {
             })
         });
     }
+#[gpui::test]
+fn file_viewer_changes_tab_tracks_projects_and_opens_github_reviews(cx:&mut TestAppContext){
+    use crate::ui_tests::{fixture,draw_frame,click_selector};
+    let(view,cx)=fixture(cx);
+    cx.update(|w,cx|view.update(cx,|app,cx|{app.motion=false;app.github.freeze_reads=true;app.toggle_files(w,cx);}));
+    draw_frame(&view,cx);assert!(cx.debug_bounds("file-tab-files").is_some());assert!(cx.debug_bounds("file-tab-changes").is_some());
+    click_selector(cx,"file-tab-changes");draw_frame(&view,cx);
+    view.update(cx,|app,cx|{assert!(!app.files_visible);assert_eq!(app.diff_view.as_ref().unwrap().read(cx).test_root(),app.execution_root().as_deref().unwrap_or(&app.project));});
+    assert!(cx.debug_bounds("changes-inspector").is_some());assert!(cx.debug_bounds("file-tab-github").is_some());
+    cx.update(|w,cx|view.update(cx,|app,cx|{let next=app.project.join("different-project");std::fs::create_dir_all(&next).unwrap();app.active=None;app.new_execution_path=None;app.project=next.clone();app.sync_file_root(w,cx);assert_eq!(app.diff_view.as_ref().unwrap().read(cx).test_root(),next);}));
+    click_selector(cx,"file-tab-files");draw_frame(&view,cx);view.update(cx,|app,_|assert!(app.files_visible&&app.diff_view.is_none()));
+    click_selector(cx,"file-tab-github");draw_frame(&view,cx);view.update(cx,|app,_|assert_eq!(app.github.panel.as_ref().unwrap().tab,Tab::Pulls));
+    cx.update(|w,cx|view.update(cx,|app,cx|{let captured=app.project.clone();app.close_github(w,cx);app.open_github_diff(captured.clone(),"diff --git a/example.rs b/example.rs\n--- a/example.rs\n+++ b/example.rs\n@@ -1 +1 @@\n-old\n+new\n".into(),cx);app.project=captured.join("other");app.sync_file_root(w,cx);assert_eq!(app.diff_view.as_ref().unwrap().read(cx).test_root(),captured,"A GitHub review must retain its captured repository");}));
+}
+
 }

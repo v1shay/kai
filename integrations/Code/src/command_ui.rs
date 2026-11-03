@@ -642,7 +642,7 @@ impl Orbit {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(icon(
+                    .child(provider_icon(
                         provider_asset(self.agent),
                         16.,
                         agent_color(self.agent),
@@ -915,7 +915,7 @@ impl Orbit {
     }
     pub(super) fn usage_footer(&self,cx:&Context<Self>)->AnyElement{
         let quota=self.reported_limit_windows().first().cloned();let fraction=quota.as_ref().map(|w|((100.-w.used_percent)/100.)as f32);
-        div().id("provider-usage-footer").debug_selector(||"provider-usage-footer".into()).h(px(20.)).flex().items_center().gap_2().cursor_pointer().child(icon(agent_icon(self.agent),12.,agent_color(self.agent)))
+        div().id("provider-usage-footer").debug_selector(||"provider-usage-footer".into()).h(px(20.)).flex().items_center().gap_2().cursor_pointer().child(provider_icon(agent_icon(self.agent),12.,agent_color(self.agent)))
         .when_some(fraction,|s,t|s.child(div().w(px(36.)).h(px(3.)).rounded_full().bg(rgba(0xffffff18)).child(div().w(px(36.*t)).h_full().rounded_full().bg(rgb(composer_design::intensity(1.-t))))))
         .child(self.usage_summary()).child(self.context_indicator()).on_click(cx.listener(|this,event:&ClickEvent,window,cx|{this.toggle_panel_from_click(Modal::Status,event.position(),true,window,cx);})).into_any_element()
     }
@@ -1199,7 +1199,7 @@ impl Orbit {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(icon(
+                    .child(provider_icon(
                         provider_asset(self.agent),
                         18.,
                         agent_color(self.agent),

@@ -230,7 +230,7 @@ impl Orbit {
             .when(self.active.as_deref() == Some(&session.id), |s| {
                 s.bg(rgba(0xffffff14))
             })
-            .child(icon(agent_icon(session.agent), 13., agent_color(session.agent)).flex_none())
+            .child(provider_icon(agent_icon(session.agent), 13., agent_color(session.agent)).flex_none())
             .child(
                 div()
                     .flex_1()
