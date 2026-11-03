@@ -1798,42 +1798,17 @@ impl Orbit {
         }
         setup
         }else{div()};
-        let summaries = snapshot
-            .and_then(|v| v["tasks"].as_array())
-            .into_iter()
-            .flatten()
-            .filter(|t| t["profile"] == p.profile.id)
-            .cloned()
-            .collect::<Vec<_>>();
-        let mut tasks = p.messages.clone();
-        for t in summaries
-            .iter()
-            .filter(|t| p.chat.as_deref() == t["chat"].as_str())
-        {
-            if let Some(old) = tasks.iter_mut().find(|v| v["id"] == t["id"]) {
-                // Full completed messages supersede clipped summaries; active
-                // stream updates always supersede a previously loaded body.
-                if old["finished"] != t["finished"]
-                    || ["running", "approval", "queued"]
-                        .contains(&t["state"].as_str().unwrap_or(""))
-                {
-                    *old = t.clone();
-                }
-            } else {
-                tasks.push(t.clone());
-            }
-        }
-        tasks.sort_by_key(|t| t["created"].as_i64().unwrap_or(0));
+        let tasks=crate::ninja_chat::merged_tasks(&p.messages,snapshot,&p.profile.id,p.chat.as_deref());
         let history_owner=format!("{}:{}:{}",p.host,p.profile.id,p.chat.as_deref().unwrap_or("draft"));
         let changed=p.history_scroll_owner.borrow().as_ref()!=Some(&history_owner);
         let mut cached=p.history_tasks.borrow_mut();
-        if changed || cached.as_ref()!=&tasks{
+        if changed || cached.len()!=tasks.len() || cached.iter().zip(&tasks).any(|(a,b)|a!=*b){
             let old=cached.len();
             if changed{p.history_scroll.reset(tasks.len());p.history_follow.set(true);}else{
-                let first=cached.iter().zip(&tasks).position(|(a,b)|a!=b).unwrap_or(old.min(tasks.len()));
+                let first=cached.iter().zip(&tasks).position(|(a,b)|a!=*b).unwrap_or(old.min(tasks.len()));
                 p.history_scroll.splice(first..old,tasks.len()-first);
             }
-            *cached=std::sync::Arc::new(tasks);
+            *cached=std::sync::Arc::new(tasks.into_iter().cloned().collect());
             if p.history_follow.get(){p.history_scroll.scroll_to(ListOffset{item_ix:cached.len(),offset_in_item:px(0.)});}
         }
         let tasks=cached.clone();drop(cached);
@@ -2164,7 +2139,7 @@ impl Orbit {
                             )),
                     ),
             )
-            .child(crate::ninja_art::wallpaper(&p.profile.style,self.motion && !native::reduced_motion() && window.is_window_active() && summaries.iter().any(crate::ninja_chat::live)))
+            .child(crate::ninja_art::wallpaper(&p.profile.style,self.motion && !native::reduced_motion() && window.is_window_active() && tasks.iter().any(crate::ninja_chat::live)))
             .into_any_element()
     }
 }

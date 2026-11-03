@@ -132,6 +132,8 @@ os.execve(sys.argv[1],sys.argv[1:],os.environ)
             result['frame_median_ms']=frames[len(frames)//2]
             result['smooth_frame_budget_passed']=result['frame_p95_ms']<34
         (report/(mode+'.json')).write_text(json.dumps(result,indent=2))
+        if mode=='ninja-chat' and not result['smooth_frame_budget_passed']:
+            raise RuntimeError(f'Ninja frame p95 exceeded 34 ms; evidence saved to {report/(mode+".json")}')
         if mode in {'performance','background-idle'} and interactions:
             raise RuntimeError(f'Idle measurement received native input ({interactions}); evidence saved, but this run cannot certify idle CPU')
         print(json.dumps({k:v for k,v in result.items() if k!='samples'},indent=2))

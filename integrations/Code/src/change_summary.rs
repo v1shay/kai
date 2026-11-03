@@ -195,7 +195,16 @@ impl Orbit {
                             .gap_1()
                             .child(
                                 div()
+                                    .id(("completion-label", ix))
                                     .debug_selector(move || format!("completion-label-{ix}"))
+                                    .cursor_pointer()
+                                    .on_click(cx.listener({
+                                        let target = open.clone();
+                                        move |app, _, _, cx| {
+                                            cx.stop_propagation();
+                                            app.open_completion_target(target.clone(), false, cx);
+                                        }
+                                    }))
                                     .text_size(theme::ui_px(12.))
                                     .child(format!(
                                         "Edited {} {}",

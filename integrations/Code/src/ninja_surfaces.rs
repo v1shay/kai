@@ -346,24 +346,7 @@ impl Orbit {
             return;
         };
         let snapshot = self.ninjas.snapshots.get(&p.host);
-        let mut tasks = p.messages.clone();
-        for t in snapshot
-            .into_iter()
-            .flat_map(|s| s["tasks"].as_array().into_iter().flatten())
-            .filter(|t| t["profile"] == p.profile.id && t["chat"].as_str() == p.chat.as_deref())
-        {
-            if let Some(old) = tasks.iter_mut().find(|v| v["id"] == t["id"]) {
-                if old["finished"] != t["finished"]
-                    || ["running", "approval", "queued"]
-                        .contains(&t["state"].as_str().unwrap_or(""))
-                {
-                    *old = t.clone();
-                }
-            } else {
-                tasks.push(t.clone());
-            }
-        }
-        tasks.sort_by_key(|t| t["created"].as_i64().unwrap_or(0));
+        let tasks=crate::ninja_chat::merged_tasks(&p.messages,snapshot,&p.profile.id,p.chat.as_deref());
         let mut history = vec![];
         for t in &tasks {
             let id = t["id"].as_str().unwrap_or("");
@@ -414,7 +397,7 @@ impl Orbit {
             p.chat.as_deref().unwrap_or("draft")
         );
         let models=p.models.iter().map(|m|json!({"model":m["id"],"displayName":m["label"],"supportedReasoningEfforts":m["efforts"].as_array().into_iter().flatten().map(|e|json!({"reasoningEffort":e})).collect::<Vec<_>>()})).collect::<Vec<_>>();
-        let override_ = json!({"orchestratorMode":p.profile.orchestrator,"orchestratorAvailable":true,"personalNinja":{"id":p.profile.id,"name":p.profile.name,"style":p.profile.style,"host":p.host},"threadId":thread,"threadName":p.chat.as_ref().map(|chat|self.lifecycle.chat_names.get(&Self::ninja_chat_key(&p.host,&p.profile.id,chat)).cloned().or_else(||self.ninja_chat_seed(&Self::ninja_chat_key(&p.host,&p.profile.id,chat))).unwrap_or_else(||p.profile.name.clone())).unwrap_or_else(||p.profile.name.clone()),"ownerToken":self.ninja_surface_owner(),"project":p.profile.project,"composerDraft":p.fields[3].read(cx).text(),"history":crate::unified::budget_history(history),"historyLoading":p.history_loading,"modelsLoading":p.models_loading.is_some(),"historyHasMore":false,"historyEarlier":false,"readOnly":false,"composerBusy":p.busy,"selectedAgent":p.profile.agent.command(),"selectedModel":p.profile.model,"effectiveModel":active.and_then(|t|t["model"].as_str()).or(p.profile.model.as_deref()),"reasoningEffort":p.profile.effort,"models":models,"chats":chats,"activeTurnId":active.and_then(|t|t["id"].as_str()),"sessionActivity":{"scene":active.map(crate::ninjas_ui::task_scene).unwrap_or("off"),"text":active.and_then(|t|t["status"].as_str()).unwrap_or("")},"attachments":[]});
+        let override_ = json!({"orchestratorMode":p.profile.orchestrator,"orchestratorAvailable":true,"personalNinja":{"id":p.profile.id,"name":p.profile.name,"style":p.profile.style,"host":p.host},"threadId":thread,"threadName":p.chat.as_ref().map(|chat|self.lifecycle.chat_names.get(&Self::ninja_chat_key(&p.host,&p.profile.id,chat)).cloned().or_else(||self.ninja_chat_seed(&Self::ninja_chat_key(&p.host,&p.profile.id,chat))).unwrap_or_else(||p.profile.name.clone())).unwrap_or_else(||p.profile.name.clone()),"ownerToken":self.ninja_surface_owner(),"project":p.profile.project,"composerDraft":p.fields[3].read(cx).text(),"history":crate::unified::budget_history(history),"historyLoading":p.history_loading,"modelsLoading":p.models_loading.is_some(),"historyHasMore":false,"historyEarlier":false,"readOnly":false,"composerBusy":p.busy,"selectedAgent":p.profile.agent.command(),"selectedModel":p.profile.model,"effectiveModel":active.and_then(|t|t["model"].as_str()).or(p.profile.model.as_deref()),"reasoningEffort":p.profile.effort,"models":models,"chats":chats,"activeTurnId":active.and_then(|t|t["id"].as_str()),"sessionActivity":{"scene":active.map(|t|crate::ninjas_ui::task_scene(t)).unwrap_or("off"),"text":active.and_then(|t|t["status"].as_str()).unwrap_or("")},"attachments":[]});
         for (key, value) in override_.as_object().unwrap() {
             s[key] = value.clone();
         }

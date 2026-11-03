@@ -33,12 +33,12 @@ final class UnifiedReviewTests:XCTestCase {
         view.reset();view.show(try request("opaque-2"));view.setReviewExpanded(true,pinned:true);choice.performClick(nil);XCTAssertEqual(sent.count,1,"Retired form controls must not target the replacement request")
         view.reset()
     }
-    @MainActor func testHoverReviewExpandsInPlaceAndClickPinsUntilExplicitCollapse()throws {
+    @MainActor func testHoverLeavesReviewClosedAndClickPinsUntilExplicitCollapse()throws {
         _=NSApplication.shared
         let view=CompactApprovalView(frame:CGRect(x:0,y:0,width:338,height:88));view.show(CompactApprovalRequest(preview:true));view.isHidden=false;view.layoutSubtreeIfNeeded()
         let icon=try XCTUnwrap(view.subviews.compactMap{$0 as? NSButton}.first{$0.accessibilityLabel()=="Review request"})
         let event=try XCTUnwrap(NSEvent.mouseEvent(with:.mouseMoved,location:.zero,modifierFlags:[],timestamp:0,windowNumber:0,context:nil,eventNumber:0,clickCount:0,pressure:0))
-        icon.mouseEntered(with:event);XCTAssertTrue(view.reviewExpanded);XCTAssertFalse(view.reviewPinned)
+        icon.mouseEntered(with:event);XCTAssertFalse(view.reviewExpanded);XCTAssertFalse(view.reviewPinned)
         icon.performClick(nil);XCTAssertTrue(view.reviewPinned);icon.mouseExited(with:event);RunLoop.main.run(until:Date().addingTimeInterval(0.3));XCTAssertTrue(view.reviewExpanded)
         icon.performClick(nil);XCTAssertFalse(view.reviewExpanded);XCTAssertEqual(view.preferredHeight,88)
         view.reset()

@@ -29,7 +29,7 @@ struct PetIconPlayback {
     private var petID="",sheet:CGImage?,rows=0,row=0
     private var playback:PetIconPlayback?,started=0.0
     private var frames=[Int:NSImage](),displayedColumn:Int?
-    private var timer:Timer?,persistWork:DispatchWorkItem?,completionWork:DispatchWorkItem?
+    private var timer:Timer?,completionWork:DispatchWorkItem?
     private var observers=[NSObjectProtocol](),pauses=Set<String>()
     private var still:NSImage?
     private var working=false
@@ -69,10 +69,8 @@ struct PetIconPlayback {
         }
         if changed {
             still=Self.frame(sheet:sheet,rows:rows,row:row,column:columns[0],size:512)
+            // Keep the signed bundle immutable; selection is persisted in preferences.
             if let still{NSApp.applicationIconImage=still}
-            persistWork?.cancel()
-            let work=DispatchWorkItem{[weak self] in self?.persistStill()};persistWork=work
-            DispatchQueue.main.asyncAfter(deadline:.now()+0.5,execute:work)
         }
         NSApp.dockTile.contentView=view
         refreshTimer()
@@ -105,19 +103,9 @@ struct PetIconPlayback {
         displayedColumn=column;view.image=image;NSApp.dockTile.display()
     }
 
-    /// Only selection changes touch the filesystem; animation frames never do.
-    private func persistStill(){
-        persistWork=nil
-        guard let still,Bundle.main.bundleURL.pathExtension == "app" else{return}
-        if !NSWorkspace.shared.setIcon(still,forFile:Bundle.main.bundlePath,options:[]){
-            NSLog("Kai could not persist the pet icon at %@",Bundle.main.bundlePath)
-        }
-    }
-
     func stop(){
         timer?.invalidate();timer=nil
         completionWork?.cancel();completionWork=nil
-        if persistWork != nil{persistWork?.cancel();persistStill()}
         observers.forEach{NSWorkspace.shared.notificationCenter.removeObserver($0)};observers=[]
         NSApp.dockTile.contentView=nil
         if let still{NSApp.applicationIconImage=still}

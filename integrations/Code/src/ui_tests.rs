@@ -400,13 +400,17 @@ fn native_delegation_button_preserves_draft_and_waits_for_submit(cx: &mut TestAp
     let (view, cx) = fixture(cx);
     cx.simulate_input("Inspect the parser without editing files");
     draw_frame(&view, cx);
-    click_selector(cx, "delegate-task");
+    cx.update(|window,cx|view.update(cx,|app,cx|app.show_modal(Modal::ComposerControls,window,cx)));
+    draw_frame(&view,cx);
+    click_selector(cx, "composer-action-delegate");
     assert_eq!(
         composer_text(&view, cx),
         "/delegate Inspect the parser without editing files"
     );
     assert!(composer_focused(&view, cx));
-    click_selector(cx, "delegate-task");
+    cx.update(|window,cx|view.update(cx,|app,cx|app.show_modal(Modal::ComposerControls,window,cx)));
+    draw_frame(&view,cx);
+    click_selector(cx, "composer-action-delegate");
     assert_eq!(
         composer_text(&view, cx),
         "/delegate Inspect the parser without editing files"
@@ -1586,6 +1590,7 @@ fn project_navigation_opens_its_chats_and_keeps_columns_aligned(cx: &mut TestApp
         let mut session = app.sessions[0].clone();
         session.id = "other-session".into();
         session.title = "A chat inside another project".into();
+        session.updated_at -= 1;
         session.project_path = other;
         app.sessions.push(session);
         app.rebuild_workspace_sessions();
@@ -1726,6 +1731,7 @@ fn nested_project_chats_preserve_group_and_session_drafts(cx: &mut TestAppContex
             let mut nested = app.sessions[0].clone();
             nested.id = "nested-session".into();
             nested.title = "Nested chat".into();
+            nested.updated_at += 1;
             nested.project_path = root.join("child");
             nested.external_id = Some("fresh-native-id".into());
             app.sessions.insert(0, nested);
@@ -2482,7 +2488,10 @@ fn native_voice_controls_and_question_choices_use_the_composer(cx: &mut TestAppC
     use chat_interactions::{ChatInteraction, InteractionStatus, QuestionCard, QuestionOption};
     let (view, cx) = fixture(cx);
     settle_composer(&view, cx);
-    assert!(cx.debug_bounds("attach-image").is_some());
+    cx.update(|window,cx|view.update(cx,|app,cx|app.show_modal(Modal::ComposerControls,window,cx)));
+    draw_frame(&view,cx);
+    assert!(cx.debug_bounds("composer-action-attach").is_some());
+    cx.update(|window,cx|view.update(cx,|app,cx|app.dismiss_panel(window,cx)));
     assert!(cx.debug_bounds("dictate").is_some());
     view.update(cx, |app, _| {
         app.active = Some("fixture-session".into());
@@ -3444,6 +3453,15 @@ fn completion_click_opens_exact_prompt_diff_and_close_releases_it(cx: &mut TestA
         app.list = ListState::new(3, ListAlignment::Top, px(200.));
     });
     draw_frame(&view, cx);
+    // The asynchronous file summary replaces the generic completion label.
+    // Wait for that real control before sampling its click coordinates.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while view.update(cx, |app, _| app.completion_summary(2).is_none()) {
+        cx.run_until_parked();
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    draw_frame(&view, cx);
     click_selector(cx, "completion-label-2");
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
@@ -3453,7 +3471,7 @@ fn completion_click_opens_exact_prompt_diff_and_close_releases_it(cx: &mut TestA
         {
             break;
         }
-        assert!(Instant::now() < deadline);
+        assert!(Instant::now() < deadline, "Completion must open the diff and expose undo");
         std::thread::sleep(Duration::from_millis(5));
     }
     cx.update(|_, cx| {

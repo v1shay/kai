@@ -34,6 +34,18 @@ pub(super) fn live(t: &Value) -> bool {
     !t["finished"].is_number()
         && matches!(t["state"].as_str(), Some("running" | "approval" | "queued"))
 }
+// Every surface uses the same task precedence. A delayed snapshot must never
+// resurrect a finished task; a state-only update must still clear approvals.
+pub(super) fn merged_tasks<'a>(messages:&'a [Value],snapshot:Option<&'a Value>,profile:&str,chat:Option<&str>)->Vec<&'a Value>{
+    let mut tasks:Vec<_>=messages.iter().collect();
+    for next in snapshot.into_iter().flat_map(|s|s["tasks"].as_array().into_iter().flatten()).filter(|t|t["profile"]==profile&&t["chat"].as_str()==chat){
+        if let Some(old)=tasks.iter_mut().find(|t|t["id"]==next["id"]){
+            if old["finished"].is_number()&&live(next){continue}
+            if old["state"]!=next["state"]||old["finished"]!=next["finished"]||live(next){*old=next;}
+        }else{tasks.push(next);}
+    }
+    tasks.sort_by_key(|t|t["created"].as_i64().unwrap_or(0));tasks
+}
 pub(super) fn block_key(task: &str, index: usize) -> usize {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -1468,5 +1480,27 @@ mod tests {
         std::os::unix::fs::symlink("/etc/hosts", project.join("escape")).unwrap();
         assert!(artifacts::scoped_file(&project, &project.join("escape"), 0).is_err());
         let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+#[cfg(test)] mod task_merge_tests {
+    use super::*;
+    use std::prelude::v1::test;
+    use serde_json::json;
+    #[test] fn state_only_stop_clears_waiting_on_every_surface(){
+        let old=vec![json!({"id":"a","profile":"p","chat":"c","state":"approval"})];
+        let snapshot=json!({"tasks":[{"id":"a","profile":"p","chat":"c","state":"stopped"}]});
+        assert!(!live(merged_tasks(&old,Some(&snapshot),"p",Some("c"))[0]));
+    }
+    #[test] fn delayed_live_snapshot_cannot_resurrect_completed_task(){
+        let old=vec![json!({"id":"a","profile":"p","chat":"c","state":"completed","finished":20,"brief":"full answer"})];
+        let snapshot=json!({"tasks":[{"id":"a","profile":"p","chat":"c","state":"running","brief":"partial"}]});
+        let tasks=merged_tasks(&old,Some(&snapshot),"p",Some("c"));
+        assert!(std::ptr::eq(tasks[0],&old[0]));assert!(!live(tasks[0]));
+    }
+    #[test] fn completed_summary_preserves_full_body_without_copying(){
+        let old=vec![json!({"id":"a","profile":"p","chat":"c","state":"completed","finished":20,"brief":"full answer"})];
+        let snapshot=json!({"tasks":[{"id":"a","profile":"p","chat":"c","state":"completed","finished":20,"brief":"clipped"}]});
+        assert!(std::ptr::eq(merged_tasks(&old,Some(&snapshot),"p",Some("c"))[0],&old[0]));
     }
 }

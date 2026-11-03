@@ -1509,8 +1509,8 @@ impl Orbit {
             self.activity.saved.seed_prompt(&session.id, at);
         }
         self.workspace_sessions.sort_by_key(|session| (
-            std::cmp::Reverse(self.activity.prompt_at(session)),
-            !self.lifecycle.pinned_chats.contains(&session.id), session.id.clone(),
+            !self.lifecycle.pinned_chats.contains(&session.id),
+            std::cmp::Reverse(self.activity.prompt_at(session)), session.id.clone(),
         ));
         self.sort_projects_by_prompt();
         self.rebuild_project_tree();

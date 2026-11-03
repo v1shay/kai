@@ -45,7 +45,7 @@ enum LocalPetLibrary {
         }.joined(separator:"\n")
     }
     static func merge(_ local:[Pet],into bundled:Catalog)->Catalog{
-        var pets=bundled.pets
+        var pets=bundled.pets.filter{$0.kind != "installed_custom"}
         for pet in local {
             if let index=pets.firstIndex(where:{$0.id == pet.id}){pets[index]=pet}else{pets.append(pet)}
         }

@@ -150,8 +150,8 @@ impl Orbit {
             let key = |ix: usize| {
                 let s = &self.sessions[ix];
                 (
-                    std::cmp::Reverse(self.activity.prompt_at(s)),
                     !self.lifecycle.pinned_chats.contains(&s.id),
+                    std::cmp::Reverse(self.activity.prompt_at(s)),
                     s.id.as_str(),
                 )
             };
@@ -666,9 +666,9 @@ impl Orbit {
                                     );
                                 })),
                         )
-                        .on_click(cx.listener(move |this, _, _, cx| {
+                        .on_click(cx.listener(move |this, _, window, cx| {
                             cx.stop_propagation();
-                            this.toggle_project_branch(path.clone(), cx);
+                            if this.sidebar_split {this.select_project(path.clone(),window,cx);}else{this.toggle_project_branch(path.clone(), cx);}
                         })),
                 )
                 .into_any_element()

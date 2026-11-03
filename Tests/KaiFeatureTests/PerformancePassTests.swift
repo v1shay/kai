@@ -119,6 +119,7 @@ final class PerformancePassTests:XCTestCase {
         let gallery=PetGallery()
         let motion=PetGalleryMotion(row:0,columns:[0,1],durationsMs:[100,200],loop:true)
         gallery.configure([PetGallerySpec(id:"pet",spritesheet:"missing.png",rows:1,motions:["idle":motion],colors:[])],at:URL(fileURLWithPath:"/tmp"))
+        gallery.layout(in:CGRect(x:0,y:0,width:400,height:300),selected:"pet")
         gallery.show(selected:"pet",motion:"idle")
         if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             XCTAssertTrue(gallery.layer.sublayers?.contains{$0.animation(forKey:"spriteFrames") != nil} == true)
