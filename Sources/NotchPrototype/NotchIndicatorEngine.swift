@@ -156,7 +156,7 @@ struct GradientStop: Codable { let location: Double, color: String }
 
     func showScene(_ id: String,looping:Bool=true) {
         cancelCycle()
-        if let image=ProviderIcons.image(id) ?? IntegrationIcons.image(id) {
+        if let image=(id == "codex" ? ProviderIcons.mark("codex-mask") : ProviderIcons.image(id)) ?? IntegrationIcons.image(id) {
             let old=CALayer()
             for primitive in primitives where !primitive.isHidden{
                 let source=primitive.presentation() ?? primitive,copy=CAShapeLayer();copy.bounds=source.bounds;copy.position=source.position;copy.path=source.path;copy.fillColor=source.fillColor;copy.strokeColor=source.strokeColor;copy.lineWidth=source.lineWidth;copy.opacity=source.opacity;copy.transform=source.transform;old.addSublayer(copy)

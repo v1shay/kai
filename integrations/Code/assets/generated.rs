@@ -78,6 +78,7 @@ pub fn asset(path: &str) -> Option<&'static [u8]> {
         "clock" => include_bytes!("clock.svg"),
         "close" => include_bytes!("close.svg"),
         "codex" => include_bytes!("codex.svg"),
+        "codex-mask" => include_bytes!("codex-mask.svg"),
         "copy" => include_bytes!("copy.svg"),
         "external" => include_bytes!("external.svg"),
         "file" => include_bytes!("file.svg"),

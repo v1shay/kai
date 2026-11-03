@@ -33,7 +33,7 @@ cp "$CARGO_TARGET_DIR/$configuration/orbit" "$product/Contents/MacOS/kai-unified
 cp "$root/.build/unified/"*.dylib "$resources/"
 cp -R "$root/Sources/NotchPrototype/Resources/"* "$resources/"
 mkdir -p "$resources/kai_pets" "$resources/providers"
-for provider in codex claude gemini opencode cursor grok antigravity ninja tailscale model-moon model-earth model-sun model-star; do cp "$root/integrations/Code/assets/$provider.svg" "$resources/providers/$provider.svg"; done
+for provider in codex codex-mask claude gemini opencode cursor grok antigravity ninja tailscale model-moon model-earth model-sun model-star; do cp "$root/integrations/Code/assets/$provider.svg" "$resources/providers/$provider.svg"; done
 for frame in 0 1 2 3; do cp "$root/integrations/Code/assets/ninja-walk-$frame.svg" "$resources/providers/"; done
 for style in fire lightning earth ice energy water; do cp "$root/integrations/Code/assets/ninja-$style.svg" "$root/integrations/Code/assets/ninja-$style.gif" "$resources/providers/"; done
 for mark in "$root"/integrations/Code/assets/{lab,engine,machine}-*.svg; do cp "$mark" "$resources/providers/"; done

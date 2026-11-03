@@ -173,7 +173,7 @@ fn icon(name: &'static str, size: f32, color: u32) -> Svg {
     } else {
         rgb(color)
     };
-    svg().path(name).size(px(size)).text_color(color)
+    svg().path(if matches!(name,"codex"|"assets/providers/codex.svg"|"assets/codex.svg"){"codex-mask"}else{name}).size(px(size)).text_color(color)
 }
 // Provider artwork keeps its own colors; ordinary UI symbols remain tintable.
 fn provider_icon(name:&'static str,size:f32,color:u32)->Div{
@@ -5862,10 +5862,7 @@ impl Render for Orbit {
                                     })
                                     .when(!unified::active() && live_activity, |s| {
                                         s.flex().items_center().justify_center().child(
-                                            svg()
-                                                .path(provider_asset(self.agent))
-                                                .size(px(16.))
-                                                .text_color(rgb(MUTED)),
+                                            provider_icon(provider_asset(self.agent),16.,MUTED),
                                         )
                                     }),
                             )

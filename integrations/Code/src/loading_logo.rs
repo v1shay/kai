@@ -155,7 +155,7 @@ impl Render for LoadingLogo {
             .child(
                 svg()
                     .debug_selector(|| "loading-provider-svg".into())
-                    .path(self.config.path)
+                    .path(if matches!(self.config.path,"codex"|"assets/providers/codex.svg"|"assets/codex.svg"){"codex-mask"}else{self.config.path})
                     .size_full()
                     .text_color(rgb(self.config.color))
                     .with_transformation(Transformation::rotate(radians(self.rotor.angle as f32))),
