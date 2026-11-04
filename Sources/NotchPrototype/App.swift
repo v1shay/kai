@@ -636,7 +636,7 @@ private final class NotchSurfaceHost:NSView {
         bridge.draftBaseProvider={ [weak self] in self?.unifiedDraftBase ?? "" }
         bridge.draftProvider={ [weak self] in self?.composerField?.stringValue ?? "" }
         bridge.onState={ [weak self] state in self?.receive(state) }
-        bridge.onError={ [weak self] error in guard let self else{return};self.pendingSlashID=nil;self.pendingSlashPicker=nil;self.slashPicker.hide();self.miniUI.dismissComposerPickers();if self.compactVoiceMode{self.failCompactVoice(error);return};self.chatVoice.stop();self.sounds.playScene("failure");self.earlierHistoryRequest=nil;self.historyControl.update(hasMore:false,loading:false);self.cancelShortcutInput();self.pendingAutoSend=false;self.sendingPrompt=nil;self.pendingFilesRequestID=nil;self.indicator.setFileLoading(false);self.finishExpandedChatLoading();if self.miniOpen{self.pinned=EmbeddedCodeRuntime.shared.active;self.compactWhileWorking=false;self.setOpen(EmbeddedCodeRuntime.shared.active,mini:EmbeddedCodeRuntime.shared.active)};self.miniUI.cancelPending();self.miniUI.setCodexMessage(error);self.syncMotion(force:true) }
+        bridge.onError={ [weak self] error in guard let self else{return};self.pendingSlashID=nil;self.pendingSlashPicker=nil;self.slashPicker.hide();self.miniUI.dismissComposerPickers();if self.compactVoiceMode{self.failCompactVoice(error);return};self.chatVoice.stop();self.sounds.playScene("failure");self.earlierHistoryRequest=nil;self.historyControl.update(hasMore:false,loading:false);self.cancelShortcutInput();self.pendingAutoSend=false;self.sendingPrompt=nil;self.sendingPromptRequestID=nil;self.pendingFilesRequestID=nil;self.indicator.setFileLoading(false);self.finishExpandedChatLoading();if self.miniOpen{self.pinned=EmbeddedCodeRuntime.shared.active;self.compactWhileWorking=false;self.setOpen(EmbeddedCodeRuntime.shared.active,mini:EmbeddedCodeRuntime.shared.active)};self.miniUI.cancelPending();self.miniUI.setCodexMessage(error);self.syncMotion(force:true) }
         speech.onModels={ [weak self] models in self?.updateVoiceMenu(models) }
         speech.onStatus={ [weak self] status in self?.featureStatusItem.title=status }
         media.onStatus={ [weak self] status in self?.featureStatusItem.title=status }
@@ -885,6 +885,7 @@ private final class NotchSurfaceHost:NSView {
         toggleMenuBarPanel()
     }
     func toggleMenuBarPanel(){
+        synchronizeComposerDraft()
         guard let button=status?.button else{return}
         cancelModifierShortcut()
         guard EmbeddedCodeRuntime.shared.active else{toggleFromMenu();return}
@@ -1530,6 +1531,7 @@ private final class NotchSurfaceHost:NSView {
         quickPrepared=(false,source,.hidden)
     }
     func prepareQuickOpening(){
+        synchronizeComposerDraft()
         cancelModifierShortcut()
         guard quickPrepared == nil,!(quickChatVisible && quickWindow?.isVisible == true),let panel else{return}
         let fromWorkspace=workspaceMorph.expanded && workspaceIsForeground && EmbeddedCodeRuntime.shared.workspaceWindow?.isVisible == true
@@ -1734,6 +1736,7 @@ private final class NotchSurfaceHost:NSView {
             }
         }else{composerField?.stringValue=text}
         miniUI.setComposerHasText(!text.isEmpty);syncMotion(force:!text.isEmpty)
+        if dictation{synchronizeComposerDraft()}
     }
     private func updateSlashPicker(){
         guard miniOpen,let field=composerField,let editor=field.currentEditor() as? NSTextView,!editor.hasMarkedText() else{slashPicker.hide();return}
@@ -1746,7 +1749,11 @@ private final class NotchSurfaceHost:NSView {
         pendingSlashPicker=["agent","model"].contains(name) ? name:nil
         slashPicker.hide();bridge.send("composer_command",["name":name,"draft":field.stringValue,"caret":editor.selectedRange().location,"requestId":id,"pickerSurface":"notch"])
     }
-    func controlTextDidChange(_ obj:Notification){dictationTextReveal.finish();miniUI.setComposerHasText(!(composerField?.stringValue.isEmpty ?? true));updateSlashPicker();syncMotion(force:true)}
+    private func synchronizeComposerDraft(){
+        guard EmbeddedCodeRuntime.shared.active,latestState != nil,sendingPrompt == nil,let field=composerField else{return}
+        bridge.send("draft",["text":field.stringValue])
+    }
+    func controlTextDidChange(_ obj:Notification){dictationTextReveal.finish();miniUI.setComposerHasText(!(composerField?.stringValue.isEmpty ?? true));synchronizeComposerDraft();updateSlashPicker();syncMotion(force:true)}
     func control(_ control:NSControl,textView:NSTextView,doCommandBy selector:Selector)->Bool{
         if slashPicker.active {
             switch selector {
@@ -1886,8 +1893,9 @@ private final class NotchSurfaceHost:NSView {
         menuBarIdentity.synchronize(state)
         if let interface=state.interfaceFont,let code=state.codeFont{applyTypography(interface:interface,code:code)}
         let pickerToOpen=pendingSlashPicker
-        let slashAccepted=pendingSlashID != nil && state.completedRequestId == pendingSlashID && state.completedRequestError == nil && composerField?.stringValue == pendingSlashDraft
-        if (pendingSlashID != nil && state.completedRequestId == pendingSlashID) || latestState?.ownerToken != state.ownerToken{pendingSlashID=nil;pendingSlashDraft=nil;pendingSlashPicker=nil;slashPicker.hide()}
+        let slashResult=pendingSlashID.flatMap(state.requestResult)
+        let slashAccepted=slashResult?.error == nil && slashResult != nil && composerField?.stringValue == pendingSlashDraft
+        if slashResult != nil || latestState?.ownerToken != state.ownerToken{pendingSlashID=nil;pendingSlashDraft=nil;pendingSlashPicker=nil;slashPicker.hide()}
         defer{refreshMedia()}
         nativeReview.update(state)
         if EmbeddedCodeRuntime.shared.active {
@@ -1905,9 +1913,12 @@ private final class NotchSurfaceHost:NSView {
         }
         if EmbeddedCodeRuntime.shared.active,let draft=state.composerDraft {
             let local=composerField?.stringValue ?? ""
-            let changed=latestState?.threadId != state.threadId || latestState?.project != state.project
-            let accepted=slashAccepted || (state.completedRequestId == sendingPromptRequestID && sendingPromptRequestID != nil && state.completedRequestError == nil)
-            if UnifiedDraftHandoff.shouldAdopt(local:local,base:unifiedDraftBase,remote:draft,selectionChanged:changed,sendAccepted:accepted) {
+            let changed=latestState?.ownerToken != state.ownerToken
+            if let base=bridge.acceptedDraftBase{unifiedDraftBase=base}
+            let accepted=slashAccepted || sendingPromptRequestID.flatMap(state.requestResult).map{$0.error == nil} == true
+            let editedAfterSend=accepted && sendingPrompt != nil && local.trimmingCharacters(in:.whitespacesAndNewlines) != sendingPrompt
+            if editedAfterSend{unifiedDraftBase=draft}
+            else if UnifiedDraftHandoff.shouldAdopt(local:local,base:unifiedDraftBase,remote:draft,selectionChanged:changed,sendAccepted:accepted) {
                 unifiedDraftBase=draft
                 if !dictating && !finalizingDictation && !shortcutPreparation.busy{setPrompt(draft)}
             }
@@ -1951,7 +1962,17 @@ private final class NotchSurfaceHost:NSView {
         let floatingTransition=wasFloating || floatingTasks.tracking
         let completed=previous?.threadId == state.threadId && state.threadId != nil && (previous?.activeTurnId != nil || previous?.viewedActivity.scene == "thinking") && state.activeTurnId == nil && state.viewedActivity.scene == "off"
         if sendingPrompt != nil {
-            if (state.completedRequestId == sendingPromptRequestID && state.completedRequestError == nil) || (state.threadId?.hasPrefix("code:") == true ? state.codeAcceptedRequestId != nil && state.codeAcceptedRequestId == sendingPromptRequestID : state.notice == "Turn started" || state.notice == "Sent to voice" || state.notice.hasPrefix("Steered active turn")) {setPrompt("");if EmbeddedCodeRuntime.shared.active{miniUI.synchronizeImages([]);queuedImageCount=0}else{miniUI.clearImages()};sendingPrompt=nil;sendingPromptRequestID=nil}
+            if EmbeddedCodeRuntime.shared.active {
+                if let reply=sendingPromptRequestID.flatMap(state.requestResult){
+                    sendingPrompt=nil;sendingPromptRequestID=nil
+                    if let error=reply.error{miniUI.setCodexMessage(error);if compactOnSend && compactWhileWorking{compactWhileWorking=false;compactThreadID=nil;setOpen(true,mini:true)}}
+                    else{synchronizeComposerDraft()}
+                } else if previous?.ownerToken != state.ownerToken {
+                    // Changing chats retires only this view's pending control;
+                    // the old owner continues executing its submitted command.
+                    sendingPrompt=nil;sendingPromptRequestID=nil
+                }
+            } else if (state.threadId?.hasPrefix("code:") == true ? state.codeAcceptedRequestId != nil && state.codeAcceptedRequestId == sendingPromptRequestID : state.notice == "Turn started" || state.notice == "Sent to voice" || state.notice.hasPrefix("Steered active turn")) {setPrompt("");miniUI.clearImages();sendingPrompt=nil;sendingPromptRequestID=nil}
             else if state.notice != previousNotice {sendingPrompt=nil;sendingPromptRequestID=nil;if compactOnSend && compactWhileWorking{compactWhileWorking=false;compactThreadID=nil;setOpen(true,mini:true)}}
         }
         if state.threadId?.hasPrefix("code:") == true,state.notice.hasPrefix("Prompt staged in Code"),state.notice != previousNotice{compactWhileWorking=false;compactThreadID=nil;pinned=true;setOpen(true,mini:true)}

@@ -1163,6 +1163,32 @@ mod tests {
         json!({"action":action,"ownerToken":app.unified_token(),"draftBase":app.composer.read(cx).text(),"targetThreadId":app.active.as_ref().map(|id|format!("code:{id}")),"requestId":uuid::Uuid::new_v4().to_string()})
     }
     #[gpui::test]
+    fn surface_handoffs_preserve_owner_run_draft_and_followup_queue(cx:&mut TestAppContext){
+        let(view,cx)=crate::ui_tests::fixture(cx);
+        view.update_in(cx,|app,_,cx|{
+            app.active=Some("continuity".into());app.loading=false;
+            app.runs.insert("continuity".into(),crate::ui_tests::idle_run("Working".into()));
+            app.composer.update(cx,|i,cx|i.set_text("draft before switching",cx));
+        });
+        let before=view.read_with(cx,|app,cx|app.unified_snapshot(cx));
+        cx.update(|_,cx|cx.set_global(quick_chat::Controller::new(view.clone())));
+        for _ in 0..3{
+            cx.update(|_,cx|cx.update_global::<quick_chat::Controller,_>(|c,cx|{c.toggle(cx).unwrap();c.toggle_menu(cx).unwrap();c.dismiss(cx);}));
+            cx.run_until_parked();
+            view.update_in(cx,|app,window,cx|{
+                let after=app.unified_snapshot(cx);
+                for field in ["ownerToken","threadId","activeTurnId","composerDraft","selectedAgent","selectedModel"]{assert_eq!(before[field],after[field],"Handoff changed {field}");}
+                assert!(!app.runs["continuity"].handle.is_cancelled());
+                let mut command=request(app,"draft",cx);command["text"]=json!("draft before switching");app.unified_command(&command,window,cx).unwrap();
+            });
+        }
+        view.update_in(cx,|app,window,cx|{
+            let mut command=request(app,"send",cx);command["text"]=json!("followup from the notch");app.unified_command(&command,window,cx).unwrap();
+            assert_eq!(app.prompt_queue.last().unwrap().text,"followup from the notch");
+            assert!(!app.runs["continuity"].handle.is_cancelled());
+        });
+    }
+    #[gpui::test]
     fn unified_send_during_run_queues_the_captured_draft_without_cancelling(cx: &mut TestAppContext) {
         let (view, cx) = crate::ui_tests::fixture(cx);
         view.update_in(cx, |app, window, cx| {

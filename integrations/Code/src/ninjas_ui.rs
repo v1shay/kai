@@ -39,7 +39,7 @@ pub(super) struct Panel {
     pub chat: Option<String>,
     pub memory_revision: u64,
     pub schedule: usize,
-    reference_pending:usize,
+    pub(super) reference_pending:usize,
     reference_submit:bool,
     pub settings: bool,
     delete_confirm:bool,
@@ -991,6 +991,9 @@ impl Orbit {
         .detach();
     }
     pub(super) fn ninja_operation(&mut self, request: Value, cx: &mut Context<Self>) {
+        self.ninja_operation_reply(request,None,cx);
+    }
+    fn ninja_operation_reply(&mut self, request: Value, issued:Option<Value>, cx: &mut Context<Self>) {
         let Some(panel) = &mut self.ninjas.panel else {
             return;
         };
@@ -1009,20 +1012,28 @@ impl Orbit {
         let token = panel.token;
         let response_host = host.clone();
         let memory_base = panel.fields[4].read(cx).text();
-        let submitted_prompt = request["prompt"].as_str().map(str::to_owned);
+        let submitted_prompt = (request["action"] == "submit").then(||panel.fields[3].read(cx).text());
+        let submitted_chat=panel.chat.clone();
+        let draft_key=format!("{}:{}:{}",panel.host,panel.profile.id,panel.chat.as_deref().unwrap_or("draft"));
         let captured_agent = panel.profile.agent;
         let captured_model = panel.profile.ninja.as_ref().map(|n| n.model.clone());
         let saved_profile=request.get("profile").cloned();
         let action = request["action"].as_str().unwrap_or("").to_owned();
         let model_owner=(action=="models").then(uuid::Uuid::new_v4);
         if let Some(owner)=model_owner{panel.models_loading=Some(owner);}else{panel.busy=true;}
+        if let Some(issued)=&issued{self.defer_unified_request(issued);}
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move { call(&host, &request) })
                 .await;
             let _ = this.update(cx, |app, cx| {
+                let reply_error=result.as_ref().err().map(ToString::to_string);
+                if result.is_ok() && submitted_prompt.as_ref().is_some_and(|text|app.ninjas.drafts.get(&draft_key)==Some(text)){
+                    app.ninjas.drafts.remove(&draft_key);app.ninjas.save();
+                }
                 let Some(panel) = app.ninjas.panel.as_mut().filter(|p| p.token == token) else {
+                    if let Some(issued)=&issued{app.complete_unified_request(issued,reply_error,cx);}
                     return;
                 };
                 if let Some(owner)=model_owner{if panel.models_loading!=Some(owner){return}panel.models_loading=None;}else{panel.busy=false;}
@@ -1069,6 +1080,9 @@ impl Orbit {
                                     });
                                 }
                             }
+                            // Still settle the request and save pending settings
+                            // below, but never navigate back after the user left.
+                            "submit" if panel.chat!=submitted_chat => {},
                             "submit" => {
                                 if let Some(revision) = value["profile"]["revision"].as_u64() {
                                     panel.profile.revision = revision;
@@ -1106,6 +1120,7 @@ impl Orbit {
                         panel.controls_dirty=false;
                     }
                 }
+                if let Some(issued)=&issued{app.complete_unified_request(issued,reply_error,cx);}
                 if app.ninjas.panel.as_ref().is_some_and(|p|p.controls_dirty&&!p.busy) { app.ninja_persist_controls(cx); }
                 if matches!(action.as_str(), "task" | "submit") {
                     app.ninja_conversation(cx);
@@ -1160,6 +1175,9 @@ impl Orbit {
         self.ninja_operation(json!({"action":"save_profile","profile":p}), cx);
     }
     pub(super) fn ninja_submit_task(&mut self, cx: &mut Context<Self>) {
+        self.ninja_submit_task_reply(None,cx);
+    }
+    pub(super) fn ninja_submit_task_reply(&mut self,issued:Option<Value>,cx:&mut Context<Self>){
         if let Some(p)=self.ninjas.panel.as_mut(){if p.reference_pending>0{p.reference_submit=true;cx.notify();return;}}
         if self
             .ninjas
@@ -1197,7 +1215,7 @@ impl Orbit {
         profile.persona = p.fields[1].read(cx).text();
         profile.project = PathBuf::from(p.fields[2].read(cx).text());
         let request = json!({"action":"submit","id":profile.id,"profile":profile,"prompt":prompt,"chat":p.chat,"due":due,"repeat":repeat});
-        self.ninja_operation(request, cx);
+        self.ninja_operation_reply(request,issued,cx);
     }
     pub(super) fn ninja_chat_rows(&self)->Vec<Value>{
         let Some(p)=self.ninjas.panel.as_ref().filter(|p|p.profile.revision>0)else{return vec![]};self.ninja_chat_rows_for(&p.host,&p.profile.id)
@@ -2151,6 +2169,39 @@ impl Orbit {
 mod tests {
     use super::*;
     use std::prelude::v1::test;
+    #[gpui::test]
+    fn late_submit_reply_cannot_navigate_or_erase_another_ninja_chat(cx:&mut TestAppContext){
+        use std::io::{BufRead,Read,Write};
+        let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint=format!("http://{}",listener.local_addr().unwrap());
+        let server=std::thread::spawn(move||{
+            let(mut stream,_)=listener.accept().unwrap();stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut reader=std::io::BufReader::new(stream.try_clone().unwrap());let mut length=0;
+            loop{let mut line=String::new();reader.read_line(&mut line).unwrap();if line=="\r\n"{break}if let Some((key,value))=line.split_once(':'){if key.eq_ignore_ascii_case("content-length"){length=value.trim().parse::<usize>().unwrap();}}}
+            let mut body=vec![0;length];reader.read_exact(&mut body).unwrap();let body:Value=serde_json::from_slice(&body).unwrap();assert_eq!(body["action"],"submit");
+            let result=json!({"id":"task","chat":"old-chat","state":"queued","prompt":body["prompt"]}).to_string();
+            write!(stream,"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",result.len(),result).unwrap();
+        });
+        let(view,cx)=crate::ui_tests::fixture(cx);
+        cx.update(|w,cx|view.update(cx,|app,cx|{
+            app.open_ninjas(Some("fixture".into()),None,w,cx);
+            app.ninjas.hosts.push(Host{id:"fixture".into(),name:"Fixture".into(),endpoint:Some(endpoint)});
+            let p=app.ninjas.panel.as_mut().unwrap();p.profile.revision=1;p.chat=Some("old-chat".into());p.fields[3].update(cx,|i,cx|i.set_text("submitted draft",cx));
+            app.remember_ninja_draft(cx);app.ninja_submit_task(cx);
+            let p=app.ninjas.panel.as_mut().unwrap();p.chat=Some("new-chat".into());p.fields[3].update(cx,|i,cx|i.set_text("new unsent draft",cx));
+        }));
+        let deadline=Instant::now()+Duration::from_secs(8);
+        loop{cx.run_until_parked();if !view.read_with(cx,|app,_|app.ninjas.panel.as_ref().unwrap().busy){break}assert!(Instant::now()<deadline,"Host response did not settle");std::thread::sleep(Duration::from_millis(10));}
+        view.read_with(cx,|app,cx|{let p=app.ninjas.panel.as_ref().unwrap();assert_eq!(p.chat.as_deref(),Some("new-chat"));assert_eq!(p.fields[3].read(cx).text(),"new unsent draft");assert!(!app.ninjas.drafts.values().any(|v|v=="submitted draft"));});
+        server.join().unwrap();
+    }
+    #[gpui::test]
+    fn failed_ninja_submit_preserves_the_original_draft(cx:&mut TestAppContext){
+        let(view,cx)=crate::ui_tests::fixture(cx);
+        cx.update(|w,cx|view.update(cx,|app,cx|{app.open_ninjas(Some("local".into()),None,w,cx);let p=app.ninjas.panel.as_mut().unwrap();p.profile.revision=1;p.profile.orchestrator=true;p.fields[3].update(cx,|i,cx|i.set_text("keep this on failure",cx));app.ninja_submit_task(cx);}));
+        cx.run_until_parked();
+        view.read_with(cx,|app,cx|{let p=app.ninjas.panel.as_ref().unwrap();assert!(!p.busy);assert!(p.error.is_some());assert_eq!(p.fields[3].read(cx).text(),"keep this on failure");});
+    }
     #[gpui::test]
     fn long_ninja_titles_keep_corner_controls_inside_narrow_chat(cx: &mut TestAppContext) {
         let (view, cx) = crate::ui_tests::fixture(cx);

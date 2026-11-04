@@ -69,10 +69,14 @@ impl Orbit {
                         .map(|a| a.kind)
                         .find(|a| a.command() == v["id"].as_str().unwrap_or(""))
                         .ok_or("Unknown provider")?;
+                    let already_selected=self.agent==agent && self.ninja_surface_owner().is_none();
                     self.remember_ninja_draft(cx);
                     self.ninjas.desktop = None;
                     self.ninjas.panel = None;
-                    if let Some(s) = self
+                    if already_selected {
+                        // A pinned provider is another surface of its selected
+                        // chat, not a request to jump to its newest background run.
+                    } else if let Some(s) = self
                         .sessions
                         .iter()
                         .filter(|s| s.agent == agent && !self.hidden_sessions.contains(&s.id))
@@ -195,10 +199,15 @@ impl Orbit {
                 if v["draftBase"].as_str() != Some(p.fields[3].read(cx).text().as_str()) {
                     return Err("The Ninja draft changed on another surface".into());
                 }
+                if action == "send" {
+                    if p.busy || p.reference_pending>0{return Err("The Ninja is saving changes or uploading references; your draft is preserved. Try again when it finishes.".into())}
+                    if text.trim().is_empty(){return Err("Enter a message".into())}
+                    if !self.ninjas.hosts.iter().any(|h|h.id==p.host){return Err("The Ninja host is unavailable".into())}
+                }
                 p.fields[3].update(cx, |i, cx| i.set_text(text, cx));
                 self.remember_ninja_draft(cx);
                 if action == "send" {
-                    self.ninja_submit_task(cx);
+                    self.ninja_submit_task_reply(Some(v.clone()),cx);
                 }
             }
             "new" | "new_project" => {
@@ -456,6 +465,16 @@ mod tests {
         cx.update(|_,cx|{cx.update_global::<quick_chat::Controller,_>(|c,cx|c.dismiss(cx));});
     }
     #[gpui::test]
+    fn pinned_provider_preserves_its_current_chat_and_unsent_draft(cx:&mut TestAppContext){
+        let(view,cx)=crate::ui_tests::fixture(cx);
+        cx.update(|w,cx|view.update(cx,|app,cx|{
+            app.agent=AgentKind::Codex;app.active=Some("current-chat".into());
+            app.composer.update(cx,|i,cx|i.set_text("keep this draft",cx));
+            app.unified_command(&json!({"action":"menu_bar_open","kind":"provider","id":"codex"}),w,cx).unwrap();
+            assert_eq!(app.active.as_deref(),Some("current-chat"));assert_eq!(app.composer.read(cx).text(),"keep this draft");
+        }));
+    }
+    #[gpui::test]
     fn notch_owns_the_selected_ninja_history_and_draft(cx: &mut TestAppContext) {
         let (view, cx) = crate::ui_tests::fixture(cx);
         cx.update(|w,cx|view.update(cx,|app,cx|{
@@ -470,6 +489,7 @@ mod tests {
             // The global Send action in mini Code must never submit the hidden
             // Code draft while its visible Ninja is busy.
             app.ninjas.panel.as_mut().unwrap().busy=true;app.send(w,cx);
+            assert!(app.unified_command(&json!({"action":"send","ownerToken":owner,"draftBase":"Ninja-only draft","text":"do not falsely accept this"}),w,cx).is_err());
             assert_eq!(app.composer.read(cx).text(),"Untouched Code draft");assert_eq!(app.ninjas.panel.as_ref().unwrap().fields[3].read(cx).text(),"Ninja-only draft");app.ninjas.panel.as_mut().unwrap().busy=false;
             app.unified_command(&json!({"action":"new","ownerToken":owner}),w,cx).unwrap();assert!(app.ninjas.panel.as_ref().unwrap().messages.is_empty());assert!(app.ninjas.panel.as_ref().unwrap().chat.is_none());assert_eq!(app.composer.read(cx).text(),"Untouched Code draft");assert!(app.ninjas.drafts.values().any(|s|s=="Ninja-only draft"));
         }));

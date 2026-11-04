@@ -315,7 +315,6 @@ impl QuickChat {
         // A delayed/repeated dismissal must not write this retired editor's
         // draft over the composer now being used in Code or the notch.
         if !self.visible{return}
-        self.sync_to_main(cx);
         self.visible = false;
         // One-shot dictation belongs to this editor. Conversational voice
         // belongs to the shared chat and continues through surface dismissal.

@@ -206,6 +206,8 @@ enum KaiBridgeEvent {
     var draftBaseProvider:(()->String)?
     var draftProvider:(()->String)?
     private var ownerToken:String?
+    private var draftWrites=UnifiedDraftWrites()
+    private(set) var acceptedDraftBase:String?
     private var embeddedModelIDs=Set<String>()
     private var selectedRunID:String?
     private var selectedThreadID:String?
@@ -218,7 +220,12 @@ enum KaiBridgeEvent {
 
     func start() {
         if EmbeddedCodeRuntime.shared.active {
-            EmbeddedCodeRuntime.shared.onState={ [weak self] state in self?.selectedThreadID=state.threadId;self?.selectedRunID=state.activeTurnId;self?.ownerToken=state.ownerToken;self?.embeddedModelIDs=Set((state.models ?? []).map(\.model));self?.onState?(state) }
+            EmbeddedCodeRuntime.shared.onState={ [weak self] state in
+                guard let self else{return}
+                self.acceptedDraftBase=self.draftWrites.receive(owner:state.ownerToken,result:state.requestResult)
+                self.selectedThreadID=state.threadId;self.selectedRunID=state.activeTurnId;self.ownerToken=state.ownerToken
+                self.embeddedModelIDs=Set((state.models ?? []).map(\.model));self.onState?(state)
+            }
             EmbeddedCodeRuntime.shared.onError={ [weak self] in self?.onError?($0) }
             return
         }
@@ -326,7 +333,11 @@ enum KaiBridgeEvent {
             for (key,value) in DefaultModelPreferences(defaults:.standard).fields(action:action,availableModels:embeddedModelIDs){request[key]=value}
             if (request["requestId"] as? String ?? "").isEmpty{request["requestId"]=UUID().uuidString}
             request["ownerToken"]=ownerToken
-            request["draftBase"]=draftBaseProvider?()
+            request["draftBase"]=draftWrites.pendingText ?? draftBaseProvider?()
+            if action == "draft",let text=request["text"] as? String{
+                if text == (request["draftBase"] as? String){return}
+                draftWrites.enqueue(id:request["requestId"] as! String,text:text)
+            }
             if action == "interrupt"{request["runId"]=selectedRunID}
             if ["chat","project","new","new_project","workspace_expand","navigate","ui_command"].contains(action){request["draft"]=draftProvider?() ?? ""}
             if request["targetThreadId"] == nil{request["targetThreadId"]=selectedThreadID}

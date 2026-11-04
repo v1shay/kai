@@ -24,6 +24,9 @@ def main():
     report.mkdir(parents=True)
     env = os.environ.copy()
     env.setdefault('CARGO_BUILD_JOBS', '2')
+    # UI fixtures also create database and runtime worker threads. Bound test
+    # concurrency so their I/O deadlines don't measure hundreds of other fixtures.
+    env.setdefault('RUST_TEST_THREADS', '2')
     env.setdefault('CARGO_TARGET_DIR', str(root / '.build/unified-test-cargo'))
     records = []
 
@@ -40,6 +43,7 @@ def main():
 
     run('rust', ['cargo', 'test', '--offline', '--manifest-path', 'integrations/Code/Cargo.toml', '--bin', 'orbit'])
     run('swift', ['swift', 'test'])
+    run('native-continuity', ['scripts/test-unified-native.sh', 'continuity'])
     for name in ['ninjas-worker', 'ninja', 'ninja-installer']:
         run(name, [sys.executable, 'scripts/test-' + name + '.py'])
     bundle = args.bundle.resolve() if args.bundle else root / '.build/unified/Kai Unified.app'

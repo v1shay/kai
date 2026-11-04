@@ -8,6 +8,25 @@ enum UnifiedDraftHandoff {
     }
 }
 
+/// Writes are ordered on the owner command queue. A fast typist can enqueue
+/// several edits before the first snapshot returns; each edit compares against
+/// the preceding edit, not the last frame the notch happened to display.
+struct UnifiedDraftWrites {
+    private var owner:String?
+    private var pending:[(id:String,text:String)]=[]
+    var pendingText:String?{pending.last?.text}
+    mutating func enqueue(id:String,text:String){pending.append((id,text))}
+    mutating func receive(owner:String?,result:(String)->KaiRequestResult?)->String?{
+        guard self.owner == owner else{self.owner=owner;pending=[];return nil}
+        var accepted:String?
+        while let first=pending.first,let reply=result(first.id){
+            pending.removeFirst()
+            if reply.error == nil{accepted=first.text}
+        }
+        return accepted
+    }
+}
+
 /// C ABI boundary for Code's GPUI owner. Both sides run on the AppKit thread.
 /// No socket, helper process, transcript scan, or independent agent connection.
 @MainActor final class EmbeddedCodeRuntime {
