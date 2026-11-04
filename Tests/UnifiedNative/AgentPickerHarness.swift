@@ -3,14 +3,15 @@ private func field(_ object:Any,_ key:String)->Any?{Mirror(reflecting:object).ch
 @main struct AgentPickerAudit {
  @MainActor static func main()throws{
   _=NSApplication.shared
-  let picker=NativeAgentPicker();var actions=[String]()
-  picker.onAgent={actions.append("agent:"+$0)};picker.onModel={actions.append("model:"+$0)};picker.onEffort={actions.append("effort:"+$0+":"+$1)}
-  func packet(agent:String="codex",horizontal:Bool=true,owner:String="owner",thread:String="code:picker",failed:Bool=false,dense:Bool=false)->KaiState{
+  let picker=NativeAgentPicker();var actions=[String]();var providerRequest=""
+  picker.onAgent={id,request in providerRequest=request;actions.append("agent:"+id)};picker.onModel={actions.append("model:"+$0)};picker.onEffort={actions.append("effort:"+$0+":"+$1)}
+  func packet(agent:String="codex",horizontal:Bool=true,owner:String="owner",thread:String="code:picker",failed:Bool=false,ownFailure:Bool=false,dense:Bool=false)->KaiState{
    var models=["gpt-6-luna","gpt-6.1-sol","gpt-6-astra"].map{["model":$0,"displayName":$0,"supportedReasoningEfforts":[["reasoningEffort":"low"],["reasoningEffort":"high"]]] as [String:Any]}
    if dense{for i in models.indices{models[i]["supportedReasoningEfforts"]=["none","minimal","low","medium","high","xhigh","max","ultra"].map{["reasoningEffort":$0]}};models += (0..<64).map{["model":"model-\($0)","displayName":"Model \($0)","supportedReasoningEfforts":[]] as [String:Any]}}
    var body:[String:Any]=["project":"/private/tmp","projects":[],"chats":[],"standaloneChats":[],"standalone":true,"threadId":thread,"threadName":"Picker audit","history":[],"attachments":[],"readOnly":false,"approval":false,"activity":["scene":"off","text":"Ready"],"activeTasks":[],"notice":"Ready","selectedAgent":agent,"effectiveModel":"gpt-6-luna","selectedModel":"gpt-6-luna","effectiveReasoningEffort":"low","models":models,"ownerToken":owner,"horizontalAgentPicker":horizontal,"agents":[["id":"codex","name":"Codex","available":true],["id":"gemini","name":"Gemini","available":true]]]
    if dense{body["agents"]=["codex","claude","gemini","opencode","cursor","grok","antigravity"].map{["id":$0,"name":$0,"available":true] as [String:Any]}}
-   if failed{body["completedRequestId"]="failed-provider";body["completedRequestError"]="Rejected"}
+   if failed{body["completedRequestId"]="unrelated-provider";body["completedRequestError"]="Rejected"}
+   if ownFailure{body["completedRequests"]=[["id":providerRequest,"error":"Provider unavailable"]]}
    return try! JSONDecoder().decode(KaiState.self,from:JSONSerialization.data(withJSONObject:body))
   }
   let anchor=CGPoint(x:400,y:600)
@@ -40,7 +41,7 @@ private func field(_ object:Any,_ key:String)->Any?{Mirror(reflecting:object).ch
   picker.show(scope:.models,state:packet(),at:anchor);picker.show(scope:.models,state:packet(),at:anchor)
   precondition(!picker.visible,"Second click did not toggle the picker closed")
   picker.show(scope:.models,state:packet(),at:anchor);picker.handleKey(53);precondition(!picker.visible,"Escape did not close picker")
-  picker.show(scope:.all,state:packet(),at:anchor);picker.handleKey(123);picker.handleKey(125);picker.handleKey(124);picker.update(packet(failed:true));precondition(!picker.visible,"Rejected provider selection left models permanently disabled")
+  picker.show(scope:.all,state:packet(),at:anchor);picker.handleKey(123);picker.handleKey(125);picker.handleKey(124);picker.update(packet(failed:true));precondition(picker.visible,"An unrelated failed command closed the pending provider picker");picker.update(packet(failed:true,ownFailure:true));precondition(!picker.visible,"Rejected provider selection left models permanently disabled")
   picker.show(scope:.all,state:packet(horizontal:false,dense:true),at:anchor)
   let denseColumns=field(picker,"columns") as! [NSView];precondition(denseColumns.allSatisfy{$0.frame.minY>=0},"Long provider/model/intensity lists clip the vertical picker")
   picker.dismiss()

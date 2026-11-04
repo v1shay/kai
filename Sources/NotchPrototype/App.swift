@@ -294,6 +294,7 @@ private final class NotchSurfaceHost:NSView {
     private var conversationScroll:NSScrollView!,conversationText:NSTextView!,latestState:KaiState?,currentScene="",sendingPrompt:String?,attachmentFiles=[URL](),queuedImageCount=0
     private let imageEncodingQueue:OperationQueue = {let queue=OperationQueue();queue.name="kai.attachment-encoding";queue.maxConcurrentOperationCount=1;queue.qualityOfService = .userInitiated;return queue}()
     private var imageEncodingWork:BlockOperation?,attachmentGeneration=UUID(),attachmentEncoding=false,pendingAttachmentSend=false
+    private var attachmentRequest:(id:String,count:Int)?
     private let fileViewer=FileViewerContent(),fileActions=FileActionsMenu()
     private var motionItems = [String: NSMenuItem](), indicatorItems = [String: NSMenuItem](), accentItems = [String: NSMenuItem]()
     private var localMonitor: Any?, globalMonitor: Any?, dragMonitor:Any?, showItem: NSMenuItem!
@@ -619,7 +620,7 @@ private final class NotchSurfaceHost:NSView {
         miniUI.onReview={ [weak self] in guard let self,let state=self.latestState,let request=CompactApprovalRequest(state:state) else{return};self.presentCompactApproval(request);self.approvalUI.setReviewExpanded(true,pinned:true) }
         miniUI.onInterrupt={ [weak self] in guard let self else{return};self.chatVoice.stopSpeaking();self.speech.cancelAudio();self.bridge.send("interrupt",["requestId":self.miniUI.pendingRequestID ?? ""]) }
         miniUI.onNinja={ [weak self] field,value in self?.bridge.send("ninja_select",["field":field,"value":value]) }
-        miniUI.onAgent={ [weak self] in self?.bridge.send("agent",["agent":$0]) }
+        miniUI.onAgent={ [weak self] agent,request in self?.bridge.send("agent",["agent":agent,"requestId":request]) }
         miniUI.onClose={ [weak self] in self?.dismissNotchView() }
         miniUI.onFilesVisibleChanged={ [weak self] visible in self?.indicator.setFileOpen(visible) }
         miniUI.onImagesChanged={ [weak self] images in self?.queueImages(images) }
@@ -636,7 +637,7 @@ private final class NotchSurfaceHost:NSView {
         bridge.draftBaseProvider={ [weak self] in self?.unifiedDraftBase ?? "" }
         bridge.draftProvider={ [weak self] in self?.composerField?.stringValue ?? "" }
         bridge.onState={ [weak self] state in self?.receive(state) }
-        bridge.onError={ [weak self] error in guard let self else{return};self.pendingSlashID=nil;self.pendingSlashPicker=nil;self.slashPicker.hide();self.miniUI.dismissComposerPickers();if self.compactVoiceMode{self.failCompactVoice(error);return};self.chatVoice.stop();self.sounds.playScene("failure");self.earlierHistoryRequest=nil;self.historyControl.update(hasMore:false,loading:false);self.cancelShortcutInput();self.pendingAutoSend=false;self.sendingPrompt=nil;self.sendingPromptRequestID=nil;self.pendingFilesRequestID=nil;self.indicator.setFileLoading(false);self.finishExpandedChatLoading();if self.miniOpen{self.pinned=EmbeddedCodeRuntime.shared.active;self.compactWhileWorking=false;self.setOpen(EmbeddedCodeRuntime.shared.active,mini:EmbeddedCodeRuntime.shared.active)};self.miniUI.cancelPending();self.miniUI.setCodexMessage(error);self.syncMotion(force:true) }
+        bridge.onError={ [weak self] error in guard let self else{return};self.pendingSlashID=nil;self.pendingSlashPicker=nil;self.slashPicker.hide();self.miniUI.dismissComposerPickers();if self.compactVoiceMode{self.failCompactVoice(error);return};self.chatVoice.stop();self.sounds.playScene("failure");self.earlierHistoryRequest=nil;self.historyControl.update(hasMore:false,loading:false);self.cancelShortcutInput();self.pendingAutoSend=false;self.pendingAttachmentSend=false;self.attachmentRequest=nil;self.sendingPrompt=nil;self.sendingPromptRequestID=nil;self.pendingFilesRequestID=nil;self.indicator.setFileLoading(false);self.finishExpandedChatLoading();if self.miniOpen{self.pinned=EmbeddedCodeRuntime.shared.active;self.compactWhileWorking=false;self.setOpen(EmbeddedCodeRuntime.shared.active,mini:EmbeddedCodeRuntime.shared.active)};self.miniUI.cancelPending();self.miniUI.setCodexMessage(error);self.syncMotion(force:true) }
         speech.onModels={ [weak self] models in self?.updateVoiceMenu(models) }
         speech.onStatus={ [weak self] status in self?.featureStatusItem.title=status }
         media.onStatus={ [weak self] status in self?.featureStatusItem.title=status }
@@ -1767,7 +1768,7 @@ private final class NotchSurfaceHost:NSView {
         if selector == #selector(NSResponder.insertNewline(_:)){sendPrompt();return true};return false
     }
 
-    private func sendPrompt(){if attachmentEncoding{pendingAttachmentSend=true;miniUI.setCodexMessage("Preparing images…");return};guard pendingSlashID == nil,expandedChatRequest == nil,sendingPrompt == nil, !shortcutPreparation.busy else{return};if !EmbeddedCodeRuntime.shared.active,latestState?.threadId?.hasPrefix("code:") == true,latestState?.inputBlocked == true{miniUI.setCodexMessage("Code is busy or loading — your prompt is kept here.");return};let prompt=(composerField?.stringValue ?? "").trimmingCharacters(in:.whitespacesAndNewlines);guard !prompt.isEmpty || queuedImageCount>0 else{return};sendingPrompt=prompt;setMotion("running-left",replay:true);speech.cancelAudio();let requestID=UUID().uuidString;sendingPromptRequestID=requestID;bridge.send("send",["text":prompt,"requestId":requestID]);if compactOnSend{hidePetGallery(restore:false);autoCompact=false;compactWhileWorking=true;compactThreadID=latestState?.threadId;compactStartHistoryCount=latestState?.history.count ?? 0;pinned=true;setOpen(true,mini:false)}}
+    private func sendPrompt(){if attachmentEncoding || attachmentRequest != nil{pendingAttachmentSend=true;miniUI.setCodexMessage("Preparing images…");return};guard pendingSlashID == nil,expandedChatRequest == nil,sendingPrompt == nil, !shortcutPreparation.busy else{return};if !EmbeddedCodeRuntime.shared.active,latestState?.threadId?.hasPrefix("code:") == true,latestState?.inputBlocked == true{miniUI.setCodexMessage("Code is busy or loading — your prompt is kept here.");return};let prompt=(composerField?.stringValue ?? "").trimmingCharacters(in:.whitespacesAndNewlines);guard !prompt.isEmpty || queuedImageCount>0 else{return};sendingPrompt=prompt;setMotion("running-left",replay:true);speech.cancelAudio();let requestID=UUID().uuidString;sendingPromptRequestID=requestID;bridge.send("send",["text":prompt,"requestId":requestID]);if compactOnSend{hidePetGallery(restore:false);autoCompact=false;compactWhileWorking=true;compactThreadID=latestState?.threadId;compactStartHistoryCount=latestState?.history.count ?? 0;pinned=true;setOpen(true,mini:false)}}
     private func answerApproval(_ action:String){
         if action == "interrupt"{speech.cancelAudio()}
         var response=action,fields:[String:Any]=["requestId":miniUI.pendingRequestID ?? ""]
@@ -1851,7 +1852,9 @@ private final class NotchSurfaceHost:NSView {
         let generation=UUID();attachmentGeneration=generation
         queuedImageCount=images.count;attachmentEncoding = !images.isEmpty
         guard !images.isEmpty else{
-            bridge.send("attachments",["paths":[String]()])
+            let request=UUID().uuidString
+            if EmbeddedCodeRuntime.shared.active{attachmentRequest=(request,0)}
+            bridge.send("attachments",["paths":[String](),"requestId":request])
             if pendingAttachmentSend{pendingAttachmentSend=false;sendPrompt()}
             return
         }
@@ -1881,7 +1884,9 @@ private final class NotchSurfaceHost:NSView {
                 }
                 self.imageEncodingWork=nil;self.attachmentEncoding=false
                 self.attachmentFiles.append(contentsOf:prepared);self.queuedImageCount=prepared.count+retained.count
-                self.bridge.send("attachments",["paths":retained+prepared.map(\.path)])
+                let request=UUID().uuidString
+                if EmbeddedCodeRuntime.shared.active{self.attachmentRequest=(request,self.queuedImageCount)}
+                self.bridge.send("attachments",["paths":retained+prepared.map(\.path),"requestId":request])
                 if let error{self.pendingAttachmentSend=false;self.miniUI.setCodexMessage(error)}
                 else if self.pendingAttachmentSend && !EmbeddedCodeRuntime.shared.active{self.pendingAttachmentSend=false;self.sendPrompt()}
             }
@@ -1899,6 +1904,9 @@ private final class NotchSurfaceHost:NSView {
         defer{refreshMedia()}
         nativeReview.update(state)
         if EmbeddedCodeRuntime.shared.active {
+            if latestState?.ownerToken != state.ownerToken{
+                imageEncodingWork?.cancel();imageEncodingWork=nil;attachmentGeneration=UUID();attachmentEncoding=false;attachmentRequest=nil;pendingAttachmentSend=false
+            }
             synchronizeOwnerAttachments(state)
             if let error=state.workspaceVoiceError,error != latestState?.workspaceVoiceError,compactVoiceMode || workspaceVoiceRequest != nil{failCompactVoice(error)}
             if let motion=state.workspaceMotion{workspaceMorph.motionEnabled=motion}
@@ -1906,9 +1914,15 @@ private final class NotchSurfaceHost:NSView {
             if let voice=state.workspaceVoiceChoice{realtimeVoiceMenu.synchronize(voice)}
             miniUI.setVoiceActive(state.workspaceVoiceActive == true)
             if let levels=state.workspaceVoiceLevels,["listening","speaking"].contains(state.workspaceVoiceScene ?? ""){indicator.setExternalLevels(levels)}
-            if pendingAttachmentSend,!attachmentEncoding,!state.inputBlocked {
-                pendingAttachmentSend=false
-                if state.completedRequestError == nil{DispatchQueue.main.async{[weak self] in self?.sendPrompt()}}
+            if let request=attachmentRequest,let reply=state.requestResult(request.id),reply.error != nil || !state.inputBlocked {
+                attachmentRequest=nil
+                if let error=reply.error{pendingAttachmentSend=false;miniUI.setCodexMessage(error)}
+                else if request.count != state.attachments.count{pendingAttachmentSend=false;miniUI.setCodexMessage("An image could not be imported. Review the draft before sending.")}
+                else if pendingAttachmentSend{
+                    pendingAttachmentSend=false
+                    let owner=state.ownerToken
+                    DispatchQueue.main.async{[weak self] in guard let self,self.latestState?.ownerToken==owner else{return};self.sendPrompt()}
+                }
             }
         }
         if EmbeddedCodeRuntime.shared.active,let draft=state.composerDraft {
@@ -1929,19 +1943,20 @@ private final class NotchSurfaceHost:NSView {
         // Composer adoption above can render the voice indicator. Keep the
         // connecting request until its new owner snapshot is actually installed.
         if EmbeddedCodeRuntime.shared.active{
-            if let request=workspaceVoiceRequest,state.completedRequestId == request || state.workspaceVoiceActive == true{
+            if let request=workspaceVoiceRequest,state.requestResult(request) != nil || state.workspaceVoiceActive == true{
                 workspaceVoiceRequest=nil;voiceLaunchTimeout?.cancel();voiceLaunchTimeout=nil
-                if let error=state.completedRequestError{failCompactVoice(error)}
+                if let error=state.requestResult(request)?.error{failCompactVoice(error)}
             }
             if previous?.workspaceVoiceActive == true,state.workspaceVoiceActive != true,state.workspaceVoiceError == nil,compactVoiceMode,!voicePrompt.active,pendingVoiceStart == nil,!shortcutPreparation.busy{closeNotch()}
         }
         var confirmedCompletion=false
         if let models=state.models{defaultModelMenu.update(models)}
-        let prepending=previous?.threadId == state.threadId && earlierHistoryRequest != nil && state.completedRequestId == earlierHistoryRequest
+        let prepending=previous?.threadId == state.threadId && state.historyLoading != true && earlierHistoryRequest.flatMap(state.requestResult) != nil
         if prepending || previous?.threadId != state.threadId{earlierHistoryRequest=nil}
         if let thread=state.threadId,thread != lastOpenedChatID {lastOpenedChatID=thread;UserDefaults.standard.set(thread,forKey:"lastOpenedChatID")}
         if let target=dictationDestination,state.threadId != target {cancelShortcutInput()}
-        shortcutPreparation.receive(thread:state.threadId,request:state.completedRequestId,error:state.completedRequestError)
+        let preparationReply=shortcutPreparation.pendingRequestID.flatMap(state.requestResult)
+        shortcutPreparation.receive(thread:state.threadId,request:preparationReply?.id,error:preparationReply?.error)
         if mediaVisible && MediaCompanion.codexNeedsNotch(state) {
             dismissMedia(closeNotch:false)
             if !miniOpen {autoCompact=true;compactWhileWorking=true;compactThreadID=nil;setOpen(true,mini:false)}
@@ -1996,9 +2011,10 @@ private final class NotchSurfaceHost:NSView {
             compactWhileWorking=false;compactThreadID=nil;pinned=true;setOpen(true,mini:true);setMotion("jumping",replay:true)
         }
         if let request=expandedChatRequest {
-            if state.completedRequestId == request.id {
+            if let reply=state.requestResult(request.id) {
                 finishExpandedChatLoading()
-                if state.threadId != request.target {miniUI.setCodexMessage(state.notice)}
+                if let error=reply.error{miniUI.setCodexMessage(error)}
+                else if state.threadId != request.target {miniUI.setCodexMessage(state.notice)}
             } else {miniUI.setCodexMessage("Loading \(request.name.isEmpty ? "chat":request.name)…")}
         }
         let wasVoiceActive=chatVoice.active
@@ -2007,8 +2023,8 @@ private final class NotchSurfaceHost:NSView {
         if voicePrompt.active,let source=voiceCaptureSource,state.threadId != source {failCompactVoice("Chat changed while recording; hold the shortcut to try again")}
         prepareRecordedVoice();renderCompactVoice()
         if let error=state.voice?.historyError{miniUI.setCodexMessage(error)}
-        miniUI.finishPending(requestID:state.completedRequestId)
-        if let pendingFilesRequestID,state.completedRequestId == pendingFilesRequestID {self.pendingFilesRequestID=nil;indicator.setFileLoading(false)}
+        miniUI.finishPending(requestID:miniUI.pendingRequestID.flatMap(state.requestResult)?.id)
+        if let pendingFilesRequestID,state.requestResult(pendingFilesRequestID) != nil {self.pendingFilesRequestID=nil;indicator.setFileLoading(false)}
         if !state.approval{updateCompactApproval(state)}
         renderInputIndicator();syncWorkspacePet();updateNinjaWallpaper();reviewNextFloatingTask()
         if (legacyCompletion || confirmedCompletion),!state.approval,!dictating,!compactVoiceMode,!voicePrompt.active,!quickChatVisible {

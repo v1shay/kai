@@ -44,6 +44,7 @@ def main():
     run('rust', ['cargo', 'test', '--offline', '--manifest-path', 'integrations/Code/Cargo.toml', '--bin', 'orbit'])
     run('swift', ['swift', 'test'])
     run('native-continuity', ['scripts/test-unified-native.sh', 'continuity'])
+    run('native-picker', ['scripts/test-unified-native.sh', 'picker'])
     for name in ['ninjas-worker', 'ninja', 'ninja-installer']:
         run(name, [sys.executable, 'scripts/test-' + name + '.py'])
     bundle = args.bundle.resolve() if args.bundle else root / '.build/unified/Kai Unified.app'

@@ -14,6 +14,11 @@ that owner; it does not create another runtime or copy a running task between wi
 - Send and slash-command controls use their own recorded request result, including
   results followed by another command. Repeated identical failures release Send
   and retain its draft. Successful sends retain text typed while awaiting the reply.
+- Navigation, history, files, provider selection and voice setup also resolve their
+  own request results. Unrelated command errors cannot dismiss a pending provider
+  picker or strand a loading control. Image sends wait for their own import and
+  keep failed imports unsent; navigation cancels an unfinished local image import
+  before it can attach files to a different chat.
 - A menu-bar shortcut for the already selected provider preserves its current chat,
   instead of selecting whichever other chat has the newest background activity.
 - Native Ninja sends wait for the host response before acknowledging success.
@@ -27,7 +32,7 @@ that owner; it does not create another runtime or copy a running task between wi
 The native continuity harness exercises real AppKit editors and presentation
 transitions with a controlled owner transport: rapid edits, intermediate snapshots,
 repeated transitions, delayed acknowledgements, repeated failures, new typing during
-send, and normal/Ninja owner routing. The native state harness separately exercises
+send, image-import readiness and navigation cancellation, and normal/Ninja owner routing. The native state harness separately exercises
 approval actions, background status, history and image-only drafts.
 
 Rust tests exercise the actual shared task owner, Mini Code/menu controller, queued

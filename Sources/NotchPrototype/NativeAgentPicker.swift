@@ -8,7 +8,7 @@ import AppKit
     private(set) var column=1
     private(set) var cursors=[0,0,0]
     private var state:KaiState?
-    private var sourceProject="",sourceThread:String?,pendingAgent:String?
+    private var sourceProject="",sourceThread:String?,pendingAgent:String?,pendingAgentRequestID:String?
     private var selectedModel:String?
     private var panel:NotchPanel?,glass:NSVisualEffectView?,monitor:Any?,globalMonitor:Any?
     private var columnIDs=[Int]()
@@ -17,7 +17,7 @@ import AppKit
     var onNinja:((String,String)->Void)?
     private var ninjaQuery=""
     private var ninjaSearch:NSSearchField?
-    var onAgent:((String)->Void)?,onModel:((String)->Void)?,onEffort:((String,String)->Void)?
+    var onAgent:((String,String)->Void)?,onModel:((String)->Void)?,onEffort:((String,String)->Void)?
     var visible:Bool{panel?.isVisible == true}
     private var providers:[KaiAgent]{state?.agents?.filter(\.available) ?? []}
     private var models:[KaiModel]{
@@ -36,7 +36,7 @@ import AppKit
         effortRows.forEach{$0.setPreview(false)};effortRows=[];columns=[];columnIDs=[];scrolls=[];buttons=[]
         old?.orderOut(nil)
         if restoreFocus,let window=previousWindow{window.makeKey();if let responder=previousResponder{window.makeFirstResponder(responder)}}
-        previousWindow=nil;previousResponder=nil;pendingAgent=nil
+        previousWindow=nil;previousResponder=nil;pendingAgent=nil;pendingAgentRequestID=nil
     }
     func show(scope:Scope,state:KaiState,at anchor:CGPoint){
         if visible,self.scope==scope{dismiss(restoreFocus:true);return}
@@ -62,13 +62,13 @@ import AppKit
         guard visible else{return}
         guard state.project==sourceProject,state.threadId==sourceThread else{dismiss();return}
         if self.state?.ownerToken != state.ownerToken,pendingAgent != state.selectedAgent{dismiss();return}
-        if pendingAgent != nil,state.completedRequestId != self.state?.completedRequestId,state.completedRequestError != nil{dismiss();return}
+        if let reply=pendingAgentRequestID.flatMap(state.requestResult),reply.error != nil{dismiss();return}
         let changed=state.ninja != self.state?.ninja || self.state?.selectedAgent != state.selectedAgent || self.state?.selectedModel != state.selectedModel || self.state?.effectiveModel != state.effectiveModel || self.state?.reasoningEffort != state.reasoningEffort || self.state?.effectiveReasoningEffort != state.effectiveReasoningEffort || self.state?.horizontalAgentPicker != state.horizontalAgentPicker || self.state?.models?.map{$0.model+":"+$0.supportedReasoningEfforts.map(\.reasoningEffort).joined(separator:",")} != state.models?.map{$0.model+":"+$0.supportedReasoningEfforts.map(\.reasoningEffort).joined(separator:",")}
         let modelChanged=self.state?.selectedModel != state.selectedModel
         self.state=state
         if modelChanged{selectedModel=state.selectedModel ?? "";cursors[1]=models.firstIndex{$0.model==selectedModel} ?? 0}
         if let pendingAgent,pendingAgent != state.selectedAgent{return}
-        if pendingAgent != nil{pendingAgent=nil;selectedModel=state.selectedModel ?? "";cursors[1]=models.firstIndex{$0.model==selectedModel} ?? 0}
+        if pendingAgent != nil{pendingAgent=nil;pendingAgentRequestID=nil;selectedModel=state.selectedModel ?? "";cursors[1]=models.firstIndex{$0.model==selectedModel} ?? 0}
         if changed{rebuild()}
     }
     private func rebuild(anchor:CGPoint?=nil){
@@ -175,7 +175,7 @@ import AppKit
         case 0:
             guard providers.indices.contains(cursors[0]) else{return}
             let id=providers[cursors[0]].id
-            if id != state.selectedAgent{ninjaQuery="";pendingAgent=id;onAgent?(id)}
+            if id != state.selectedAgent{ninjaQuery="";pendingAgent=id;let request=UUID().uuidString;pendingAgentRequestID=request;onAgent?(id,request)}
             if scope == .providers{dismiss(restoreFocus:true)}else{column=1;rebuild()}
         case 1:
             guard pendingAgent==nil,models.indices.contains(cursors[1]) else{return}

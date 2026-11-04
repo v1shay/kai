@@ -25,9 +25,9 @@ private func command(_ bytes:UnsafePointer<UInt8>?,_ count:Int)->Bool{
         let ui=member(app,"miniUI") as! MiniAppInterface
         let field=member(app,"composerField") as! NSTextField
         defer{app.applicationWillTerminate(Notification(name:NSApplication.willTerminateNotification));NSApp.windows.forEach{$0.orderOut(nil)}}
-        var owner="code:continuous",thread="code:continuous",draft="",results=[[String:Any]]()
+        var owner="code:continuous",thread="code:continuous",draft="",results=[[String:Any]](),attachments=[String](),inputBlocked=false
         func publish(){
-            let value:[String:Any]=["ownerToken":owner,"composerDraft":draft,"project":"/private/tmp","projects":[],"chats":[],"standaloneChats":[],"standalone":true,"threadId":thread,"threadName":"Continuous chat","history":[],"readOnly":false,"composerBusy":false,"approval":false,"activity":["scene":"thinking","text":"Working"],"sessionActivity":["scene":"thinking","text":"Working"],"activeTurnId":"same-running-task","activeTasks":[],"notice":"Ready","attachments":[],"selectedAgent":"codex","models":[],"workspaceMotion":false,"completedRequestId":"unrelated-later-command","completedRequests":results]
+            let value:[String:Any]=["ownerToken":owner,"composerDraft":draft,"project":"/private/tmp","projects":[],"chats":[],"standaloneChats":[],"standalone":true,"threadId":thread,"threadName":"Continuous chat","history":[],"readOnly":false,"composerBusy":inputBlocked,"approval":false,"activity":["scene":"thinking","text":"Working"],"sessionActivity":["scene":"thinking","text":"Working"],"activeTurnId":"same-running-task","activeTasks":[],"notice":"Ready","attachments":attachments,"completedRequestError":"Unrelated command failed","selectedAgent":"codex","models":[],"workspaceMotion":false,"completedRequestId":"unrelated-later-command","completedRequests":results]
             runtime.receive(try! JSONSerialization.data(withJSONObject:value))
         }
         func edit(_ text:String){field.stringValue=text;app.controlTextDidChange(Notification(name:NSControl.textDidChangeNotification,object:field))}
@@ -36,6 +36,9 @@ private func command(_ bytes:UnsafePointer<UInt8>?,_ count:Int)->Bool{
             var reply:[String:Any]=["id":request["requestId"]!];if let error{reply["error"]=error};results.append(reply);draft=text;publish()
         }
         publish();app.expandToRunningChat()
+        let navigation=ui.beginChatLoading("Another chat")
+        results.append(["id":navigation]);publish()
+        precondition(ui.pendingRequestID==nil,"Navigation stayed loading when its acknowledgement was followed by another command")
         edit("h");let first=last("draft")
         edit("hello from the notch");let second=last("draft")
         precondition(first["draftBase"] as? String == "")
@@ -75,7 +78,24 @@ private func command(_ bytes:UnsafePointer<UInt8>?,_ count:Int)->Bool{
         acknowledge(disconnected,"")
         precondition(field.stringValue == "preserve this after disconnect","A late reply after transport failure erased newer input")
         precondition(member(app,"sendingPrompt")==nil && member(app,"sendingPromptRequestID")==nil)
+        let picture=NSImage(size:NSSize(width:8,height:8));picture.lockFocus();NSColor.red.setFill();NSRect(x:0,y:0,width:8,height:8).fill();picture.unlockFocus()
+        ui.onImagesChanged?([picture]);ui.onSend?()
+        let deadline=Date().addingTimeInterval(3)
+        while Date()<deadline && !commands.contains(where:{$0["action"] as? String == "attachments"}){RunLoop.current.run(until:Date().addingTimeInterval(0.01))}
+        let imported=last("attachments")
+        defer{for path in imported["paths"] as? [String] ?? []{try? FileManager.default.removeItem(atPath:path)}}
+        let sendsBeforeImport=commands.filter{$0["action"] as? String == "send"}.count
+        inputBlocked=true;acknowledge(imported,draft)
+        precondition(commands.filter{$0["action"] as? String == "send"}.count==sendsBeforeImport,"Image send ran before host import completed")
+        attachments=["/private/tmp/imported-owner-image.png"];inputBlocked=false;publish()
+        RunLoop.current.run(until:Date().addingTimeInterval(0.1))
+        precondition(commands.filter{$0["action"] as? String == "send"}.count==sendsBeforeImport+1,"An unrelated command error blocked image submission")
+        acknowledge(last("send"),"");attachments=[]
+        let importsBeforeNavigation=commands.filter{$0["action"] as? String == "attachments"}.count
+        ui.onImagesChanged?([picture]);ui.onSend?()
         owner="personal:host:ninja:chat";thread="ninja-chat:host:ninja:chat";draft="Ninja's own draft";publish()
+        RunLoop.current.run(until:Date().addingTimeInterval(0.1))
+        precondition(commands.filter{$0["action"] as? String == "attachments"}.count==importsBeforeNavigation,"Pending image import followed navigation into a different owner")
         precondition(field.stringValue == draft,"Explicit chat navigation did not adopt the selected owner's draft")
         edit("Ninja continuation");let ninjaDraft=last("draft")
         precondition(ninjaDraft["ownerToken"] as? String == owner && ninjaDraft["targetThreadId"] as? String == thread)

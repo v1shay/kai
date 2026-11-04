@@ -17,6 +17,7 @@ import Foundation
     }
     private var job: Job?, timeout: DispatchWorkItem?
     var busy: Bool { job != nil }
+    var pendingRequestID: String? { job?.request }
 
     static func target(selected: String?, running: String?, lastOpened: String?) -> String? {
         selected ?? running ?? lastOpened

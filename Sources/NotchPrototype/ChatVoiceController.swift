@@ -80,13 +80,13 @@ import AVFoundation
     func receive(_ state:KaiState){
         guard active else{return}
         guard state.threadId == threadID else{stop();return}
-        if let request=initialTextRequest,state.completedRequestId == request {
-            if let error=state.completedRequestError{fail(error);return}
+        if let request=initialTextRequest,let reply=state.requestResult(request) {
+            if let error=reply.error{fail(error);return}
             let accepted=initialText;initialText=nil;initialTextRequest=nil
             if let accepted{onInitialTextAccepted?(accepted)}
         }
         guard let voice=state.voice,voice.sessionId == sessionID else{
-            if startIssued,state.completedRequestId == sessionID{fail(state.completedRequestError ?? state.notice)}
+            if startIssued,let reply=sessionID.flatMap(state.requestResult){fail(reply.error ?? state.notice)}
             return
         }
         switch voice.phase {

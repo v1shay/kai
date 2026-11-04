@@ -268,7 +268,7 @@ private final class AttachmentLayer:CALayer {
     var onNavigate: ((String)->Void)?
     var onContextMode: ((Bool)->Void)?
     var onNinja:((String,String)->Void)?
-    var onAgent:((String)->Void)?
+    var onAgent:((String,String)->Void)?
     var onVoice:(()->Void)?
     var onFocusComposer:(()->Void)?
     var onPendingTimeout:((String)->Void)?
@@ -803,7 +803,7 @@ private final class AttachmentLayer:CALayer {
     func showAgentPicker(_ kind:String){
         guard let state=modelState else{return};composerPopover.dismiss()
         agentPicker.onNinja={[weak self] field,value in self?.onNinja?(field,value)}
-        agentPicker.onAgent={[weak self] id in self?.onAgent?(id)}
+        agentPicker.onAgent={[weak self] id,request in self?.onAgent?(id,request)}
         agentPicker.onModel={[weak self] id in self?.onModel?(id)}
         agentPicker.onEffort={[weak self] model,effort in self?.onSettings?(model,effort)}
         agentPicker.show(scope:kind=="agent" ? .providers:kind=="models" ? .models:.all,state:state,at:NSEvent.mouseLocation)
@@ -831,7 +831,7 @@ private final class AttachmentLayer:CALayer {
         }
         return menu
     }
-    @objc private func selectAgent(_ item:NSMenuItem){if let id=item.representedObject as? String{onAgent?(id)}}
+    @objc private func selectAgent(_ item:NSMenuItem){if let id=item.representedObject as? String{onAgent?(id,UUID().uuidString)}}
     @objc private func selectSetting(_ item:NSMenuItem) {guard let values=item.representedObject as? [String],values.count == 3,values[2]==(modelState?.ownerToken ?? "") else{return};if values[1].isEmpty,let onModel{onModel(values[0])}else{onSettings?(values[0],values[1])}}
 
     private func layoutActions(){
