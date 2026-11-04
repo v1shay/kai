@@ -78,12 +78,14 @@ match the signed candidate. The existing persistent worker remained PID 823.
 - Native continuity and final morph matrix: passed.
 - Final signed package: surface identity, actual menu-bar toggle, and all three
   startup modes passed.
-- The final Ninja fixture retained the same owner/editor/window across all four
-  forms and downloaded all eight previews. Its frame-rate check was rejected:
-  macOS reported `CGSSessionScreenIsLocked = true` and suspended display updates.
-  The runner now reports this precondition explicitly instead of presenting an
-  invalid frame measurement. The earlier build's 16.64 ms median / 17.54 ms p95
-  is retained as preliminary evidence, not a final installed-build certification.
+- After the user unlocked the Mac, the installed build passed the final Ninja
+  fixture: same owner/editor/window across all four forms, all eight inline
+  PNG/SVG previews loaded, and 120 frame samples at **16.63 ms median / 17.64 ms
+  p95**. Screenshots of all four forms were saved and the compact views inspected.
+  The installed executable/library hashes still match the signed candidate.
+- Earlier locked-screen attempts were rejected rather than counted as performance
+  evidence. The runner now reports that precondition explicitly. Measurements
+  above are from the controlled 24-turn fixture, not every provider workload.
 
 The repeated-click package check also caught a focus race: a status-item click
 could temporarily remove key focus while the menu was opening. Toggling now uses
