@@ -1372,19 +1372,24 @@ emit({'type':'result','subtype':'success','is_error':False,'result':'Standalone 
                     path.clone(),
                     (Instant::now() - Duration::from_millis(100), true, 0.),
                 );
+                app.project_tree.frame_elapsed = Some(Duration::from_millis(100));
                 let before = app.project_fold_fraction(&path).clamp(0., 1.);
                 app.toggle_project_branch(path.clone(), cx);
+                app.project_tree.frame_elapsed = Some(Duration::ZERO);
                 assert!((app.project_fold_fraction(&path) - before).abs() < 0.01);
                 app.project_tree.motions.insert(
                     path.clone(),
                     (Instant::now() - Duration::from_millis(80), false, before),
                 );
+                app.project_tree.frame_elapsed = Some(Duration::from_millis(80));
                 let before = app.project_fold_fraction(&path).clamp(0., 1.);
                 app.toggle_project_branch(path.clone(), cx);
+                app.project_tree.frame_elapsed = Some(Duration::ZERO);
                 assert!((app.project_fold_fraction(&path) - before).abs() < 0.01);
                 app.project_tree
                     .motions
                     .insert(path, (Instant::now() - Duration::from_secs(1), false, 1.));
+                app.project_tree.frame_elapsed = None;
                 app.expanded_projects.clear();
                 app.tick_project_tree(window, cx);
                 assert!(app.project_tree.motions.is_empty());
