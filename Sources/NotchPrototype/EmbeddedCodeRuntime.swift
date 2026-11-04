@@ -1,32 +1,5 @@
 import AppKit
 
-/// Hidden composers retain divergent drafts until the owner accepts the handoff.
-/// Window visibility never grants permission to replace unsent local input.
-enum UnifiedDraftHandoff {
-    static func shouldAdopt(local:String,base:String,remote:String,selectionChanged:Bool,sendAccepted:Bool)->Bool {
-        selectionChanged || sendAccepted || local == base || local == remote
-    }
-}
-
-/// Writes are ordered on the owner command queue. A fast typist can enqueue
-/// several edits before the first snapshot returns; each edit compares against
-/// the preceding edit, not the last frame the notch happened to display.
-struct UnifiedDraftWrites {
-    private var owner:String?
-    private var pending:[(id:String,text:String)]=[]
-    var pendingText:String?{pending.last?.text}
-    mutating func enqueue(id:String,text:String){pending.append((id,text))}
-    mutating func receive(owner:String?,result:(String)->KaiRequestResult?)->String?{
-        guard self.owner == owner else{self.owner=owner;pending=[];return nil}
-        var accepted:String?
-        while let first=pending.first,let reply=result(first.id){
-            pending.removeFirst()
-            if reply.error == nil{accepted=first.text}
-        }
-        return accepted
-    }
-}
-
 /// C ABI boundary for Code's GPUI owner. Both sides run on the AppKit thread.
 /// No socket, helper process, transcript scan, or independent agent connection.
 @MainActor final class EmbeddedCodeRuntime {
@@ -83,6 +56,15 @@ struct UnifiedDraftWrites {
         guard data != lastState else{return}
         guard let packet=try? JSONDecoder().decode(OwnerPacket.self,from:data) else{onError?("Could not read Code’s owner state");fputs("Kai unified state decode failed\n",stderr);return}
         if let object=try? JSONSerialization.jsonObject(with:data) as? [String:Any]{
+            if let type=object["type"] as? String,["conversationSurface","conversationToggle","conversationShow"].contains(type),
+               let raw=object["form"] as? String,let form=ConversationForm(rawValue:raw){
+                // Resizing a GPUI window synchronously during an Orbit update
+                // reenters its lock. Only geometry crosses this async boundary.
+                DispatchQueue.main.async{[weak self] in
+                    if type == "conversationSurface"{self?.app?.presentConversation(form,revision:object["revision"] as? Int ?? -1)}
+                    else{self?.app?.requestConversation(form,toggle:type == "conversationToggle")}
+                };return
+            }
             if (object["type"] as? String)?.hasPrefix("adaptiveText") == true{AdaptiveTextBackdrop.shared.receive(object);return}
             if object["type"] as? String == "quickLook",let paths=object["paths"] as? [String]{NativeWorkspaceIntegrations.shared.quickLook(paths.map{URL(fileURLWithPath:$0)});return}
             if object["type"] as? String == "artifactPreview",let artifact=object["artifact"] as? [String:Any]{NativeWorkspaceIntegrations.shared.artifact(artifact);return}
@@ -90,14 +72,14 @@ struct UnifiedDraftWrites {
         if let object=try? JSONSerialization.jsonObject(with:data) as? [String:Any],object["type"] as? String == "ninjaAtmosphereSlot",let rect=object["rect"] as? [Double],rect.count==4{app?.ninjaAtmosphereGeometry(CGRect(x:rect[0],y:rect[1],width:rect[2],height:rect[3]));return}
         switch packet.type {
         case "keyboardCatalog":keyboardCommands=packet.commands ?? [];return
-        case "menuBarToggle":app?.toggleMenuBarPanel();return
+        case "menuBarToggle":DispatchQueue.main.async{[weak self] in self?.app?.toggleMenuBarPanel()};return
         case "quickMiniPrepare":app?.prepareMiniOpening();return
         case "quickPrepare":app?.prepareQuickOpening();return
         case "workspaceReveal":app?.revealWorkspace();return
         case "launchWorkspace":app?.launchUnifiedWorkspace();return
         case "launchExtended":app?.expandToRunningChat();return
         case "launchCompact":app?.showUnifiedNotchOnLaunch();return
-        case "workspaceDismiss":app?.dismissUnifiedSurface();return
+        case "workspaceDismiss":DispatchQueue.main.async{[weak self] in self?.app?.dismissUnifiedSurface()};return
         case "probeDoubleCommand":if CommandLine.arguments.contains("--unified-smoke-test"){app?.probeDoubleCommand()};return
         case "probeMenuBarClick":if CommandLine.arguments.contains("--unified-smoke-test"){app?.probeMenuBarClick()};return
         case "quickVisibility":if let visible=packet.visible{app?.setQuickChatVisible(visible)};return

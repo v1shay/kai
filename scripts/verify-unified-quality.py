@@ -44,6 +44,7 @@ def main():
     run('rust', ['cargo', 'test', '--offline', '--manifest-path', 'integrations/Code/Cargo.toml', '--bin', 'orbit'])
     run('swift', ['swift', 'test'])
     run('native-continuity', ['scripts/test-unified-native.sh', 'continuity'])
+    run('native-matrix', ['scripts/test-unified-native.sh', 'matrix'])
     run('native-picker', ['scripts/test-unified-native.sh', 'picker'])
     for name in ['ninjas-worker', 'ninja', 'ninja-installer']:
         run(name, [sys.executable, 'scripts/test-' + name + '.py'])
@@ -54,7 +55,7 @@ def main():
     run('signature', ['codesign', '--verify', '--deep', '--strict', str(bundle)])
     run('approval-protocol', [sys.executable, 'scripts/test-ninja-approval-protocol.py', str(bundle / 'Contents/MacOS/kai-unified')])
     # Sequential probes avoid contaminating frame and CPU measurements with one another.
-    for mode in ['ninja-chat', 'menu-bar', 'startup-workspace', 'startup-extended', 'startup-compact', 'latency', 'performance', 'background-idle']:
+    for mode in ['surfaces', 'ninja-chat', 'menu-bar', 'startup-workspace', 'startup-extended', 'startup-compact', 'latency', 'performance', 'background-idle']:
         run(mode, [sys.executable, 'scripts/test-unified-packaged.py', mode, '--bundle', str(bundle)])
         source = root / '.build/validation' / (mode + '.json')
         (report / source.name).write_bytes(source.read_bytes())

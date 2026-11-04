@@ -1349,7 +1349,7 @@ impl Orbit {
     }
     pub(super) fn ninjas_conversation(&self, window: &Window, cx: &Context<Self>) -> AnyElement {
         div().debug_selector(||"chat-pane".into()).flex_1().size_full().min_w(px(0.)).min_h(px(0.)).flex().flex_col().relative().overflow_hidden()
-            .child(self.tabs(cx)).child(div().flex_1().min_h(px(0.)).child(self.ninjas_panel(window,cx))).into_any_element()
+            .when(!self.conversation_form.compact(),|s|s.child(self.tabs(cx))).child(div().flex_1().min_h(px(0.)).child(self.ninjas_panel(window,cx))).into_any_element()
     }
     fn ninja_task_row(&self,t:&Value,window:&Window,cx:&Context<Self>)->AnyElement{
         let p=self.ninjas.panel.as_ref().unwrap();
@@ -1861,7 +1861,7 @@ impl Orbit {
                             .items_center()
                             .gap_2()
                             .child(crate::ninja_art::art(&p.profile.style,28.,self.motion && !native::reduced_motion() && window.is_window_active()))
-                            .child(div().min_w(px(0.)).flex_1().text_ellipsis().child(if p.profile.name.is_empty() {
+                            .child(div().debug_selector(||"ninja-chat-title".into()).min_w(px(0.)).flex_1().truncate().child(if p.profile.name.is_empty() {
                                 "New Ninja".to_owned()
                             } else {
                                 p.profile.name.clone()

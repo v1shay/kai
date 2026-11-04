@@ -128,7 +128,7 @@ impl Orbit {
         window: &Window,
         cx: &Context<Self>,
     ) -> AnyElement {
-        if !self.terminal_visible {
+        if !self.terminal_visible || self.conversation_form.compact() {
             return content;
         }
         let dock = self.terminal_dock.normalized();

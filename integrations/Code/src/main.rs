@@ -81,6 +81,7 @@ mod prompt_queue;
 mod provider_capabilities;
 mod queue_ui;
 mod quick_chat;
+mod conversation_surface;
 #[cfg(test)]
 mod quick_chat_tests;
 mod quick_surface;
@@ -583,6 +584,8 @@ impl ListReveal {
     }
 }
 struct Orbit {
+    conversation_form: conversation_surface::Form,
+    surface_navigation: bool,
     ninjas:ninjas_ui::State,
     ninja:ninja_ui::State,
     remote:remote_host::State,
@@ -976,8 +979,10 @@ impl Orbit {
             cx.notify();
         });
         let bounds_changed = cx.observe_window_bounds(window, |this, window, cx| {
-            this.window_state = Some(workspace_ui::capture_window(window));
-            this.queue_workspace_save(cx);
+            if !this.conversation_form.compact() {
+                this.window_state = Some(workspace_ui::capture_window(window));
+                this.queue_workspace_save(cx);
+            }
         });
         let before_quit = cx.on_app_quit(|this, cx| {
             this.stop_dictation(cx);
@@ -1177,6 +1182,7 @@ impl Orbit {
             unified_back:vec![],unified_forward:vec![],unified_navigating:false,
             fast_transition:None,orchestrator_new:false,orchestrator_transition:None,composer_toolbars:Default::default(),
             automatic_titles:!cfg!(test)&&restored.as_ref().is_none_or(|s|s.automatic_titles),title_queue:Default::default(),title_busy:false,title_work:None,title_motions:HashMap::new(),
+            conversation_form: Default::default(), surface_navigation: false,
             startup_surface:restored.as_ref().map_or_else(Default::default,|s|s.startup_surface),
             orchestration_models:HashMap::new(),orchestration_probes:HashSet::new(),
             orchestrator_chats:restored.as_ref().map(|s|s.orchestrator_chats.iter().cloned().collect()).unwrap_or_default(),
@@ -1836,6 +1842,7 @@ impl Orbit {
                 .on_click(cx.listener(move|app,_,_,cx|app.close_pane(if changes{pane_layout::Pane::Changes}else{pane_layout::Pane::Files},cx))))
     }
     fn toggle_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.conversation_form.compact(){unified::reveal();if self.files_visible{return}}
         if self.reopen_closing_pane(pane_layout::Pane::Files,cx){return}
         if self.files_visible {self.close_pane(pane_layout::Pane::Files,cx);return}
         self.prepare_inspector_switch(pane_layout::Pane::Files);
@@ -1853,6 +1860,7 @@ impl Orbit {
         cx.notify();
     }
     fn open_changes(&mut self, cx: &mut Context<Self>) {
+        if self.conversation_form.compact(){unified::reveal();}
         self.reopen_closing_pane(pane_layout::Pane::Changes,cx);
         self.prepare_inspector_switch(pane_layout::Pane::Changes);
         self.broker_panel = None;
@@ -4032,7 +4040,7 @@ impl Orbit {
             .id("sidebar-layout-panel")
             .debug_selector(|| "project-rail".into())
             .on_click(cx.listener(|this,event:&ClickEvent,_,cx| {if event.click_count()==2 {this.toggle_sidebar_layout(cx);}}))
-            .w(px(if self.sidebar_layout_transition.is_some() { self.sidebar_width } else { self.sidebar_target_width() }))
+            .w(px(if self.conversation_form.compact(){240.}else if self.sidebar_layout_transition.is_some() { self.sidebar_width } else { self.sidebar_target_width() }))
             .h_full()
             .flex_none()
             .flex()
@@ -5783,10 +5791,10 @@ impl Render for Orbit {
                 }
             }))
             .on_action(cx.listener(|_, _: &MinimizeWindow, window, _| window.minimize_window()))
-            .when(self.sidebar_width > 0., |s| {
+            .when((!self.conversation_form.compact() && self.sidebar_width > 0.) || (self.conversation_form.compact() && self.surface_navigation), |s| {
                 s.child(
                     entrance.container(WorkspacePart::Sidebar)
-                        .w(px(self.sidebar_width))
+                        .w(px(if self.conversation_form.compact(){240.}else{self.sidebar_width}))
                         .h_full()
                         .overflow_hidden()
                         .flex_none()
@@ -5794,7 +5802,7 @@ impl Render for Orbit {
                 )
             })
             .when(
-                (self.sidebar_split || self.sidebar_layout_transition.is_some())
+                !self.conversation_form.compact() && (self.sidebar_split || self.sidebar_layout_transition.is_some())
                     && (self.conversations_visible||self.conversations_transition.is_some())
                     && (!inspector_open || window.viewport_size().width >= px(1180.)),
                 |s| {
@@ -5809,7 +5817,7 @@ impl Render for Orbit {
                     )
                 },
             )
-            .child(self.docked_conversation(adaptive_ui::panel!(self,"chat",window,
+            .child(self.conversation_chrome(self.docked_conversation(adaptive_ui::panel!(self,"chat",window,
                 if self.ninja_surface_owner().is_some(){self.ninjas_conversation(window,cx)}else{div()
                     .flex_1()
                     .min_w(px(0.))
@@ -5821,7 +5829,7 @@ impl Render for Orbit {
                     .relative()
                     .overflow_hidden()
                     .child(div().absolute().inset_0().child(self.background.clone()))
-                    .child(entrance.container(WorkspacePart::Header).flex_none().child(self.tabs(cx)))
+                    .when(!self.conversation_form.compact(),|s|s.child(entrance.container(WorkspacePart::Header).flex_none().child(self.tabs(cx))))
                     .child(
                         entrance.container(WorkspacePart::Header)
                             .h(px(36.))
@@ -5833,7 +5841,7 @@ impl Render for Orbit {
                             .border_b_1()
                             .border_color(rgba(0xebebeb12))
                             .when(
-                                !self.sidebar
+                                !self.conversation_form.compact() && !self.sidebar
                                     && (!self.sidebar_split
                                         || !self.conversations_visible
                                         || (inspector_open
@@ -5880,7 +5888,7 @@ impl Render for Orbit {
                                     .on_mouse_down(MouseButton::Left,|_,window,_|native::drag(window))
                                     .child(title),
                             )
-                            .when(unified::active(), |s| {
+                            .when(unified::active() && !self.conversation_form.compact(), |s| {
                                 s.child(
                                     context_ui::header_control("return-to-notch", false)
                                         .text_size(theme::ui_px(11.))
@@ -6070,9 +6078,9 @@ impl Render for Orbit {
                         )
                     })
                     .child(entrance.container(WorkspacePart::Composer).flex_none().child(self.composer(window, cx)))
-                    .into_any_element()}),window,cx)
+                    .into_any_element()}),window,cx),cx)
             )
-            .when(self.files_visible, |s| {
+            .when(self.files_visible && !self.conversation_form.compact(), |s| {
                 s.when_some(self.file_browser.clone(), |s, browser| {
                     s.child(adaptive_ui::panel!(self,"files",window,self.inspector_shell(pane_layout::Pane::Files, entrance.container(WorkspacePart::Inspector)
                             .debug_selector(|| "files-inspector".into())
@@ -6088,10 +6096,10 @@ impl Render for Orbit {
                             .child(div().flex_1().min_h(px(0.)).w_full().child(browser)).into_any_element(),window,cx)))
                 })
             })
-            .when(self.broker_panel.is_some(), |s| {
+            .when(self.broker_panel.is_some() && !self.conversation_form.compact(), |s| {
                 s.child(adaptive_ui::panel!(self,"agents",window,self.inspector_shell(pane_layout::Pane::Children,self.children_panel(cx),window,cx)))
             })
-            .when_some(self.diff_view.clone(), |s, review| {
+            .when_some(self.diff_view.clone().filter(|_|!self.conversation_form.compact()), |s, review| {
                 s.child(adaptive_ui::panel!(self,"changes",window,self.inspector_shell(pane_layout::Pane::Changes, entrance.container(WorkspacePart::Inspector)
                         .debug_selector(|| "changes-inspector".into())
                         .w_full()

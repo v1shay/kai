@@ -231,8 +231,12 @@ private final class NotchSurfaceHost:NSView {
     private var quickPrepared:(workspace:Bool,source:CGRect,returnTo:QuickReturn)?
     private var commandChordActive=false
     private let hangDiagnostics=HangDiagnostics()
-    private var unifiedDraftBase=""
     private let workspaceMorph=WorkspaceMorph()
+    private var conversationForm:ConversationForm = .workspace
+    private var conversationRequestedForm:ConversationForm = .workspace
+    private var conversationWorkspaceFrame:CGRect?
+    private var conversationRevision=0
+
     private var quickChatVisible=false,workspaceVoiceRequest:String?
     private var completionIndicatorWork:DispatchWorkItem?
     private var workspaceFocusRefreshPending=false
@@ -634,8 +638,6 @@ private final class NotchSurfaceHost:NSView {
             guard let self,let state=self.latestState,request.matches(state),fields["threadId"] as? String==request.review?.owner,fields["approvalRequestId"] as? String==request.review?.token else{return}
             self.bridge.send(action,fields)
         }
-        bridge.draftBaseProvider={ [weak self] in self?.unifiedDraftBase ?? "" }
-        bridge.draftProvider={ [weak self] in self?.composerField?.stringValue ?? "" }
         bridge.onState={ [weak self] state in self?.receive(state) }
         bridge.onError={ [weak self] error in guard let self else{return};self.pendingSlashID=nil;self.pendingSlashPicker=nil;self.slashPicker.hide();self.miniUI.dismissComposerPickers();if self.compactVoiceMode{self.failCompactVoice(error);return};self.chatVoice.stop();self.sounds.playScene("failure");self.earlierHistoryRequest=nil;self.historyControl.update(hasMore:false,loading:false);self.cancelShortcutInput();self.pendingAutoSend=false;self.pendingAttachmentSend=false;self.attachmentRequest=nil;self.sendingPrompt=nil;self.sendingPromptRequestID=nil;self.pendingFilesRequestID=nil;self.indicator.setFileLoading(false);self.finishExpandedChatLoading();if self.miniOpen{self.pinned=EmbeddedCodeRuntime.shared.active;self.compactWhileWorking=false;self.setOpen(EmbeddedCodeRuntime.shared.active,mini:EmbeddedCodeRuntime.shared.active)};self.miniUI.cancelPending();self.miniUI.setCodexMessage(error);self.syncMotion(force:true) }
         speech.onModels={ [weak self] models in self?.updateVoiceMenu(models) }
@@ -886,14 +888,13 @@ private final class NotchSurfaceHost:NSView {
         toggleMenuBarPanel()
     }
     func toggleMenuBarPanel(){
-        synchronizeComposerDraft()
         guard let button=status?.button else{return}
         cancelModifierShortcut()
         guard EmbeddedCodeRuntime.shared.active else{toggleFromMenu();return}
-        if quickChatVisible,menuQuickAnchor != nil{EmbeddedCodeRuntime.shared.sendAction("quick_dismiss");return}
-        guard let host=button.window else{return};let anchor=host.convertToScreen(button.convert(button.bounds,to:nil));menuQuickAnchor=anchor
-        let fromWorkspace=EmbeddedCodeRuntime.shared.workspaceWindow?.isVisible == true
-        quickPrepared=(fromWorkspace,fromWorkspace ? EmbeddedCodeRuntime.shared.workspaceWindow!.frame:anchor,.hidden)
+        // Clicking the status item can temporarily take key focus from its
+        // window. Visibility, not focus, decides whether this click closes it.
+        if conversationRequestedForm == .menu,EmbeddedCodeRuntime.shared.workspaceWindow?.isVisible == true{dismissConversation();return}
+        if let host=button.window{menuQuickAnchor=host.convertToScreen(button.convert(button.bounds,to:nil))}
         let mark=menuBarIdentity.mark
         bridge.send("menu_bar_open",["kind":mark.kind,"id":mark.id])
     }
@@ -1101,7 +1102,7 @@ private final class NotchSurfaceHost:NSView {
         guard commandDismissGesture.update(down:down,eligible:bare && (open || (workspaceMorph.expanded && workspaceIsForeground) || workspaceMorph.transitioning || quickChatVisible),at:time) else{return false}
         cancelShortcutHold();cancelWorkspaceHold();holdWork?.cancel();dismissNotchView();return true
     }
-    func probeMenuBarClick(){guard CommandLine.arguments.contains("--unified-smoke-test") else{return};menuBarClicked(nil);DispatchQueue.main.asyncAfter(deadline:.now()+0.2){[weak self] in guard let self,self.quickChatVisible else{return};self.launchUnifiedWorkspace()}}
+    func probeMenuBarClick(){guard CommandLine.arguments.contains("--unified-smoke-test") else{return};menuBarClicked(nil)}
     func probeDoubleCommand(){
         guard CommandLine.arguments.contains("--unified-smoke-test") else{return}
         if workspaceMorph.expanded,let window=EmbeddedCodeRuntime.shared.workspaceWindow{
@@ -1212,6 +1213,9 @@ private final class NotchSurfaceHost:NSView {
     }
     func dismissUnifiedSurface(){dismissNotchView()}
     private func dismissNotchView(){
+        if EmbeddedCodeRuntime.shared.active,EmbeddedCodeRuntime.shared.workspaceWindow?.isVisible == true{
+            dismissConversation();return
+        }
         if let request=approvalUI.request ?? latestState.flatMap(CompactApprovalRequest.init(state:)){approvalDismissal.dismiss(request)}
         if approvalPopout{nativeReview.dismiss();approvalPopout=false;approvalUI.reset();closeNotch();return}
         cancelWorkspaceHold()
@@ -1331,6 +1335,9 @@ private final class NotchSurfaceHost:NSView {
     }
 
     private func setOpen(_ requested: Bool, mini requestedMini: Bool = false,userInitiated:Bool=false,forceReveal:Bool=false) {
+        if EmbeddedCodeRuntime.shared.active,requested,requestedMini{
+            requestConversation(.notch);return
+        }
         if !requested || !requestedMini{slashPicker.hide();miniUI.dismissComposerPickers()}
         if approvalPopout && (!requested || requestedMini){approvalPopout=false;approvalUI.reset()}
         if compactVoiceMode,userInitiated {voiceExpanded=requested && requestedMini}
@@ -1395,71 +1402,61 @@ private final class NotchSurfaceHost:NSView {
 
     func showUnifiedNotchOnLaunch(){pinned=true;setOpen(true,mini:false,userInitiated:true)}
     func toggleUnifiedSurface(){
-        if quickChatVisible{quickReturn = .extended;EmbeddedCodeRuntime.shared.sendAction("quick_dismiss");return}
-        if workspaceNotchOverlay && miniOpen{expandWorkspace()}
-        else if workspaceMorph.expanded{collapseWorkspace()}
-        else{pinned=true;compactWhileWorking=false;setOpen(true,mini:true,userInitiated:true)}
+        if EmbeddedCodeRuntime.shared.workspaceIsForeground{
+            if conversationRequestedForm == .workspace{requestConversation(.notch)}else{requestConversation(.workspace)}
+        }else{requestConversation(.notch)}
     }
-    @objc func expandWorkspace(){
-        guard EmbeddedCodeRuntime.shared.active,let window=EmbeddedCodeRuntime.shared.workspaceWindow,panel != nil else{return}
-        miniUI.cancelPending();finishExpandedChatLoading()
-        if workspaceMorph.expanded && workspaceIsForeground && !workspaceNotchOverlay && !workspaceMorph.transitioning{window.makeKeyAndOrderFront(nil);return}
-        let draft=composerField?.stringValue ?? ""
-        if draft != unifiedDraftBase{bridge.send("draft",["text":draft])}
-        revealWorkspace()
-    }
-    func launchUnifiedWorkspace(){guard !quickChatVisible,quickPrepared == nil else{return};revealWorkspace()}
-    func revealWorkspace(from explicitSource:CGRect?=nil,sourceIsNotch:Bool=true){
-        guard let window=EmbeddedCodeRuntime.shared.workspaceWindow,let panel else{return}
-        passiveCompact=false;passiveVoice=false;passiveRetire?.cancel();passiveRetire=nil
-        workspaceAutomaticStatus=false;workspaceStatusRetire?.cancel();workspaceStatusRetire=nil;workspaceStatusMorph.cancel()
-        let replay=workspaceMorph.expanded && (workspaceNotchOverlay || !workspaceIsForeground)
-        if workspaceMorph.expanded && !replay && !workspaceMorph.transitioning{window.makeKeyAndOrderFront(nil);return}
-        let quickSource=quickChatVisible ? quickWindow?.frame:nil
-        if quickSource != nil || !sourceIsNotch{quickMorph.retireBackdrop()}
-        if quickChatVisible{quickReturn = .handoff;EmbeddedCodeRuntime.shared.sendAction("quick_dismiss");quickChatVisible=false}
-        let width=open ? expandedWidth:notchWidth,height=open ? popoutHeight:notchHeight
-        let settledSource=CGRect(x:panel.frame.midX-width/2,y:panel.frame.maxY-height,width:width,height:height)
-        let source=explicitSource ?? quickSource ?? (panel.isVisible ? (mask.presentation()?.path ?? mask.path).map{panel.convertToScreen($0.boundingBoxOfPath)} ?? settledSource:settledSource)
-        miniUI.cancelPending();compactWhileWorking=true;compactThreadID=latestState?.threadId;autoCompact=false;pinned=true
-        workspaceNotchOverlay=false;voiceExpanded=false
-        workspaceMorph.expand(window,from:source,replay:replay,sourceNotch:quickSource == nil && sourceIsNotch,crossfade:quickSource != nil || !sourceIsNotch,sourceRadius:quickSource != nil || !sourceIsNotch ? 20:10){[weak self] in self?.syncWorkspacePet();self?.workspaceFocusChanged()}
-        setOpen(true,mini:false);if !approvalPopout{panel.orderOut(nil);dropPanel?.orderOut(nil)};floatingTasks.setSuppressed(true);syncWorkspacePet()
-    }
-    @objc func collapseWorkspace(){
-        if workspaceMorph.expanded && !workspaceIsForeground{expandToRunningChat();return}
-        foldWorkspace()
-    }
-    // An explicit request from Code already identifies the surface to fold.
-    // WindowServer focus may still be settling after a reveal; only the global
-    // shortcut uses focus to choose a background overlay instead of a fold.
-    func foldWorkspace(){
-        workspaceNotchOverlay=false
-        guard let window=EmbeddedCodeRuntime.shared.workspaceWindow,let panel else{return}
-        pinned=true;compactWhileWorking=false;autoCompact=false
-        let width=expandedSize?.width ?? notchWidth+160
-        let target=CGRect(x:panel.frame.midX-width/2,y:panel.frame.maxY-canvasHeight,width:width,height:canvasHeight)
-        workspaceMorph.collapse(window,to:target,into:panel,revealNotch:{[weak self] in
-            guard let self else{return}
-            self.restoreWorkspacePet()
-            self.setOpen(true,mini:true,userInitiated:true)
-        }){[weak self] in
-            guard let self else{return}
-            self.floatingTasks.setSuppressed(self.suppressFloatingTasks)
-            if !self.quickChatVisible,self.showsNotchSurface{self.panel.makeKey();self.reviewNextFloatingTask()}
-        }
-    }
+    @objc func expandWorkspace(){requestConversation(.workspace)}
+    func launchUnifiedWorkspace(){requestConversation(.workspace)}
 
-    private func dismissWorkspace(){
-        guard let window=EmbeddedCodeRuntime.shared.workspaceWindow,let panel else{return}
-        let busy=latestState.map{!$0.activeTasks.isEmpty || $0.activeTurnId != nil} ?? false
-        let width=busy ? notchWidth+160:notchWidth
-        let target=CGRect(x:panel.frame.midX-width/2,y:panel.frame.maxY-notchHeight,width:width,height:notchHeight)
-        closeNotch()
-        workspaceMorph.collapse(window,to:target){[weak self] in
-            guard let self else{return};self.restoreWorkspacePet();self.floatingTasks.setSuppressed(self.suppressFloatingTasks);if self.open{self.placePanel()}
-        }
+    func requestConversation(_ form:ConversationForm,toggle:Bool=false){
+        guard EmbeddedCodeRuntime.shared.active else{return}
+        cancelModifierShortcut()
+        if toggle,conversationRequestedForm == form,EmbeddedCodeRuntime.shared.workspaceIsForeground{dismissConversation();return}
+        conversationRequestedForm=form;conversationRevision+=1
+        EmbeddedCodeRuntime.shared.sendAction("conversation_surface",["form":form.rawValue,"revision":conversationRevision])
     }
+    /// Called after the owner has applied layout, outside its GPUI borrow. There
+    /// is no secondary editor, native transcript, or draft adoption in this path.
+    func presentConversation(_ form:ConversationForm,revision:Int){
+        guard revision == conversationRevision else{return}
+        guard let window=EmbeddedCodeRuntime.shared.workspaceWindow else{return}
+        let screen=(form == .notch ? NSScreen.screens.first{$0.safeAreaInsets.top>0}:nil) ?? window.screen ?? NSScreen.main
+        guard let screen else{return}
+        if conversationForm == .workspace,form != .workspace{conversationWorkspaceFrame=window.frame}
+        let source=window.isVisible ? window.frame:(panel?.frame ?? window.frame)
+        let target=form.frame(in:screen.visibleFrame,workspace:conversationWorkspaceFrame,anchor:menuQuickAnchor)
+        conversationForm=form;conversationRequestedForm=form
+        quickPrepared=nil;quickChatVisible=false;quickWindow=nil
+        workspaceNotchOverlay=false;workspaceAutomaticStatus=false
+        workspaceStatusRetire?.cancel();workspaceStatusRetire=nil;workspaceStatusMorph.cancel()
+        passiveRetire?.cancel();passiveRetire=nil;passiveCompact=false;passiveVoice=false
+        miniUI.cancelPending();slashPicker.hide();miniUI.dismissComposerPickers()
+        approvalPopout=false;approvalUI.reset();nativeReview.dismiss()
+        setOpen(false);panel?.orderOut(nil);dropPanel?.orderOut(nil)
+        window.minSize=CGSize(width:form == .workspace ? 940:480,height:form == .workspace ? 620:360)
+        workspaceMorph.expand(window,from:source,replay:true,destination:target,destinationLevel:form == .workspace ? .normal:.floating,sourceNotch:false,sourceRadius:16,destinationRadius:16){[weak self] in
+            self?.syncWorkspacePet();self?.updateNinjaWallpaper();self?.workspaceFocusChanged()
+        }
+        floatingTasks.setSuppressed(true)
+        syncWorkspacePet();updateNinjaWallpaper()
+    }
+    private func dismissConversation(){
+        guard let window=EmbeddedCodeRuntime.shared.workspaceWindow else{return}
+        // Cancel pending presentation before retiring the only interactive view.
+        conversationRevision+=1
+        workspaceMorph.park(window)
+        workspaceNotchOverlay=false;workspaceAutomaticStatus=false
+        restoreWorkspacePet();ninjaScene.suspend()
+        compactWhileWorking=workspaceNeedsStatus;autoCompact=false;pinned=false
+        setOpen(workspaceNeedsStatus,mini:false,forceReveal:true)
+        if let state=latestState,workspaceNeedsStatus{showActivity(displayActivity(state))}
+        floatingTasks.setSuppressed(suppressFloatingTasks)
+    }
+    func revealWorkspace(from explicitSource:CGRect?=nil,sourceIsNotch:Bool=true){requestConversation(.workspace)}
+    @objc func collapseWorkspace(){requestConversation(.notch)}
+    func foldWorkspace(){requestConversation(.notch)}
+    private func dismissWorkspace(){dismissConversation()}
     private var workspaceIsForeground:Bool{EmbeddedCodeRuntime.shared.workspaceIsForeground && !quickChatVisible}
     private var showsNotchSurface:Bool{approvalPopout || (!quickChatVisible && (workspaceMorph.presentingNotch || (!workspaceMorph.transitioning && (!workspaceMorph.expanded || workspaceNotchOverlay))))}
     private func prepareNotchOverlay(){
@@ -1479,14 +1476,14 @@ private final class NotchSurfaceHost:NSView {
     }
     @objc func workspaceFocusChanged(){
         guard EmbeddedCodeRuntime.shared.active else{return}
-        if menuQuickAnchor != nil,quickChatVisible,!quickMorph.transitioning,!EmbeddedCodeRuntime.shared.isForeground(quickWindow){EmbeddedCodeRuntime.shared.sendAction("quick_dismiss");return}
+        if conversationForm == .menu,workspaceMorph.expanded,!workspaceMorph.transitioning,!EmbeddedCodeRuntime.shared.workspaceIsForeground{dismissConversation();return}
         let foreground=workspaceIsForeground,returned=workspaceWasForeground == false && foreground
         workspaceWasForeground=foreground
         if workspaceMorph.expanded,!workspaceMorph.transitioning,!quickChatVisible{
             if EmbeddedCodeRuntime.shared.workspaceIsForeground{
                 if let state=latestState{updateCompactApproval(state)}
                 if workspaceNotchOverlay && returned{
-                    if open || panel?.isVisible == true{revealWorkspace()}else{workspaceNotchOverlay=false;workspaceAutomaticStatus=false;workspaceStatusMorph.cancel();syncWorkspacePet()}
+                    workspaceNotchOverlay=false;workspaceAutomaticStatus=false;workspaceStatusMorph.cancel();setOpen(false);panel?.orderOut(nil);syncWorkspacePet()
                 }
             }else if workspaceNeedsStatus{
                 workspaceStatusRetire?.cancel();workspaceStatusRetire=nil
@@ -1532,7 +1529,6 @@ private final class NotchSurfaceHost:NSView {
         quickPrepared=(false,source,.hidden)
     }
     func prepareQuickOpening(){
-        synchronizeComposerDraft()
         cancelModifierShortcut()
         guard quickPrepared == nil,!(quickChatVisible && quickWindow?.isVisible == true),let panel else{return}
         let fromWorkspace=workspaceMorph.expanded && workspaceIsForeground && EmbeddedCodeRuntime.shared.workspaceWindow?.isVisible == true
@@ -1646,10 +1642,10 @@ private final class NotchSurfaceHost:NSView {
             if window.frame == screen.visibleFrame{value |= 64}
             if CommandLine.arguments.contains("--unified-startup-probe"){fputs("KAI_STARTUP_FRAME actual=\(window.frame) visible=\(screen.visibleFrame) transitioning=\(workspaceMorph.transitioning)\n",stderr)}
         }
-        if quickChatVisible{value |= 128}
+        if EmbeddedCodeRuntime.shared.workspaceWindow?.isVisible == true,[ConversationForm.menu,.mini].contains(conversationForm){value |= 128}
         if !workspaceBackground.isHidden && workspaceBackground.hasImage{value |= 256}
         if indicator.mode != .off && indicator.layer.opacity>0{value |= 32}
-        if miniOpen{value |= 512}
+        if EmbeddedCodeRuntime.shared.workspaceWindow?.isVisible == true,conversationForm == .notch{value |= 512}
         return value
     }
     func workspacePetGeometry(_ frame:CGRect){workspacePetSlot=frame;syncWorkspacePet()}
@@ -1737,7 +1733,7 @@ private final class NotchSurfaceHost:NSView {
             }
         }else{composerField?.stringValue=text}
         miniUI.setComposerHasText(!text.isEmpty);syncMotion(force:!text.isEmpty)
-        if dictation{synchronizeComposerDraft()}
+
     }
     private func updateSlashPicker(){
         guard miniOpen,let field=composerField,let editor=field.currentEditor() as? NSTextView,!editor.hasMarkedText() else{slashPicker.hide();return}
@@ -1750,11 +1746,7 @@ private final class NotchSurfaceHost:NSView {
         pendingSlashPicker=["agent","model"].contains(name) ? name:nil
         slashPicker.hide();bridge.send("composer_command",["name":name,"draft":field.stringValue,"caret":editor.selectedRange().location,"requestId":id,"pickerSurface":"notch"])
     }
-    private func synchronizeComposerDraft(){
-        guard EmbeddedCodeRuntime.shared.active,latestState != nil,sendingPrompt == nil,let field=composerField else{return}
-        bridge.send("draft",["text":field.stringValue])
-    }
-    func controlTextDidChange(_ obj:Notification){dictationTextReveal.finish();miniUI.setComposerHasText(!(composerField?.stringValue.isEmpty ?? true));synchronizeComposerDraft();updateSlashPicker();syncMotion(force:true)}
+    func controlTextDidChange(_ obj:Notification){dictationTextReveal.finish();miniUI.setComposerHasText(!(composerField?.stringValue.isEmpty ?? true));updateSlashPicker();syncMotion(force:true)}
     func control(_ control:NSControl,textView:NSTextView,doCommandBy selector:Selector)->Bool{
         if slashPicker.active {
             switch selector {
@@ -1925,18 +1917,6 @@ private final class NotchSurfaceHost:NSView {
                 }
             }
         }
-        if EmbeddedCodeRuntime.shared.active,let draft=state.composerDraft {
-            let local=composerField?.stringValue ?? ""
-            let changed=latestState?.ownerToken != state.ownerToken
-            if let base=bridge.acceptedDraftBase{unifiedDraftBase=base}
-            let accepted=slashAccepted || sendingPromptRequestID.flatMap(state.requestResult).map{$0.error == nil} == true
-            let editedAfterSend=accepted && sendingPrompt != nil && local.trimmingCharacters(in:.whitespacesAndNewlines) != sendingPrompt
-            if editedAfterSend{unifiedDraftBase=draft}
-            else if UnifiedDraftHandoff.shouldAdopt(local:local,base:unifiedDraftBase,remote:draft,selectionChanged:changed,sendAccepted:accepted) {
-                unifiedDraftBase=draft
-                if !dictating && !finalizingDictation && !shortcutPreparation.busy{setPrompt(draft)}
-            }
-        }
         if let connection=state.codeConnection{codeConnectionItem?.toolTip=connection.error;codeConnectionItem?.title=EmbeddedCodeRuntime.shared.active ? "Code runtime · in this app":connection.enabled ? "Connect to Code · \(connection.connected ? "connected":"waiting")":"Connect to Code"}
         let previous=latestState,previousNotice=previous?.notice,wasFloating=floatingTasks.tracking;latestState=state
         if (previous?.personalNinja == nil) != (state.personalNinja == nil){updateGlassBackground()}
@@ -1981,7 +1961,6 @@ private final class NotchSurfaceHost:NSView {
                 if let reply=sendingPromptRequestID.flatMap(state.requestResult){
                     sendingPrompt=nil;sendingPromptRequestID=nil
                     if let error=reply.error{miniUI.setCodexMessage(error);if compactOnSend && compactWhileWorking{compactWhileWorking=false;compactThreadID=nil;setOpen(true,mini:true)}}
-                    else{synchronizeComposerDraft()}
                 } else if previous?.ownerToken != state.ownerToken {
                     // Changing chats retires only this view's pending control;
                     // the old owner continues executing its submitted command.
@@ -2706,7 +2685,7 @@ private final class NotchSurfaceHost:NSView {
         }else{ninjaScene.suspend();return}
         guard let host,rect.width>0,rect.height>0 else{ninjaScene.suspend();return}
         ninjaScene.mount(in:host,frame:rect)
-        ninjaScene.configure(identity:ninja.host+":"+ninja.id+":"+(state.threadId ?? ""),name:ninja.name,style:ninja.style,working:state.activeTurnId != nil || state.workspaceVoiceActive == true,motion:workspaceMorph.motionEnabled,visible:true,bottomAnchored:miniOpen && showsNotchSurface && !quickChatVisible)
+        ninjaScene.configure(identity:ninja.host+":"+ninja.id+":"+(state.threadId ?? ""),name:ninja.name,style:ninja.style,working:state.activeTurnId != nil || state.workspaceVoiceActive == true,motion:workspaceMorph.motionEnabled,visible:true,bottomAnchored:conversationForm == .notch || (miniOpen && showsNotchSurface && !quickChatVisible))
     }
     private func updateGlassBackground(){
         updateNinjaWallpaper()

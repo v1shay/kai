@@ -78,6 +78,7 @@ fn fit_rect(state: &WindowState, displays: &[Bounds<Pixels>]) -> Bounds<Pixels> 
 
 impl Orbit {
     pub(super) fn toggle_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.conversation_form.compact(){unified::reveal();if self.terminal_visible{return}}
         if self.reopen_closing_pane(pane_layout::Pane::Terminal,cx){return}
         if self.terminal_visible {self.close_pane(pane_layout::Pane::Terminal,cx);return}
         if self.quit_pending {
@@ -134,7 +135,7 @@ impl Orbit {
         }
         self.stop_dictation(cx);
         self.stop_voice(cx);
-        if window.window_handle().window_id() == self.primary_window {
+        if window.window_handle().window_id() == self.primary_window && !self.conversation_form.compact() {
             self.window_state = Some(capture_window(window));
         }
         self.save_workspace_now(cx);

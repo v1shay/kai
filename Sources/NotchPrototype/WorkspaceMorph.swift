@@ -132,7 +132,7 @@ import AppKit
             layer.opacity=appearing ? original:0;layer.add(fade,forKey:"workspaceContent")
         }
     }
-    func expand(_ window:NSWindow,from source:CGRect,replay:Bool=false,destination:CGRect?=nil,sourceNotch:Bool=true,crossfade:Bool=false,sourceRadius:CGFloat=10,destinationRadius:CGFloat=10,completion:@escaping()->Void={}){
+    func expand(_ window:NSWindow,from source:CGRect,replay:Bool=false,destination:CGRect?=nil,destinationLevel:NSWindow.Level?=nil,sourceNotch:Bool=true,crossfade:Bool=false,sourceRadius:CGFloat=10,destinationRadius:CGFloat=10,completion:@escaping()->Void={}){
         NSApp.activate(ignoringOtherApps:true)
         if expanded && !transitioning && !replay{present(window);completion();return}
         CATransaction.begin();CATransaction.setDisableActions(true);defer{CATransaction.commit()}
@@ -140,6 +140,9 @@ import AppKit
         let returningOpacity=liveContentOpacities()
         let start=contour?.boundingBoxOfPath ?? source
         revision += 1;let token=revision;clearVisuals();self.window=window;expanded=true;transitioning=true
+        // Restore the interrupted transition before applying the new form's
+        // level; otherwise its old completion policy wins a rapid reversal.
+        if let destinationLevel{window.level=destinationLevel}
         let screen=NSScreen.screens.first{$0.frame.contains(CGPoint(x:source.midX,y:source.maxY-1))} ?? window.screen ?? NSScreen.main
         let target=destination ?? Self.destination(saved:nil,screen:screen?.visibleFrame ?? window.frame)
         // A parked workspace retains its working-area frame. Reapplying that

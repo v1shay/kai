@@ -205,11 +205,8 @@ enum KaiBridgeEvent {
     private let writeQueue=DispatchQueue(label:"kai.bridge-write",qos:.userInitiated)
     private let audioWrites=DispatchSemaphore(value:16)
     private let decodeQueue=DispatchQueue(label:"kai.state-decode",qos:.userInitiated)
-    var draftBaseProvider:(()->String)?
-    var draftProvider:(()->String)?
     private var ownerToken:String?
-    private var draftWrites=UnifiedDraftWrites()
-    private(set) var acceptedDraftBase:String?
+    private var composerBase:String?
     private var embeddedModelIDs=Set<String>()
     private var selectedRunID:String?
     private var selectedThreadID:String?
@@ -224,7 +221,7 @@ enum KaiBridgeEvent {
         if EmbeddedCodeRuntime.shared.active {
             EmbeddedCodeRuntime.shared.onState={ [weak self] state in
                 guard let self else{return}
-                self.acceptedDraftBase=self.draftWrites.receive(owner:state.ownerToken,result:state.requestResult)
+                self.composerBase=state.composerDraft
                 self.selectedThreadID=state.threadId;self.selectedRunID=state.activeTurnId;self.ownerToken=state.ownerToken
                 self.embeddedModelIDs=Set((state.models ?? []).map(\.model));self.onState?(state)
             }
@@ -335,13 +332,10 @@ enum KaiBridgeEvent {
             for (key,value) in DefaultModelPreferences(defaults:.standard).fields(action:action,availableModels:embeddedModelIDs){request[key]=value}
             if (request["requestId"] as? String ?? "").isEmpty{request["requestId"]=UUID().uuidString}
             request["ownerToken"]=ownerToken
-            request["draftBase"]=draftWrites.pendingText ?? draftBaseProvider?()
-            if action == "draft",let text=request["text"] as? String{
-                if text == (request["draftBase"] as? String){return}
-                draftWrites.enqueue(id:request["requestId"] as! String,text:text)
-            }
+            // Native global capture can submit input, but presentation and
+            // navigation never shuttle text between independent editors.
+            if ["send","composer_command"].contains(action){request["draftBase"]=composerBase}
             if action == "interrupt"{request["runId"]=selectedRunID}
-            if ["chat","project","new","new_project","workspace_expand","navigate","ui_command"].contains(action){request["draft"]=draftProvider?() ?? ""}
             if request["targetThreadId"] == nil{request["targetThreadId"]=selectedThreadID}
             if let data=try? JSONSerialization.data(withJSONObject:request){EmbeddedCodeRuntime.shared.send(data)}
             return

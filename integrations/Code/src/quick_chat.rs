@@ -1,5 +1,5 @@
-//! A demand-created native window over the existing Orbit entity. The panel has
-//! its own input geometry, but shares drafts, agents, history and runtime state.
+//! Shortcut routing. Kai Unified changes the original window's presentation.
+//! The separate QuickChat editor below is retained only for standalone Code.
 use super::*;
 use global_hotkey::{GlobalHotkey, Shortcut};
 
@@ -77,11 +77,12 @@ impl Controller {
         cx.spawn(async move|cx|{while events.recv().await.is_ok(){if cx.update(|_|unified::emit(&serde_json::json!({"type":"menuBarToggle"}))).is_err(){break}}}).detach();Ok(())
     }
     pub fn toggle_menu(&mut self,cx:&mut App)->anyhow::Result<()>{
+        if unified::active(){unified::emit(&serde_json::json!({"type":"conversationToggle","form":"menu"}));return Ok(())}
         let switching=!self.menu_surface;self.menu_surface=true;
         if switching{self.open(cx)}else{self.toggle_surface(cx)}
     }
     pub fn toggle(&mut self, cx: &mut App) -> anyhow::Result<()> {
-        unified::emit(&serde_json::json!({"type":"quickMiniPrepare"}));
+        if unified::active(){unified::emit(&serde_json::json!({"type":"conversationToggle","form":"mini"}));return Ok(())}
         let switching=self.menu_surface;self.menu_surface=false;
         if switching{self.open(cx)}else{self.toggle_surface(cx)}
     }
@@ -108,9 +109,11 @@ impl Controller {
         self.dismiss_at(None,cx);
     }
     pub(super) fn dismiss_at(&mut self,issued_at:Option<f64>,cx:&mut App){
+        if unified::active(){unified::emit(&serde_json::json!({"type":"workspaceDismiss"}));return}
         if let Some(window)=self.window{let _=window.update(cx,|panel,window,cx|panel.hide_if_current(issued_at,window,cx));}
     }
     pub fn open(&mut self, cx: &mut App) -> anyhow::Result<()> {
+        if unified::active(){unified::emit(&serde_json::json!({"type":"conversationShow","form":"mini"}));return Ok(())}
         unified::quick_prepare();
         let result=self.open_surface(cx);
         if result.is_err(){unified::quick_visibility(false);}

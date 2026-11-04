@@ -37,16 +37,25 @@ def image_fixture(env,enabled):
 
 def main():
     parser=argparse.ArgumentParser()
-    parser.add_argument('mode',choices=['ninja-chat','menu-bar','wallpaper','glass','startup-workspace','startup-extended','startup-compact','performance','latency','background-idle'])
+    parser.add_argument('mode',choices=['surfaces','ninja-chat','menu-bar','wallpaper','glass','startup-workspace','startup-extended','startup-compact','performance','latency','background-idle'])
     parser.add_argument('--bundle',type=Path,help='Verify another signed bundle, including an installed baseline')
     args=parser.parse_args();mode=args.mode
+    if mode in {'ninja-chat','latency','performance'}:
+        # WindowServer suspends display updates at the lock screen. Identity
+        # checks can still run there, but visible-frame timings cannot certify UI.
+        console=plistlib.loads(subprocess.check_output(['ioreg','-a','-n','Root','-d','1']))
+        if isinstance(console,list):console=console[0]
+        if any(user.get('CGSSessionScreenIsLocked') for user in console.get('IOConsoleUsers',[])):
+            raise RuntimeError('Unlock this Mac before measuring visible-window rendering; macOS has paused display updates.')
     root=Path(__file__).resolve().parent.parent
     source=args.bundle or root/'.build/unified/Kai Unified.app'
     report=root/'.build/validation';report.mkdir(parents=True,exist_ok=True)
     log=report/(mode+'.log')
     env=os.environ.copy();env['KAI_PERFORMANCE_LOG']='1'
     flags=['--unified-smoke-test']
-    if mode=='ninja-chat':
+    if mode=='surfaces':
+        flags+=['--unified-surface-probe'];marker='KAI_SURFACE_PROBE_OK'
+    elif mode=='ninja-chat':
         flags+=['--unified-ninja-render-probe'];marker='KAI_NINJA_RENDER_PROBE_OK';env['KAI_STARTUP_SURFACE']='workspace'
     elif mode=='menu-bar':
         flags+=['--unified-menu-bar-probe'];marker='KAI_MENU_BAR_PROBE_OK';env['KAI_STARTUP_SURFACE']='workspace'
