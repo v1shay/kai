@@ -3,7 +3,7 @@ https://github.com/v1shay/kai
 
 Source files inspected: Sources/NotchPrototype/WebRTCVoiceMedia.swift,
 Sources/NotchPrototype/Resources/voice/session.js, and kai_voice.py in the local
-Kai checkout (/Users/vishayagarwal/Documents/ChatGPT/notchdex).
+Kai checkout.
 
 The user expressly requested reuse of this implementation. The source checkout
 has no separate LICENSE file; this attribution does not assert an upstream open

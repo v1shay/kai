@@ -301,6 +301,8 @@ private final class AttachmentLayer:CALayer {
     var onFilesVisibleChanged:((Bool)->Void)?
     var onProject:((String)->Void)?,onChat:((String)->Void)?,onNew:(()->Void)?,onNewInProject:(()->Void)?,onFolder:((String)->Void)?,onSend:(()->Void)?,onApprove:(()->Void)?,onReject:(()->Void)?,onApprovalStop:(()->Void)?,onReview:(()->Void)?,onInterrupt:(()->Void)?,onClose:(()->Void)?,onImagesChanged:(([NSImage])->Void)?
     private let left=CALayer(), projectToggle=CAShapeLayer(), preview=FilePreviewLayer(), main=CALayer(), right=CALayer(), input=CAGradientLayer(), imageStrip=CALayer(), command=CALayer(), send=CAGradientLayer(), sendShade=CAGradientLayer(), sendGlass=CAGradientLayer(), arrow=CAShapeLayer(), message=CATextLayer(), response=CAGradientLayer(), responseMask=CALayer(), typingDots=(0..<3).map{_ in CALayer()},pendingHighlight=CALayer(),pendingRibbon=CAGradientLayer()
+    private let ninjaTitle=CATextLayer()
+    private var ninjaGroups=[KaiNinjaGroup](),ninjaRows=[(ChatRowLayer,String)](),foldedNinjas=Set<String>()
     private let newRow=CATextLayer(), projectNewRow=CATextLayer(), standaloneTitle=CATextLayer(),codeTitle=CATextLayer(), activeTitle=CATextLayer(), actionBar=CALayer(), closeButton=CATextLayer()
     private var projectRows=[(CALayer,String)](),chatRows=[(ChatRowLayer,String)](),standaloneRows=[(ChatRowLayer,String)](),activeRows=[(ChatRowLayer,String)](),codeRows=[(ChatRowLayer,String)](),codeChats=[KaiChat](),projects=[KaiProject](),chats=[KaiChat](),standaloneChats=[KaiChat](),selectedProject="",selectedThread:String?,fileEntries=[KaiFile](),fileRows=[FileRowLayer](),pathHits=[(CGRect,URL)](),filesOpen=false,previewOpen=false,previewFromFiles=false,projectsCollapsed=false,projectIntrudesComposer=false,projectOffset:CGFloat=0,fileOffset:CGFloat=0,approvalNeeded=false,turnActive=false
     private var sidebarContentHeight:CGFloat=0
@@ -328,6 +330,7 @@ private final class AttachmentLayer:CALayer {
         layer.opacity=0; layer.addSublayer(left);layer.addSublayer(projectToggle);layer.addSublayer(preview); layer.addSublayer(main); layer.addSublayer(right);left.masksToBounds=true;right.masksToBounds=true;projectToggle.fillColor=nil;projectToggle.strokeColor=NSColor.white.withAlphaComponent(0.38).cgColor;projectToggle.lineWidth=1;projectToggle.lineCap = .round;projectToggle.lineJoin = .round
         configure(newRow,"+ new chat",8,.white.withAlphaComponent(0.65));left.addSublayer(newRow)
         configure(projectNewRow,"+ in project",7,.white.withAlphaComponent(0.58));left.addSublayer(projectNewRow)
+        configure(ninjaTitle,"NINJAS",7,.white.withAlphaComponent(0.42),.medium);left.addSublayer(ninjaTitle)
         configure(standaloneTitle,"CHATS",7,.white.withAlphaComponent(0.42),.medium);left.addSublayer(standaloneTitle)
         configure(codeTitle,"CODE",7,.white.withAlphaComponent(0.42),.medium);left.addSublayer(codeTitle)
         configure(activeTitle,"ACTIVE",7,.white.withAlphaComponent(0.42),.medium);activeTitle.opacity=0;left.addSublayer(activeTitle)
@@ -370,7 +373,7 @@ private final class AttachmentLayer:CALayer {
         guard pendingRequestID != nil,let target=pendingSidebarTarget else{return}
         let row:CALayer?
         switch target {
-        case .chat(let id):row=(chatRows+standaloneRows+activeRows+codeRows).first{$0.1 == id}?.0
+        case .chat(let id):row=(chatRows+standaloneRows+activeRows+codeRows+ninjaRows).first{$0.1 == id}?.0
         case .project(let path):row=projectRows.first{$0.1 == path}?.0
         case .newChat:row=newRow
         case .newInProject:row=projectNewRow.opacity>0 ? projectNewRow:nil
@@ -394,25 +397,42 @@ private final class AttachmentLayer:CALayer {
     private func layoutProjects(animated:Bool) {
         defer{AdaptiveTextBackdrop.shared.refreshNativeInk()}
         CATransaction.begin();CATransaction.setDisableActions(true);defer{CATransaction.commit()}
-        sidebarContentHeight=21+CGFloat(codeChats.isEmpty ? 0:21+codeChats.count*16)+CGFloat(standaloneChats.isEmpty ? 0:21+standaloneChats.count*16)+CGFloat(elsewhere.isEmpty ? 0:21+elsewhere.count*16)+CGFloat(projects.count)*21+(projects.contains(where:{$0.path == selectedProject}) ? CGFloat(chats.count)*16+19:0)
+        let ninjaHeight=ninjaGroups.isEmpty ? 0:21+ninjaGroups.reduce(0){$0+21+(foldedNinjas.contains($1.id) ? 0:$1.chats.count*16)}
+        sidebarContentHeight=CGFloat(ninjaHeight)+21+CGFloat(codeChats.isEmpty ? 0:21+codeChats.count*16)+CGFloat(standaloneChats.isEmpty ? 0:21+standaloneChats.count*16)+CGFloat(elsewhere.isEmpty ? 0:21+elsewhere.count*16)+CGFloat(projects.count)*21+(projects.contains(where:{$0.path == selectedProject}) ? CGFloat(chats.count)*16+19:0)
         projectOffset=min(projectOffset,max(0,sidebarContentHeight-left.bounds.height+8))
         var cursor=left.bounds.height-4+projectOffset
         let viewport=left.bounds.insetBy(dx:0,dy:-18)
         let oldProjects=Dictionary(projectRows.map{($0.1,$0.0)},uniquingKeysWith:{first,_ in first})
-        let oldChats=Dictionary((chatRows+standaloneRows+activeRows+codeRows).map{($0.1,$0.0)},uniquingKeysWith:{first,_ in first})
+        let oldChats=Dictionary((chatRows+standaloneRows+activeRows+codeRows+ninjaRows).map{($0.1,$0.0)},uniquingKeysWith:{first,_ in first})
+        var nextNinjas=[(ChatRowLayer,String)]()
         var nextProjects=[(CALayer,String)](),nextChats=[(ChatRowLayer,String)](),nextStandalone=[(ChatRowLayer,String)](),nextActive=[(ChatRowLayer,String)](),nextCode=[(ChatRowLayer,String)]()
         func chat(_ id:String,_ name:String,_ running:Bool,_ rect:CGRect)->(ChatRowLayer,String)? {
             guard viewport.intersects(rect) else{return nil}
             let row:ChatRowLayer
             if let existing=oldChats[id],existing.name == name {row=existing}
             else {row=ChatRowLayer(name);row.name=name;left.addSublayer(row)}
-            setFrame(row,rect,animated:animated);row.setSelected(id == selectedThread)
-            let agent=(chats+standaloneChats+codeChats).first{$0.id==id}?.agent ?? elsewhere.first{$0.id==id}?.agent ?? ProviderIcons.identifier(name) ?? "codex"
-            row.setProvider(agent,profile:rowProfile);row.setRunning(running,runID:modelState?.activeTasks.first{$0.id == id}?.runId,successfulRuns:(modelState?.finishedTasks ?? []).filter{$0.id == id}.compactMap(\.runId))
+            setFrame(row,rect,animated:animated);row.setSelected(id == selectedThread || modelState?.personalNinja.map{id == "ninja-profile:\($0.host):\($0.id)"} == true)
+            let knownChats = chats + standaloneChats + codeChats + ninjaGroups.flatMap(\.chats)
+            let rowAgent = knownChats.first { $0.id == id }?.agent
+            let activeAgent = elsewhere.first { $0.id == id }?.agent
+            let fallbackAgent = id.hasPrefix("ninja-profile:") ? "ninja" : ProviderIcons.identifier(name)
+            let agent = rowAgent ?? activeAgent ?? fallbackAgent ?? "codex"
+            let ninjaStyle=ninjaGroups.first{$0.id == id || $0.chats.contains{$0.id == id}}?.style ?? elsewhere.first{$0.id == id}?.ninjaStyle
+            row.setProvider(agent,profile:ninjaStyle.map{PetGradientProfile.ninja($0)} ?? rowProfile);row.setRunning(running,runID:modelState?.activeTasks.first{$0.id == id}?.runId,successfulRuns:(modelState?.finishedTasks ?? []).filter{$0.id == id}.compactMap(\.runId))
             row.setPet(id.hasPrefix("child:") ? taskPets[id]:nil)
             return (row,id)
         }
         setFrame(newRow,CGRect(x:5,y:cursor-12,width:leftWidth-10,height:11),animated:animated);cursor-=21
+        ninjaTitle.opacity=ninjaGroups.isEmpty ? 0:1
+        if !ninjaGroups.isEmpty {
+            setFrame(ninjaTitle,CGRect(x:5,y:cursor-10,width:leftWidth-10,height:9),animated:animated);cursor-=15
+            for group in ninjaGroups {
+                let folded=foldedNinjas.contains(group.id)
+                if let row=chat(group.id,(folded ? "› ":"⌄ ")+group.name,false,CGRect(x:4,y:cursor-16,width:leftWidth-8,height:15)){nextNinjas.append(row)};cursor-=21
+                if !folded {for item in group.chats {if let row=chat(item.id,item.name,["running","queued","approval"].contains(item.status),CGRect(x:16,y:cursor-13,width:leftWidth-20,height:12)){nextNinjas.append(row)};cursor-=16}}
+            }
+            cursor-=6
+        }
         projectNewRow.opacity=projects.contains(where:{$0.path == selectedProject}) ? 1:0
         activeTitle.opacity=elsewhere.isEmpty ? 0:1
         if !elsewhere.isEmpty {
@@ -447,9 +467,10 @@ private final class AttachmentLayer:CALayer {
             }
         }
         var kept=Set((nextProjects.map{$0.0}+(nextChats+nextStandalone+nextActive).map{$0.0 as CALayer}).map{ObjectIdentifier($0)})
+        kept.formUnion(nextNinjas.map{ObjectIdentifier($0.0)})
         kept.formUnion(nextCode.map{ObjectIdentifier($0.0)})
-        for row in projectRows.map({$0.0})+(chatRows+standaloneRows+activeRows+codeRows).map({$0.0 as CALayer}) where !kept.contains(ObjectIdentifier(row)){row.removeFromSuperlayer()}
-        projectRows=nextProjects;chatRows=nextChats;standaloneRows=nextStandalone;activeRows=nextActive;codeRows=nextCode
+        for row in projectRows.map({$0.0})+(chatRows+standaloneRows+activeRows+codeRows+ninjaRows).map({$0.0 as CALayer}) where !kept.contains(ObjectIdentifier(row)){row.removeFromSuperlayer()}
+        projectRows=nextProjects;chatRows=nextChats;standaloneRows=nextStandalone;activeRows=nextActive;codeRows=nextCode;ninjaRows=nextNinjas
         updatePendingSidebarHighlight()
         projectIntrudesComposer=cursor+left.frame.minY<36
     }
@@ -545,17 +566,21 @@ private final class AttachmentLayer:CALayer {
             add(newRow.frame.offsetBy(dx:left.frame.minX,dy:left.frame.minY),limit:left.frame){[self] in
                 beginPending(newRow.frame.offsetBy(dx:left.frame.minX,dy:left.frame.minY),sidebarTarget:.newChat);onNew?()
             }
-            for (row,id) in (standaloneRows+activeRows+chatRows+codeRows).map({($0.0 as CALayer,$0.1)})+projectRows {
+            for (row,id) in (standaloneRows+activeRows+chatRows+codeRows+ninjaRows).map({($0.0 as CALayer,$0.1)})+projectRows {
                 let frame=row.frame.offsetBy(dx:left.frame.minX,dy:left.frame.minY)
                 let project=projectRows.contains{$0.0 === row}
                 // Separate the row's normal action from its hide affordance.
                 let body=CGRect(x:frame.minX,y:frame.minY,width:max(0,frame.width-12),height:frame.height)
                 let hide=CGRect(x:frame.maxX-12,y:frame.minY,width:12,height:frame.height)
                 add(body,limit:left.frame){[self] in
+                    if id.hasPrefix("ninja-profile:") {
+                        if modelState?.personalNinja.map({id == "ninja-profile:\($0.host):\($0.id)"}) == true{if !foldedNinjas.insert(id).inserted{foldedNinjas.remove(id)}}else{foldedNinjas.remove(id)}
+                        layoutProjects(animated:true)
+                    }
                     beginPending(frame,sidebarTarget:project ? .project(id):.chat(id))
                     if project{onProject?(id)}else{onChat?(id)}
                 }
-                add(hide,limit:left.frame){[self] in if project{hideProject(id)}else{hideChat(id)}}
+                if !id.hasPrefix("ninja-profile:"){add(hide,limit:left.frame){[self] in if project{hideProject(id)}else{hideChat(id)}}}
             }
             if projects.contains(where:{$0.path == selectedProject}) {
                 add(projectNewRow.frame.offsetBy(dx:left.frame.minX,dy:left.frame.minY),limit:left.frame){[self] in
@@ -597,14 +622,14 @@ private final class AttachmentLayer:CALayer {
         let fileHover=point.flatMap{fileAction(at:$0)}
         preview.setActionHover(preview.representedURL == fileHover?.url ? fileHover?.action:nil)
         for row in fileRows{row.setActionHover(row.url == fileHover?.url ? fileHover?.action:nil)}
-        guard let point else {projectRows.forEach{$0.0.sublayers?.last?.opacity=0}; (chatRows+standaloneRows+activeRows+codeRows).forEach{$0.0.setHovered(false)};hoveredAttachment=nil;for(i,item) in (imageStrip.sublayers?.compactMap{$0 as? AttachmentLayer} ?? []).enumerated(){item.setHovered(false);item.zPosition=CGFloat(i)};return }
+        guard let point else {projectRows.forEach{$0.0.sublayers?.last?.opacity=0}; (chatRows+standaloneRows+activeRows+codeRows+ninjaRows).forEach{$0.0.setHovered(false)};hoveredAttachment=nil;for(i,item) in (imageStrip.sublayers?.compactMap{$0 as? AttachmentLayer} ?? []).enumerated(){item.setHovered(false);item.zPosition=CGFloat(i)};return }
         let attachmentPoint=CGPoint(x:point.x-imageStrip.frame.minX,y:point.y-imageStrip.frame.minY),previews=imageStrip.sublayers?.compactMap{$0 as? AttachmentLayer} ?? [],hovered=(hoveredAttachment?.frame.contains(attachmentPoint) == true ? hoveredAttachment:previews.reversed().first{$0.frame.contains(attachmentPoint)})
         hoveredAttachment=hovered;for(i,item) in previews.enumerated(){item.setHovered(item === hovered);item.zPosition=item === hovered ? 1000:CGFloat(i)}
         let p=CGPoint(x:point.x-left.frame.minX,y:point.y-left.frame.minY)
-        let rows=projectRows.map{$0.0}+(chatRows+standaloneRows+codeRows+activeRows).map{$0.0 as CALayer}
+        let rows=projectRows.map{$0.0}+(chatRows+standaloneRows+codeRows+activeRows+ninjaRows.filter{!$0.1.hasPrefix("ninja-profile:")}).map{$0.0 as CALayer}
         let hoveredRow=(!projectsCollapsed && !previewOpen) ? NotchInputRegion.nearestTarget(at:p,frames:rows.map(\.frame),limits:Array(repeating:left.bounds,count:rows.count)).map{rows[$0]}:nil
         for (row,_) in projectRows {row.sublayers?.last?.opacity=row === hoveredRow ? 1:0}
-        for (row,_) in chatRows+standaloneRows+codeRows+activeRows {row.setHovered(row === hoveredRow)}
+        for (row,_) in chatRows+standaloneRows+codeRows+activeRows+ninjaRows {row.setHovered(row === hoveredRow)}
     }
 
     func fileURL(at point:CGPoint)->URL? {
@@ -637,7 +662,7 @@ private final class AttachmentLayer:CALayer {
     func setState(_ state:KaiState){
         let oldIntrusion=projectIntrudesComposer
         var membershipChanged=false
-        for chat in state.chats where chatProjects[chat.id] != state.project {chatProjects[chat.id]=state.project;membershipChanged=true}
+        for chat in state.chats where !chat.id.hasPrefix("ninja-") && chatProjects[chat.id] != state.project {chatProjects[chat.id]=state.project;membershipChanged=true}
         if membershipChanged {defaults.set(chatProjects,forKey:"kaiChatProjects")}
         let nextProjects=state.projects.filter{!hiddenProjects.contains($0.path)}
         let active=state.activeTasks.filter{!hiddenChats.contains($0.id) && !$0.id.hasPrefix("dot:") && !(chatProjects[$0.id].map{hiddenProjects.contains($0)} ?? false)}
@@ -645,11 +670,12 @@ private final class AttachmentLayer:CALayer {
         let nextChats=hiddenProjects.contains(state.project) ? [] : state.chats.filter{!hiddenChats.contains($0.id) && !activeIDs.contains($0.id)}
         let nextStandalone=state.standaloneChats.filter{!hiddenChats.contains($0.id) && !activeIDs.contains($0.id)}
         let nextCode=(state.codeChats ?? []).filter{!hiddenChats.contains($0.id) && !activeIDs.contains($0.id)}
-        let sidebarChanged=codeChats != nextCode || selectedProject != state.project || selectedThread != state.threadId || projects != nextProjects || chats != nextChats || standaloneChats != nextStandalone || elsewhere != active || modelState?.finishedTasks != state.finishedTasks
+        let nextNinjas=(state.ninjaGroups ?? []).map{KaiNinjaGroup(id:$0.id,name:$0.name,style:$0.style,chats:$0.chats.filter{!hiddenChats.contains($0.id)})}
+        let sidebarChanged=ninjaGroups != nextNinjas || codeChats != nextCode || selectedProject != state.project || selectedThread != state.threadId || projects != nextProjects || chats != nextChats || standaloneChats != nextStandalone || elsewhere != active || modelState?.finishedTasks != state.finishedTasks
         if modelState?.ownerToken != state.ownerToken || modelState?.selectedModel != state.selectedModel{composerPopover.dismiss()}
         modelState=state;agentPicker.update(state)
         selectedProject=state.project;selectedThread=state.threadId;approvalNeeded=state.approval;turnActive=state.activeTurnId != nil
-        projects=nextProjects;chats=nextChats;standaloneChats=nextStandalone;codeChats=nextCode
+        ninjaGroups=nextNinjas;projects=nextProjects;chats=nextChats;standaloneChats=nextStandalone;codeChats=nextCode
         if elsewhere.isEmpty && !active.isEmpty {projectOffset=0}
         elsewhere=active
         if let files=state.files {

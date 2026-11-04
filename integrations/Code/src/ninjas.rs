@@ -1519,10 +1519,15 @@ pub fn serve() -> Result<()> {
 }
 pub fn call_local(data: &Path, request: &Value, start: bool) -> Result<Value> {
     let address = socket(data);
-    if start && data == root() {
+    let managed=start && data == root();
+    if managed {
         install_service(&std::env::current_exe()?, false)?;
     }
     if start && UnixStream::connect(&address).is_err() {
+        if managed {
+            let domain=format!("gui/{}/com.kai.ninjas.worker",unsafe{libc::getuid()});
+            let _=Command::new("/bin/launchctl").args(["kickstart",&domain]).stdout(Stdio::null()).stderr(Stdio::null()).status();
+        } else {
         let mut command = Command::new(std::env::current_exe()?);
         command
             .args(["--ninja-worker", "--data"])
@@ -1532,6 +1537,7 @@ pub fn call_local(data: &Path, request: &Value, start: bool) -> Result<Value> {
             .stderr(Stdio::null())
             .process_group(0);
         let _ = command.spawn()?;
+        }
         let until = std::time::Instant::now() + Duration::from_secs(5);
         while UnixStream::connect(&address).is_err() && std::time::Instant::now() < until {
             thread::sleep(Duration::from_millis(20));
@@ -1585,6 +1591,15 @@ pub fn install_service(executable: &Path, keep_reachable: bool) -> Result<()> {
         .join("Library/LaunchAgents");
     fs::create_dir_all(&folder)?;
     let path = folder.join("com.kai.ninjas.worker.plist");
+    if let Ok(existing)=fs::read_to_string(&path) {
+        if existing.contains("kai-ninja-host") {
+            let domain=format!("gui/{}",unsafe{libc::getuid()});
+            if !Command::new("/bin/launchctl").args(["print",&format!("{domain}/com.kai.ninjas.worker")]).stdout(Stdio::null()).stderr(Stdio::null()).status()?.success(){
+                ensure!(Command::new("/bin/launchctl").args(["bootstrap",&domain]).arg(&path).status()?.success(),"Could not load the Ninja host service");
+            }
+            return Ok(());
+        }
+    }
     let escape = |s: &str| {
         s.replace('&', "&amp;")
             .replace('<', "&lt;")

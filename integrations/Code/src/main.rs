@@ -1162,6 +1162,12 @@ impl Orbit {
                 });
             });
         }));
+        // Host monitoring belongs to the application lifetime, not window paint.
+        let owner=cx.weak_entity();
+        cx.defer(move|cx|{let _=owner.update(cx,|app,cx|{
+            let hosts=app.ninjas.hosts.iter().filter(|h|h.endpoint.is_some()||app.ninjas.snapshots.get(&h.id).is_some_and(|v|v["profiles"].as_array().is_some_and(|p|!p.is_empty()))).cloned().collect::<Vec<_>>();
+            for host in hosts{app.start_ninja_watch(host,cx);}
+        });});
         Self {
             ninjas:ninjas_ui::State::restore(),
             remote:Default::default(),performance:Default::default(),artifact_index:vec![],recent_results:restored.as_ref().map(|s|s.recent_results.clone()).unwrap_or_default(),workflows:restored.as_ref().map(|s|s.workflows.clone()).unwrap_or_default(),workflow_dir:data.clone(),
@@ -5434,7 +5440,6 @@ impl Orbit {
 }
 impl Render for Orbit {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if !self.ninjas.started {self.ninjas.started=true;let hosts=self.ninjas.hosts.iter().filter(|h|self.ninjas.snapshots.get(&h.id).is_some_and(|v|v["profiles"].as_array().is_some_and(|p|!p.is_empty()))).cloned().collect::<Vec<_>>();for host in hosts{self.start_ninja_watch(host,cx);}}
         let _render_span=performance::Span::new("root_render");
         self.performance_ready(window);
         self.attach_daily_entry_points(cx);

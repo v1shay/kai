@@ -2034,6 +2034,12 @@ private final class NotchSurfaceHost:NSView {
         }
         if !quickChatVisible && !state.activeTasks.isEmpty && !open {autoCompact=true;compactWhileWorking=true;setOpen(true,mini:false)}
         if state.activeTasks.isEmpty && autoCompact && !miniOpen {autoCompact=false;DispatchQueue.main.asyncAfter(deadline:.now()+1.2){[weak self] in guard let self,self.latestState?.activeTasks.isEmpty == true,!self.miniOpen,!self.dictating,!self.finalizingDictation,!(self.workspaceMorph.expanded && self.workspaceNotchOverlay) else{return};self.compactWhileWorking=false;self.setOpen(false)}}
+        // Working is derived from the owner snapshot, not a success toast.
+        // Failed/stopped/disconnected tasks also retire compact work; a delayed
+        // or deduplicated completion notification must never keep it alive.
+        if !workspaceNeedsStatus && sendingPrompt == nil {
+            compactWhileWorking=false;compactThreadID=nil
+        }
         if EmbeddedCodeRuntime.shared.active{workspaceFocusChanged()}
         reconcilePassiveStatus()
     }

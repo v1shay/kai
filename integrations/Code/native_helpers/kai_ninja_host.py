@@ -106,9 +106,16 @@ class Server(http.server.ThreadingHTTPServer):
                     return True
                 except OSError:return False
             if not reachable():
-                args=[worker,'--ninja-worker','--data',str(root)]
-                if getattr(self.args,'keep_reachable',False):args.append('--keep-reachable')
-                subprocess.Popen(args,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True)
+                service=pathlib.Path.home()/'Library/LaunchAgents/com.kai.ninjas.worker.plist'
+                if service.exists():
+                    domain='gui/'+str(os.getuid())
+                    loaded=subprocess.run(['launchctl','print',domain+'/com.kai.ninjas.worker'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode==0
+                    if not loaded:subprocess.run(['launchctl','bootstrap',domain,str(service)],check=True,stdout=subprocess.DEVNULL)
+                    subprocess.run(['launchctl','kickstart',domain+'/com.kai.ninjas.worker'],check=True,stdout=subprocess.DEVNULL)
+                else:
+                    args=[worker,'--ninja-worker','--data',str(root)]
+                    if getattr(self.args,'keep_reachable',False):args.append('--keep-reachable')
+                    subprocess.Popen(args,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True)
                 until=time.monotonic()+6
                 while not reachable() and time.monotonic()<until:time.sleep(.03)
         with socket.socket(socket.AF_UNIX) as client:

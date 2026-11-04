@@ -46,9 +46,11 @@ struct KaiContextWindow:Decodable{let used:UInt64,limit:UInt64,fraction:Double}
 struct KaiNinjaSelection:Decodable,Equatable{let machine:String;let endpoint:String;let engine:String;let harness:String;let model:String;let thinking:String?}
 struct KaiNinjaMachine:Decodable,Equatable{let id:String;let name:String;let online:Bool;let local:Bool}
 struct KaiNinja:Decodable,Equatable{var canCancel:Bool?=nil;let selection:KaiNinjaSelection;let machines:[KaiNinjaMachine];let progress:String?;let error:String?;let loading:Bool}
+struct KaiNinjaGroup:Decodable,Equatable {let id:String,name:String,style:String;let chats:[KaiChat]}
 struct KaiPersonalNinja:Decodable {let id:String,name:String,style:String,host:String}
 struct KaiState: Decodable {
     var personalNinja:KaiPersonalNinja?=nil
+    var ninjaGroups:[KaiNinjaGroup]?=nil
     var menuBarNinjas:[MenuBarNinja]?=nil
     var menuBarNinja:MenuBarNinja?=nil
     var ninja:KaiNinja?=nil

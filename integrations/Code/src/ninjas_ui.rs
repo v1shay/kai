@@ -20,7 +20,6 @@ pub(super) struct State {
     pub errors: HashMap<String, String>,
     pub reviews:HashMap<String,crate::native_request_ui::LiveRequest>,
     pub drafts: HashMap<String,String>,
-    pub started: bool,
     pub title_attempted:HashSet<String>,
     pub artifacts:HashMap<String,Result<crate::ninja_chat::Artifact,String>>,
     pub artifact_pending:HashSet<String>,
@@ -157,15 +156,23 @@ impl State {
             .find(|v| v["id"] == format!("{}:{}", p.host, p.profile.id))
             .unwrap_or(Value::Null)
     }
+    pub fn live_snapshot(&self,host:&str)->Option<&Value>{
+        if self.errors.contains_key(host){None}else{self.snapshots.get(host)}
+    }
+    pub fn tasks(&self,host:&str)->Vec<std::borrow::Cow<'_,Value>>{
+        let history=self.panel.as_ref().filter(|p|p.host==host).into_iter().flat_map(|p|p.messages.iter().chain(p.task.iter()));
+        let cached=self.snapshots.get(host).into_iter().flat_map(|s|s["tasks"].as_array().into_iter().flatten());
+        let current=self.live_snapshot(host).into_iter().flat_map(|s|s["tasks"].as_array().into_iter().flatten());
+        crate::ninja_chat::reconcile_tasks(history.chain(cached),current)
+    }
     pub fn active(&self) -> Vec<Value> {
         let mut out = vec![];
         for h in &self.hosts {
-            let Some(v) = self.snapshots.get(&h.id) else {
+            let Some(v) = self.live_snapshot(&h.id) else {
                 continue;
             };
-            let reconnecting = self.errors.contains_key(&h.id);
             for t in
-                v["tasks"].as_array().into_iter().flatten().filter(|t| {
+                self.tasks(&h.id).iter().filter(|t| {
                     crate::ninja_chat::live(t) && t["state"] != "queued"
                 })
             {
@@ -175,7 +182,7 @@ impl State {
                     .flatten()
                     .find(|p| p["id"] == t["profile"]);
                 let name = p.and_then(|p| p["name"].as_str()).unwrap_or("Ninja");
-                out.push(json!({"id":format!("ninja:{}:{}",h.id,t["id"].as_str().unwrap_or("")),"runId":t["id"],"scene":if reconnecting{"thinking"}else{task_scene(t)},"text":if reconnecting{format!("{name} · Reconnecting to {}",h.name)}else{format!("{name} · {}",t["status"].as_str().unwrap_or("Working"))},"name":name,"agent":"ninja","ninjaStyle":p.and_then(|p|p["style"].as_str()).unwrap_or("fire")}));
+                out.push(json!({"id":format!("ninja:{}:{}",h.id,t["id"].as_str().unwrap_or("")),"runId":t["id"],"scene":task_scene(t),"text":format!("{name} · {}",t["status"].as_str().unwrap_or("Working")),"name":name,"agent":"ninja","ninjaStyle":p.and_then(|p|p["style"].as_str()).unwrap_or("fire")}));
             }
         }
         if let Some(call) = &self.call {
@@ -206,19 +213,13 @@ impl State {
         }
         out
     }
+    pub fn pending_count(&self)->usize{
+        self.hosts.iter().map(|h|self.tasks(&h.id).iter().filter(|t|crate::ninja_chat::live(t)).map(|t|t["requests"].as_array().map_or(0,Vec::len)).sum::<usize>()).sum()
+    }
     pub fn pending(&self) -> Option<(Host, String, Value)> {
-        self.hosts
-            .iter()
-            .filter(|h| !self.errors.contains_key(&h.id))
-            .find_map(|h| {
-                self.snapshots.get(&h.id)?["tasks"]
-                    .as_array()?
-                    .iter()
-                    .find_map(|t| {
-                        let r = t["requests"].as_array()?.first()?.clone();
-                        Some((h.clone(), t["id"].as_str()?.into(), r))
-                    })
-            })
+        self.hosts.iter().find_map(|h|self.tasks(&h.id).iter().filter(|t|crate::ninja_chat::live(t)).find_map(|t|{
+            Some((h.clone(),t["id"].as_str()?.into(),t["requests"].as_array()?.first()?.clone()))
+        }))
     }
     pub fn review(&self) -> Value {
         let Some((h, task, v)) = self.pending() else {
@@ -405,6 +406,7 @@ pub(super) fn task_scene(task: &Value) -> &'static str {
         "failed" | "interrupted" => "failure",
         "stopped" => "declined",
         "queued" => "waiting",
+        "unknown" => "off",
         _ => kai_icons::scene_for_status(task["status"].as_str().unwrap_or("Thinking")),
     }
 }
@@ -651,7 +653,7 @@ impl Orbit {
                                 let previous = app.ninjas.snapshots.get(&host.id);
                                 let refresh_history = app.ninjas.panel.as_ref().is_some_and(|p| {
                                     p.host == host.id
-                                        && value["tasks"].as_array().into_iter().flatten().any(
+                                        && (previous.is_some_and(|old|old["tasks"].as_array().into_iter().flatten().any(|t|t["profile"]==p.profile.id&&t["chat"].as_str()==p.chat.as_deref()&&crate::ninja_chat::live(t)&&!value["tasks"].as_array().into_iter().flatten().any(|next|next["id"]==t["id"]))) || value["tasks"].as_array().into_iter().flatten().any(
                                             |t| {
                                                 t["profile"] == p.profile.id
                                                     && t["chat"].as_str() == p.chat.as_deref()
@@ -668,7 +670,7 @@ impl Orbit {
                                                             })
                                                     })
                                             },
-                                        )
+                                        ))
                                 });
                                 for task in
                                     value["tasks"].as_array().into_iter().flatten().filter(|t| {
@@ -1220,9 +1222,8 @@ impl Orbit {
     pub(super) fn ninja_chat_rows(&self)->Vec<Value>{
         let Some(p)=self.ninjas.panel.as_ref().filter(|p|p.profile.revision>0)else{return vec![]};self.ninja_chat_rows_for(&p.host,&p.profile.id)
     }
-    fn ninja_chat_rows_for(&self,host:&str,profile:&str)->Vec<Value>{
-        let mut tasks=self.ninjas.snapshots.get(host).into_iter().flat_map(|s|s["tasks"].as_array().into_iter().flatten()).filter(|t|t["profile"]==profile).cloned().collect::<Vec<_>>();
-        if let Some(p)=self.ninjas.panel.as_ref().filter(|p|p.host==host&&p.profile.id==profile){for t in p.messages.iter().chain(p.task.iter()){if !tasks.iter().any(|v|v["id"]==t["id"]){tasks.push(t.clone());}}}
+    pub(super) fn ninja_chat_rows_for(&self,host:&str,profile:&str)->Vec<Value>{
+        let mut tasks=self.ninjas.tasks(host).into_iter().filter(|t|t["profile"]==profile).map(std::borrow::Cow::into_owned).collect::<Vec<_>>();
         tasks.sort_by_key(|t|std::cmp::Reverse(t["created"].as_i64().unwrap_or(0)));
         let mut seen=HashSet::new();tasks.retain(|t|t["chat"].is_string()&&seen.insert(t["chat"].clone().to_string()));tasks
     }
@@ -1816,17 +1817,17 @@ impl Orbit {
         }
         setup
         }else{div()};
-        let tasks=crate::ninja_chat::merged_tasks(&p.messages,snapshot,&p.profile.id,p.chat.as_deref());
+        let tasks=crate::ninja_chat::merged_tasks(&p.messages,self.ninjas.live_snapshot(&p.host),&p.profile.id,p.chat.as_deref());
         let history_owner=format!("{}:{}:{}",p.host,p.profile.id,p.chat.as_deref().unwrap_or("draft"));
         let changed=p.history_scroll_owner.borrow().as_ref()!=Some(&history_owner);
         let mut cached=p.history_tasks.borrow_mut();
-        if changed || cached.len()!=tasks.len() || cached.iter().zip(&tasks).any(|(a,b)|a!=*b){
+        if changed || cached.len()!=tasks.len() || cached.iter().zip(&tasks).any(|(a,b)|a!=b.as_ref()){
             let old=cached.len();
             if changed{p.history_scroll.reset(tasks.len());p.history_follow.set(true);}else{
-                let first=cached.iter().zip(&tasks).position(|(a,b)|a!=*b).unwrap_or(old.min(tasks.len()));
+                let first=cached.iter().zip(&tasks).position(|(a,b)|a!=b.as_ref()).unwrap_or(old.min(tasks.len()));
                 p.history_scroll.splice(first..old,tasks.len()-first);
             }
-            *cached=std::sync::Arc::new(tasks.into_iter().cloned().collect());
+            *cached=std::sync::Arc::new(tasks.into_iter().map(std::borrow::Cow::into_owned).collect());
             if p.history_follow.get(){p.history_scroll.scroll_to(ListOffset{item_ix:cached.len(),offset_in_item:px(0.)});}
         }
         let tasks=cached.clone();drop(cached);
@@ -2265,7 +2266,7 @@ mod tests {
             assert_eq!(app.ninja_chat_label("local","ice-personal",&app.ninja_chat_rows()[0]),"Fix the renderer alignment");
             assert!(app.apply_chat_title("ninja-chat:local:ice-personal:one","Fix the renderer alignment","Renderer alignment repair",cx));
             let snapshot=app.unified_snapshot(cx);assert_eq!(snapshot["threadName"],"Renderer alignment repair");
-            assert!(snapshot["chats"].as_array().unwrap().iter().any(|c|c["name"]=="zane · Renderer alignment repair"),"Native surfaces must use generated Ninja chat names");
+            assert!(snapshot["ninjaGroups"].as_array().unwrap().iter().filter(|g|g["name"]=="zane").flat_map(|g|g["chats"].as_array().unwrap()).any(|c|c["name"]=="Renderer alignment repair"),"Native surfaces must use generated Ninja chat names");
         }));
         crate::ui_tests::draw_frame(&view,cx);
         let pane=cx.debug_bounds("workspace-pane").unwrap();let row=cx.debug_bounds("ninja-chat-two").unwrap();assert!(row.left()>=pane.left() && row.right()<=pane.right());
@@ -2340,7 +2341,7 @@ mod tests {
         view.update(cx,|app,cx|{
             let native=runtime::NativeRequest{id:"question-42".into(),method:"question".into(),title:"Choose deployment".into(),detail:"Exact remote request".into(),kind:runtime::NativeRequestKind::Questions{questions:vec![runtime::NativeQuestion{id:"target".into(),header:"Target".into(),question:"Which environment?".into(),options:vec![],secret:false,multiple:false,required:true}]}};
             app.ninjas.snapshots.insert("local".into(),json!({"profiles":[{"id":"personal","name":"Ice","style":"ice"}],"tasks":[{"id":"task-7","profile":"personal","state":"approval","requests":[native]}]}));
-            let snapshot=app.unified_snapshot(cx);assert_eq!(snapshot["menuBarNinjas"][0]["id"],"local:personal");assert_eq!(snapshot["menuBarNinjas"][0]["style"],"ice");assert_eq!(snapshot["approvalThreadId"],"ninja:local:task-7");assert_eq!(snapshot["nativeReview"]["token"],"question-42");assert_eq!(snapshot["nativeReview"]["kind"],"questions");assert_eq!(snapshot["nativeReview"]["questions"][0]["id"],"target");assert_eq!(snapshot["activeTasks"][0]["scene"],"permission");assert_eq!(snapshot["approvalCount"],1);app.ninjas.errors.insert("local".into(),"Disconnected".into());let offline=app.unified_snapshot(cx);assert!(offline["nativeReview"].is_null());assert!(offline["activeTasks"][0]["text"].as_str().unwrap().contains("Reconnecting"));
+            let snapshot=app.unified_snapshot(cx);assert_eq!(snapshot["menuBarNinjas"][0]["id"],"local:personal");assert_eq!(snapshot["menuBarNinjas"][0]["style"],"ice");assert_eq!(snapshot["approvalThreadId"],"ninja:local:task-7");assert_eq!(snapshot["nativeReview"]["token"],"question-42");assert_eq!(snapshot["nativeReview"]["kind"],"questions");assert_eq!(snapshot["nativeReview"]["questions"][0]["id"],"target");assert_eq!(snapshot["activeTasks"][0]["scene"],"permission");assert_eq!(snapshot["approvalCount"],1);app.ninjas.errors.insert("local".into(),"Disconnected".into());let offline=app.unified_snapshot(cx);assert!(offline["nativeReview"].is_null());assert!(offline["activeTasks"].as_array().unwrap().is_empty());
         });
     }
     #[gpui::test]

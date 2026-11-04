@@ -24,6 +24,7 @@ for name in ['start','publish','toggle','collapse','ready','workspace_visible','
 print('Verified all eleven native ABI exports')
 PYABI
 python3 "$root/scripts/build-native-cached.py" "$root/.build/unified/libCodeVoice.dylib" -parse-as-library -emit-library "${swift_optimization[@]}" -module-cache-path "$swift_cache" "$root/integrations/Code/native_helpers/CodeVoiceMedia.swift" -framework AppKit -framework WebKit -framework AVFoundation
+python3 "$root/scripts/build-native-cached.py" "$root/.build/unified/kai-ninja-host" -O -module-cache-path "$swift_cache" "$root/integrations/Code/native_helpers/NinjaWorkerLauncher.swift"
 staging=$(mktemp -d "$root/.build/unified/.package.XXXXXX")
 trap 'rm -rf "$staging"' EXIT
 product="$staging/Kai Unified.app"
@@ -41,6 +42,7 @@ mkdir -p "$resources/skills"
 cp -R "$root/integrations/Code/skills/"* "$resources/skills/"
 cp "$root/kai_speech.py" "$resources/"
 cp "$root/integrations/Code/native_helpers/kai_inference_stream.py" "$resources/"
+cp "$root/.build/unified/kai-ninja-host" "$resources/"
 cp "$root/integrations/Code/native_helpers/kai_ninja.py" "$resources/"
 cp "$root/integrations/Code/native_helpers/kai_ninja_host.py" "$resources/"
 cp "$root/integrations/Code/native_helpers/kai_ninja_handoff.py" "$resources/"
@@ -65,7 +67,7 @@ for pet in catalog['pets']:
  source=root/'kai_pets'/pet['spritesheet'];target=resources/'kai_pets'/pet['spritesheet']
  target.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(source,target)
 info=plistlib.loads((root/'integrations/Code/scripts/Info.plist').read_bytes())
-info.update(CFBundleName='Kai Unified',CFBundleDisplayName='Kai Unified',CFBundleIdentifier='com.kai.unified.experimental',CFBundleExecutable='kai-unified',CFBundleVersion='93',CFBundleShortVersionString='0.12.56')
+info.update(CFBundleName='Kai Unified',CFBundleDisplayName='Kai Unified',CFBundleIdentifier='com.kai.unified.experimental',CFBundleExecutable='kai-unified',CFBundleVersion='95',CFBundleShortVersionString='0.12.58')
 icon=root/'integrations/Code/assets/Code.icns'
 if icon.exists():shutil.copy2(icon,resources/'Code-Bonsai.icns')
 info['CFBundleURLTypes']=[{'CFBundleURLName':'Kai workspace','CFBundleURLSchemes':['kai']}]

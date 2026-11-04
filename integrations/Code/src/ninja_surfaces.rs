@@ -104,6 +104,14 @@ impl Orbit {
             return Ok(true);
         }
         if action == "chat" {
+            if let Some(raw)=v["id"].as_str().and_then(|s|s.strip_prefix("ninja-profile:")) {
+                let(host,id)=raw.rsplit_once(':').ok_or("Invalid Ninja identity")?;
+                if !self.ninjas.snapshots.get(host).and_then(|s|s["profiles"].as_array()).is_some_and(|ps|ps.iter().any(|p|p["id"]==id)) {return Err("This Ninja is unavailable on its host".into())}
+                if !self.ninjas.panel.as_ref().is_some_and(|p|p.host==host&&p.profile.id==id){self.open_ninjas(Some(host.into()),Some(id.into()),window,cx);}
+                return Ok(true);
+            }
+        }
+        if action == "chat" {
             if let Some(raw) = v["id"].as_str().and_then(|s| s.strip_prefix("ninja-chat:")) {
                 let mut parts = raw.rsplitn(3, ':');
                 let chat = parts.next().ok_or("Missing chat")?;
@@ -322,30 +330,16 @@ impl Orbit {
         Ok(true)
     }
     pub(super) fn ninja_surface_snapshot(&self, s: &mut Value, cx: &App) {
-        // Personal chats also appear in the normal native conversation picker.
-        let mut chats = Vec::new();
-        for h in &self.ninjas.hosts {
-            if let Some(v) = self.ninjas.snapshots.get(&h.id) {
-                for p in v["profiles"].as_array().into_iter().flatten() {
-                    let id = p["id"].as_str().unwrap_or("");
-                    let mut seen = HashSet::new();
-                    for t in v["tasks"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .filter(|t| {
-                            t["profile"] == id && seen.insert(t["chat"].clone().to_string())
-                        })
-                        .take(12)
-                    {
-                        chats.push(json!({"id":format!("ninja-chat:{}:{}:{}",h.id,id,t["chat"].as_str().unwrap_or("")),"name":format!("{} · {}",p["name"].as_str().unwrap_or("Ninja"),self.ninja_chat_label(&h.id,id,t)),"status":t["state"],"agent":"ninja"}));
-                    }
-                }
-            }
-        }
-        if let Some(list) = s["standaloneChats"].as_array_mut() {
-            list.extend(chats.clone());
-        }
+        // Publish identities independently of task history, including empty Ninjas.
+        // Each native surface renders the same profile/chat hierarchy.
+        let groups=self.ninjas.hosts.iter().flat_map(|h|{
+            self.ninjas.snapshots.get(&h.id).into_iter().flat_map(move |v|v["profiles"].as_array().into_iter().flatten().map(move |p|{
+                let id=p["id"].as_str().unwrap_or("");
+                let chats=self.ninja_chat_rows_for(&h.id,id).iter().map(|t|json!({"id":Self::ninja_chat_key(&h.id,id,t["chat"].as_str().unwrap_or("")),"name":self.ninja_chat_label(&h.id,id,t),"status":t["state"],"agent":"ninja"})).collect::<Vec<_>>();
+                json!({"id":format!("ninja-profile:{}:{}",h.id,id),"name":p["name"],"style":p["style"],"chats":chats})
+            }))
+        }).collect::<Vec<_>>();
+        s["ninjaGroups"]=json!(groups);
         let Some(p) = self
             .ninjas
             .panel
@@ -354,7 +348,7 @@ impl Orbit {
         else {
             return;
         };
-        let snapshot = self.ninjas.snapshots.get(&p.host);
+        let snapshot = self.ninjas.live_snapshot(&p.host);
         let tasks=crate::ninja_chat::merged_tasks(&p.messages,snapshot,&p.profile.id,p.chat.as_deref());
         let mut history = vec![];
         for t in &tasks {
@@ -406,7 +400,7 @@ impl Orbit {
             p.chat.as_deref().unwrap_or("draft")
         );
         let models=p.models.iter().map(|m|json!({"model":m["id"],"displayName":m["label"],"supportedReasoningEfforts":m["efforts"].as_array().into_iter().flatten().map(|e|json!({"reasoningEffort":e})).collect::<Vec<_>>()})).collect::<Vec<_>>();
-        let override_ = json!({"orchestratorMode":p.profile.orchestrator,"orchestratorAvailable":true,"personalNinja":{"id":p.profile.id,"name":p.profile.name,"style":p.profile.style,"host":p.host},"threadId":thread,"threadName":p.chat.as_ref().map(|chat|self.lifecycle.chat_names.get(&Self::ninja_chat_key(&p.host,&p.profile.id,chat)).cloned().or_else(||self.ninja_chat_seed(&Self::ninja_chat_key(&p.host,&p.profile.id,chat))).unwrap_or_else(||p.profile.name.clone())).unwrap_or_else(||p.profile.name.clone()),"ownerToken":self.ninja_surface_owner(),"project":p.profile.project,"composerDraft":p.fields[3].read(cx).text(),"history":crate::unified::budget_history(history),"historyLoading":p.history_loading,"modelsLoading":p.models_loading.is_some(),"historyHasMore":false,"historyEarlier":false,"readOnly":false,"composerBusy":p.busy,"selectedAgent":p.profile.agent.command(),"selectedModel":p.profile.model,"effectiveModel":active.and_then(|t|t["model"].as_str()).or(p.profile.model.as_deref()),"reasoningEffort":p.profile.effort,"models":models,"chats":chats,"activeTurnId":active.and_then(|t|t["id"].as_str()),"sessionActivity":{"scene":active.map(|t|crate::ninjas_ui::task_scene(t)).unwrap_or("off"),"text":active.and_then(|t|t["status"].as_str()).unwrap_or("")},"attachments":[]});
+        let override_ = json!({"orchestratorMode":p.profile.orchestrator,"orchestratorAvailable":true,"personalNinja":{"id":p.profile.id,"name":p.profile.name,"style":p.profile.style,"host":p.host},"threadId":thread,"threadName":p.chat.as_ref().map(|chat|self.lifecycle.chat_names.get(&Self::ninja_chat_key(&p.host,&p.profile.id,chat)).cloned().or_else(||self.ninja_chat_seed(&Self::ninja_chat_key(&p.host,&p.profile.id,chat))).unwrap_or_else(||p.profile.name.clone())).unwrap_or_else(||p.profile.name.clone()),"ownerToken":self.ninja_surface_owner(),"project":p.profile.project,"composerDraft":p.fields[3].read(cx).text(),"history":crate::unified::budget_history(history),"historyLoading":p.history_loading,"modelsLoading":p.models_loading.is_some(),"historyHasMore":false,"historyEarlier":false,"readOnly":false,"composerBusy":p.busy,"selectedAgent":p.profile.agent.command(),"selectedModel":p.profile.model,"effectiveModel":active.and_then(|t|t["model"].as_str()).or(p.profile.model.as_deref()),"reasoningEffort":p.profile.effort,"models":models,"chats":[],"activeTurnId":active.and_then(|t|t["id"].as_str()),"sessionActivity":{"scene":active.map(|t|crate::ninjas_ui::task_scene(t)).unwrap_or("off"),"text":active.and_then(|t|t["status"].as_str()).unwrap_or("")},"attachments":[]});
         for (key, value) in override_.as_object().unwrap() {
             s[key] = value.clone();
         }
@@ -436,6 +430,44 @@ impl Orbit {
 mod tests {
     use super::*;
     use std::prelude::v1::test;
+    #[gpui::test]
+    fn all_surfaces_retire_missing_or_disconnected_task_state(cx:&mut TestAppContext){
+        let(view,cx)=crate::ui_tests::fixture(cx);
+        cx.update(|w,cx|view.update(cx,|app,cx|{
+            app.open_ninjas(Some("local".into()),None,w,cx);
+            let p=app.ninjas.panel.as_mut().unwrap();p.profile.revision=1;p.chat=Some("c".into());
+            let task=json!({"id":"run","profile":p.profile.id,"chat":"c","state":"approval","requests":[{"id":"approval"}],"brief":"Keep the transcript"});
+            p.messages=vec![task.clone()];
+            app.ninjas.snapshots.insert("local".into(),json!({"profiles":[p.profile],"tasks":[task]}));
+            let running=app.unified_snapshot(cx);assert_eq!(running["activeTasks"].as_array().unwrap().len(),1);assert_eq!(running["activeTurnId"],"run");assert_eq!(running["approvalCount"],1);
+            app.ninjas.errors.insert("local".into(),"Host disconnected".into());
+            let offline=app.unified_snapshot(cx);assert_eq!(offline["activeTasks"],json!([]));assert!(offline["activeTurnId"].is_null());assert_eq!(offline["approvalCount"],0);assert!(offline["nativeReview"].is_null());
+            app.ninjas.errors.clear();app.ninjas.snapshots.get_mut("local").unwrap()["tasks"]=json!([]);
+            let gone=app.unified_snapshot(cx);assert_eq!(gone["activeTasks"],json!([]));assert!(gone["activeTurnId"].is_null());assert_eq!(gone["sessionActivity"]["scene"],"off");assert_eq!(app.ninja_chat_rows()[0]["state"],"unknown");
+        }));
+    }
+    #[gpui::test]
+    fn native_picker_includes_empty_ninjas_and_keeps_chats_under_their_owner(cx:&mut TestAppContext){
+        let(view,cx)=crate::ui_tests::fixture(cx);
+        cx.update(|w,cx|view.update(cx,|app,cx|{
+            app.open_ninjas(Some("local".into()),None,w,cx);
+            let mut profile=app.ninjas.panel.as_ref().unwrap().profile.clone();profile.revision=1;profile.name="Empty Ninja".into();
+            app.ninjas.panel=None;
+            app.ninjas.snapshots.insert("local".into(),json!({"profiles":[profile],"tasks":[]}));
+            let snapshot=app.unified_snapshot(cx);let groups=snapshot["ninjaGroups"].as_array().unwrap();
+            assert_eq!(groups.len(),1);assert_eq!(groups[0]["name"],"Empty Ninja");assert_eq!(groups[0]["chats"],json!([]));
+            let target=groups[0]["id"].clone();
+            app.unified_command(&json!({"action":"chat","id":target}),w,cx).unwrap();
+            assert_eq!(app.ninjas.panel.as_ref().unwrap().profile.id,profile.id);
+            let owner=app.ninja_surface_owner().unwrap();
+            app.unified_command(&json!({"action":"draft","ownerToken":owner,"draftBase":"","text":"Continue here"}),w,cx).unwrap();
+            app.unified_command(&json!({"action":"chat","id":target}),w,cx).unwrap();
+            assert_eq!(app.ninja_surface_owner().as_deref(),Some(owner.as_str()));assert_eq!(app.ninjas.panel.as_ref().unwrap().fields[3].read(cx).text(),"Continue here");
+            app.ninjas.snapshots.get_mut("local").unwrap()["tasks"]=json!([{"id":"task","profile":profile.id,"chat":"one","prompt":"My chat","state":"completed","created":1}]);
+            let snapshot=app.unified_snapshot(cx);assert_eq!(snapshot["ninjaGroups"][0]["chats"].as_array().unwrap().len(),1);assert_eq!(snapshot["chats"],json!([]));
+            assert!(!snapshot["standaloneChats"].as_array().unwrap().iter().any(|c|c["id"].as_str().unwrap_or("").starts_with("ninja-chat:")));
+        }));
+    }
     #[gpui::test]
     fn native_work_disclosure_uses_the_same_group_and_rejects_a_changed_owner(cx:&mut TestAppContext){
         let(view,cx)=crate::ui_tests::fixture(cx);

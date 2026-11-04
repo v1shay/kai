@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Protocol/authorization tests, real loopback HTTP; no credentials or model needed."""
+import io
+from unittest.mock import patch
 import sys, contextlib, importlib.util, json, pathlib, tempfile, threading, types, unittest, urllib.request, urllib.error
 ROOT=pathlib.Path(__file__).resolve().parents[1]
 def load(name):
@@ -92,6 +94,25 @@ class Protocol(unittest.TestCase):
   self.upstream.events=[{'message':{'content':'<function=Read>\n<parameter=file_path>\n/tmp/proof\n</parameter>\n</function>\n</tool_call>'}},{'done':True}]
   events=self.call({'stream':True,'messages':[{'role':'user','content':'Read it'}],'tools':[{'name':'Read','input_schema':{'type':'object','properties':{'file_path':{'type':'string'}},'required':['file_path']}}]},'messages')
   self.assertTrue(any(v.get('content_block',{}).get('name')=='Read' for v in events));self.assertEqual(events[-2]['delta']['stop_reason'],'tool_use')
+class ManagedWorker(unittest.TestCase):
+ def test_missing_socket_wakes_installed_service_without_spawning_another_worker(self):
+  with tempfile.TemporaryDirectory() as folder:
+   home=pathlib.Path(folder);worker=home/'runtime';worker.touch();service=home/'Library/LaunchAgents/com.kai.ninjas.worker.plist';service.parent.mkdir(parents=True);service.touch()
+   server=H.Server.__new__(H.Server);server.args=types.SimpleNamespace(worker=str(worker));server.engines=types.SimpleNamespace(lock=threading.Lock())
+   attempts=[]
+   class Socket:
+    def __enter__(self):return self
+    def __exit__(self,*args):pass
+    def connect(self,address):
+     attempts.append(address)
+     if len(attempts)==1:raise ConnectionRefusedError()
+    def settimeout(self,value):pass
+    def sendall(self,value):self.request=json.loads(value)
+    def makefile(self,mode):return io.BytesIO(b'{"tasks":[]}\n')
+   with patch.object(H.pathlib.Path,'home',return_value=home),patch.object(H.socket,'socket',side_effect=lambda *a:Socket()),patch.object(H.subprocess,'run',return_value=types.SimpleNamespace(returncode=0)) as run,patch.object(H.subprocess,'Popen',side_effect=AssertionError('Managed worker must only be spawned by launchd')):
+    self.assertEqual(server.worker_call({'action':'snapshot'}),{'tasks':[]})
+    self.assertTrue(any('kickstart' in c.args[0] for c in run.call_args_list))
+
 class HostAuth(unittest.TestCase):
  def test_host_requires_owner_identity_and_has_no_workspace_or_shell_api(self):
   s=H.Server(types.SimpleNamespace(owner='owner@example.com',port=0));threading.Thread(target=s.serve_forever,daemon=True).start()

@@ -173,7 +173,7 @@ fn start_ninja_probe(owner:WindowHandle<Orbit>,cx:&mut App){
     cx.spawn(async move|cx|{
         Timer::after(Duration::from_secs(3)).await;
         let _=owner.update(cx,|app,window,cx|{
-            app.ninjas=crate::ninjas_ui::State{started:true,..Default::default()};app.ninja.draft.node=false;
+            app.ninjas=crate::ninjas_ui::State::default();app.ninja.draft.node=false;
             app.open_ninjas(Some("validation".into()),None,window,cx);
             let p=app.ninjas.panel.as_mut().unwrap();p.profile.revision=1;p.profile.name="rendering validation".into();p.profile.style="ice".into();p.chat=Some("fixture".into());p.settings=false;
             let tool=chat_interactions::serialize_interaction(&chat_interactions::ChatInteraction::Delegation{title:"Terminal output".into(),details:"$ cargo check\nChecking project\nFinished successfully\n".repeat(100),status:chat_interactions::InteractionStatus::Completed,agent:None});

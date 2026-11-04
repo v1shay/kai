@@ -34,15 +34,31 @@ pub(super) fn live(t: &Value) -> bool {
     !t["finished"].is_number()
         && matches!(t["state"].as_str(), Some("running" | "approval" | "queued"))
 }
-// Every surface uses the same task precedence. A delayed snapshot must never
-// resurrect a finished task; a state-only update must still clear approvals.
-pub(super) fn merged_tasks<'a>(messages:&'a [Value],snapshot:Option<&'a Value>,profile:&str,chat:Option<&str>)->Vec<&'a Value>{
-    let mut tasks:Vec<_>=messages.iter().collect();
-    for next in snapshot.into_iter().flat_map(|s|s["tasks"].as_array().into_iter().flatten()).filter(|t|t["profile"]==profile&&t["chat"].as_str()==chat){
+// History owns content; the host snapshot owns liveness. Snapshots include every
+// pending task but only a bounded window of completed work. A task absent from
+// that window must not keep running forever through a cached transcript.
+pub(super) fn merged_tasks<'a>(messages:&'a [Value],snapshot:Option<&'a Value>,profile:&str,chat:Option<&str>)->Vec<std::borrow::Cow<'a,Value>>{
+    reconcile_tasks(messages.iter().filter(|t|t["profile"]==profile&&t["chat"].as_str()==chat),snapshot.into_iter().flat_map(|s|s["tasks"].as_array().into_iter().flatten()).filter(|t|t["profile"]==profile&&t["chat"].as_str()==chat))
+}
+pub(super) fn reconcile_tasks<'a>(history:impl IntoIterator<Item=&'a Value>,current:impl IntoIterator<Item=&'a Value>)->Vec<std::borrow::Cow<'a,Value>>{
+    use std::borrow::Cow;
+    let mut tasks=Vec::new();
+    for t in history {
+        if let Some(old)=tasks.iter_mut().find(|old:&&mut Cow<'_,Value>|old["id"]==t["id"]){
+            if live(old) && t["finished"].is_number(){*old=Cow::Borrowed(t);}
+        }else{tasks.push(Cow::Borrowed(t));}
+    }
+    let current:Vec<_>=current.into_iter().collect();
+    for old in &mut tasks {
+        if live(old) && !current.iter().any(|t|t["id"]==old["id"]){
+            let value=old.to_mut();value["state"]=json!("unknown");value["status"]=json!("Task status unavailable");value["requests"]=json!([]);
+        }
+    }
+    for next in current {
         if let Some(old)=tasks.iter_mut().find(|t|t["id"]==next["id"]){
             if old["finished"].is_number()&&live(next){continue}
-            if old["state"]!=next["state"]||old["finished"]!=next["finished"]||live(next){*old=next;}
-        }else{tasks.push(next);}
+            if old["state"]!=next["state"]||old["finished"]!=next["finished"]||live(next){*old=Cow::Borrowed(next);}
+        }else{tasks.push(Cow::Borrowed(next));}
     }
     tasks.sort_by_key(|t|t["created"].as_i64().unwrap_or(0));tasks
 }
@@ -1490,17 +1506,26 @@ mod tests {
     #[test] fn state_only_stop_clears_waiting_on_every_surface(){
         let old=vec![json!({"id":"a","profile":"p","chat":"c","state":"approval"})];
         let snapshot=json!({"tasks":[{"id":"a","profile":"p","chat":"c","state":"stopped"}]});
-        assert!(!live(merged_tasks(&old,Some(&snapshot),"p",Some("c"))[0]));
+        assert!(!live(&merged_tasks(&old,Some(&snapshot),"p",Some("c"))[0]));
     }
     #[test] fn delayed_live_snapshot_cannot_resurrect_completed_task(){
         let old=vec![json!({"id":"a","profile":"p","chat":"c","state":"completed","finished":20,"brief":"full answer"})];
         let snapshot=json!({"tasks":[{"id":"a","profile":"p","chat":"c","state":"running","brief":"partial"}]});
         let tasks=merged_tasks(&old,Some(&snapshot),"p",Some("c"));
-        assert!(std::ptr::eq(tasks[0],&old[0]));assert!(!live(tasks[0]));
+        assert!(std::ptr::eq(tasks[0].as_ref(),&old[0]));assert!(!live(&tasks[0]));
+    }
+    #[test] fn missing_pending_task_is_unknown_not_infinite_work(){
+        let old=vec![json!({"id":"a","profile":"p","chat":"c","state":"approval","requests":[{"id":"permission"}],"brief":"Retain useful history"})];
+        for snapshot in [None,Some(json!({"tasks":[]}))] {
+            let tasks=merged_tasks(&old,snapshot.as_ref(),"p",Some("c"));
+            assert_eq!(tasks[0]["state"],"unknown");assert!(!live(&tasks[0]));
+            assert_eq!(tasks[0]["brief"],"Retain useful history");assert_eq!(tasks[0]["requests"],json!([]));
+            assert!(tasks[0]["finished"].is_null(),"Unknown must not fabricate completion");
+        }
     }
     #[test] fn completed_summary_preserves_full_body_without_copying(){
         let old=vec![json!({"id":"a","profile":"p","chat":"c","state":"completed","finished":20,"brief":"full answer"})];
         let snapshot=json!({"tasks":[{"id":"a","profile":"p","chat":"c","state":"completed","finished":20,"brief":"clipped"}]});
-        assert!(std::ptr::eq(merged_tasks(&old,Some(&snapshot),"p",Some("c"))[0],&old[0]));
+        assert!(std::ptr::eq(merged_tasks(&old,Some(&snapshot),"p",Some("c"))[0].as_ref(),&old[0]));
     }
 }

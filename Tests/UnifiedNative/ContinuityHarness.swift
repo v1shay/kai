@@ -25,9 +25,9 @@ private func command(_ bytes:UnsafePointer<UInt8>?,_ count:Int)->Bool{
         let ui=member(app,"miniUI") as! MiniAppInterface
         let field=member(app,"composerField") as! NSTextField
         defer{app.applicationWillTerminate(Notification(name:NSApplication.willTerminateNotification));NSApp.windows.forEach{$0.orderOut(nil)}}
-        var owner="code:continuous",thread="code:continuous",draft="",results=[[String:Any]](),attachments=[String](),inputBlocked=false
+        var owner="code:continuous",thread="code:continuous",draft="",results=[[String:Any]](),attachments=[String](),inputBlocked=false,running=true
         func publish(){
-            let value:[String:Any]=["ownerToken":owner,"composerDraft":draft,"project":"/private/tmp","projects":[],"chats":[],"standaloneChats":[],"standalone":true,"threadId":thread,"threadName":"Continuous chat","history":[],"readOnly":false,"composerBusy":inputBlocked,"approval":false,"activity":["scene":"thinking","text":"Working"],"sessionActivity":["scene":"thinking","text":"Working"],"activeTurnId":"same-running-task","activeTasks":[],"notice":"Ready","attachments":attachments,"completedRequestError":"Unrelated command failed","selectedAgent":"codex","models":[],"workspaceMotion":false,"completedRequestId":"unrelated-later-command","completedRequests":results]
+            let value:[String:Any]=["ninjaGroups":[["id":"ninja-profile:host:empty","name":"Empty Ninja","style":"ice","chats":[]]],"ownerToken":owner,"composerDraft":draft,"project":"/private/tmp","projects":[],"chats":[],"standaloneChats":[],"standalone":true,"threadId":thread,"threadName":"Continuous chat","history":[],"readOnly":false,"composerBusy":inputBlocked,"approval":false,"activity":["scene":running ? "thinking":"off","text":running ? "Working":"Ready"],"sessionActivity":["scene":running ? "thinking":"off","text":running ? "Working":"Ready"],"activeTurnId":running ? "same-running-task" as Any:NSNull(),"activeTasks":running && owner.hasPrefix("personal:") ? [["id":"ninja:host:run","name":"Ninja","scene":"thinking","text":"Working","agent":"ninja","ninjaStyle":"ice"]]:[],"notice":"Ready","attachments":attachments,"completedRequestError":"Unrelated command failed","selectedAgent":"codex","models":[],"workspaceMotion":false,"completedRequestId":"unrelated-later-command","completedRequests":results]
             runtime.receive(try! JSONSerialization.data(withJSONObject:value))
         }
         func edit(_ text:String){field.stringValue=text;app.controlTextDidChange(Notification(name:NSControl.textDidChangeNotification,object:field))}
@@ -36,6 +36,16 @@ private func command(_ bytes:UnsafePointer<UInt8>?,_ count:Int)->Bool{
             var reply:[String:Any]=["id":request["requestId"]!];if let error{reply["error"]=error};results.append(reply);draft=text;publish()
         }
         publish();app.expandToRunningChat()
+        let rows=Mirror(reflecting:member(ui,"ninjaRows")!).children.map { element -> (CALayer,String) in
+            let pair=Array(Mirror(reflecting:element.value).children)
+            return (pair[0].value as! CALayer,pair[1].value as! String)
+        }
+        precondition(rows.count==1 && rows[0].1=="ninja-profile:host:empty","A Ninja without task history is missing from the native sidebar")
+        let left=member(ui,"left") as! CALayer
+        let target=rows[0].0.frame.offsetBy(dx:left.frame.minX,dy:left.frame.minY)
+        precondition(ui.handleClick(CGPoint(x:target.midX,y:target.midY)))
+        precondition(last("chat")["id"] as? String == "ninja-profile:host:empty","Native Ninja row did not navigate its owner")
+        acknowledge(last("chat"),draft)
         let navigation=ui.beginChatLoading("Another chat")
         results.append(["id":navigation]);publish()
         precondition(ui.pendingRequestID==nil,"Navigation stayed loading when its acknowledgement was followed by another command")
@@ -104,6 +114,12 @@ private func command(_ bytes:UnsafePointer<UInt8>?,_ count:Int)->Bool{
         precondition(ninjaSend["ownerToken"] as? String == owner && ninjaSend["text"] as? String == draft)
         acknowledge(ninjaSend,"")
         precondition(field.stringValue.isEmpty && member(app,"sendingPrompt")==nil)
+        app.foldWorkspace();app.prepareQuickOpening();app.setQuickChatVisible(false)
+        publish();running=false;publish()
+        RunLoop.current.run(until:Date().addingTimeInterval(1.5))
+        let settled=member(app,"latestState") as! KaiState
+        precondition(settled.activeTasks.isEmpty && settled.activeTurnId==nil)
+        precondition(member(app,"compactWhileWorking") as? Bool == false,"Compact notch retained work after the authoritative task disappeared")
         print("Native continuity: rapid draft writes, repeated surface handoffs, task identity, ledger acknowledgements, repeated failed sends, next-draft preservation, and Ninja owner routing passed")
     }
 }
