@@ -526,7 +526,7 @@ mod tests {
             view.update(cx, |app, cx| {
                 let original = app.sessions[0].clone();
                 let mut newer = original.clone();
-                newer.id = "newer".into();
+                newer.id = "a-newer".into();
                 newer.updated_at += 500;
                 app.sessions.push(newer);
                 app.lifecycle.pinned_chats.insert(original.id.clone());
@@ -534,7 +534,11 @@ mod tests {
                     .chat_names
                     .insert(original.id.clone(), "Renamed locally".into());
                 app.rebuild_workspace_sessions();
-                assert_eq!(app.workspace_sessions[0].id, original.id);
+                assert_eq!(app.workspace_sessions[0].id, "a-newer", "User prompt recency takes precedence over pins");
+                assert!(app.lifecycle.pinned_chats.contains(&original.id));
+                app.activity.prompted(&original.id, (original.updated_at + 500) * 1000);
+                app.rebuild_workspace_sessions();
+                assert_eq!(app.workspace_sessions[0].id, original.id, "Pins break equal-time ties");
                 assert_eq!(app.chat_label(&original), "Renamed locally");
                 assert_eq!(app.sessions[0].title, "Fixture conversation");
                 app.lifecycle.archived_chats.insert(original.id.clone());

@@ -150,8 +150,8 @@ impl Orbit {
             let key = |ix: usize| {
                 let s = &self.sessions[ix];
                 (
-                    !self.lifecycle.pinned_chats.contains(&s.id),
                     std::cmp::Reverse(self.activity.prompt_at(s)),
+                    !self.lifecycle.pinned_chats.contains(&s.id),
                     s.id.as_str(),
                 )
             };

@@ -1828,6 +1828,8 @@ impl Orbit {
             .when(empty,|v|v.child(div().flex().justify_center().child(crate::ninja_art::art(&p.profile.style,80.,self.motion && !native::reduced_motion() && window.is_window_active()))))
             .child(
                 div()
+                    .debug_selector(|| "ninja-chat-header".into())
+                    .w_full().min_w(px(0.))
                     .flex()
                     .items_center()
                     .justify_between()
@@ -1835,15 +1837,16 @@ impl Orbit {
                         div()
                             .text_size(theme::ui_px(15.))
                             .flex_1()
+                            .min_w(px(0.))
                             .flex()
                             .items_center()
                             .gap_2()
                             .child(crate::ninja_art::art(&p.profile.style,28.,self.motion && !native::reduced_motion() && window.is_window_active()))
-                            .child(if p.profile.name.is_empty() {
+                            .child(div().min_w(px(0.)).flex_1().text_ellipsis().child(if p.profile.name.is_empty() {
                                 "New Ninja".to_owned()
                             } else {
                                 p.profile.name.clone()
-                            }),
+                            })),
                     )
                     .when(p.profile.revision > 0, |s| {
                         s.child(marked_chip(
@@ -2148,6 +2151,30 @@ impl Orbit {
 mod tests {
     use super::*;
     use std::prelude::v1::test;
+    #[gpui::test]
+    fn long_ninja_titles_keep_corner_controls_inside_narrow_chat(cx: &mut TestAppContext) {
+        let (view, cx) = crate::ui_tests::fixture(cx);
+        cx.update(|window, cx| view.update(cx, |app, cx| {
+            app.sidebar_split = false;
+            app.sidebar_layout_transition = None;
+            app.sidebar_width = 280.;
+            app.open_ninjas(Some("remote".into()), None, window, cx);
+            let p = app.ninjas.panel.as_mut().unwrap();
+            p.profile.revision = 1;
+            p.profile.name = "a persistent engineering partner with a long name".into();
+            p.settings = false;
+            app.ninjas.hosts.push(Host { id: "remote".into(), name: "Studio".into(), endpoint: Some("http://127.0.0.1:1".into()) });
+        }));
+        for width in [620., 900., 1180.] {
+            cx.simulate_resize(size(px(width), px(790.)));
+            cx.run_until_parked();
+            cx.draw(point(px(0.), px(0.)), size(px(width), px(790.)), |_, _| view.clone().into_any_element());
+            let header = cx.debug_bounds("ninja-chat-header").unwrap();
+            let close = cx.debug_bounds("close-personal-ninjas").unwrap();
+            assert!(close.right() <= header.right() + px(1.), "Close escaped the header at {width}: {close:?}, {header:?}");
+            assert!(close.right() <= px(width), "Close must remain visible");
+        }
+    }
     #[gpui::test]
     fn each_ninja_has_independent_foldable_chats_and_preserves_its_draft(cx:&mut TestAppContext){
         let(view,cx)=crate::ui_tests::fixture(cx);

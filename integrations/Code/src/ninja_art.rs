@@ -55,12 +55,8 @@ pub(super) fn wallpaper(_style:&str,_animated:bool)->AnyElement {
 }
 pub(super) fn art(style: &str, size: f32, animated: bool) -> AnyElement {
     if !animated {
-        return icon(
-            glyph(style),
-            size,
-            color(style),
-        )
-        .into_any_element();
+        return img(format!("assets/{}.svg", glyph(style)))
+            .size(px(size)).flex_none().into_any_element();
     }
     let i = ninjas::styles()
         .iter()
@@ -70,6 +66,7 @@ pub(super) fn art(style: &str, size: f32, animated: bool) -> AnyElement {
         .id(SharedString::from(format!("ninja-art-{style}-{size}")))
         .w(px(size))
         .h(px(size * 56. / 48.))
+        .flex_none()
         .object_fit(ObjectFit::Contain)
         .into_any_element()
 }

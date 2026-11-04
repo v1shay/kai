@@ -1509,8 +1509,8 @@ impl Orbit {
             self.activity.saved.seed_prompt(&session.id, at);
         }
         self.workspace_sessions.sort_by_key(|session| (
-            !self.lifecycle.pinned_chats.contains(&session.id),
-            std::cmp::Reverse(self.activity.prompt_at(session)), session.id.clone(),
+            std::cmp::Reverse(self.activity.prompt_at(session)),
+            !self.lifecycle.pinned_chats.contains(&session.id), session.id.clone(),
         ));
         self.sort_projects_by_prompt();
         self.rebuild_project_tree();
@@ -4816,7 +4816,7 @@ impl Orbit {
                     tab.into_any_element()
                 }
             }))
-            .when_some(self.ninjas.panel.as_ref().filter(|p|p.profile.revision>0),|s,p|s.child(div().h(px(30.)).px_3().flex().items_center().gap_2().rounded_md().bg(rgba((ninja_art::color(&p.profile.style)<<8)|0x24)).child(icon(ninja_art::glyph(&p.profile.style),14.,ninja_art::color(&p.profile.style))).child(p.profile.name.clone()).child(div().id("ninja-tab-close").child(icon("close",12.,TEXT)).cursor_pointer().on_click(cx.listener(|app,_,_,cx|{app.remember_ninja_draft(cx);app.ninjas.desktop=None;app.ninjas.panel=None;cx.notify();})))))
+            .when_some(self.ninjas.panel.as_ref().filter(|p|p.profile.revision>0),|s,p|s.child(div().h(px(30.)).px_3().flex().items_center().gap_2().rounded_md().bg(rgba((ninja_art::color(&p.profile.style)<<8)|0x24)).child(ninja_art::art(&p.profile.style,14.,false)).child(p.profile.name.clone()).child(div().id("ninja-tab-close").child(icon("close",12.,TEXT)).cursor_pointer().on_click(cx.listener(|app,_,_,cx|{app.remember_ninja_draft(cx);app.ninjas.desktop=None;app.ninjas.panel=None;cx.notify();})))))
             .child(div().debug_selector(||"workspace-window-drag-space".into()).flex_1().h_full().min_w(px(12.)).on_mouse_down(MouseButton::Left,|_,window,_|native::drag(window)))
     }
     fn home(&self, _cx: &Context<Self>) -> impl IntoElement {
