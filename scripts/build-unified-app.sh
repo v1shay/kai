@@ -15,7 +15,7 @@ args=(build --offline --manifest-path "$root/integrations/Code/Cargo.toml" --bin
 cargo "${args[@]}"
 swift_optimization=(-O -whole-module-optimization)
 [[ "$configuration" == release ]] || swift_optimization=(-Onone)
-python3 "$root/scripts/build-native-cached.py" "$root/.build/unified/libKaiNotch.dylib" -parse-as-library -emit-library "${swift_optimization[@]}" -D KAI_UNIFIED -module-name KaiNotch -module-cache-path "$swift_cache" "$root"/Sources/NotchPrototype/*.swift
+python3 "$root/scripts/build-native-cached.py" "$root/.build/unified/libKaiNotch.dylib" -target "$(uname -m)-apple-macos13.0" -parse-as-library -emit-library "${swift_optimization[@]}" -D KAI_UNIFIED -module-name KaiNotch -module-cache-path "$swift_cache" "$root"/Sources/NotchPrototype/*.swift
 python3 - "$root/.build/unified/libKaiNotch.dylib" <<'PYABI'
 import ctypes,sys
 library=ctypes.CDLL(sys.argv[1])
