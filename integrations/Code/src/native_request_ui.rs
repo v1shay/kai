@@ -1224,7 +1224,7 @@ mod tests {
             app.runs.insert("fixture-session".into(), run);
             cx.notify();
         });
-        cx.update(|window,cx|view.update(cx,|app,cx|{if app.terminal_panel.is_none(){let panel=cx.new(|cx|crate::terminal_ui::TerminalPanel::new(app.project.clone(),window,cx));panel.update(cx,|panel,_|panel.stop());app.terminal_panel=Some(panel);app.terminal_visible=true;cx.notify();}}));
+        cx.update(|window,cx|view.update(cx,|app,cx|{if app.terminals.is_empty(){app.new_terminal(window,cx);app.active_terminal_panel().unwrap().update(cx,|panel,_|panel.stop());cx.notify();}}));
         cx.run_until_parked();
         let bounds = cx.debug_bounds("native-request-tray").unwrap();
         assert!(bounds.size.height <= px(300.));

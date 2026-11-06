@@ -61,7 +61,7 @@ impl Orbit {
         if theme_controls::matches(&query,"GitHub repository branches pull requests credentials source control"){
             panel=panel.child(div().id("github-settings").p_3().rounded_lg().border_1().border_color(rgba(0xffffff16)).cursor_pointer().flex().items_center().gap_2().child(icon("kai/integrations/github",16.,TEXT)).child("GitHub & source control").child(div().flex_1()).child(icon("chevron-right",12.,MUTED)).on_click(cx.listener(|app,_,w,cx|app.open_github(github_ui::Tab::Repository,w,cx))));
         }
-        if theme_controls::matches(&query,"Startup launch window notch workspace automatic chat titles"){panel=panel.child(self.startup_controls(cx));}
+        if theme_controls::matches(&query,"Startup launch window notch workspace automatic chat titles animation opening entrance motion"){panel=panel.child(self.startup_controls(cx));}
         panel = panel.child(theme_controls::controls(
             &self.theme,
             &self.resolved_theme,

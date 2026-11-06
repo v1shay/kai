@@ -192,19 +192,10 @@ fn start_ninja_probe(owner:WindowHandle<Orbit>,cx:&mut App){
             app.sidebar_split=false;app.sidebar_layout_transition=None;app.conversations_visible=false;
             window.activate_window();cx.activate(true);frames(window,120,Instant::now());cx.notify();
         });
-        let identity=owner.update(cx,|app,w,cx|{let p=app.ninjas.panel.as_ref().unwrap();(native::window_number(w),p.fields[3].entity_id(),app.ninja_surface_owner(),cx.entity().entity_id())}).expect("Ninja identity");
-        for (phase,form) in [("wide","workspace"),("compact","notch"),("mini","mini"),("menu","menu")]{
-            let _=cx.update(|_|unified::emit(&serde_json::json!({"type":"conversationShow","form":form})));
-            Timer::after(Duration::from_secs(3)).await;
-            let id=owner.update(cx,|app,w,cx|{
-                assert_eq!(native::window_number(w),identity.0);
-                assert_eq!(app.ninjas.panel.as_ref().unwrap().fields[3].entity_id(),identity.1);
-                assert_eq!(app.ninja_surface_owner(),identity.2);
-                assert_eq!(cx.entity().entity_id(),identity.3);
-                assert_eq!(app.conversation_form,conversation_surface::Form::parse(form).unwrap());
-                assert_eq!(cx.windows().len(),1);
-                native::window_number(w)
-            }).expect("Same live Ninja in every form");
+        for phase in ["wide","compact"]{
+            if phase=="compact"{let _=owner.update(cx,|_,window,_|window.resize(size(px(620.),px(720.))));}
+            Timer::after(Duration::from_secs(4)).await;
+            let id=owner.update(cx,|_,window,_|native::window_number(window)).unwrap_or(0);
             if id>0{let destination=format!("/private/tmp/kai050-ninja-{phase}.png");let result=cx.background_executor().spawn(async move{std::process::Command::new("/usr/sbin/screencapture").args(["-x","-l",&id.to_string(),&destination]).status()}).await;if !result.is_ok_and(|s|s.success()){eprintln!("KAI_NINJA_RENDER_PROBE_FAILED capture");}}
         }
         if std::env::var_os("KAI_NINJA_IMAGE_PROBE_ENDPOINT").is_some(){

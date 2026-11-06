@@ -4,7 +4,7 @@ The application uses provider marks solely to identify installed agent products.
 
 ## MonoCode provider assets and design references
 
-`providers/claude.svg`, `providers/opencode.svg`, `providers/cursor.svg`, `providers/grok.svg`, and `providers/antigravity.svg` are copied verbatim from [MonoCode](https://github.com/hardbeat920/monocode), commit `889579b61c2342cc27751092ff0effbe9ec8e162`, `src/assets/providers/`. Copyright (c) 2026 Nick. Copies of the original MIT license and trademark notice are in `LICENSES/Monocode-MIT.txt` and `LICENSES/Monocode-NOTICE.txt`.
+`providers/claude.svg`, `providers/opencode.svg`, `providers/cursor.svg`, `providers/grok.svg`, and `providers/antigravity.svg` were originally copied from [MonoCode](https://github.com/hardbeat920/monocode), commit `889579b61c2342cc27751092ff0effbe9ec8e162`, `src/assets/providers/`. Copyright (c) 2026 Nick. Copies of the original MIT license and trademark notice are in `LICENSES/Monocode-MIT.txt` and `LICENSES/Monocode-NOTICE.txt`.
 
 The top-level provider SVGs, except Codex, retain the original path geometry with white fills for GPUI's monochrome alpha-mask renderer. Codex uses the full-color upstream SVG in both asset locations and preserves its gradient and white backing circle. `codex-mask.svg` retains the same outline and negative-space terminal details for the rotating loading icon and gradient status masks, whose renderers accept alpha masks only. The Claude and OpenCode path geometry and original view boxes are retained. Original colored SVG files remain in `providers/`. Cursor and Grok retain the exact upstream paths with white fills. Antigravity retains its original outline path while omitting decorative gradient layers and filter definitions for the monochrome renderer.
 
@@ -61,3 +61,9 @@ original Kai Unified artwork. They identify Luna, Terra, Sol, and Astra model
 families and are shared by the native notch and Code composer.
 
 Codex color mark: MonoCode, `crates/monocode-gpui/assets/codex.svg`, Git blob `4333ab231ac7ad38953c90398a13f4b5b91aab58`, https://github.com/hardbeat920/monocode/blob/main/crates/monocode-gpui/assets/codex.svg (MIT; see bundled MonoCode/Code attribution). Codex is an OpenAI mark.
+
+### Account usage protocols
+
+Cursor protobuf quota fields, the Cursor checksum, Grok Build billing protocol, and Antigravity's structured `/usage` output were independently adapted from [AgentUsage](https://github.com/vlondon/AgentUsage), MIT license retained in `LICENSES/AgentUsage-MIT.txt`. No missing quota is treated as zero. Cursor, Grok, and OpenCode image fills are fixed to the light neutral brand mark for dark surfaces; native notch alpha masks remain separate.
+
+Terminal font metrics and focused macOS action bindings were compared with MonoCode Native (`crates/monocode-gpui/src/terminal.rs`, main, 2026-11-06; https://github.com/hardbeat920/monocode/blob/main/crates/monocode-gpui/src/terminal.rs). MonoCode attribution and MIT license are included above.

@@ -1349,7 +1349,7 @@ impl Orbit {
     }
     pub(super) fn ninjas_conversation(&self, window: &Window, cx: &Context<Self>) -> AnyElement {
         div().debug_selector(||"chat-pane".into()).flex_1().size_full().min_w(px(0.)).min_h(px(0.)).flex().flex_col().relative().overflow_hidden()
-            .when(!self.conversation_form.compact(),|s|s.child(self.tabs(cx))).child(div().flex_1().min_h(px(0.)).child(self.ninjas_panel(window,cx))).into_any_element()
+            .child(div().flex_1().min_h(px(0.)).child(self.ninjas_panel(window,cx))).into_any_element()
     }
     fn ninja_task_row(&self,t:&Value,window:&Window,cx:&Context<Self>)->AnyElement{
         let p=self.ninjas.panel.as_ref().unwrap();

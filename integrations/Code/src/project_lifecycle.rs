@@ -48,16 +48,17 @@ impl Orbit {
             .unwrap_or_else(|| project.name.clone())
     }
     pub(super) fn project_path_label(&self, path: &std::path::Path) -> String {
-        self.lifecycle
-            .project_names
-            .get(path)
-            .cloned()
-            .unwrap_or_else(|| {
-                path.file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .into_owned()
-            })
+        if let Some(name)=self.lifecycle.project_names.get(path){return name.clone()}
+        // The project catalog owns imported frontend names. Folder-derived
+        // labels are only a fallback for paths that aren't in that catalog.
+        if let Some(project)=self.projects.iter().filter(|p|path.starts_with(&p.path))
+            .max_by_key(|p|p.path.components().count()) {
+            return self.project_label(project);
+        }
+        if let Some(project)=self.custom_projects.iter().chain(&self.source_projects).find(|p|p.path==path){
+            return self.project_label(project);
+        }
+        path.file_name().unwrap_or_default().to_string_lossy().into_owned()
     }
     pub(super) fn chat_label(&self, session: &SessionSummary) -> String {
         self.lifecycle
@@ -809,5 +810,27 @@ mod tests {
         );
         assert!(std::fs::read_dir(&root).unwrap().count() == 1);
         std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)] mod frontend_name_tests {
+    use super::*;
+    use std::prelude::v1::test;
+    #[gpui::test]
+    fn project_path_labels_match_the_frontend_catalog_and_nested_workspaces(cx:&mut gpui::TestAppContext){
+        let(app,cx)=crate::ui_tests::fixture(cx);
+        app.update(cx,|app,_|{
+            let root=PathBuf::from("/tmp/folder-name");
+            let project=Project{path:root.clone(),name:"Frontend project".into()};
+            app.projects=vec![project.clone()];
+            assert_eq!(app.project_path_label(&root),app.project_label(&project));
+            assert_eq!(app.project_path_label(&root.join("src")),"Frontend project");
+            assert_eq!(app.project_path_label(std::path::Path::new("/tmp/folder-name-other")),"folder-name-other");
+            app.lifecycle.project_names.insert(root.clone(),"Renamed in Kai".into());
+            assert_eq!(app.project_path_label(&root),"Renamed in Kai");
+            assert_eq!(app.project_path_label(&root.join("src")),"Renamed in Kai");
+            app.projects.push(Project{path:root.join("nested"),name:"Nested project".into()});
+            assert_eq!(app.project_path_label(&root.join("nested/src")),"Nested project");
+        });
     }
 }

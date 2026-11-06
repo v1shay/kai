@@ -1,5 +1,8 @@
 # One live conversation, four presentations — 0.12.59 (96)
 
+> Historical 0.12.59 design. The native presentations have since been restored;
+> see [the current architecture](KAI_SHARED_SURFACES_AND_TERMINALS_2026_11_06.md).
+
 This supersedes the editor-handoff design described in
 `SURFACE_CONTINUITY_2026_11_03.md`. Sharing a backend while copying between
 independent editors was not sufficient. Kai Unified now presents the original

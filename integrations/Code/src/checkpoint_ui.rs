@@ -323,10 +323,7 @@ impl Orbit {
             || !self.settling.is_empty()
             || !self.finalizing.is_empty()
             || self.checkpoint_busy > 0
-            || self
-                .terminal_panel
-                .as_ref()
-                .is_some_and(|panel| !panel.read(cx).is_settled())
+            || self.terminals.iter().any(|session| !session.panel.read(cx).is_settled())
         {
             return Some("Stop agents and terminals and wait for their files to finish before restoring a prompt.".into());
         }

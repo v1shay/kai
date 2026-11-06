@@ -96,12 +96,7 @@ impl Orbit {
         composer.update(cx, |input, _| {
             input.set_command_navigation(self.slash.is_some())
         });
-        let project = self
-            .project
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned();
+        let project = self.project_path_label(&self.project);
         let title = self
             .active
             .as_ref()
@@ -265,7 +260,7 @@ impl Orbit {
                                     div()
                                         .text_size(theme::ui_px(18.))
                                         .font_weight(FontWeight::MEDIUM)
-                                        .child("What would you like to build?"),
+                                        .child(self.build_greeting()),
                                 ),
                         )
                     })

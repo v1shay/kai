@@ -616,7 +616,7 @@ impl ResolvedTheme {
     }
 }
 thread_local! { static CURRENT:RefCell<ResolvedTheme>=RefCell::new(Theme::default().resolve(true,Appearance::default())); }
-thread_local! { static MONO_WIDTH:Cell<Option<f32>>=const {Cell::new(None)}; }
+thread_local! { static MONO_METRICS:Cell<Option<(f32,f32)>>=const {Cell::new(None)}; }
 pub fn install_resolved(theme: ResolvedTheme) {
     let font_changed = CURRENT.with(|current| {
         let mut current = current.borrow_mut();
@@ -626,13 +626,13 @@ pub fn install_resolved(theme: ResolvedTheme) {
         changed
     });
     if font_changed {
-        MONO_WIDTH.with(|width| width.set(None));
+        MONO_METRICS.with(|metrics| metrics.set(None));
     }
 }
 /// Terminal cell metrics are measured once per font/theme change, with no
 /// repeated system font enumeration or shaping in the terminal's paint loop.
 pub fn ensure_font_metrics(window: &gpui::Window) {
-    MONO_WIDTH.with(|cache| {
+    MONO_METRICS.with(|cache| {
         if cache.get().is_none() {
             let face = gpui::font(mono_font());
             let font_id = window.text_system().resolve_font(&face);
@@ -643,17 +643,19 @@ pub fn ensure_font_metrics(window: &gpui::Window) {
                 .map(|advance| f32::from(advance.width))
                 .filter(|width| width.is_finite() && *width > 0.)
                 .unwrap_or_else(|| f32::from(mono_px(7.23)));
-            cache.set(Some(width));
+            let height = f32::from((window.text_system().ascent(font_id, mono_px(12.))
+                + window.text_system().descent(font_id, mono_px(12.)).abs()).ceil()).max(f32::from(mono_px(14.)));
+            cache.set(Some((width,height)));
         }
     });
 }
 pub fn mono_cell_width() -> f32 {
-    MONO_WIDTH
-        .with(|width| width.get())
+    MONO_METRICS.with(|metrics| metrics.get().map(|metrics|metrics.0))
         .unwrap_or_else(|| f32::from(mono_px(7.23)))
 }
 pub fn mono_cell_height() -> f32 {
-    f32::from(mono_px(18.))
+    MONO_METRICS.with(|metrics|metrics.get().map(|metrics|metrics.1))
+        .unwrap_or_else(|| f32::from(mono_px(14.)))
 }
 pub fn rgb(color: u32) -> Rgba {
     CURRENT.with(|t| gpui::rgb(t.borrow().map_rgb(color)))

@@ -230,14 +230,13 @@ fn main_codex_voice_control_has_a_readable_label_and_fits_the_composer(cx: &mut 
 }
 
 #[gpui::test]
-fn quick_composer_has_separate_geometry_and_bidirectional_unicode_drafts(cx: &mut TestAppContext) {
+fn quick_composer_is_the_original_editor_with_unicode_input(cx: &mut TestAppContext) {
     let (orbit, panel, cx) = fixture(cx);
     cx.update(|_, cx| {
         let main = orbit.read(cx).composer.clone();
         let quick = panel.read(cx).composer.clone();
-        assert_ne!(main.entity_id(), quick.entity_id());
+        assert_eq!(main.entity_id(), quick.entity_id());
         assert_eq!(quick.read(cx).text(), "Draft 🦀");
-        assert_ne!(main.read(cx).bounds(), quick.read(cx).bounds());
     });
     cx.simulate_input(" 日本語");
     cx.simulate_keystrokes("left");
@@ -499,4 +498,15 @@ fn quick_dictation_mirrors_unselected_text_and_follows_wrapped_lines(cx: &mut Te
         );
     });
     cx.update(|_, cx| main.update(cx, |input, cx| input.end_dictation(cx)));
+}
+
+#[gpui::test]
+fn compact_editor_keeps_selection_and_undo_across_visibility_changes(cx:&mut TestAppContext){
+    let(orbit,panel,cx)=fixture(cx);
+    cx.simulate_keystrokes("cmd-a");
+    cx.simulate_input("replacement 🥷");
+    panel.update_in(cx,|panel,w,cx|{panel.hide(w,cx);panel.show(w,cx);});
+    draw(&panel,cx);
+    cx.simulate_keystrokes("cmd-z");
+    cx.update(|_,cx|{assert_eq!(orbit.read(cx).composer.read(cx).text(),"Draft 🦀");assert_eq!(panel.read(cx).composer.entity_id(),orbit.read(cx).composer.entity_id());});
 }

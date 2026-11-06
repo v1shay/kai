@@ -340,6 +340,9 @@ fn build_catalog(agent: AgentKind) -> Vec<Command> {
             });
         }
     }
+    if agent != AgentKind::OpenCode {
+        commands.push(Command{name:"models",description:"Choose an available model",action:Action::Models,native_equivalent:false});
+    }
     let alias = match agent {
         AgentKind::Claude | AgentKind::Grok => Some((
             "cost",
@@ -501,8 +504,8 @@ mod tests {
             let commands = catalog(agent);
             let names: std::collections::HashSet<_> = commands.iter().map(|c| c.name).collect();
             assert_eq!(names.len(), commands.len());
-            // Existing catalog plus the three native GitHub actions.
-            assert!(commands.len() <= 53);
+            // Includes the shared /models alias and the native GitHub actions.
+            assert!(commands.len() <= 54);
             for (name, action) in [("github",Action::Github),("commit",Action::Commit),("pr",Action::PullRequest)] {
                 assert_eq!(lookup(agent,name).unwrap().action,action);
             }
@@ -575,4 +578,14 @@ mod tests {
         assert_eq!(query("/model real-model"), Some("model"));
         assert_eq!(matching(AgentKind::Claude, "mod")[0].name, "model");
     }
+}
+
+#[cfg(test)]mod shared_model_alias_tests{
+ use super::*;
+ #[test]fn every_provider_resolves_models_to_the_local_picker(){
+  for provider in [AgentKind::Codex,AgentKind::Claude,AgentKind::Gemini,AgentKind::OpenCode,AgentKind::Antigravity,AgentKind::Cursor,AgentKind::Grok,AgentKind::Ninja]{
+   assert_eq!(lookup(provider,"models").unwrap().action,Action::Models);
+   assert_eq!(catalog(provider).iter().filter(|c|c.name=="models").count(),1);
+  }
+ }
 }

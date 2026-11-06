@@ -3,14 +3,32 @@ import XCTest
 @testable import NotchPrototype
 
 final class WorkspaceMorphTests:XCTestCase {
-    func testConversationFormsFitTheCurrentDisplayWithoutAnotherEditor(){
-        let screen=CGRect(x:-1920,y:40,width:1920,height:1040)
-        for form in [ConversationForm.workspace,.notch,.mini,.menu]{
-            let frame=form.frame(in:screen,workspace:nil,anchor:CGRect(x:5000,y:3000,width:20,height:20))
-            XCTAssertTrue(screen.contains(frame))
-            XCTAssertGreaterThanOrEqual(frame.width,480)
-            XCTAssertGreaterThanOrEqual(frame.height,360)
-        }
+    func testRapidDraftWritesFollowAcknowledgementsWithoutRollingBackNewerTyping(){
+        var writes=UnifiedDraftWrites()
+        _=writes.receive(owner:"chat"){_ in nil}
+        writes.enqueue(id:"a",text:"h")
+        writes.enqueue(id:"b",text:"hello")
+        XCTAssertEqual(writes.pendingText,"hello")
+        XCTAssertEqual(writes.receive(owner:"chat"){$0 == "a" ? KaiRequestResult(id:$0,error:nil):nil},"h")
+        XCTAssertEqual(writes.pendingText,"hello","An intermediate frame must not become the next edit's base")
+        XCTAssertEqual(writes.receive(owner:"chat"){$0 == "b" ? KaiRequestResult(id:$0,error:nil):nil},"hello")
+        XCTAssertNil(writes.pendingText)
+        writes.enqueue(id:"c",text:"another chat must not inherit this")
+        XCTAssertNil(writes.receive(owner:"other"){KaiRequestResult(id:$0,error:nil)})
+        XCTAssertNil(writes.pendingText)
+    }
+    func testRejectedDraftIsNotAcknowledgedAsSaved(){
+        var writes=UnifiedDraftWrites()
+        _=writes.receive(owner:"chat"){_ in nil}
+        writes.enqueue(id:"a",text:"conflicting draft")
+        XCTAssertNil(writes.receive(owner:"chat"){KaiRequestResult(id:$0,error:"Changed in another editor")})
+        XCTAssertNil(writes.pendingText)
+    }
+    func testHiddenNotchPreservesItsDivergentDraftUntilTheOwnerAcceptsIt(){
+        XCTAssertFalse(UnifiedDraftHandoff.shouldAdopt(local:"notch draft",base:"old",remote:"new IDE draft",selectionChanged:false,sendAccepted:false))
+        XCTAssertTrue(UnifiedDraftHandoff.shouldAdopt(local:"notch draft",base:"old",remote:"notch draft",selectionChanged:false,sendAccepted:false))
+        XCTAssertTrue(UnifiedDraftHandoff.shouldAdopt(local:"old",base:"old",remote:"new IDE draft",selectionChanged:false,sendAccepted:false))
+        XCTAssertTrue(UnifiedDraftHandoff.shouldAdopt(local:"sent",base:"old",remote:"",selectionChanged:false,sendAccepted:true))
     }
 
     func testWorkspaceContourUsesTheOriginalNotchShouldersAndMatchingSegments(){

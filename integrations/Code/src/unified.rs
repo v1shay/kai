@@ -186,26 +186,36 @@ pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Resul
             "Kai unified: native layer and owner state ready in process {}",
             std::process::id()
         );
-        if std::env::args().any(|arg|arg=="--unified-surface-probe"){
+        if std::env::args().any(|arg|arg=="--unified-surface-probe") {
             anyhow::ensure!(std::env::args().any(|arg|arg=="--unified-smoke-test"),"Surface probe requires isolated data");
-            cx.spawn(async move|cx|{
-                // Restore happens in the first draw, before a user can type.
-                let _=cx.update(|_|reveal());
-                Timer::after(Duration::from_millis(1400)).await;
-                let original=window.update(cx,|app,w,cx|{assert!(app.restore_pending.is_none());app.composer.update(cx,|i,cx|i.set_text("same live editor",cx));(native::window_number(w),cx.entity().entity_id(),app.composer.entity_id(),app.unified_token())}).expect("Restored conversation");
-                for form in ["workspace","notch","mini","menu","notch","workspace"]{
-                    let _=cx.update(|_|emit(&json!({"type":"conversationShow","form":form})));
-                    Timer::after(Duration::from_millis(1150)).await;
-                    window.update(cx,|app,w,cx|{
-                        assert_eq!(native::window_number(w),original.0,"Form created a different native window");
-                        assert_eq!(cx.entity().entity_id(),original.1);
-                        assert_eq!(app.composer.entity_id(),original.2);
-                        assert_eq!(app.unified_token(),original.3);
-                        assert_eq!(app.composer.read(cx).text(),"same live editor");
-                        assert_eq!(app.conversation_form,conversation_surface::Form::parse(form).unwrap());
-                        assert_eq!(cx.windows().len(),1,"Form created a second GPUI window");
-                        eprintln!("KAI_SURFACE_IDENTITY {form} window={} entity={:?} editor={:?} viewport={:?}",original.0,original.1,original.2,w.viewport_size());
-                    }).expect("Original conversation survived");
+            let diagnostics=unsafe{libc::dlsym(library,c"kai_unified_diagnostics".as_ptr())};anyhow::ensure!(!diagnostics.is_null(),"No native diagnostics");let diagnostics:unsafe extern "C" fn()->u32=unsafe{std::mem::transmute(diagnostics)};
+            cx.spawn(async move|cx| {
+                let _=cx.update(|_|reveal());Timer::after(Duration::from_millis(1400)).await;
+                let original=window.update(cx,|app,w,cx| {
+                    app.composer.update(cx,|input,cx|input.set_text("shared editor 🦀",cx));
+                    (native::window_number(w),cx.entity().entity_id(),app.composer.entity_id(),app.unified_token(),w.viewport_size())
+                }).unwrap();
+                for form in ["notch","workspace","mini","workspace","menu","notch","workspace"] {
+                    let _=cx.update(|cx|match form {
+                        "notch"=>crate::unified::collapse(),"workspace"=>reveal(),
+                        "mini"=>cx.update_global::<quick_chat::Controller,_>(|c,cx|c.toggle(cx).unwrap()),
+                        "menu"=>emit(&json!({"type":"probeMenuBarClick"})),_=>{}
+                    });
+                    Timer::after(Duration::from_millis(1300)).await;
+                    window.update(cx,|app,w,cx| {
+                        assert_eq!(cx.entity().entity_id(),original.1);assert_eq!(app.composer.entity_id(),original.2);
+                        assert_eq!(app.unified_token(),original.3);assert_eq!(app.composer.read(cx).text(),"shared editor 🦀");
+                        assert_eq!(w.viewport_size(),original.4,"Native notch must not resize the workspace");
+                    }).unwrap();
+                    let flags=unsafe{diagnostics()};
+                    match form {
+                        "workspace"=>assert_eq!(flags&3,1),
+                        "notch"=>{assert_eq!(flags&3,2);assert_ne!(flags&512,0);},
+                        _=>{assert_ne!(flags&128,0);assert_eq!(flags&3,0);
+                            cx.update(|cx|cx.update_global::<quick_chat::Controller,_>(|c,cx|c.verify_shared_editor(original.0,original.2,cx))).unwrap();
+                        }
+                    }
+                    eprintln!("KAI_SURFACE_IDENTITY {form} owner={:?} editor={:?} flags={flags}",original.1,original.2);
                 }
                 eprintln!("KAI_SURFACE_PROBE_OK");let _=cx.update(|cx|cx.quit());
             }).detach();
@@ -221,7 +231,7 @@ pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Resul
                     let _=cx.update(|_|emit(&json!({"type":"probeMenuBarClick"})));
                     Timer::after(Duration::from_millis(700)).await;
                     assert_ne!(unsafe{diagnostics()}&128,0,"The actual status-item handler did not open mini Code");
-                    assert_eq!(unsafe{diagnostics()}&3,1,"Menu must use only the original window");
+                    assert_eq!(unsafe{diagnostics()}&1,0,"The workspace remained live beside menu mini Code");
                     let _=cx.update(|_|emit(&json!({"type":"probeMenuBarClick"})));
                     Timer::after(Duration::from_millis(700)).await;
                     assert_eq!(unsafe{diagnostics()}&128,0,"A repeated status-item click did not close mini Code");
@@ -234,7 +244,7 @@ pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Resul
             let surface=entity.read(cx).startup_surface;
             cx.spawn(async move|cx|{Timer::after(Duration::from_millis(std::env::var("KAI_STARTUP_WAIT_MS").ok().and_then(|s|s.parse::<u64>().ok()).unwrap_or(1400).clamp(1400,60000))).await;let state=unsafe{diagnostics()};match surface{
                 startup::Surface::Workspace=>{assert_eq!(state&31,9,"Default startup must show only the workspace and its shared pet");assert_ne!(state&64,0,"Startup workspace must fill the working area");},
-                startup::Surface::Extended=>{assert_eq!(state&3,1);assert_ne!(state&512,0,"Extended startup must really expand the notch");},
+                startup::Surface::Extended=>{assert_eq!(state&3,2);assert_ne!(state&512,0,"Extended startup must really expand the notch");},
                 startup::Surface::Compact=>{assert_eq!(state&3,2);assert_eq!(state&512,0,"Compact startup must not show the mini chat");}
             }eprintln!("KAI_STARTUP_PROBE_OK {surface:?}");let _=cx.update(|cx|cx.quit());}).detach();
         }else if std::env::args().any(|arg|arg=="--unified-voice-probe"){
@@ -275,7 +285,7 @@ pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Resul
                 });
                 Timer::after(Duration::from_millis(850)).await;
                 let _=cx.update(|_|{
-                    assert_eq!(unsafe{diagnostics()} & 3,1,"Fold must keep the original window");assert_ne!(unsafe{diagnostics()}&512,0,"Fold must apply notch form");
+                    assert_eq!(unsafe{diagnostics()} & 27,2,"Fold must restore the extended notch and pet");
                     if std::env::args().any(|arg|arg=="--unified-wallpaper-probe"){assert_ne!(unsafe{diagnostics()} & 256,0,"The extended notch did not receive Code's real prepared wallpaper");}
                     crate::unified::reveal();
                 });
@@ -289,7 +299,7 @@ pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Resul
                 Timer::after(Duration::from_millis(1000)).await;
                 let _=cx.update(|cx|{
                     let state=unsafe{diagnostics()};assert_ne!(state & 128,0,"Quick Chat was not opened");
-                    assert_eq!(state & 3,1,"Mini Code must use only the original window");
+                    assert_eq!(state & 3,0,"Quick Chat must not also open the notch or workspace");
                     cx.update_global::<quick_chat::Controller,_>(|service,cx|service.dismiss(cx));
                 });
                 Timer::after(Duration::from_millis(1000)).await;
@@ -392,13 +402,6 @@ impl Orbit {
             && self.workspace_trust.is_none() && self.session_conflict.is_none()
     }
     fn dispatch_unified(&mut self, request: Value, window: &mut Window, cx: &mut Context<Self>) {
-        if request["action"] == "conversation_surface" {
-            if let Some(form)=request["form"].as_str().and_then(conversation_surface::Form::parse) {
-                self.set_conversation_form(form,cx);
-                emit(&json!({"type":"conversationSurface","form":request["form"],"revision":request["revision"]}));
-            }
-            return;
-        }
         // Presentation updates must never replace the acknowledgement of a
         // prompt or decision that the native controls are still waiting for.
         if matches!(request["action"].as_str(),Some("pet_visuals"|"adaptive_text_samples")){
@@ -963,7 +966,7 @@ impl Orbit {
         let (effective_model,effective_effort)=self.effective_model_settings();
         let history=if self.loading{vec![]}else{self.unified_history()};
         let local_older=history.first().and_then(|v|v["id"].as_str()).is_some_and(|v|v!="row-0");
-        let mut snapshot=json!({"project":self.project,"projects":self.projects.iter().take(80).map(|p|json!({"path":p.path,"name":p.name})).collect::<Vec<_>>(),"projectsLoading":false,
+        let mut snapshot=json!({"project":self.project,"projects":self.projects.iter().take(80).map(|p|json!({"path":p.path,"name":self.project_label(p)})).collect::<Vec<_>>(),"projectsLoading":false,
             "chats":chats,"standaloneChats":standalone,"standalone":self.project==self.unprojected_root(),"codeChats":[],"codeConnection":{"connected":true,"enabled":true},
             "threadId":selected,"threadName":chat.map(|s|s.title.as_str()).unwrap_or("New chat"),"ownerToken":self.unified_token(),"composerDraft":self.composer.read(cx).text(),
             "historyLoading":self.loading || self.loading_earlier,"history":history,"historyHasMore":self.has_older || local_older,"files":self.unified_file_rows(cx),
@@ -991,7 +994,7 @@ impl Orbit {
         snapshot["contextWindow"]=json!(self.context_usage().map(|(used,limit)|json!({"used":used,"limit":limit,"fraction":(used as f64/limit as f64).clamp(0.,1.)})));
         if self.agent==AgentKind::Ninja{let selection=self.ninja_selection();snapshot["selectedModel"]=json!(selection.model);snapshot["ninja"]=json!({"selection":selection,"machines":self.ninja.machines,"progress":self.ninja.progress,"error":self.ninja.error,"loading":!self.ninja.pending.is_empty(),"canCancel":self.ninja.download_cancel.is_some()});}
         snapshot["fastMode"]=json!(self.fast_enabled());snapshot["fastSupported"]=json!(self.fast_supported());snapshot["usageSummary"]=json!(self.usage_summary());snapshot["usageWindows"]=json!(self.usage_windows().iter().map(|w|json!({"label":w.window_title().unwrap_or_else(||w.label.clone()),"remaining":w.remaining_text(),"fraction":((100.-w.used_percent)/100.).clamp(0.,1.),"reset":w.resets_at.and_then(|t|chrono::DateTime::from_timestamp(t,0)).map(|t|format!("Resets {}",t.with_timezone(&chrono::Local).format("%b %-d at %-I:%M %p")))})).collect::<Vec<_>>());snapshot["usageAccount"]=json!(self.controls.get(self.agent.command()).and_then(|(_,c)|c.account.clone()));snapshot["usageUpdated"]=json!(self.controls.get(self.agent.command()).map(|(at,_)|format!("Updated {}s ago",at.elapsed().as_secs())));
-        snapshot["workspaceVoiceError"]=json!(self.voice_error);snapshot["historyEarlier"]=json!(self.unified_history_end.as_ref().is_some_and(|(owner,_)|owner==&self.unified_token()) || self.history_offset>0 || self.navigation_history);snapshot["approvalCount"]=json!(self.unified_pending_ids().len()+self.ninjas.pending_count());snapshot["workspaceMotion"]=json!(self.motion);snapshot["workspaceTextMorph"]=json!(self.unified_text_morph);self.ninja_surface_snapshot(&mut snapshot,cx);snapshot
+        snapshot["workspaceVoiceError"]=json!(self.voice_error);snapshot["historyEarlier"]=json!(self.unified_history_end.as_ref().is_some_and(|(owner,_)|owner==&self.unified_token()) || self.history_offset>0 || self.navigation_history);snapshot["approvalCount"]=json!(self.unified_pending_ids().len()+self.ninjas.pending_count());snapshot["workspaceMotion"]=json!(self.motion);snapshot["workspaceOpeningOnce"]=json!(self.workspace_opening_once);snapshot["workspaceTextMorph"]=json!(self.unified_text_morph);self.ninja_surface_snapshot(&mut snapshot,cx);snapshot
 
     }
     fn unified_detail_id(&self,index:usize)->Option<String>{
@@ -1189,19 +1192,11 @@ mod tests {
             assert!(app.unified_command(&body,window,cx).is_err(),"A stale draft base must never overwrite newer input");
         }));
     }
-    #[gpui::test] fn native_navigation_commands_do_not_need_or_replace_an_editor_copy(cx:&mut TestAppContext){
-        let(view,cx)=crate::ui_tests::fixture(cx);
-        view.update_in(cx,|app,w,cx|{
-            app.composer.update(cx,|i,cx|i.set_text("original unsent draft",cx));
-            app.unified_command(&json!({"action":"ui_command","command":"fold_work","ownerToken":app.unified_token()}),w,cx).unwrap();
-            assert_eq!(app.composer.read(cx).text(),"original unsent draft");
-        });
-    }
     fn request(app: &Orbit, action: &str, cx: &App) -> Value {
         json!({"action":action,"ownerToken":app.unified_token(),"draftBase":app.composer.read(cx).text(),"targetThreadId":app.active.as_ref().map(|id|format!("code:{id}")),"requestId":uuid::Uuid::new_v4().to_string()})
     }
     #[gpui::test]
-    fn conversation_forms_keep_the_original_editor_run_and_submit_path(cx:&mut TestAppContext){
+    fn surface_handoffs_preserve_owner_run_draft_and_followup_queue(cx:&mut TestAppContext){
         let(view,cx)=crate::ui_tests::fixture(cx);
         view.update_in(cx,|app,_,cx|{
             app.active=Some("continuity".into());app.loading=false;
@@ -1209,42 +1204,21 @@ mod tests {
             app.composer.update(cx,|i,cx|i.set_text("draft before switching",cx));
         });
         let before=view.read_with(cx,|app,cx|app.unified_snapshot(cx));
-        let editor=view.read_with(cx,|app,_|app.composer.entity_id());
-        for form in ["notch","mini","menu","workspace","notch","workspace"]{
+        cx.update(|_,cx|cx.set_global(quick_chat::Controller::new(view.clone())));
+        for _ in 0..3{
+            cx.update(|_,cx|cx.update_global::<quick_chat::Controller,_>(|c,cx|{c.toggle(cx).unwrap();c.toggle_menu(cx).unwrap();c.dismiss(cx);}));
+            cx.run_until_parked();
             view.update_in(cx,|app,window,cx|{
-                app.dispatch_unified(json!({"action":"conversation_surface","form":form,"revision":1}),window,cx);
                 let after=app.unified_snapshot(cx);
-                for field in ["ownerToken","threadId","activeTurnId","composerDraft","selectedAgent","selectedModel"]{assert_eq!(before[field],after[field],"Presentation changed {field}");}
-                assert_eq!(app.composer.entity_id(),editor);
+                for field in ["ownerToken","threadId","activeTurnId","composerDraft","selectedAgent","selectedModel"]{assert_eq!(before[field],after[field],"Handoff changed {field}");}
                 assert!(!app.runs["continuity"].handle.is_cancelled());
+                let mut command=request(app,"draft",cx);command["text"]=json!("draft before switching");app.unified_command(&command,window,cx).unwrap();
             });
         }
-        cx.simulate_input(" plus typing");
         view.update_in(cx,|app,window,cx|{
-            assert_eq!(app.composer.read(cx).text(),"draft before switching plus typing");
-            app.send(window,cx);
-            assert_eq!(app.prompt_queue.last().unwrap().text,"draft before switching plus typing");
+            let mut command=request(app,"send",cx);command["text"]=json!("followup from the notch");app.unified_command(&command,window,cx).unwrap();
+            assert_eq!(app.prompt_queue.last().unwrap().text,"followup from the notch");
             assert!(!app.runs["continuity"].handle.is_cancelled());
-        });
-    }
-    #[gpui::test]
-    fn conversation_forms_keep_ninja_input_history_and_pending_approval(cx:&mut TestAppContext){
-        let(view,cx)=crate::ui_tests::fixture(cx);
-        view.update_in(cx,|app,w,cx|{
-            app.open_ninjas(Some("local".into()),None,w,cx);
-            let p=app.ninjas.panel.as_mut().unwrap();p.profile.revision=1;p.chat=Some("chat".into());p.settings=false;
-            p.fields[3].update(cx,|i,cx|i.set_text("Ninja draft",cx));
-            let task=json!({"id":"run","profile":p.profile.id,"chat":"chat","state":"approval","requests":[{"id":"approval"}],"brief":"Existing transcript"});
-            p.messages=vec![task.clone()];
-            app.ninjas.snapshots.insert("local".into(),json!({"profiles":[p.profile],"tasks":[task]}));
-            let editor=p.fields[3].entity_id();let before=app.unified_snapshot(cx);
-            for form in ["notch","mini","menu","workspace"]{
-                app.dispatch_unified(json!({"action":"conversation_surface","form":form,"revision":1}),w,cx);
-                assert_eq!(app.ninjas.panel.as_ref().unwrap().fields[3].entity_id(),editor);
-                assert_eq!(app.ninjas.panel.as_ref().unwrap().fields[3].read(cx).text(),"Ninja draft");
-                let after=app.unified_snapshot(cx);
-                for key in ["ownerToken","history","activeTurnId","approvalCount","nativeReview"]{assert_eq!(before[key],after[key],"Ninja presentation changed {key}");}
-            }
         });
     }
     #[gpui::test]

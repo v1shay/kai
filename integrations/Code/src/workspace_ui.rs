@@ -77,46 +77,78 @@ fn fit_rect(state: &WindowState, displays: &[Bounds<Pixels>]) -> Bounds<Pixels> 
 }
 
 impl Orbit {
-    pub(super) fn toggle_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.conversation_form.compact(){unified::reveal();if self.terminal_visible{return}}
-        if self.reopen_closing_pane(pane_layout::Pane::Terminal,cx){return}
-        if self.terminal_visible {self.close_pane(pane_layout::Pane::Terminal,cx);return}
-        if self.quit_pending {
-            return;
+    pub(super) fn active_terminal_panel(&self) -> Option<&Entity<terminal_ui::TerminalPanel>> {
+        self.terminals.iter().find(|session| Some(session.panel.entity_id()) == self.active_terminal).map(|session| &session.panel)
+    }
+    pub(super) fn sync_terminal_visibility(&self, cx: &mut Context<Self>) {
+        for session in &self.terminals {
+            let visible = self.terminal_visible && self.terminal_panes.visible(session.panel.entity_id());
+            session.panel.update(cx, |panel, _| panel.set_visible(visible));
         }
-        if self.terminal_panel.is_none() && self.checkpoint_busy > 0 {
+    }
+    pub(super) fn select_terminal(&mut self, id: EntityId, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.terminals.iter().any(|session| session.panel.entity_id() == id) { return; }
+        self.active_terminal = Some(id);
+        self.terminal_panes.select(id);
+        self.terminal_visible = true;
+        self.reopen_closing_pane(pane_layout::Pane::Terminal, cx);
+        self.sync_terminal_visibility(cx);
+        if let Some(panel) = self.active_terminal_panel() { panel.read(cx).focus_handle(cx).focus(window); }
+        cx.notify();
+    }
+    pub(super) fn new_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.quit_pending { return; }
+        if self.checkpoint_busy > 0 {
             self.notice = Some("Wait for file checkpoint work before opening a terminal.".into());
             cx.notify();
             return;
         }
-        self.terminal_visible = !self.terminal_visible;
-        if self.terminal_visible && self.terminal_panel.is_none() {
-            let root = self
-                .execution_root()
-                .unwrap_or_else(|| self.project.clone());
-            let panel = cx.new(|cx| terminal_ui::TerminalPanel::new(root, window, cx));
-            self.terminal_subscription =
-                Some(cx.subscribe_in(&panel, window, |this, _, event, _, cx| {
-                    if let terminal_ui::TerminalEvent::Dock(side)=event{this.dock_terminal(*side,cx);}
-                    if matches!(event,terminal_ui::TerminalEvent::DockStarted){this.terminal_dock_hover=None;}
-                    if matches!(event, terminal_ui::TerminalEvent::Close) {
-                        this.terminal_visible = false;
-                        this.terminal_panel = None;
-                        this.terminal_subscription = None;
+        let root = self.execution_root().unwrap_or_else(|| self.project.clone());
+        let chats_root = self.unprojected_root();
+        let create_workspace = self.project == chats_root && root.parent() == Some(chats_root.as_path())
+            && root.file_name().and_then(|name|name.to_str()).is_some_and(|name|uuid::Uuid::parse_str(name).is_ok());
+        let panel = cx.new(|cx| terminal_ui::TerminalPanel::new_workspace(root, create_workspace, window, cx));
+        let id = panel.entity_id();
+        let subscription = cx.subscribe_in(&panel, window, |this, panel, event, window, cx| {
+            match event {
+                terminal_ui::TerminalEvent::Dock(side) => this.dock_terminal(*side, cx),
+                terminal_ui::TerminalEvent::DockStarted => this.terminal_dock_hover = None,
+                terminal_ui::TerminalEvent::TitleChanged => cx.notify(),
+                terminal_ui::TerminalEvent::New => this.new_terminal(window,cx),
+                terminal_ui::TerminalEvent::Close => {
+                    if let Some(index) = this.terminals.iter().position(|session| session.panel.entity_id() == panel.entity_id()) {
+                        let replacement = this.terminal_panes.remove(panel.entity_id());
+                        this.terminals.remove(index);
+                        if this.active_terminal == Some(panel.entity_id()) {
+                            this.active_terminal = replacement;
+                        }
+                        if this.terminals.is_empty() {
+                            this.terminal_visible = false;
+                            this.composer.read(cx).focus_handle(cx).focus(window);
+                        } else if this.terminal_visible && let Some(panel) = this.active_terminal_panel() {
+                            panel.read(cx).focus_handle(cx).focus(window);
+                        }
+                        this.sync_terminal_visibility(cx);
                         cx.notify();
                     }
-                }));
-            self.terminal_panel = Some(panel);
+                }
+            }
+        });
+        self.terminal_panes.insert(id, self.active_terminal);
+        self.terminals.push(terminal_ui::Session { number: self.next_terminal_number, panel, _subscription: subscription });
+        self.next_terminal_number += 1;
+        self.select_terminal(id, window, cx);
+    }
+    pub(super) fn toggle_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.reopen_closing_pane(pane_layout::Pane::Terminal,cx) {
+            self.sync_terminal_visibility(cx);
+            if let Some(panel) = self.active_terminal_panel() { panel.read(cx).focus_handle(cx).focus(window); }
+            return;
         }
-        if self.terminal_visible
-            && let Some(panel) = &self.terminal_panel
-        {
-            panel.read(cx).focus_handle(cx).focus(window);
-        }
-        if let Some(panel) = &self.terminal_panel {
-            panel.update(cx, |panel, _| panel.set_visible(self.terminal_visible));
-        }
-        cx.notify();
+        if self.terminal_visible { self.close_pane(pane_layout::Pane::Terminal,cx); return; }
+        if self.terminals.is_empty() { self.new_terminal(window, cx); return; }
+        if self.quit_pending { return; }
+        if let Some(id) = self.active_terminal { self.select_terminal(id, window, cx); }
     }
     /// GPUI's platform shutdown hook has a 100 ms deadline. Normal Quit waits
     /// before initiating platform shutdown, without blocking the UI thread.
@@ -130,12 +162,12 @@ impl Orbit {
             .update(cx, |background, cx| background.set_quitting(true, cx));
         self.cancel_pending_launches();
         let broker_shutdown = self.shutdown_app_brokers();
-        if let Some(terminal) = &self.terminal_panel {
-            terminal.update(cx, |terminal, _| terminal.stop());
+        for session in &self.terminals {
+            session.panel.update(cx, |terminal, _| terminal.stop());
         }
         self.stop_dictation(cx);
         self.stop_voice(cx);
-        if window.window_handle().window_id() == self.primary_window && !self.conversation_form.compact() {
+        if window.window_handle().window_id() == self.primary_window {
             self.window_state = Some(capture_window(window));
         }
         self.save_workspace_now(cx);
@@ -165,7 +197,7 @@ impl Orbit {
                     for id in settled {
                         this.poll(&id, cx);
                     }
-                    !broker_shutdown.is_closed() || this.starting || !this.team_starting.is_empty() || !this.runs.is_empty() || this.pending_project_creations > 0 || this.checkpoint_busy > 0 || this.file_browser.as_ref().is_some_and(|browser|browser.read(cx).editor_busy(cx)) || this.terminal_panel.as_ref().is_some_and(|terminal| !terminal.read(cx).is_settled())
+                    !broker_shutdown.is_closed() || this.starting || !this.team_starting.is_empty() || !this.runs.is_empty() || this.pending_project_creations > 0 || this.checkpoint_busy > 0 || this.file_browser.as_ref().is_some_and(|browser|browser.read(cx).editor_busy(cx)) || this.terminals.iter().any(|session| !session.panel.read(cx).is_settled())
                 }) else {
                     return;
                 };
@@ -436,6 +468,7 @@ impl Orbit {
             codex_approvals: self.codex_approvals,
             codex_access: self.codex_access,
             motion: self.motion,
+            workspace_opening_once: self.workspace_opening_once,
             sidebar: self.sidebar,
             sidebar_split: self.sidebar_split,
             sidebar_projects_collapsed:self.project_tree.projects_collapsed,sidebar_chats_collapsed:self.project_tree.chats_collapsed,

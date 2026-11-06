@@ -101,7 +101,6 @@ fn transcript_width(rows: &[(String, bool)]) -> f32 {
 }
 impl Orbit {
     pub(super) fn toggle_children(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.conversation_form.compact(){unified::reveal();if self.broker_panel.is_some(){return}}
         if self.reopen_closing_pane(pane_layout::Pane::Children,cx){return}
         if self.broker_panel.is_some() {self.close_pane(pane_layout::Pane::Children,cx);return}
         if self.broker_panel.take().is_some() {

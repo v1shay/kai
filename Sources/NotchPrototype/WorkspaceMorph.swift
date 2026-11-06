@@ -4,6 +4,8 @@ import AppKit
 /// its real components at their final size; no tiles or per-frame window resize.
 @MainActor final class WorkspaceMorph {
     var motionEnabled=true
+    var openingOnlyOnce=false
+    private var hasOpened=false
     var onPresentation:((String)->Void)?
     private var revision=0
     private weak var window:NSWindow?,host:NSView?
@@ -150,6 +152,11 @@ import AppKit
         // every reveal, although only the contour needs to move.
         surfaceRadius=destinationRadius
         if window.frame != target{window.setFrame(target,display:true)}
+        let animateOpening = !openingOnlyOnce || !hasOpened
+        hasOpened=true
+        if !animateOpening {
+            transitioning=false;window.alphaValue=1;onPresentation?("visible");present(window);completion();return
+        }
         onPresentation?(replay ? "reopen":"expand")
         let reduce = !motionEnabled || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         window.alphaValue=1
@@ -216,6 +223,7 @@ import AppKit
     /// Restore the real workspace in place without ordering or activating it.
     /// A notch overlay must not close a window behind another application.
     func retainOpen(_ window:NSWindow){
+        hasOpened=true
         if expanded && !transitioning{return}
         revision += 1;clearVisuals();self.window=window;expanded=true;transitioning=false;window.alphaValue=1;onPresentation?("visible")
     }

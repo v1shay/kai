@@ -306,6 +306,34 @@ private final class AttachmentLayer:CALayer {
     private let newRow=CATextLayer(), projectNewRow=CATextLayer(), standaloneTitle=CATextLayer(),codeTitle=CATextLayer(), activeTitle=CATextLayer(), actionBar=CALayer(), closeButton=CATextLayer()
     private var projectRows=[(CALayer,String)](),chatRows=[(ChatRowLayer,String)](),standaloneRows=[(ChatRowLayer,String)](),activeRows=[(ChatRowLayer,String)](),codeRows=[(ChatRowLayer,String)](),codeChats=[KaiChat](),projects=[KaiProject](),chats=[KaiChat](),standaloneChats=[KaiChat](),selectedProject="",selectedThread:String?,fileEntries=[KaiFile](),fileRows=[FileRowLayer](),pathHits=[(CGRect,URL)](),filesOpen=false,previewOpen=false,previewFromFiles=false,projectsCollapsed=false,projectIntrudesComposer=false,projectOffset:CGFloat=0,fileOffset:CGFloat=0,approvalNeeded=false,turnActive=false
     private var sidebarContentHeight:CGFloat=0
+    private let sidebarRail=CALayer(),sidebarThumb=CALayer()
+    private var sidebarDrag:(y:CGFloat,offset:CGFloat)?
+    private var sidebarOverflow:CGFloat{max(0,sidebarContentHeight-left.bounds.height+8)}
+    private func layoutSidebarScroller(){
+        let height=max(0,left.bounds.height-8)
+        sidebarRail.frame=CGRect(x:leftWidth-5,y:4,width:4,height:height)
+        sidebarRail.isHidden=sidebarOverflow<=0 || height<=0
+        let thumb=min(height,max(22,height*left.bounds.height/max(1,sidebarContentHeight+8)))
+        sidebarThumb.frame=CGRect(x:0,y:(height-thumb)*(1-projectOffset/max(1,sidebarOverflow)),width:4,height:thumb)
+    }
+    func beginSidebarScroll(at point:CGPoint)->Bool{
+        guard !projectsCollapsed,!previewOpen,!sidebarRail.isHidden else{return false}
+        let local=CGPoint(x:point.x-left.frame.minX,y:point.y-left.frame.minY)
+        guard sidebarRail.frame.insetBy(dx:-4,dy:0).contains(local) else{return false}
+        let thumb=sidebarThumb.frame.offsetBy(dx:sidebarRail.frame.minX,dy:sidebarRail.frame.minY)
+        if !thumb.contains(local){
+            projectOffset=min(sidebarOverflow,max(0,(sidebarRail.frame.maxY-local.y-sidebarThumb.bounds.height/2)/max(1,sidebarRail.bounds.height-sidebarThumb.bounds.height)*sidebarOverflow))
+            layoutProjects(animated:false)
+        }
+        sidebarDrag=(point.y,projectOffset);return true
+    }
+    func dragSidebarScroll(to point:CGPoint){
+        guard let drag=sidebarDrag else{return}
+        projectOffset=min(sidebarOverflow,max(0,drag.offset+(drag.y-point.y)/max(1,sidebarRail.bounds.height-sidebarThumb.bounds.height)*sidebarOverflow))
+        layoutProjects(animated:false)
+    }
+    func endSidebarScroll(){sidebarDrag=nil}
+
     private var elsewhere=[KaiActiveTask]()
     var renderedSidebarRowCount:Int {projectRows.count+chatRows.count+standaloneRows.count+activeRows.count+codeRows.count}
     private var rowProfile:PetGradientProfile?
@@ -326,6 +354,10 @@ private final class AttachmentLayer:CALayer {
         chatProjects=defaults.dictionary(forKey:"kaiChatProjects") as? [String:String] ?? [:]
         hiddenChats=Set(defaults.stringArray(forKey:"kaiHiddenChats") ?? [])
         hiddenProjects=Set(defaults.stringArray(forKey:"kaiHiddenProjects") ?? [])
+        sidebarRail.backgroundColor=NSColor.white.withAlphaComponent(0.06).cgColor
+        sidebarRail.cornerRadius=2;sidebarRail.zPosition=100
+        sidebarThumb.backgroundColor=NSColor.white.withAlphaComponent(0.35).cgColor
+        sidebarThumb.cornerRadius=2;sidebarRail.addSublayer(sidebarThumb);left.addSublayer(sidebarRail)
         preview.onContentChanged={ [weak self] in self?.notifyPreviewContent() }
         layer.opacity=0; layer.addSublayer(left);layer.addSublayer(projectToggle);layer.addSublayer(preview); layer.addSublayer(main); layer.addSublayer(right);left.masksToBounds=true;right.masksToBounds=true;projectToggle.fillColor=nil;projectToggle.strokeColor=NSColor.white.withAlphaComponent(0.38).cgColor;projectToggle.lineWidth=1;projectToggle.lineCap = .round;projectToggle.lineJoin = .round
         configure(newRow,"+ new chat",8,.white.withAlphaComponent(0.65));left.addSublayer(newRow)
@@ -472,6 +504,7 @@ private final class AttachmentLayer:CALayer {
         for row in projectRows.map({$0.0})+(chatRows+standaloneRows+activeRows+codeRows+ninjaRows).map({$0.0 as CALayer}) where !kept.contains(ObjectIdentifier(row)){row.removeFromSuperlayer()}
         projectRows=nextProjects;chatRows=nextChats;standaloneRows=nextStandalone;activeRows=nextActive;codeRows=nextCode;ninjaRows=nextNinjas
         updatePendingSidebarHighlight()
+        layoutSidebarScroller()
         projectIntrudesComposer=cursor+left.frame.minY<36
     }
 

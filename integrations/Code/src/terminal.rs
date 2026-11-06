@@ -34,13 +34,22 @@ const WRITE_BUDGET: usize = 256 * 1024;
 pub struct Size {
     pub columns: usize,
     pub lines: usize,
+    pub cell_width: u16,
+    pub cell_height: u16,
 }
 impl Size {
     pub fn new(columns: usize, lines: usize) -> Self {
         Self {
-            columns: columns.clamp(2, 240),
-            lines: lines.clamp(1, 80),
+            columns: columns.clamp(2, 512),
+            lines: lines.clamp(1, 256),
+            cell_width: 7,
+            cell_height: 14,
         }
+    }
+    pub fn with_cell(mut self, width: f32, height: f32) -> Self {
+        self.cell_width = width.round().clamp(1., 128.) as u16;
+        self.cell_height = height.round().clamp(1., 128.) as u16;
+        self
     }
 }
 impl Dimensions for Size {
@@ -108,6 +117,7 @@ enum Control {
         start: bool,
     },
     Copy(async_channel::Sender<Option<String>>),
+    SelectAll,
 }
 #[derive(Clone)]
 struct Proxy {
@@ -137,8 +147,8 @@ impl EventListener for Proxy {
                 Some(format(alacritty_terminal::event::WindowSize {
                     num_lines: size.lines as u16,
                     num_cols: size.columns as u16,
-                    cell_width: 7,
-                    cell_height: 18,
+                    cell_width: size.cell_width,
+                    cell_height: size.cell_height,
                 }))
             }
             Event::ColorRequest(index, format) => {
@@ -354,6 +364,7 @@ impl Terminal {
     pub fn select(&self, row: usize, column: usize, start: bool) -> Result<()> {
         self.send(Control::Select { row, column, start })
     }
+    pub fn select_all(&self) -> Result<()> { self.send(Control::SelectAll) }
     pub fn copy(&self) -> Result<async_channel::Receiver<Option<String>>> {
         let (tx, rx) = async_channel::bounded(1);
         self.send(Control::Copy(tx))?;
@@ -454,8 +465,8 @@ fn window_size(size: Size) -> libc::winsize {
     libc::winsize {
         ws_row: size.lines as u16,
         ws_col: size.columns as u16,
-        ws_xpixel: 0,
-        ws_ypixel: 0,
+        ws_xpixel: (size.columns * usize::from(size.cell_width)).min(u16::MAX as usize) as u16,
+        ws_ypixel: (size.lines * usize::from(size.cell_height)).min(u16::MAX as usize) as u16,
     }
 }
 fn worker(
@@ -532,6 +543,12 @@ fn worker(
                     }
                     dirty = true;
                 }
+                Control::SelectAll => {
+                    let mut selection = Selection::new(SelectionType::Simple, Point::new(term.topmost_line(), Column(0)), Side::Left);
+                    selection.update(Point::new(term.bottommost_line(), term.last_column()), Side::Right);
+                    term.selection = Some(selection);
+                    dirty = true;
+                }
                 Control::Copy(tx) => {
                     let value = term
                         .selection_to_string()
@@ -605,6 +622,15 @@ fn worker(
             );
             dirty = false;
             published = Instant::now();
+        }
+        // Hidden tabs still publish title changes, without rendering their grid.
+        if dirty && !shared.visible.load(Ordering::Acquire) {
+            let title = shared.metadata.lock().unwrap_or_else(|e| e.into_inner()).0.clone();
+            let mut frame = shared.frame.lock().unwrap_or_else(|e| e.into_inner());
+            if frame.title != title {
+                Arc::make_mut(&mut frame).title = title;
+                let _ = shared.wake.try_send(());
+            }
         }
         if done {
             break;
@@ -932,7 +958,7 @@ mod tests {
         let frame = event(&term);
         assert_eq!(frame.rows.len(), size.lines);
         assert!(frame.rows.iter().map(Vec::len).sum::<usize>() <= size.lines * size.columns);
-        assert!(Size::new(usize::MAX, usize::MAX) == Size::new(240, 80));
+        assert!(Size::new(usize::MAX, usize::MAX) == Size::new(512, 256));
     }
     #[test]
     fn output_wakes_are_coalesced_and_large_input_is_rejected() {

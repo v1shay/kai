@@ -112,11 +112,10 @@ mod tests {
         let (view, cx) = crate::ui_tests::fixture(cx);
         let id = cx.update(|window, cx| {
             view.update(cx, |app, cx| {
-                let panel =
-                    cx.new(|cx| terminal_ui::TerminalPanel::new(app.project.clone(), window, cx));
+                app.new_terminal(window, cx);
+                let panel = app.active_terminal_panel().unwrap().clone();
                 panel.update(cx, |panel, _| panel.stop());
                 let id = panel.entity_id();
-                app.terminal_panel = Some(panel);
                 app.terminal_visible = true;
                 id
             })
@@ -131,7 +130,7 @@ mod tests {
                     cx,
                 );
                 assert!(!app.terminal_visible);
-                assert_eq!(app.terminal_panel.as_ref().unwrap().entity_id(), id);
+                assert_eq!(app.active_terminal_panel().unwrap().entity_id(), id);
             });
         }
     }
@@ -298,9 +297,7 @@ impl Orbit {
         match pane {
             Pane::Terminal => {
                 self.terminal_visible = false;
-                if let Some(panel) = &self.terminal_panel {
-                    panel.update(cx, |panel, _| panel.set_visible(false));
-                }
+                self.sync_terminal_visibility(cx);
             }
             Pane::Files => {
                 self.files_visible = false;

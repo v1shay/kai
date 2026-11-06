@@ -15,6 +15,16 @@ pub struct LimitWindow {
     pub reported_at_ms: Option<i64>,
 }
 impl LimitWindow {
+    /// Compact surfaces identify the provider with artwork and show one reset
+    /// countdown. Internal bucket names stay in the detailed quota panel.
+    pub fn compact_used(&self, now:i64)->String {
+        let percent=if self.used_percent>0. && self.used_percent<0.1 {"<0.1".into()}else{format!("{:.0}",self.used_percent)};
+        let reset=self.resets_at.map(|at|{
+            let secs=(at-now).max(0);
+            if secs>=86400{format!("{}d {}h",secs/86400,secs%86400/3600)}else if secs>=3600{format!("{}h {}m",secs/3600,secs%3600/60)}else{format!("{}m",secs/60)}
+        });
+        reset.map(|reset|format!("{percent}% {reset}")).unwrap_or_else(||format!("{percent}%"))
+    }
     pub fn remaining_text(&self) -> String {
         let remaining = (100. - self.used_percent).clamp(0., 100.);
         let rounded = (remaining * 10.).round() / 10.;

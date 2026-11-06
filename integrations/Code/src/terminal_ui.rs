@@ -11,11 +11,39 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
+actions!(terminal, [Copy, Paste, SelectAll, NewTerminal, CloseTerminal, SendHome, SendEnd, DeleteToStart]);
+pub fn bind_keys(cx: &mut App) {
+    let context=Some("CodeTerminal");
+    cx.bind_keys([
+        KeyBinding::new("cmd-c",Copy,context), KeyBinding::new("cmd-v",Paste,context),
+        KeyBinding::new("cmd-a",SelectAll,context), KeyBinding::new("cmd-t",NewTerminal,context),
+        KeyBinding::new("cmd-w",CloseTerminal,context),
+        KeyBinding::new("cmd-left",SendHome,context), KeyBinding::new("cmd-right",SendEnd,context),
+        KeyBinding::new("cmd-backspace",DeleteToStart,context),
+    ]);
+}
+
 pub enum TerminalEvent {
     Close,
     Dock(crate::terminal_dock::Side),
     DockStarted,
+    TitleChanged,
+    New,
 }
+pub struct Session {
+    pub number: u64,
+    pub panel: Entity<TerminalPanel>,
+    pub _subscription: Subscription,
+}
+
+impl Session {
+    pub fn title(&self, cx: &App) -> String {
+        let title = self.panel.read(cx).title();
+        let title: String = title.chars().filter(|c| !c.is_control()).take(160).collect();
+        if title.trim().is_empty() || title == "Terminal" { format!("Terminal {}", self.number) } else { title }
+    }
+}
+
 pub struct TerminalPanel {
     runtime: Option<Terminal>,
     frame: Arc<Frame>,
@@ -44,7 +72,19 @@ impl Focusable for TerminalPanel {
     }
 }
 impl TerminalPanel {
-    pub fn new(project: PathBuf, _window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn title(&self) -> &str { self.frame.title.trim() }
+    fn refresh_frame(&mut self, cx: &mut Context<Self>) {
+        if let Some(runtime) = &self.runtime {
+            let next = runtime.snapshot();
+            let title_changed = next.title != self.frame.title;
+            self.frame = next;
+            if title_changed { cx.emit(TerminalEvent::TitleChanged); }
+        }
+    }
+    pub fn new(project: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self::new_workspace(project,false,window,cx)
+    }
+    pub fn new_workspace(project: PathBuf, create_workspace: bool, _window: &mut Window, cx: &mut Context<Self>) -> Self {
         let root = project.clone();
         let startup_cancel = Arc::new(AtomicBool::new(false));
         let cancel = startup_cancel.clone();
@@ -52,7 +92,12 @@ impl TerminalPanel {
         cx.spawn(async move |this, cx| {
             let task = cx
                 .background_executor()
-                .spawn(async move { Terminal::spawn(&root, cancel) });
+                .spawn(async move {
+                if create_workspace && !cancel.load(Ordering::Acquire) {
+                    std::fs::create_dir_all(&root).map_err(|error|anyhow::anyhow!("Could not create this chat's workspace: {error}"))?;
+                }
+                Terminal::spawn(&root, cancel)
+            });
             let result = task.await;
             let _ = this.update(cx, |this, cx| {
                 this.starting = false;
@@ -68,15 +113,13 @@ impl TerminalPanel {
                             }
                         }
                         let wake = runtime.wake.clone();
-                        this.frame = runtime.snapshot();
                         this.runtime = Some(runtime);
+                        this.refresh_frame(cx);
                         cx.spawn(async move |this, cx| {
                             while wake.recv().await.is_ok() {
                                 if this
                                     .update(cx, |this, cx| {
-                                        if let Some(runtime) = &this.runtime {
-                                            this.frame = runtime.snapshot();
-                                        }
+                                        this.refresh_frame(cx);
                                         cx.notify();
                                     })
                                     .is_err()
@@ -85,9 +128,7 @@ impl TerminalPanel {
                                 }
                             }
                             let _ = this.update(cx, |this, cx| {
-                                if let Some(runtime) = &this.runtime {
-                                    this.frame = runtime.snapshot();
-                                }
+                                this.refresh_frame(cx);
                                 cx.notify();
                             });
                         })
@@ -117,6 +158,7 @@ impl TerminalPanel {
         }
     }
     pub fn set_visible(&mut self, visible: bool) {
+        if self.visible == visible { return; }
         self.visible = visible;
         if let Some(runtime) = &self.runtime {
             runtime.set_visible(visible);
@@ -129,7 +171,7 @@ impl TerminalPanel {
             runtime.stop();
         }
     }
-    fn close(&mut self, cx: &mut Context<Self>) {
+    pub fn close(&mut self, cx: &mut Context<Self>) {
         self.stop();
         // Keep the entity's active-session guard until cleanup finishes. A
         // checkpoint restore immediately after Close must not race shell IO.
@@ -206,20 +248,7 @@ impl TerminalPanel {
     }
     fn key(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
         let stroke = &event.keystroke;
-        if stroke.modifiers.platform {
-            match stroke.key.as_str() {
-                "c" => {
-                    self.copy(cx);
-                    cx.stop_propagation();
-                }
-                "v" => {
-                    self.paste(cx);
-                    cx.stop_propagation();
-                }
-                _ => {}
-            }
-            return;
-        }
+        if stroke.modifiers.platform { return; }
         if self.marked.is_empty()
             && let Some(bytes) = key_bytes(
                 &stroke.key,
@@ -374,6 +403,24 @@ impl Render for TerminalPanel {
         let painted = entity.clone();
         let frame = self.frame.clone();
         let cursor_focus = self.focus.clone();
+        let stop_label = if self.frame.running { "Stop" } else { "Stopped" };
+        let text_width = |text: &str| crate::composer_toolbar::text_width(window, text);
+        // Account for every fixed control and gap before adding optional labels.
+        // Omit whole labels instead of squeezing the title or project to an ellipsis.
+        let fixed_width = 16. + 24. + 6. * 4. + 16. + text_width(stop_label)
+            + crate::terminal_dock::Side::ALL.iter().map(|side| 8. + text_width(side.glyph())).sum::<f32>();
+        let available = self.bounds.map_or(0., |bounds| f32::from(bounds.size.width) + 16.) - fixed_width;
+        let status = self.error.clone().unwrap_or_else(|| if self.starting { "Starting…".into() } else { self.frame.status.clone() });
+        let mut metadata = String::new();
+        let project = self.project.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        let project = if project == self.title() { String::new() } else { project };
+        for label in [project, status,
+            if self.frame.alternate { "Full screen".into() } else { String::new() },
+            if self.frame.display_offset > 0 { format!("↑ {}",self.frame.display_offset) } else { String::new() }] {
+            if label.is_empty() { continue; }
+            let candidate = if metadata.is_empty() { label } else { format!("{metadata} · {label}") };
+            if text_width(&candidate) <= available { metadata = candidate; }
+        }
         div()
             .id("native-terminal-panel").debug_selector(||"native-terminal-panel".into())
             .flex()
@@ -388,42 +435,35 @@ impl Render for TerminalPanel {
             .key_context("CodeTerminal")
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::key))
+            .on_action(cx.listener(|this,_: &Copy,_,cx|{this.copy(cx);cx.stop_propagation();}))
+            .on_action(cx.listener(|this,_: &Paste,_,cx|{this.paste(cx);cx.stop_propagation();}))
+            .on_action(cx.listener(|this,_: &SelectAll,_,cx|{if let Some(runtime)=&this.runtime{let _=runtime.select_all();}cx.stop_propagation();}))
+            .on_action(cx.listener(|_,_: &NewTerminal,_,cx|{cx.emit(TerminalEvent::New);cx.stop_propagation();}))
+            .on_action(cx.listener(|this,_: &CloseTerminal,_,cx|{this.close(cx);cx.stop_propagation();}))
+            .on_action(cx.listener(|this,_: &SendHome,_,cx|{this.input(vec![1],cx);cx.stop_propagation();}))
+            .on_action(cx.listener(|this,_: &SendEnd,_,cx|{this.input(vec![5],cx);cx.stop_propagation();}))
+            .on_action(cx.listener(|this,_: &DeleteToStart,_,cx|{this.input(vec![21],cx);cx.stop_propagation();}))
             .child(
-                div().id("terminal-drag-handle").debug_selector(||"terminal-drag-handle".into()).cursor_move()
-                    .on_mouse_down(MouseButton::Left,|_,window,cx|{crate::native::panel_drag_guard(window,true);cx.stop_propagation();})
-                    .on_mouse_up(MouseButton::Left,|_,window,_|crate::native::panel_drag_guard(window,false))
-                    .on_drag(crate::terminal_dock::MoveTerminal,{let weak=cx.weak_entity();move|_,_,_,cx|{let _=weak.update(cx,|_,cx|cx.emit(TerminalEvent::DockStarted));cx.new(|_|crate::terminal_dock::MoveTerminal)}})
-                    .h(px(32.))
-                    .px_3()
+                div().id("terminal-header")
+                    .h(px(32.)).flex_none().min_w(px(0.))
+                    .px_2()
                     .flex()
                     .items_center()
-                    .gap_2()
+                    .gap_1()
                     .text_size(crate::theme::ui_px(11.))
                     .text_color(rgb(0x929292))
-                    .child(div().flex_1().min_w(px(0.)).truncate().child(self.frame.title.clone()))
-                    .when(self.frame.alternate, |s| s.child("Full screen"))
-                    .when(self.frame.display_offset > 0, |s| {
-                        s.child(format!("↑ {}", self.frame.display_offset))
-                    })
-                    .child(
-                        self.project
-                            .file_name()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                            .into_owned(),
-                    )
-                    .child(div().flex_1())
-                    .children(crate::terminal_dock::Side::ALL.into_iter().map(|side|div().id(("terminal-dock-side",side as usize)).px_1().cursor_pointer().hover(|s|s.bg(rgba(0xffffff14))).child(side.glyph()).on_click(cx.listener(move|_,_,_,cx|{cx.stop_propagation();cx.emit(TerminalEvent::Dock(side));}))))
-                    .child(self.error.clone().unwrap_or_else(|| {
-                        if self.starting {
-                            "Starting…".into()
-                        } else {
-                            self.frame.status.clone()
-                        }
-                    }))
+                    .child(div().id("terminal-drag-handle").debug_selector(||"terminal-drag-handle".into())
+                        .w(px(24.)).h_full().flex_none().flex().items_center().justify_center()
+                        .cursor_move().hover(|s|s.text_color(rgb(0xebebeb)).bg(rgba(0xffffff10)))
+                        .child("⠿")
+                        .on_mouse_down(MouseButton::Left,|_,window,cx|{crate::native::panel_drag_guard(window,true);cx.stop_propagation();})
+                        .on_mouse_up(MouseButton::Left,|_,window,_|crate::native::panel_drag_guard(window,false))
+                        .on_drag(crate::terminal_dock::MoveTerminal,{let weak=cx.weak_entity();move|_,_,_,cx|{let _=weak.update(cx,|_,cx|cx.emit(TerminalEvent::DockStarted));cx.new(|_|crate::terminal_dock::MoveTerminal)}}))
+                    .child(div().flex_1().min_w(px(0.)).overflow_hidden().whitespace_nowrap().child(metadata))
+                    .children(crate::terminal_dock::Side::ALL.into_iter().map(|side|div().id(("terminal-dock-side",side as usize)).flex_none().px_1().cursor_pointer().hover(|s|s.bg(rgba(0xffffff14))).child(side.glyph()).on_click(cx.listener(move|_,_,_,cx|{cx.stop_propagation();cx.emit(TerminalEvent::Dock(side));}))))
                     .child(
                         div()
-                            .id("terminal-stop")
+                            .id("terminal-stop").flex_none()
                             .px_2()
                             .py_1()
                             .rounded_md()
@@ -439,20 +479,6 @@ impl Render for TerminalPanel {
                                 cx.notify();
                             })),
                     )
-                    .child(
-                        div()
-                            .id("terminal-close")
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .cursor_pointer()
-                            .hover(|s| s.bg(rgba(0xffffff10)))
-                            .child("×")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.close(cx);
-                                cx.notify();
-                            })),
-                    ),
             )
             .child(
                 div()
@@ -500,8 +526,10 @@ impl Render for TerminalPanel {
                     .child(
                         canvas(
                             move |bounds, _, cx| {
-                                entity.update(cx, |this, _| {
+                                entity.update(cx, |this, cx| {
+                                    let width_changed = this.bounds.is_none_or(|previous| previous.size.width != bounds.size.width);
                                     this.bounds = Some(bounds);
+                                    if width_changed { cx.notify(); }
                                     let size = Size::new(
                                         (f32::from(bounds.size.width)
                                             / crate::theme::mono_cell_width())
@@ -509,7 +537,7 @@ impl Render for TerminalPanel {
                                         (f32::from(bounds.size.height)
                                             / crate::theme::mono_cell_height())
                                             as usize,
-                                    );
+                                    ).with_cell(crate::theme::mono_cell_width(),crate::theme::mono_cell_height());
                                     if size != this.size {
                                         this.size = size;
                                         if let Some(runtime) = &this.runtime {

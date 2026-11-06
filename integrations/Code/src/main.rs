@@ -59,6 +59,7 @@ mod chat_titles;
 mod launch_metrics;
 mod performance;
 mod terminal_dock;
+mod terminal_panes;
 mod orchestrator;
 mod remote_host;
 mod artifacts;
@@ -81,7 +82,6 @@ mod prompt_queue;
 mod provider_capabilities;
 mod queue_ui;
 mod quick_chat;
-mod conversation_surface;
 #[cfg(test)]
 mod quick_chat_tests;
 mod quick_surface;
@@ -109,6 +109,7 @@ mod live_history;
 mod chat_timing;
 mod workspace_motion;
 mod usage;
+mod usage_bar;
 mod voice;
 mod voice_bridge;
 mod voice_ui;
@@ -177,11 +178,13 @@ fn icon(name: &'static str, size: f32, color: u32) -> Svg {
     svg().path(if matches!(name,"codex"|"assets/providers/codex.svg"|"assets/codex.svg"){"codex-mask"}else{name}).size(px(size)).text_color(color)
 }
 // Provider artwork keeps its own colors; ordinary UI symbols remain tintable.
-fn provider_icon(name:&'static str,size:f32,color:u32)->Div{
-    div().size(px(size)).flex_none().child(if matches!(name,"codex"|"assets/providers/codex.svg"|"assets/codex.svg"){
-        img("assets/codex.svg").size_full().into_any_element()
-    }else{icon(name,size,color).into_any_element()})
+fn provider_art(name:&str)->Option<&'static str>{
+    Some(match name.strip_prefix("assets/providers/").unwrap_or(name).strip_suffix(".svg").unwrap_or(name.strip_prefix("assets/providers/").unwrap_or(name)) {"codex"=>"assets/providers/codex.svg","claude"=>"assets/providers/claude.svg","gemini"=>"assets/providers/gemini.svg","antigravity"=>"assets/providers/antigravity.svg","cursor"=>"assets/providers/cursor.svg","grok"=>"assets/providers/grok.svg","opencode"=>"assets/providers/opencode.svg",_=>return None})
 }
+fn provider_icon(name:&'static str,size:f32,color:u32)->Div{
+    div().size(px(size)).flex_none().child(match provider_art(name){Some(path)=>img(path).size_full().into_any_element(),None=>icon(name,size,color).into_any_element()})
+}
+
 fn rich_text(
     id: impl Into<ElementId>,
     text: &str,
@@ -584,8 +587,6 @@ impl ListReveal {
     }
 }
 struct Orbit {
-    conversation_form: conversation_surface::Form,
-    surface_navigation: bool,
     ninjas:ninjas_ui::State,
     ninja:ninja_ui::State,
     remote:remote_host::State,
@@ -640,14 +641,16 @@ struct Orbit {
     prompt_queue: Vec<prompt_queue::Prompt>,
     queue_dispatch: Option<String>,
     queue_editing: Option<queue_ui::Editing>,
-    terminal_panel: Option<Entity<terminal_ui::TerminalPanel>>,
+    terminals: Vec<terminal_ui::Session>,
+    active_terminal: Option<EntityId>,
+    terminal_panes: terminal_panes::Layout,
+    next_terminal_number: u64,
     terminal_visible: bool,
     terminal_dock:terminal_dock::Dock,
     inspector_widths:pane_layout::Widths,
     pane_layout:pane_layout::Layout,
     closed_control_press:Option<control_clicks::ClosedPress>,
     terminal_dock_hover:Option<terminal_dock::Side>,
-    terminal_subscription: Option<Subscription>,
     teams: Vec<teams::Team>,
     team_panel: Option<team_ui::Panel>,
     team_starting: HashSet<String>,
@@ -671,6 +674,7 @@ struct Orbit {
     expanded_projects: HashSet<PathBuf>,
     project_tree: project_tree::ProjectTree,
     usage: HashMap<String, usage::Usage>,
+    usage_bar: usage_bar::State,
     appearance: appearance::Appearance,
     theme: theme::Theme,
     resolved_theme: theme::ResolvedTheme,
@@ -846,6 +850,7 @@ struct Orbit {
     discovering: bool,
     notice: Option<String>,
     motion: bool,
+    workspace_opening_once: bool,
     home_generation: u64,
     _subscriptions: Vec<Subscription>,
     #[cfg(test)]
@@ -936,6 +941,7 @@ impl Orbit {
             .unwrap_or(root);
         let saved_sidebar = restored.as_ref().is_none_or(|state| state.sidebar);
         let saved_motion = restored.as_ref().is_none_or(|state| state.motion);
+        let workspace_opening_once = restored.as_ref().is_none_or(|state| state.workspace_opening_once);
         let saved_sidebar_width = if restored.as_ref().is_some_and(|state| state.sidebar_split) {
             200.
         } else {
@@ -979,10 +985,8 @@ impl Orbit {
             cx.notify();
         });
         let bounds_changed = cx.observe_window_bounds(window, |this, window, cx| {
-            if !this.conversation_form.compact() {
-                this.window_state = Some(workspace_ui::capture_window(window));
-                this.queue_workspace_save(cx);
-            }
+            this.window_state = Some(workspace_ui::capture_window(window));
+            this.queue_workspace_save(cx);
         });
         let before_quit = cx.on_app_quit(|this, cx| {
             this.stop_dictation(cx);
@@ -1078,39 +1082,8 @@ impl Orbit {
         });
         composer.read(cx).focus_handle.focus(window);
         let submit = cx.subscribe_in(&composer, window, |this, _, event, window, cx| {
-            if matches!(event, InputEvent::Submit) {
-                this.send(window, cx);
-            }
-            if matches!(
-                event,
-                InputEvent::DictationCancelled | InputEvent::LimitReached
-            ) {
-                this.stop_dictation(cx);
-            }
-            if matches!(event, InputEvent::LimitReached) {
-                this.notice =
-                    Some("Keep the prompt under 64 KB. Reference large files by path.".into());
-                cx.notify();
-            }
-            if matches!(event, InputEvent::Changed) {
-                this.composer_revision = this.composer_revision.wrapping_add(1);
-                cx.notify();
-                this.queue_workspace_save(cx);
-                this.update_slash(window, cx);
-            }
-            match event {
-                InputEvent::ImagePasted(bytes) => this.add_clipboard_image(bytes.clone(), cx),
-                InputEvent::FilesPasted(paths)=>this.add_attachments(paths.clone(),cx),
-                InputEvent::ClipboardError(error) => {
-                    this.notice = Some(error.clone());
-                    cx.notify();
-                }
-                InputEvent::CursorChanged => this.update_slash(window, cx),
-                InputEvent::CommandPrevious => this.move_slash(-1, cx),
-                InputEvent::CommandNext => this.move_slash(1, cx),
-                InputEvent::CommandAccept => this.accept_slash(false, window, cx),
-                InputEvent::CommandComplete => this.accept_slash(true, window, cx),
-                _ => {}
+            if this.overlay_window.is_none_or(|id| id == window.window_handle().window_id()) {
+                this.composer_event(event, window, cx);
             }
         });
         let search_change =
@@ -1182,7 +1155,6 @@ impl Orbit {
             unified_back:vec![],unified_forward:vec![],unified_navigating:false,
             fast_transition:None,orchestrator_new:false,orchestrator_transition:None,composer_toolbars:Default::default(),
             automatic_titles:!cfg!(test)&&restored.as_ref().is_none_or(|s|s.automatic_titles),title_queue:Default::default(),title_busy:false,title_work:None,title_motions:HashMap::new(),
-            conversation_form: Default::default(), surface_navigation: false,
             startup_surface:restored.as_ref().map_or_else(Default::default,|s|s.startup_surface),
             orchestration_models:HashMap::new(),orchestration_probes:HashSet::new(),
             orchestrator_chats:restored.as_ref().map(|s|s.orchestrator_chats.iter().cloned().collect()).unwrap_or_default(),
@@ -1210,12 +1182,14 @@ impl Orbit {
             prompt_queue: Vec::new(),
             queue_dispatch: None,
             queue_editing: None,
-            terminal_panel: None,
+            terminals: Vec::new(),
+            active_terminal: None,
+            terminal_panes: Default::default(),
+            next_terminal_number: 1,
             terminal_visible: false,
             terminal_dock:restored.as_ref().map_or_else(Default::default,|s|s.terminal_dock.normalized()),
             inspector_widths:restored.as_ref().map_or_else(Default::default,|s|s.inspector_widths.normalized()),pane_layout:Default::default(),closed_control_press:None,
             terminal_dock_hover:None,
-            terminal_subscription: None,
             teams: Vec::new(),
             team_panel: None,
             team_starting: HashSet::new(),
@@ -1241,6 +1215,7 @@ impl Orbit {
                 .as_ref()
                 .is_none_or(|state| state.conversations_visible),
             usage: HashMap::new(),
+            usage_bar: Default::default(),
             appearance: restored
                 .as_ref()
                 .map_or_else(Default::default, |state| state.appearance),
@@ -1427,6 +1402,7 @@ impl Orbit {
             discovering: true,
             notice: None,
             motion: saved_motion && std::env::var_os("ORBIT_REDUCE_MOTION").is_none(),
+            workspace_opening_once,
             home_generation: 0,
             _subscriptions: vec![
                 logo_settled,
@@ -1841,8 +1817,43 @@ impl Orbit {
             .child(div().id(if changes{"close-changes"}else{"close-files"}).debug_selector(move||if changes{"close-changes".into()}else{"close-files".into()}).p_1().cursor_pointer().child(icon("close",14.,MUTED))
                 .on_click(cx.listener(move|app,_,_,cx|app.close_pane(if changes{pane_layout::Pane::Changes}else{pane_layout::Pane::Files},cx))))
     }
+    fn composer_event(&mut self, event: &InputEvent, window: &mut Window, cx: &mut Context<Self>) {
+            if matches!(event, InputEvent::Submit) {
+                self.send(window, cx);
+            }
+            if matches!(
+                event,
+                InputEvent::DictationCancelled | InputEvent::LimitReached
+            ) {
+                self.stop_dictation(cx);
+            }
+            if matches!(event, InputEvent::LimitReached) {
+                self.notice =
+                    Some("Keep the prompt under 64 KB. Reference large files by path.".into());
+                cx.notify();
+            }
+            if matches!(event, InputEvent::Changed) {
+                self.composer_revision = self.composer_revision.wrapping_add(1);
+                cx.notify();
+                self.queue_workspace_save(cx);
+                self.update_slash(window, cx);
+            }
+            match event {
+                InputEvent::ImagePasted(bytes) => self.add_clipboard_image(bytes.clone(), cx),
+                InputEvent::FilesPasted(paths)=>self.add_attachments(paths.clone(),cx),
+                InputEvent::ClipboardError(error) => {
+                    self.notice = Some(error.clone());
+                    cx.notify();
+                }
+                InputEvent::CursorChanged => self.update_slash(window, cx),
+                InputEvent::CommandPrevious => self.move_slash(-1, cx),
+                InputEvent::CommandNext => self.move_slash(1, cx),
+                InputEvent::CommandAccept => self.accept_slash(false, window, cx),
+                InputEvent::CommandComplete => self.accept_slash(true, window, cx),
+                _ => {}
+            }
+    }
     fn toggle_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.conversation_form.compact(){unified::reveal();if self.files_visible{return}}
         if self.reopen_closing_pane(pane_layout::Pane::Files,cx){return}
         if self.files_visible {self.close_pane(pane_layout::Pane::Files,cx);return}
         self.prepare_inspector_switch(pane_layout::Pane::Files);
@@ -1860,7 +1871,6 @@ impl Orbit {
         cx.notify();
     }
     fn open_changes(&mut self, cx: &mut Context<Self>) {
-        if self.conversation_form.compact(){unified::reveal();}
         self.reopen_closing_pane(pane_layout::Pane::Changes,cx);
         self.prepare_inspector_switch(pane_layout::Pane::Changes);
         self.broker_panel = None;
@@ -4040,7 +4050,7 @@ impl Orbit {
             .id("sidebar-layout-panel")
             .debug_selector(|| "project-rail".into())
             .on_click(cx.listener(|this,event:&ClickEvent,_,cx| {if event.click_count()==2 {this.toggle_sidebar_layout(cx);}}))
-            .w(px(if self.conversation_form.compact(){240.}else if self.sidebar_layout_transition.is_some() { self.sidebar_width } else { self.sidebar_target_width() }))
+            .w(px(if self.sidebar_layout_transition.is_some() { self.sidebar_width } else { self.sidebar_target_width() }))
             .h_full()
             .flex_none()
             .flex()
@@ -4747,6 +4757,7 @@ impl Orbit {
     fn tabs(&self, cx: &Context<Self>) -> impl IntoElement {
         let tabs=self.open_tab_sessions();
         div()
+            .debug_selector(||"workspace-tab-strip".into())
             .h(px(40.))
             .flex_none()
             .flex()
@@ -4833,6 +4844,11 @@ impl Orbit {
             .when_some(self.ninjas.panel.as_ref().filter(|p|p.profile.revision>0),|s,p|s.child(div().h(px(30.)).px_3().flex().items_center().gap_2().rounded_md().bg(rgba((ninja_art::color(&p.profile.style)<<8)|0x24)).child(ninja_art::art(&p.profile.style,14.,false)).child(p.profile.name.clone()).child(div().id("ninja-tab-close").child(icon("close",12.,TEXT)).cursor_pointer().on_click(cx.listener(|app,_,_,cx|{app.remember_ninja_draft(cx);app.ninjas.desktop=None;app.ninjas.panel=None;cx.notify();})))))
             .child(div().debug_selector(||"workspace-window-drag-space".into()).flex_1().h_full().min_w(px(12.)).on_mouse_down(MouseButton::Left,|_,window,_|native::drag(window)))
     }
+    fn build_greeting(&self)->String{
+        if self.project.starts_with(self.unprojected_root()){return "What do you want to build?".into()}
+        let name=self.project_path_label(&self.project);
+        format!("What do you want to build in {name}?")
+    }
     fn home(&self, _cx: &Context<Self>) -> impl IntoElement {
         let greeting = div()
             .debug_selector(||"new-chat-greeting".into())
@@ -4845,7 +4861,7 @@ impl Orbit {
                 div()
                     .text_size(theme::ui_px(25.))
                     .font_weight(FontWeight::MEDIUM)
-                    .child("What would you like to build?"),
+                    .child(self.build_greeting()),
             );
         let greeting = if self.motion {
             greeting
@@ -5207,12 +5223,7 @@ impl Orbit {
             .active
             .as_ref()
             .is_some_and(|id| self.runs.contains_key(id)) || self.starting_current();
-        let project = self
-            .project
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned();
+        let project = self.project_path_label(&self.project);
         div()
             .flex_none()
             .w_full()
@@ -5448,6 +5459,7 @@ impl Orbit {
 }
 impl Render for Orbit {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.refresh_usage_bar(false,cx);
         let _render_span=performance::Span::new("root_render");
         self.performance_ready(window);
         self.attach_daily_entry_points(cx);
@@ -5691,7 +5703,7 @@ impl Render for Orbit {
             indicator.set_awake(window.is_window_active() && indicator_motion, cx);
             indicator.set_open(inspector_open, indicator_motion, cx);
         });
-        div()
+        let workspace=div()
             .key_context("Orbit")
             .track_focus(&self.focus)
             .size_full()
@@ -5715,8 +5727,14 @@ impl Render for Orbit {
                     }
                 }),
             )
-            .on_mouse_up(MouseButton::Left, |_,window,_|native::panel_drag_guard(window,false))
-            .on_mouse_up_out(MouseButton::Left,|_,window,_|native::panel_drag_guard(window,false))
+            .on_mouse_up(MouseButton::Left, cx.listener(|app,_,window,cx| {
+                native::panel_drag_guard(window,false);
+                if app.terminal_panes.clear_hover() { cx.notify(); }
+            }))
+            .on_mouse_up_out(MouseButton::Left,cx.listener(|app,_,window,cx| {
+                native::panel_drag_guard(window,false);
+                if app.terminal_panes.clear_hover() { cx.notify(); }
+            }))
             .capture_any_mouse_down(cx.listener(|this, _, _, _| {
                 // Outside-dismiss handlers run later in capture. Preserve the
                 // panel for this click so its own trigger can still toggle it.
@@ -5791,10 +5809,10 @@ impl Render for Orbit {
                 }
             }))
             .on_action(cx.listener(|_, _: &MinimizeWindow, window, _| window.minimize_window()))
-            .when((!self.conversation_form.compact() && self.sidebar_width > 0.) || (self.conversation_form.compact() && self.surface_navigation), |s| {
+            .when(self.sidebar_width > 0., |s| {
                 s.child(
                     entrance.container(WorkspacePart::Sidebar)
-                        .w(px(if self.conversation_form.compact(){240.}else{self.sidebar_width}))
+                        .w(px(self.sidebar_width))
                         .h_full()
                         .overflow_hidden()
                         .flex_none()
@@ -5802,7 +5820,7 @@ impl Render for Orbit {
                 )
             })
             .when(
-                !self.conversation_form.compact() && (self.sidebar_split || self.sidebar_layout_transition.is_some())
+                (self.sidebar_split || self.sidebar_layout_transition.is_some())
                     && (self.conversations_visible||self.conversations_transition.is_some())
                     && (!inspector_open || window.viewport_size().width >= px(1180.)),
                 |s| {
@@ -5817,7 +5835,11 @@ impl Render for Orbit {
                     )
                 },
             )
-            .child(self.conversation_chrome(self.docked_conversation(adaptive_ui::panel!(self,"chat",window,
+            .child(div().flex_1().min_w(px(0.)).h_full().flex().flex_col()
+                // Window chrome stays above every dock position. A top/side
+                // terminal must never occupy AppKit's titlebar drag region.
+                .child(entrance.container(WorkspacePart::Header).flex_none().child(self.tabs(cx)))
+                .child(self.docked_conversation(adaptive_ui::panel!(self,"chat",window,
                 if self.ninja_surface_owner().is_some(){self.ninjas_conversation(window,cx)}else{div()
                     .flex_1()
                     .min_w(px(0.))
@@ -5829,7 +5851,6 @@ impl Render for Orbit {
                     .relative()
                     .overflow_hidden()
                     .child(div().absolute().inset_0().child(self.background.clone()))
-                    .when(!self.conversation_form.compact(),|s|s.child(entrance.container(WorkspacePart::Header).flex_none().child(self.tabs(cx))))
                     .child(
                         entrance.container(WorkspacePart::Header)
                             .h(px(36.))
@@ -5841,7 +5862,7 @@ impl Render for Orbit {
                             .border_b_1()
                             .border_color(rgba(0xebebeb12))
                             .when(
-                                !self.conversation_form.compact() && !self.sidebar
+                                !self.sidebar
                                     && (!self.sidebar_split
                                         || !self.conversations_visible
                                         || (inspector_open
@@ -5881,14 +5902,14 @@ impl Render for Orbit {
                             )
                             .child(
                                 div()
+                                    .debug_selector(||"conversation-header-title".into())
                                     .text_size(theme::ui_px(12.))
-                                    .flex_1()
-                                    .overflow_hidden()
-                                    .text_ellipsis()
+                                    .flex_1().min_w(px(0.))
+                                    .truncate()
                                     .on_mouse_down(MouseButton::Left,|_,window,_|native::drag(window))
                                     .child(title),
                             )
-                            .when(unified::active() && !self.conversation_form.compact(), |s| {
+                            .when(unified::active(), |s| {
                                 s.child(
                                     context_ui::header_control("return-to-notch", false)
                                         .text_size(theme::ui_px(11.))
@@ -6078,9 +6099,9 @@ impl Render for Orbit {
                         )
                     })
                     .child(entrance.container(WorkspacePart::Composer).flex_none().child(self.composer(window, cx)))
-                    .into_any_element()}),window,cx),cx)
+                    .into_any_element()}),window,cx))
             )
-            .when(self.files_visible && !self.conversation_form.compact(), |s| {
+            .when(self.files_visible, |s| {
                 s.when_some(self.file_browser.clone(), |s, browser| {
                     s.child(adaptive_ui::panel!(self,"files",window,self.inspector_shell(pane_layout::Pane::Files, entrance.container(WorkspacePart::Inspector)
                             .debug_selector(|| "files-inspector".into())
@@ -6096,10 +6117,10 @@ impl Render for Orbit {
                             .child(div().flex_1().min_h(px(0.)).w_full().child(browser)).into_any_element(),window,cx)))
                 })
             })
-            .when(self.broker_panel.is_some() && !self.conversation_form.compact(), |s| {
+            .when(self.broker_panel.is_some(), |s| {
                 s.child(adaptive_ui::panel!(self,"agents",window,self.inspector_shell(pane_layout::Pane::Children,self.children_panel(cx),window,cx)))
             })
-            .when_some(self.diff_view.clone().filter(|_|!self.conversation_form.compact()), |s, review| {
+            .when_some(self.diff_view.clone(), |s, review| {
                 s.child(adaptive_ui::panel!(self,"changes",window,self.inspector_shell(pane_layout::Pane::Changes, entrance.container(WorkspacePart::Inspector)
                         .debug_selector(|| "changes-inspector".into())
                         .w_full()
@@ -6156,7 +6177,9 @@ impl Render for Orbit {
             })
             .when(self.team_panel.is_some(), |s| {
                 s.child(self.team_panel_view(window, cx))
-            })
+            }) ;
+        div().size_full().flex().flex_col().child(workspace.flex_1().min_h(px(0.))).child(self.account_usage_bar(cx))
+
     }
 }
 // Render runs before GPUI pushes the view onto its element stack. Target our
@@ -6182,7 +6205,7 @@ fn bind_app_keys(cx: &mut App) {
         KeyBinding::new("cmd-e", ToggleConversations, None),
         KeyBinding::new("cmd-s", input::SaveFile, None),
         KeyBinding::new("cmd-shift-k", ReturnToNotch, None),
-        KeyBinding::new("cmd-a", ToggleSettings, Some("Orbit && !TextInput")),
+        KeyBinding::new("cmd-a", ToggleSettings, Some("Orbit && !TextInput && !CodeTerminal")),
         KeyBinding::new("cmd-f", ToggleFiles, None),
         KeyBinding::new("cmd-d", ToggleDiffs, None),
         KeyBinding::new("cmd-k", ToggleSearch, None),
@@ -6191,6 +6214,7 @@ fn bind_app_keys(cx: &mut App) {
         KeyBinding::new("escape", Escape, None),
         KeyBinding::new("cmd-enter", Send, None),
     ]);
+    terminal_ui::bind_keys(cx);
     cx.on_action(|_: &Quit, cx| cx.quit());
 }
 

@@ -1,5 +1,5 @@
-//! Shortcut routing. Kai Unified changes the original window's presentation.
-//! The separate QuickChat editor below is retained only for standalone Code.
+//! A demand-created native window over the existing Orbit entity. The panel has
+//! its own input geometry, but shares drafts, agents, history and runtime state.
 use super::*;
 use global_hotkey::{GlobalHotkey, Shortcut};
 
@@ -21,6 +21,13 @@ impl Controller {
     }
     /// Install after placing this Controller in App globals. Rebinding preserves
     /// a working registration if the candidate conflicts with another app.
+    pub(super) fn verify_shared_editor(&self,workspace_number:i64,editor:gpui::EntityId,cx:&mut App){
+        self.window.expect("Compact window exists").update(cx,|panel,w,cx|{
+            assert_ne!(native::window_number(w),workspace_number,"Compact shell needs its own window");
+            assert_eq!(panel.composer.entity_id(),editor,"Compact shell replaced the editor");
+            assert_eq!(panel.orbit.read(cx).composer.entity_id(),editor);
+        }).unwrap();
+    }
     pub fn bind(&mut self, shortcut: Shortcut, cx: &mut App) -> anyhow::Result<()> {
         if let Some(hotkey) = &mut self.hotkey {
             return hotkey.rebind(shortcut);
@@ -77,12 +84,11 @@ impl Controller {
         cx.spawn(async move|cx|{while events.recv().await.is_ok(){if cx.update(|_|unified::emit(&serde_json::json!({"type":"menuBarToggle"}))).is_err(){break}}}).detach();Ok(())
     }
     pub fn toggle_menu(&mut self,cx:&mut App)->anyhow::Result<()>{
-        if unified::active(){unified::emit(&serde_json::json!({"type":"conversationToggle","form":"menu"}));return Ok(())}
         let switching=!self.menu_surface;self.menu_surface=true;
         if switching{self.open(cx)}else{self.toggle_surface(cx)}
     }
     pub fn toggle(&mut self, cx: &mut App) -> anyhow::Result<()> {
-        if unified::active(){unified::emit(&serde_json::json!({"type":"conversationToggle","form":"mini"}));return Ok(())}
+        unified::emit(&serde_json::json!({"type":"quickMiniPrepare"}));
         let switching=self.menu_surface;self.menu_surface=false;
         if switching{self.open(cx)}else{self.toggle_surface(cx)}
     }
@@ -109,11 +115,9 @@ impl Controller {
         self.dismiss_at(None,cx);
     }
     pub(super) fn dismiss_at(&mut self,issued_at:Option<f64>,cx:&mut App){
-        if unified::active(){unified::emit(&serde_json::json!({"type":"workspaceDismiss"}));return}
         if let Some(window)=self.window{let _=window.update(cx,|panel,window,cx|panel.hide_if_current(issued_at,window,cx));}
     }
     pub fn open(&mut self, cx: &mut App) -> anyhow::Result<()> {
-        if unified::active(){unified::emit(&serde_json::json!({"type":"conversationShow","form":"mini"}));return Ok(())}
         unified::quick_prepare();
         let result=self.open_surface(cx);
         if result.is_err(){unified::quick_visibility(false);}
@@ -167,61 +171,14 @@ pub struct QuickChat {
 }
 impl QuickChat {
     pub(super) fn new(orbit: Entity<Orbit>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let main_composer = orbit.read(cx).composer.clone();
-        let draft = main_composer.read(cx).text();
-        let composer = cx.new(|cx| {
-            let mut input = TextInput::new(window, cx);
-            input.set_placeholder("Ask, build, or explore…", cx);
-            input.set_image_paste(true);
-            input.set_text(&draft, cx);
-            input
-        });
+        let composer = orbit.read(cx).composer.clone();
         let input_changes = cx.subscribe_in(&composer, window, |this, _, event, window, cx| {
-            if !this.visible {
-                return;
-            }
-            match event {
-                InputEvent::Changed | InputEvent::CursorChanged => {
-                    this.sync_to_main(cx);
-                }
-                InputEvent::Submit => this.submit(window, cx),
-                InputEvent::FilesPasted(paths)=>this.orbit.update(cx,|app,cx|app.add_attachments(paths.clone(),cx)),
-                InputEvent::ImagePasted(bytes) => this
-                    .orbit
-                    .update(cx, |app, cx| app.add_clipboard_image(bytes.clone(), cx)),
-                InputEvent::ClipboardError(error) => this.orbit.update(cx, |app, cx| {
-                    app.notice = Some(error.clone());
-                    cx.notify();
-                }),
-                InputEvent::DictationCancelled | InputEvent::LimitReached => {
-                    this.orbit.update(cx, |app, cx| {
-                        app.stop_dictation(cx);
-                        if matches!(event, InputEvent::LimitReached) {
-                            app.notice = Some(
-                                "Keep the prompt under 64 KB. Reference large files by path."
-                                    .into(),
-                            );
-                            cx.notify();
-                        }
-                    })
-                }
-                InputEvent::CommandPrevious => {
-                    this.orbit.update(cx, |app, cx| app.move_slash(-1, cx))
-                }
-                InputEvent::CommandNext => this.orbit.update(cx, |app, cx| app.move_slash(1, cx)),
-                InputEvent::CommandAccept => this
-                    .orbit
-                    .update(cx, |app, cx| app.accept_slash(false, window, cx)),
-                InputEvent::CommandComplete => this
-                    .orbit
-                    .update(cx, |app, cx| app.accept_slash(true, window, cx)),
-                _ => {}
+            if this.visible {
+                this.orbit.update(cx, |app, cx| app.composer_event(event, window, cx));
             }
         });
-        let main_changes = cx.observe(&main_composer, |this, _, cx| {
-            if this.visible {
-                this.sync_from_main(cx);
-            }
+        let main_changes = cx.observe(&composer, |this, _, cx| {
+            if this.visible { cx.notify(); }
         });
         let orbit_changes = cx.observe(&orbit, |this, _, cx| {
             if this.visible {
@@ -271,33 +228,9 @@ impl QuickChat {
     fn focus_composer(&self,window:&mut Window,cx:&mut Context<Self>){
         let app=self.orbit.read(cx);let input=app.ninjas.panel.as_ref().filter(|p|p.profile.revision>0).map(|p|p.fields[3].clone()).unwrap_or_else(||self.composer.clone());input.read(cx).focus_handle.focus(window);
     }
-    fn sync_to_main(&mut self, cx: &mut Context<Self>) {
-        if self.orbit.read(cx).ninjas.panel.as_ref().is_some_and(|p|p.profile.revision>0){return}
-        let text = self.composer.read(cx).text();
-        let caret=self.composer.read(cx).command_caret();
-        let main = self.orbit.read(cx).composer.clone();
-        if main.read(cx).text() != text {
-            main.update(cx, |input, cx| input.set_text(&text, cx));
-        }
-        main.update(cx,|input,cx|input.follow_command_caret(caret,cx));
-    }
-    fn sync_from_main(&mut self, cx: &mut Context<Self>) {
-        let main = self.orbit.read(cx).composer.clone();
-        let text = main.read(cx).text();
-        let follow = main.read(cx).is_dictating();
-        self.composer
-            .update(cx, |input, cx| input.follow_mirrored_dictation(follow, cx));
-        let navigation=self.orbit.read(cx).slash.as_ref().is_some_and(|p|!p.closing);
-        self.composer.update(cx,|input,_|input.set_command_navigation(navigation));
-        if self.composer.read(cx).text() != text {
-            self.composer
-                .update(cx, |input, cx| input.set_text(&text, cx));
-        }
-    }
     pub(super) fn show(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.shown_at=workspace_motion::now();
         unified::quick_prepare();
-        self.sync_from_main(cx);
         self.visible = true;
         self.show_generation = self.show_generation.wrapping_add(1);
         self.orbit.update(cx, |app, _| {
@@ -338,12 +271,10 @@ impl QuickChat {
         if issued_at.is_none_or(|issued|issued>=self.shown_at){self.hide(window,cx)}
     }
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.sync_to_main(cx);
         self.orbit.update(cx, |app, cx| {
             app.send(window, cx);
         });
         self.focus_composer(window,cx);
-        self.sync_from_main(cx);
     }
     fn escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.orbit.read(cx).github.panel.is_some(){self.orbit.update(cx,|app,cx|app.close_github(window,cx));return}
@@ -424,7 +355,7 @@ impl Render for QuickChat {
             .on_action(cx.listener(|this, _: &CloseWindow, window, cx| this.hide(window, cx)))
             .on_action(cx.listener(|this, _: &Send, window, cx| this.submit(window, cx)))
             .on_action(cx.listener(|this, action: &keyboard::Execute, window, cx| {
-                if action.id=="composer"{this.focus_composer(window,cx);}else{this.sync_to_main(cx);this.orbit.update(cx,|app,cx|app.execute_shortcut(&action.id,window,cx));this.sync_from_main(cx);}
+                if action.id=="composer"{this.focus_composer(window,cx);}else{this.orbit.update(cx,|app,cx|app.execute_shortcut(&action.id,window,cx));}
             }))
             .on_action(cx.listener(|this, _: &NewConversation, window, cx| {
                 this.orbit
@@ -433,7 +364,7 @@ impl Render for QuickChat {
                             if let Err(error)=app.ninja_surface_command(&serde_json::json!({"action":"new","ownerToken":owner}),window,cx){app.notice=Some(error);}
                         } else { app.new_conversation(window, cx); }
                     });
-                this.sync_from_main(cx);
+
                 this.focus_composer(window,cx);
             }))
             .on_action(cx.listener(|this, _: &ToggleSearch, window, cx| {

@@ -4932,7 +4932,7 @@ fn checkpoint_work_blocks_new_prompts_and_terminals_without_consuming_drafts(
             assert_eq!(app.composer.read(cx).text(), "Keep this request");
             assert!(!app.starting && app.runs.is_empty());
             app.toggle_terminal(window, cx);
-            assert!(app.terminal_panel.is_none() && !app.terminal_visible);
+            assert!(app.terminals.is_empty() && !app.terminal_visible);
             app.run_native_terminal(window, cx);
             assert_eq!(app.composer.read(cx).text(), "Keep this request");
             assert!(!app.starting && app.runs.is_empty());

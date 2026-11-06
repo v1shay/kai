@@ -1,4 +1,4 @@
-//! A single live PTY moves between edges; docking never restarts its process.
+//! The live terminal split tree docks at any edge without restarting its PTYs.
 use super::*;
 use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -128,7 +128,7 @@ impl Orbit {
         window: &Window,
         cx: &Context<Self>,
     ) -> AnyElement {
-        if !self.terminal_visible || self.conversation_form.compact() {
+        if !self.terminal_visible {
             return content;
         }
         let dock = self.terminal_dock.normalized();
@@ -149,8 +149,8 @@ impl Orbit {
                     s.h(px(extent)).max_h(relative(0.65)).w_full()
                 })
                 .on_mouse_down(MouseButton::Left,|_,_,cx|cx.stop_propagation())
-                .when_some(this.terminal_panel.clone(), |s, panel| {
-                    let body=div().when(horizontal,|s|s.w(px(body_extent)).h_full()).when(!horizontal,|s|s.h(px(body_extent)).w_full()).child(panel);
+                .map(|s| {
+                    let body=div().flex().flex_col().min_w(px(0.)).min_h(px(0.)).when(horizontal,|s|s.w(px(body_extent)).h_full()).when(!horizontal,|s|s.h(px(body_extent)).w_full()).child(this.render_terminal_panes(cx));
                     if this.motion&&!native::reduced_motion(){if let Some(at)=this.pane_layout.terminal_reposition.filter(|at|at.elapsed()<Duration::from_millis(280)){return s.child(body.with_animation(SharedString::from(format!("terminal-position-{at:?}")),Animation::new(Duration::from_millis(280)),|s,t|s.opacity(t).relative().top(px(8.*(1.-presentation::spring(t))))))}}
                     s.child(body)
                 })
@@ -265,12 +265,10 @@ mod tests {
         let (view, cx) = crate::ui_tests::fixture(cx);
         let original = cx.update(|window, cx| {
             view.update(cx, |app, cx| {
-                let panel = cx.new(|cx| {
-                    crate::terminal_ui::TerminalPanel::new(app.project.clone(), window, cx)
-                });
+                app.new_terminal(window, cx);
+                let panel = app.active_terminal_panel().unwrap().clone();
                 panel.update(cx, |p, _| p.stop());
                 let id = panel.entity_id();
-                app.terminal_panel = Some(panel);
                 app.terminal_visible = true;
                 cx.notify();
                 id
@@ -280,7 +278,9 @@ mod tests {
         for side in [Side::Left, Side::Top, Side::Right, Side::Bottom] {
             let area = cx.debug_bounds("conversation-dock-area").unwrap();
             let header = cx.debug_bounds("terminal-drag-handle").unwrap();
-            let from = header.origin + point(px(50.), px(16.));
+            let chrome = cx.debug_bounds("workspace-tab-strip").unwrap();
+            assert!(header.top() >= chrome.bottom(), "terminal grip overlaps window chrome");
+            let from = header.center();
             let target = match side {
                 Side::Left => point(area.left() + px(8.), area.center().y),
                 Side::Right => point(area.right() - px(8.), area.center().y),
@@ -298,11 +298,13 @@ mod tests {
             cx.run_until_parked();
             view.update(cx, |app, cx| {
                 assert_eq!(app.terminal_dock.side, side);
-                assert_eq!(app.terminal_panel.as_ref().unwrap().entity_id(), original);
+                assert_eq!(app.active_terminal_panel().unwrap().entity_id(), original);
                 assert_eq!(app.workspace_snapshot(cx).terminal_dock.side, side);
             });
             let chat = cx.debug_bounds("chat-pane").unwrap();
             let terminal = cx.debug_bounds("terminal-dock").unwrap();
+            let chrome = cx.debug_bounds("workspace-tab-strip").unwrap();
+            assert!(terminal.top() >= chrome.bottom());
             assert!(chat.size.width > px(200.) && chat.size.height > px(200.));
             match side {
                 Side::Left => assert!(terminal.right() <= chat.left() + px(1.)),
@@ -317,11 +319,9 @@ mod tests {
         let (view, cx) = crate::ui_tests::fixture(cx);
         cx.update(|window, cx| {
             view.update(cx, |app, cx| {
-                let panel = cx.new(|cx| {
-                    crate::terminal_ui::TerminalPanel::new(app.project.clone(), window, cx)
-                });
+                app.new_terminal(window, cx);
+                let panel = app.active_terminal_panel().unwrap().clone();
                 panel.update(cx, |p, _| p.stop());
-                app.terminal_panel = Some(panel);
                 app.terminal_visible = true;
                 cx.notify();
             })

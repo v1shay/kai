@@ -57,6 +57,8 @@ pub struct TextInput {
     last_layout: Vec<WrappedLine>,
     last_line_height: Pixels,
     last_bounds: Option<Bounds<Pixels>>,
+    geometry_window: Option<gpui::WindowId>,
+    window_geometry: std::collections::HashMap<gpui::WindowId, (Vec<WrappedLine>, Pixels, Option<Bounds<Pixels>>)>,
     is_selecting: bool,
     dictation: Option<DictationTail>,
     mirrored_dictation: bool,
@@ -201,6 +203,8 @@ impl TextInput {
             last_layout: vec![],
             last_line_height: px(24.),
             last_bounds: None,
+            geometry_window: None,
+            window_geometry: Default::default(),
             is_selecting: false,
             dictation: None,
             mirrored_dictation: false,
@@ -543,24 +547,28 @@ impl TextInput {
             }
         }
     }
-    fn up(&mut self, _: &Up, _: &mut Window, cx: &mut Context<Self>) {
+    fn up(&mut self, _: &Up, window: &mut Window, cx: &mut Context<Self>) {
+        self.use_window_geometry(window);
         if self.palette_navigation || (self.command_navigation && self.command_query().is_some()) {
             cx.emit(InputEvent::CommandPrevious);
             return;
         }
         self.vertical(-1., false, cx);
     }
-    fn down(&mut self, _: &Down, _: &mut Window, cx: &mut Context<Self>) {
+    fn down(&mut self, _: &Down, window: &mut Window, cx: &mut Context<Self>) {
+        self.use_window_geometry(window);
         if self.palette_navigation || (self.command_navigation && self.command_query().is_some()) {
             cx.emit(InputEvent::CommandNext);
             return;
         }
         self.vertical(1., false, cx);
     }
-    fn select_up(&mut self, _: &SelectUp, _: &mut Window, cx: &mut Context<Self>) {
+    fn select_up(&mut self, _: &SelectUp, window: &mut Window, cx: &mut Context<Self>) {
+        self.use_window_geometry(window);
         self.vertical(-1., true, cx);
     }
-    fn select_down(&mut self, _: &SelectDown, _: &mut Window, cx: &mut Context<Self>) {
+    fn select_down(&mut self, _: &SelectDown, window: &mut Window, cx: &mut Context<Self>) {
+        self.use_window_geometry(window);
         self.vertical(1., true, cx);
     }
 
@@ -597,6 +605,7 @@ impl TextInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.use_window_geometry(window);
         window.focus(&self.focus_handle);
         self.is_selecting = true;
 
@@ -611,7 +620,8 @@ impl TextInput {
         self.is_selecting = false;
     }
 
-    fn on_mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_mouse_move(&mut self, event: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
+        self.use_window_geometry(window);
         if self.is_selecting {
             self.select_to(self.index_for_mouse_position(event.position), cx);
         }
@@ -700,6 +710,17 @@ impl TextInput {
         }
     }
 
+    // Editing state is shared. Hit-testing/IME geometry belongs to the window
+    // that generated the event, even if the hidden workspace painted afterward.
+    fn use_window_geometry(&mut self, window: &Window) {
+        let id=window.window_handle().window_id();
+        if self.geometry_window==Some(id){return}
+        if let Some(previous)=self.geometry_window {
+            self.window_geometry.insert(previous,(std::mem::take(&mut self.last_layout),self.last_line_height,self.last_bounds));
+        }
+        let (lines,height,bounds)=self.window_geometry.remove(&id).unwrap_or((Vec::new(),px(24.),None));
+        self.last_layout=lines;self.last_line_height=height;self.last_bounds=bounds;self.geometry_window=Some(id);
+    }
     fn index_for_mouse_position(&self, position: Point<Pixels>) -> usize {
         if self.content.is_empty() {
             return 0;
@@ -931,6 +952,7 @@ impl EntityInputHandler for TextInput {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
+        self.use_window_geometry(_window);
         let range = self.range_from_utf16(&range_utf16);
         let start = self.position_for_offset(range.start)?;
         let end = self.position_for_offset(range.end)?;
@@ -944,9 +966,10 @@ impl EntityInputHandler for TextInput {
     fn character_index_for_point(
         &mut self,
         point: Point<Pixels>,
-        _: &mut Window,
+        window: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<usize> {
+        self.use_window_geometry(window);
         Some(self.offset_to_utf16(self.index_for_mouse_position(point)))
     }
 }
@@ -1187,6 +1210,7 @@ impl Element for TextElement {
             window.paint_quad(cursor);
         }
         self.input.update(cx, |input, _| {
+            input.use_window_geometry(window);
             input.last_layout = std::mem::take(&mut state.lines);
             input.last_bounds = Some(bounds);
             input.last_line_height = height;

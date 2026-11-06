@@ -163,7 +163,11 @@ pub fn inspect_project(kind:AgentKind,executable:&Path,home:&Path,project:&Path)
             &["/model/name"],
         ),
         AgentKind::Antigravity => {
-            // `agy models` can initiate automatic sign-in. Read configuration only.
+            // Use the installed CLI's catalog, including display labels and
+            // IDs. A terminal-only picker must not be the only way to select it.
+            if let Ok(output)=probe(executable,&["models"],home,Duration::from_secs(12)) {
+                if output.success {info.models=catalog_lines(kind,&output.stdout);}
+            }
             configured_model(
                 &mut info.models,
                 &home.join(".gemini/antigravity-cli/settings.json"),
@@ -939,11 +943,14 @@ fn catalog_lines(kind: AgentKind, bytes: &[u8]) -> Vec<ModelChoice> {
         let accepted = match kind {
             AgentKind::OpenCode => line == id && id.contains('/'),
             AgentKind::Cursor => line.contains(" - "),
+            AgentKind::Antigravity => line.split_once('\t').is_some_and(|(id,label)|valid_model_id(id)&&!label.trim().is_empty()),
             AgentKind::Grok => id.starts_with("grok-"),
             _ => false,
         };
         if accepted {
-            let label = if kind == AgentKind::Cursor {
+            let label = if kind == AgentKind::Antigravity {
+                line.split_once('\t').map(|(_,label)|label.trim()).unwrap_or(id)
+            } else if kind == AgentKind::Cursor {
                 line.split_once(" - ").map(|(_, label)| label).unwrap_or(id)
             } else {
                 id
@@ -1598,7 +1605,7 @@ fi
     }
 
     #[test]
-    fn gemini_and_agy_use_only_configured_models_without_auth_probes() {
+    fn gemini_uses_config_and_agy_reads_native_catalog_with_config_fallback() {
         let fixture = Fixture::new();
         fs::create_dir_all(fixture.0.join(".gemini/antigravity-cli")).unwrap();
         fs::write(
@@ -1611,7 +1618,7 @@ fi
             r#"{"model":"native-agy"}"#,
         )
         .unwrap();
-        let cli = fixture.cli("touch marker");
+        let cli = fixture.cli(r#"[ "$1" = models ] || touch marker"#);
         for (kind, id) in [
             (AgentKind::Gemini, "native-gemini"),
             (AgentKind::Antigravity, "native-agy"),
@@ -1620,6 +1627,16 @@ fi
             assert_eq!(info.auth, AuthState::Unknown);
             assert_eq!(info.models[0].id, id);
         }
+        assert!(!fixture.0.join("marker").exists());
+    }
+
+    #[test]
+    fn antigravity_catalog_reads_cli_ids_and_labels_without_inference(){
+        let fixture=Fixture::new();
+        let cli=fixture.cli(r#"if [ "$1" = models ]; then printf 'future-high\tFuture (High)\nsecond-model\tSecond Model\n--invalid\tBad\nFetching available models...\n'; else touch marker; fi"#);
+        let info=inspect(AgentKind::Antigravity,&cli,&fixture.0);
+        assert_eq!(info.models.iter().map(|m|m.id.as_str()).collect::<Vec<_>>(),vec!["future-high","second-model"]);
+        assert_eq!(info.models[0].label,"Future (High)");
         assert!(!fixture.0.join("marker").exists());
     }
 
@@ -1763,4 +1780,11 @@ for line in sys.stdin:
 "#).unwrap();std::fs::set_permissions(&path,std::fs::Permissions::from_mode(0o700)).unwrap();
   let (models,defaults)=acp_model_metadata(AgentKind::Gemini,&path,&root,Some("model-b")).unwrap();assert_eq!(defaults.model.as_deref(),Some("model-a"));assert_eq!(defaults.efforts.get("model-b").map(String::as_str),Some("high"));assert_eq!(models.iter().find(|m|m.id=="model-b").unwrap().reasoning_efforts,vec!["low","high"]);assert!(models.iter().find(|m|m.id=="model-a").unwrap().reasoning_efforts.is_empty());std::fs::remove_dir_all(root).unwrap();
  }
+}
+
+/// Read account limits without starting a model/agent session.
+pub(super) fn account_limits(kind:AgentKind,executable:Option<&Path>,home:&Path)->Vec<LimitWindow>{
+    if Some(home)!=dirs::home_dir().as_deref(){return vec![]}
+    let path=executable.and_then(Path::to_str).unwrap_or("");
+    probe_with_limit(Path::new("/usr/bin/python3"),&["-c",include_str!("../native_helpers/provider_usage.py"),kind.command(),home.to_str().unwrap_or(""),path],home,Duration::from_secs(40),64*1024).ok().filter(|v|v.success).and_then(|v|serde_json::from_slice::<Vec<LimitWindow>>(&v.stdout).ok()).unwrap_or_default().into_iter().filter(LimitWindow::valid).take(32).collect()
 }

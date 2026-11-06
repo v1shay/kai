@@ -152,14 +152,13 @@ impl Render for LoadingLogo {
             .size(px(self.config.size as f32))
             .flex_none()
             .debug_selector(|| "loading-provider-logo".into())
-            .child(
-                svg()
-                    .debug_selector(|| "loading-provider-svg".into())
-                    .path(if matches!(self.config.path,"codex"|"assets/providers/codex.svg"|"assets/codex.svg"){"codex-mask"}else{self.config.path})
-                    .size_full()
-                    .text_color(rgb(self.config.color))
-                    .with_transformation(Transformation::rotate(radians(self.rotor.angle as f32))),
-            )
+            .child(div().debug_selector(|| "loading-provider-svg".into()).size_full().child(
+                if let Some(path)=crate::provider_art(self.config.path){
+                    img(path).size_full().opacity(0.85+0.15*(self.rotor.angle as f32).cos()).into_any_element()
+                }else{
+                    svg().path(self.config.path).size_full().text_color(rgb(self.config.color)).with_transformation(Transformation::rotate(radians(self.rotor.angle as f32))).into_any_element()
+                }
+            ))
     }
 }
 

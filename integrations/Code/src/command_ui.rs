@@ -842,27 +842,22 @@ impl Orbit {
             "Idle"
         }
     }
-    pub(super) fn reported_limit_windows(&self) -> Vec<usage::LimitWindow> {
+    pub(super) fn reported_limit_windows(&self)->Vec<usage::LimitWindow>{self.provider_limit_windows(self.agent)}
+    pub(super) fn provider_limit_windows(&self,kind:AgentKind) -> Vec<usage::LimitWindow> {
         let usage = self
             .active
             .as_ref()
             .filter(|id| {
                 self.sessions
                     .iter()
-                    .any(|session| &session.id == *id && session.agent == self.agent)
+                    .any(|session| &session.id == *id && session.agent == kind)
             })
             .and_then(|id| self.usage.get(id));
-        let snapshot = self.controls.get(self.agent.command());
-        let controls = snapshot.map(|(_, info)| info);
-        // A newly opened account snapshot wins over persisted old chat usage.
-        // Later rolling reports update only their reported windows, retaining the
-        // other buckets from that snapshot. No percentage is inferred.
-        let mut limits = controls.map(|info| info.limits.clone()).unwrap_or_default();
-        let snapshot_time = snapshot.map(|(at, _)| {
-            chrono::Utc::now()
-                .timestamp_millis()
-                .saturating_sub(at.elapsed().as_millis().min(i64::MAX as u128) as i64)
-        });
+        let controls=self.controls.get(kind.command()).filter(|(_,info)|!info.limits.is_empty()).map(|(at,info)|(*at,&info.limits));
+        let account=self.usage_bar.snapshot(kind.command());
+        let snapshot=match (controls,account){(Some(c),Some(a))=>Some(if c.0>=a.0{c}else{a}),(Some(c),None)=>Some(c),(None,Some(a))=>Some(a),_=>None};
+        let mut limits=snapshot.map(|(_,v)|v.clone()).unwrap_or_default();
+        let snapshot_time=snapshot.map(|(at,_)|chrono::Utc::now().timestamp_millis().saturating_sub(at.elapsed().as_millis().min(i64::MAX as u128) as i64));
         if let Some(usage) = usage {
             for window in usage
                 .limit_windows
@@ -891,7 +886,7 @@ impl Orbit {
                     .filter(|n| n.is_finite() && (0. ..=100.).contains(n))
             {
                 limits.push(agent_controls::LimitWindow {
-                    label: format!("{} primary",self.agent.command()),
+                    label: format!("{} primary",kind.command()),
                     used_percent: used,
                     duration_minutes: None,
                     resets_at: usage.limit_resets_at,
@@ -911,15 +906,19 @@ impl Orbit {
         }limits
     }
     pub(super) fn usage_summary(&self)->String{
-        self.usage_windows().first().map(|w|format!("{} · {}{}",self.agent.name(),w.remaining_text(),if w.label=="Context window"{" context"}else{""})).unwrap_or_else(||format!("{} usage",self.agent.name()))
+        self.reported_limit_windows().first().map(|w|format!("{} used",w.compact_used(chrono::Utc::now().timestamp()))).unwrap_or_default()
     }
     pub(super) fn usage_footer(&self,cx:&Context<Self>)->AnyElement{
-        let quota=self.reported_limit_windows().first().cloned();let fraction=quota.as_ref().map(|w|((100.-w.used_percent)/100.)as f32);
+        let Some(quota)=self.reported_limit_windows().first().cloned() else{return self.context_indicator()};
+        let fraction=((100.-quota.used_percent)/100.)as f32;
         div().id("provider-usage-footer").debug_selector(||"provider-usage-footer".into()).h(px(20.)).flex().items_center().gap_2().cursor_pointer().child(provider_icon(agent_icon(self.agent),12.,agent_color(self.agent)))
-        .when_some(fraction,|s,t|s.child(div().w(px(36.)).h(px(3.)).rounded_full().bg(rgba(0xffffff18)).child(div().w(px(36.*t)).h_full().rounded_full().bg(rgb(composer_design::intensity(1.-t))))))
+        .child(div().w(px(36.)).h(px(3.)).rounded_full().bg(rgba(0xffffff18)).child(div().w(px(36.*fraction)).h_full().rounded_full().bg(rgb(composer_design::intensity(1.-fraction)))))
         .child(self.usage_summary()).child(self.context_indicator()).on_click(cx.listener(|this,event:&ClickEvent,window,cx|{this.toggle_panel_from_click(Modal::Status,event.position(),true,window,cx);})).into_any_element()
     }
-    pub(super) fn context_usage(&self)->Option<(u64,u64)>{let usage=self.active.as_ref().and_then(|id|self.usage.get(id))?;Some((usage.context_used?,usage.context_limit.filter(|n|*n>0)?))}
+    pub(super) fn context_usage(&self)->Option<(u64,u64)>{
+        let id=self.active.as_ref().filter(|id|self.sessions.iter().any(|s|&s.id==*id&&s.agent==self.agent))?;
+        let usage=self.usage.get(id)?;Some((usage.context_used?,usage.context_limit.filter(|n|*n>0)?))
+    }
     fn context_indicator(&self)->AnyElement{
         let Some((used,limit))=self.context_usage()else{return div().into_any_element()};
         let fraction=(used as f64/limit as f64).clamp(0.,1.)as f32;
@@ -1438,6 +1437,23 @@ mod status_tests {
             assert_eq!(primary.used_percent, 25.);
             assert_eq!(primary.resets_at, Some(1800000000));
             assert_eq!(primary.duration_minutes, Some(300));
+        });
+    }
+}
+
+#[cfg(test)] mod model_alias_flow_tests {
+    use super::*;
+    use std::prelude::v1::test;
+    #[gpui::test]
+    fn antigravity_models_command_opens_picker_without_starting_a_turn(cx:&mut gpui::TestAppContext){
+        let(app,cx)=crate::ui_tests::fixture(cx);
+        app.update_in(cx,|app,w,cx|{
+            app.agent=AgentKind::Antigravity;app.loading=false;
+            app.native_models.insert(AgentKind::Antigravity,vec![agent_controls::ModelChoice{id:"native-high".into(),label:"Native High".into(),reasoning_efforts:vec![]}]);
+            app.composer.update(cx,|i,cx|i.set_text("/models",cx));
+            app.send(w,cx);
+            assert!(app.agent_picker.is_some());
+            assert!(app.runs.is_empty());assert!(app.launches.is_empty());
         });
     }
 }
