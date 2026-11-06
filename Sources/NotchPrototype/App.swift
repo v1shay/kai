@@ -368,6 +368,13 @@ private final class NotchSurfaceHost:NSView {
     private var defaultWidthSlider:NSSlider?,defaultHeightSlider:NSSlider?
     private var sizeLabels=[String:NSTextField]()
     private var expandedWidth:CGFloat { (miniOpen || experimentalWebMode) ? (expandedSize?.width ?? notchWidth+160) : notchWidth+160 }
+    // Keep every surface anchored to the same display and floating top edge.
+    private var surfaceScreen: NSScreen? {
+        NSScreen.screens.first(where: { $0.auxiliaryTopLeftArea != nil && $0.auxiliaryTopRightArea != nil }) ?? NSScreen.main ?? NSScreen.screens.first
+    }
+    private var islandMode = false
+    private var surfaceTopInset: CGFloat { islandMode ? 12 : 0 }
+    private var islandRadius: CGFloat { min(26, notchHeight / 2) }
     private var notchWidth: CGFloat = 210, notchHeight: CGFloat = 39, canvasWidth: CGFloat = 470, canvasHeight: CGFloat = 320
     private lazy var assetRoot: URL = {
         if let resources=Bundle.main.resourceURL {
@@ -619,7 +626,7 @@ private final class NotchSurfaceHost:NSView {
             else if self.chatVoice.listening{self.indicator.startListening(useMicrophone:false)}
             else if let state=self.latestState{self.showActivity(self.displayActivity(state))}
         }
-        chatVoice.attachMedia(to:panel.contentView)
+        if let mediaHost=panel?.contentView{chatVoice.attachMedia(to:mediaHost)}
         bridge.onVoiceSDP={ [weak self] in self?.chatVoice.receiveSDP($0,$1) }
         miniUI.onApprove={ [weak self] in self?.answerApproval("approve") }
         miniUI.onReject={ [weak self] in self?.answerApproval("reject") }
@@ -908,14 +915,22 @@ private final class NotchSurfaceHost:NSView {
     private func layoutPanel(present:Bool,approvalDuration:TimeInterval=0) {
         defer{floatingTasks.refresh()}
         let previousMaskSize=mask.bounds.size,previousDestination=mask.path
-        guard let screen = NSScreen.screens.first(where: { $0.auxiliaryTopLeftArea != nil && $0.auxiliaryTopRightArea != nil }),
-              let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea else { panel?.orderOut(nil); return }
+        let notchedScreen = NSScreen.screens.first(where: { $0.auxiliaryTopLeftArea != nil && $0.auxiliaryTopRightArea != nil })
+        guard let screen = notchedScreen ?? NSScreen.main ?? NSScreen.screens.first else { panel?.orderOut(nil); return }
         CATransaction.begin();CATransaction.setDisableActions(true);defer{CATransaction.commit()}
-        notchHeight = screen.safeAreaInsets.top + 1
-        let gapCenter = (left.maxX + right.minX) / 2
-        let center = abs(gapCenter - screen.frame.midX) <= 1 ? screen.frame.midX : gapCenter
-        notchWidth = 2 * max(center - left.maxX, right.minX - center)
-        let baseline=CGSize(width:notchWidth+160,height:320)
+        islandMode = notchedScreen == nil
+        let center: CGFloat
+        if let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea {
+            notchHeight = screen.safeAreaInsets.top + 1
+            let gapCenter = (left.maxX + right.minX) / 2
+            center = abs(gapCenter - screen.frame.midX) <= 1 ? screen.frame.midX : gapCenter
+            notchWidth = 2 * max(center - left.maxX, right.minX - center)
+        } else {
+            center = screen.frame.midX
+            notchHeight = 44
+            notchWidth = 80
+        }
+        let baseline=CGSize(width:max(islandMode ? 340:0,notchWidth+160),height:320)
         let saved=CGSize(width:UserDefaults.standard.object(forKey:"notchDefaultWidth") as? Double ?? Double(baseline.width),height:UserDefaults.standard.object(forKey:"notchDefaultHeight") as? Double ?? 320)
         expandedSize=NotchSizing.constrained(expandedSize ?? saved,baseline:baseline,screen:screen.frame.size)
         canvasWidth=ceil(max(notchWidth+260,expandedSize!.width+100));canvasHeight=expandedSize!.height
@@ -924,7 +939,7 @@ private final class NotchSurfaceHost:NSView {
         defaultHeightSlider?.maxValue=Double(max(320,screen.frame.height-80));defaultHeightSlider?.doubleValue=Double(defaultSize.height)
         sizeLabels["notchDefaultWidth"]?.stringValue="Width · \(Int(defaultSize.width)) pt"
         sizeLabels["notchDefaultHeight"]?.stringValue="Height · \(Int(defaultSize.height)) pt"
-        let rect = NSRect(x: center - canvasWidth / 2, y: screen.frame.maxY - canvasHeight,
+        let rect = NSRect(x: center - canvasWidth / 2, y: screen.frame.maxY - surfaceTopInset - canvasHeight,
                           width: canvasWidth, height: canvasHeight)
         if panel == nil {
             panel = NotchPanel(contentRect: rect, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -968,8 +983,8 @@ private final class NotchSurfaceHost:NSView {
         // The full canvas must never intercept the desktop while compact.
         panel.ignoresMouseEvents = !NotchInputRegion.mainAcceptsInput(expanded:miniOpen,web:experimentalWebMode)
         approvalUI.maximumReviewHeight=max(80,min(480,screen.frame.maxY-screen.visibleFrame.minY-notchHeight-80))
-        let dropRect=NotchInputRegion.compactFrame(screen:screen.frame,center:center,width:notchWidth+160,height:approvalPopout ? popoutHeight:notchHeight)
-        if dropPanel == nil { dropPanel=NotchPanel(contentRect:dropRect,styleMask:[.borderless,.nonactivatingPanel],backing:.buffered,defer:false);dropPanel.backgroundColor = .clear;dropPanel.isOpaque=false;dropPanel.level = .popUpMenu;dropPanel.collectionBehavior=[.canJoinAllSpaces,.fullScreenAuxiliary,.stationary];let drop=NotchView(frame:NSRect(origin:.zero,size:dropRect.size));drop.autoresizingMask=[.width,.height];drop.click={ [weak self] _,_ in guard let self else{return};if self.compactVoiceMode{self.handleCompactVoiceClick();return};guard self.compactWhileWorking else{return};self.expandToRunningChat() };drop.dragEntered={ [weak self] in self?.handleImageEntered() };drop.imageDropped={ [weak self] images in self?.handleImageDrop(images) };dropPanel.contentView=drop }
+        let dropRect=NotchInputRegion.compactFrame(screen:screen.frame.offsetBy(dx:0,dy:-surfaceTopInset),center:center,width:expandedWidth,height:approvalPopout ? popoutHeight:notchHeight)
+        if dropPanel == nil { dropPanel=NotchPanel(contentRect:dropRect,styleMask:[.borderless,.nonactivatingPanel],backing:.buffered,defer:false);dropPanel.backgroundColor = .clear;dropPanel.isOpaque=false;dropPanel.level = .popUpMenu;dropPanel.collectionBehavior=[.canJoinAllSpaces,.fullScreenAuxiliary,.stationary];let drop=NotchView(frame:NSRect(origin:.zero,size:dropRect.size));drop.autoresizingMask=[.width,.height];drop.click={ [weak self] _,_ in guard let self else{return};if self.compactVoiceMode{self.handleCompactVoiceClick();return};guard self.compactWhileWorking || self.islandMode else{return};self.expandToRunningChat() };drop.dragEntered={ [weak self] in self?.handleImageEntered() };drop.imageDropped={ [weak self] images in self?.handleImageDrop(images) };dropPanel.contentView=drop }
         if approvalUI.superview == nil {dropPanel.contentView?.addSubview(approvalUI);approvalUI.onDecision={ [weak self] action,request in self?.decidePopout(action,request:request) }}
         let approvalFrame=CGRect(x:16,y:12,width:dropRect.width-32,height:approvalUI.preferredHeight)
         if approvalDuration>0,approvalPopout,dropPanel.isVisible{
@@ -979,7 +994,7 @@ private final class NotchSurfaceHost:NSView {
             }
         }else{dropPanel.setFrame(dropRect,display:true);approvalUI.frame=approvalFrame}
         approvalUI.isHidden = !approvalPopout
-        let compactInput=approvalPopout || NotchInputRegion.compactAcceptsInput(open:open,expanded:miniOpen,web:experimentalWebMode,working:compactWhileWorking,voice:compactVoiceMode)
+        let compactInput=(islandMode && open && !miniOpen && !experimentalWebMode) || approvalPopout || NotchInputRegion.compactAcceptsInput(open:open,expanded:miniOpen,web:experimentalWebMode,working:compactWhileWorking,voice:compactVoiceMode)
         dropPanel.ignoresMouseEvents = !compactInput
         if present{compactInput && showsNotchSurface ? dropPanel.orderFrontRegardless():dropPanel.orderOut(nil)}
         updateGlassBackground()
@@ -1025,7 +1040,7 @@ private final class NotchSurfaceHost:NSView {
     }
 
     private func path(width: CGFloat, height: CGFloat) -> CGPath {
-        NotchSizing.path(canvas:CGSize(width:canvasWidth,height:canvasHeight),width:width,height:height,radius:glassEnabled && miniOpen ? CGFloat(GlassPreferences(defaults:.standard).radius):14)
+        NotchSizing.path(canvas:CGSize(width:canvasWidth,height:canvasHeight),width:width,height:height,radius:islandMode ? islandRadius:(glassEnabled && miniOpen ? CGFloat(GlassPreferences(defaults:.standard).radius):14),floating:islandMode)
     }
 
     func flags(_ event: NSEvent) {
@@ -1428,7 +1443,7 @@ private final class NotchSurfaceHost:NSView {
         miniUI.cancelPending();compactWhileWorking=true;compactThreadID=latestState?.threadId;autoCompact=false;pinned=true
         workspaceNotchOverlay=false;voiceExpanded=false
         workspaceMorph.openingOnlyOnce=latestState?.workspaceOpeningOnce ?? true
-        workspaceMorph.expand(window,from:source,replay:replay,sourceNotch:quickSource == nil && sourceIsNotch,crossfade:quickSource != nil || !sourceIsNotch,sourceRadius:quickSource != nil || !sourceIsNotch ? 20:10){[weak self] in self?.syncWorkspacePet();self?.workspaceFocusChanged()}
+        workspaceMorph.expand(window,from:source,replay:replay,sourceNotch:quickSource == nil && sourceIsNotch && !islandMode,crossfade:quickSource != nil || !sourceIsNotch,sourceRadius:islandMode ? islandRadius:(quickSource != nil || !sourceIsNotch ? 20:10)){[weak self] in self?.syncWorkspacePet();self?.workspaceFocusChanged()}
         setOpen(true,mini:false);if !approvalPopout{panel.orderOut(nil);dropPanel?.orderOut(nil)};floatingTasks.setSuppressed(true);syncWorkspacePet()
     }
     @objc func collapseWorkspace(){
@@ -1448,7 +1463,7 @@ private final class NotchSurfaceHost:NSView {
             guard let self else{return}
             self.restoreWorkspacePet()
             self.setOpen(true,mini:true,userInitiated:true)
-        }){[weak self] in
+        },targetNotch:!islandMode,targetRadius:islandMode ? islandRadius:10){[weak self] in
             guard let self else{return}
             self.floatingTasks.setSuppressed(self.suppressFloatingTasks)
             if !self.quickChatVisible,self.showsNotchSurface{self.panel.makeKey();self.reviewNextFloatingTask()}
@@ -1461,7 +1476,7 @@ private final class NotchSurfaceHost:NSView {
         let width=busy ? notchWidth+160:notchWidth
         let target=CGRect(x:panel.frame.midX-width/2,y:panel.frame.maxY-notchHeight,width:width,height:notchHeight)
         closeNotch()
-        workspaceMorph.collapse(window,to:target){[weak self] in
+        workspaceMorph.collapse(window,to:target,targetNotch:!islandMode,targetRadius:islandMode ? islandRadius:10){[weak self] in
             guard let self else{return};self.restoreWorkspacePet();self.floatingTasks.setSuppressed(self.suppressFloatingTasks);if self.open{self.placePanel()}
         }
     }
@@ -1569,7 +1584,7 @@ private final class NotchSurfaceHost:NSView {
                 workspaceMorph.collapse(workspace,to:window.frame,targetNotch:false,retireContent:true,targetRadius:20,backdrop:false,completion:{})
             }
             if workspaceMorph.transitioning && !workspaceMorph.expanded{workspaceMorph.retireBackdrop()}
-            quickMorph.expand(window,from:source,replay:true,destination:window.frame,sourceNotch:!fromWorkspace && menuQuickAnchor == nil,crossfade:true,destinationRadius:20){[weak self] in self?.syncWorkspacePet();self?.updateNinjaWallpaper()}
+            quickMorph.expand(window,from:source,replay:true,destination:window.frame,sourceNotch:!fromWorkspace && menuQuickAnchor == nil && !islandMode,crossfade:true,sourceRadius:islandMode ? islandRadius:10,destinationRadius:20){[weak self] in self?.syncWorkspacePet();self?.updateNinjaWallpaper()}
             // Retire the existing notch through its own morph, while the shared
             // contour carries the boundary into the live mini workspace.
             setOpen(false);dropPanel?.orderOut(nil);syncWorkspacePet()
@@ -1599,9 +1614,9 @@ private final class NotchSurfaceHost:NSView {
                         self.workspaceNotchOverlay=self.workspaceMorph.expanded;self.compactWhileWorking = !expanded && self.workspaceNeedsStatus
                         self.restoreWorkspacePet()
                         self.pinned=true;self.setOpen(true,mini:expanded,userInitiated:true,forceReveal:true)
-                    },completion:{})
+                    },targetNotch:!islandMode,targetRadius:islandMode ? islandRadius:10,completion:{})
                 }else{
-                    setOpen(false);quickMorph.collapse(window,to:target,retireContent:true,completion:{[weak self] in self?.restoreWorkspacePet()})
+                    setOpen(false);quickMorph.collapse(window,to:target,targetNotch:!islandMode,retireContent:true,targetRadius:islandMode ? islandRadius:10,completion:{[weak self] in self?.restoreWorkspacePet()})
                 }
             }
             floatingTasks.setSuppressed(suppressFloatingTasks)
@@ -2493,11 +2508,11 @@ private final class NotchSurfaceHost:NSView {
 
     private func handleImageEntered(){guard !miniOpen else{return};sounds.playScene("image");pinned=true;if !open{setOpen(true)};indicator.showScene("image")}
     private func handleImageDrop(_ images:[NSImage]){guard !images.isEmpty,ProcessInfo.processInfo.systemUptime-lastImageDrop>0.35 else{return};lastImageDrop=ProcessInfo.processInfo.systemUptime;approachImages.removeAll();approachActive=false;miniUI.addImages(images);if miniOpen{return};sounds.playScene("success");indicator.showScene("success");imageExpandWork?.cancel();let work=DispatchWorkItem{[weak self] in guard let self,self.open,!self.miniOpen else{return};self.setOpen(true,mini:true)};imageExpandWork=work;DispatchQueue.main.asyncAfter(deadline:.now()+0.72,execute:work)}
-    private func globalDrag(_ event:NSEvent){guard !experimentalWebMode,let screen=NSScreen.screens.first(where:{$0.auxiliaryTopLeftArea != nil && $0.auxiliaryTopRightArea != nil}) else{return};let p=NSEvent.mouseLocation,nearNotch=abs(p.x-screen.frame.midX)<notchWidth/2+45 && p.y>screen.frame.maxY-notchHeight-70;if event.type == .leftMouseDragged,nearNotch{let images=draggedImages(NSPasteboard(name:.drag));guard !images.isEmpty else{return};approachImages=images;if !approachActive{approachActive=true;handleImageEntered()}}else if event.type == .leftMouseUp{defer{approachActive=false;approachImages.removeAll()};if approachActive,nearNotch,!approachImages.isEmpty{handleImageDrop(approachImages)}}}
+    private func globalDrag(_ event:NSEvent){guard !experimentalWebMode,let screen=surfaceScreen else{return};let p=NSEvent.mouseLocation,nearNotch=abs(p.x-screen.frame.midX)<notchWidth/2+45 && p.y>screen.frame.maxY-surfaceTopInset-notchHeight-70 && p.y<screen.frame.maxY-surfaceTopInset;if event.type == .leftMouseDragged,nearNotch{let images=draggedImages(NSPasteboard(name:.drag));guard !images.isEmpty else{return};approachImages=images;if !approachActive{approachActive=true;handleImageEntered()}}else if event.type == .leftMouseUp{defer{approachActive=false;approachImages.removeAll()};if approachActive,nearNotch,!approachImages.isEmpty{handleImageDrop(approachImages)}}}
 
     @objc private func changeMediaSize(_ slider:NSSlider){mediaSize=CGFloat(slider.doubleValue);UserDefaults.standard.set(Double(mediaSize),forKey:"mediaSize");layoutMediaArtwork(animated:true)}
     private func layoutMediaArtwork(animated:Bool){
-        guard let screen=NSScreen.screens.first(where:{$0.auxiliaryTopLeftArea != nil}) else{return}
+        guard let screen=surfaceScreen else{return}
         let expanded=expandedWidth,physicalLeft=(canvasWidth-notchWidth)/2,kaiLeft=(canvasWidth-expanded)/2
         let center=CGPoint(x:(physicalLeft+kaiLeft)/2,y:canvasHeight-notchHeight/2)
         let frame=NotchVisualTransition.artworkFrame(size:mediaSize,notchHeight:notchHeight,center:center,scale:screen.backingScaleFactor)
@@ -2506,7 +2521,7 @@ private final class NotchSurfaceHost:NSView {
     private func layoutPet() {
         // Preparing the hidden notch must not move the pet still owned by Code.
         guard sprite.superlayer !== workspacePet.layer else{return}
-        guard let screen=NSScreen.screens.first(where:{$0.auxiliaryTopLeftArea != nil}) else{return};let expanded=expandedWidth,physicalLeft=(canvasWidth-notchWidth)/2,kaiLeft=(canvasWidth-expanded)/2,scale=screen.backingScaleFactor,topBandY=canvasHeight-notchHeight,h=min(36,notchHeight-3)*petScale,w=h*192/208
+        guard let screen=surfaceScreen else{return};let expanded=expandedWidth,physicalLeft=(canvasWidth-notchWidth)/2,kaiLeft=(canvasWidth-expanded)/2,scale=screen.backingScaleFactor,topBandY=canvasHeight-notchHeight,h=min(36,notchHeight-3)*petScale,w=h*192/208
         func px(_ v:CGFloat)->CGFloat{round(v*scale)/scale};CATransaction.begin();CATransaction.setDisableActions(true);sprite.frame=CGRect(x:px((physicalLeft+kaiLeft)/2-w/2),y:px(topBandY+(notchHeight-h)/2),width:px(w),height:px(h));CATransaction.commit()
     }
 

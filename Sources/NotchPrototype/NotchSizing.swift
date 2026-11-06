@@ -1,8 +1,8 @@
 import AppKit
 
 struct NotchSizing {
-    static func path(canvas:CGSize,width:CGFloat,height:CGFloat,radius:CGFloat=14)->CGPath {
-        let x = (canvas.width-width)/2, r: CGFloat = min(max(0,radius),min(width/2,height/2)), sx: CGFloat = 7, sy: CGFloat = 9, top = canvas.height, bottom = top-height, right = x+width, k = 1-0.5523
+    static func path(canvas:CGSize,width:CGFloat,height:CGFloat,radius:CGFloat=14,floating:Bool=false)->CGPath {
+        let x = (canvas.width-width)/2, r: CGFloat = min(max(0,radius),min(width/2,height/2)), sx: CGFloat = floating ? -r:7, sy: CGFloat = floating ? r:9, top = canvas.height, bottom = top-height, right = x+width, k = 1-0.5523
         let p = CGMutablePath(); p.move(to: CGPoint(x:x-sx,y:top)); p.addLine(to:CGPoint(x:right+sx,y:top))
         p.addCurve(to:CGPoint(x:right,y:top-sy),control1:CGPoint(x:right+sx*k,y:top),control2:CGPoint(x:right,y:top-sy*k))
         p.addLine(to:CGPoint(x:right,y:bottom+r)); p.addCurve(to:CGPoint(x:right-r,y:bottom),control1:CGPoint(x:right,y:bottom+r*k),control2:CGPoint(x:right-r*k,y:bottom))

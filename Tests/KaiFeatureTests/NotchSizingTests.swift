@@ -4,6 +4,22 @@ import AppKit
 
 final class NotchSizingTests: XCTestCase {
     let baseline=CGSize(width:370,height:320)
+    func testFloatingIslandHasRoundedTopAndBottomCorners() {
+        let canvas=CGSize(width:440,height:320)
+        for height:CGFloat in [44,320] {
+            let path=NotchSizing.path(canvas:canvas,width:240,height:height,radius:22,floating:true)
+            XCTAssertEqual(path.boundingBoxOfPath,CGRect(x:100,y:320-height,width:240,height:height))
+            XCTAssertTrue(path.contains(CGPoint(x:220,y:319)))
+            XCTAssertFalse(path.contains(CGPoint(x:101,y:319)))
+            XCTAssertFalse(path.contains(CGPoint(x:101,y:321-height)))
+        }
+    }
+    func testAttachedNotchRetainsItsTopShoulders() {
+        let path=NotchSizing.path(canvas:CGSize(width:440,height:320),width:240,height:44)
+        XCTAssertEqual(path.boundingBoxOfPath.minX,93)
+        XCTAssertEqual(path.boundingBoxOfPath.maxX,347)
+        XCTAssertTrue(path.contains(CGPoint(x:101,y:319)))
+    }
     func testOverlayFrameRemainsAtScreenTopWhenHeightChanges() async {
         await MainActor.run {
             let panel=NotchPanel(contentRect:.zero,styleMask:[.borderless,.nonactivatingPanel],backing:.buffered,defer:false)
