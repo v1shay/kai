@@ -37,7 +37,7 @@ def image_fixture(env,enabled):
 
 def main():
     parser=argparse.ArgumentParser()
-    parser.add_argument('mode',choices=['surfaces','ninja-chat','menu-bar','wallpaper','glass','startup-workspace','startup-extended','startup-compact','performance','latency','background-idle'])
+    parser.add_argument('mode',choices=['discovery','surfaces','ninja-chat','menu-bar','wallpaper','glass','startup-workspace','startup-extended','startup-compact','performance','latency','background-idle'])
     parser.add_argument('--bundle',type=Path,help='Verify another signed bundle, including an installed baseline')
     args=parser.parse_args();mode=args.mode
     if mode in {'ninja-chat','latency','performance'}:
@@ -53,7 +53,11 @@ def main():
     log=report/(mode+'.log')
     env=os.environ.copy();env['KAI_PERFORMANCE_LOG']='1'
     flags=['--unified-smoke-test']
-    if mode=='surfaces':
+    if mode=='discovery':
+        flags+=['--unified-discovery-probe'];marker='KAI_DISCOVERY_PROBE_OK'
+        cached=Path.home()/'Library/Application Support/Kai Unified/history.sqlite'
+        if cached.is_file():env['KAI_DISCOVERY_CACHE_SOURCE']=str(cached)
+    elif mode=='surfaces':
         flags+=['--unified-surface-probe'];marker='KAI_SURFACE_PROBE_OK'
     elif mode=='ninja-chat':
         flags+=['--unified-ninja-render-probe'];marker='KAI_NINJA_RENDER_PROBE_OK';env['KAI_STARTUP_SURFACE']='workspace'
@@ -88,10 +92,17 @@ def main():
         env['KAI_LAUNCH_ORIGIN_UNIX_NS']=str(time.time_ns())
         with log.open('w') as output:
             command=[str(app/'Contents/MacOS'/executable),*flags]
-            if env.get('KAI_VALIDATION_FIXTURE') or env.get('KAI_VALIDATION_BACKGROUND_SOURCE'):
+            if env.get('KAI_VALIDATION_FIXTURE') or env.get('KAI_VALIDATION_BACKGROUND_SOURCE') or env.get('KAI_DISCOVERY_CACHE_SOURCE'):
                 prepare="""import os,sys,json,tempfile,shutil
 from pathlib import Path
 p=Path(tempfile.gettempdir())/('kai-unified-smoke-'+str(os.getpid()));p.mkdir(exist_ok=True)
+if os.environ.get('KAI_DISCOVERY_CACHE_SOURCE'):
+ import sqlite3
+ source=sqlite3.connect(Path(os.environ['KAI_DISCOVERY_CACHE_SOURCE']).as_uri()+'?mode=ro',uri=True)
+ target=sqlite3.connect(p/'history.sqlite')
+ target.execute('CREATE TABLE sessions(id TEXT PRIMARY KEY,title TEXT NOT NULL,agent TEXT NOT NULL,project_path TEXT NOT NULL,updated_at INTEGER NOT NULL,external_id TEXT,transcript_path TEXT,execution_path TEXT)')
+ rows=source.execute('SELECT id,title,agent,project_path,updated_at,external_id,transcript_path,execution_path FROM sessions ORDER BY updated_at DESC LIMIT 6000')
+ target.executemany('INSERT INTO sessions VALUES(?,?,?,?,?,?,?,?)',rows);target.commit();target.close();source.close()
 (p/'workspace.json').write_text(os.environ.get('KAI_VALIDATION_FIXTURE','{}'))
 if os.environ.get('KAI_VALIDATION_BACKGROUND_SOURCE'):
  b=p/'backgrounds';b.mkdir(exist_ok=True);source=b/'probe.png';shutil.copy2(os.environ['KAI_VALIDATION_BACKGROUND_SOURCE'],source)
@@ -127,6 +138,11 @@ os.execve(sys.argv[1],sys.argv[1:],os.environ)
         if process.returncode or marker not in text:raise RuntimeError(f'{mode}: failed ({process.returncode}); {log}')
         timings={name:float(ms) for name,ms in re.findall(r'KAI_LAUNCH (\S+) ([0-9.]+)ms',text)}
         if mode in {'performance','background-idle'} and len(samples)<6:raise RuntimeError('Insufficient process samples; run the isolated probe with process-inspection access')
+        if mode=='discovery':
+            for name in ['cached-navigation-ready','providers-ready','discovery-ready']:
+                if name not in timings:raise RuntimeError('Discovery readiness was not measured: '+name)
+            if timings['providers-ready']>=timings['discovery-ready']:raise RuntimeError('Providers waited for history discovery')
+            if timings['cached-navigation-ready']>=timings['discovery-ready']:raise RuntimeError('Cached navigation waited for history discovery')
         native_commands=re.findall(r'KAI_NATIVE_COMMAND (\S+)',text)
         interactions=[name for name in native_commands if name not in {'pet_visuals','workspace_presentation','workspace_wallpaper_visibility'}]
         result={'mode':mode,'version':info.get('CFBundleShortVersionString'),'elapsed_seconds':round(time.monotonic()-launched,2),'launch_milliseconds':timings,'samples':samples,'native_commands':native_commands,'idle_interactions':interactions,'metrics':{name:[float(ms) for key,ms in re.findall(r'KAI_METRIC (\S+) ([0-9.]+)',text) if key==name] for name in ['warm_chat_switch','cold_chat_switch','warm_reveal','root_render','ninja_frame']},'log':str(log)}

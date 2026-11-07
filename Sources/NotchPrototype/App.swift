@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import ImageIO
 import WebKit
 import UniformTypeIdentifiers
@@ -465,6 +466,17 @@ private final class NotchSurfaceHost:NSView {
     func applicationDidFinishLaunching(_ note: Notification) {
         hangDiagnostics.start()
         NSApp.setActivationPolicy(.regular)
+        // Permission-only repair/diagnostic entry point: no capture starts here.
+        if CommandLine.arguments.contains("--request-microphone-permission") {
+            DispatchQueue.main.async {
+                NSApp.activate(ignoringOtherApps:true)
+                let before=AVCaptureDevice.authorizationStatus(for:.audio).rawValue
+                print("KAI_MICROPHONE_PERMISSION before=\(before)")
+                AVCaptureDevice.requestAccess(for:.audio){allowed in
+                    print("KAI_MICROPHONE_PERMISSION allowed=\(allowed) status=\(AVCaptureDevice.authorizationStatus(for:.audio).rawValue)")
+                }
+            }
+        }
         petScale = CGFloat(UserDefaults.standard.object(forKey: "petScale") as? Double ?? 1)
         experimentalWebMode = !EmbeddedCodeRuntime.shared.active && !CommandLine.arguments.contains("--preview-approval") && !CommandLine.arguments.contains("--preview-task-pets") && UserDefaults.standard.bool(forKey:"experimentalWebMode")
         morphingText=textRevealPreferences.enabled

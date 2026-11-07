@@ -6,6 +6,45 @@ use gpui::{TestAppContext, VisualTestContext};
 use std::prelude::v1::test;
 
 #[gpui::test]
+fn cached_selection_restores_before_the_global_history_scan_finishes(cx: &mut TestAppContext) {
+    let (view,cx)=fixture(cx);
+    cx.run_until_parked();
+    cx.update(|window,cx|view.update(cx,|app,cx|{
+        let selected=app.sessions[0].clone();
+        app.discovering=true;app.preferences_ready=true;
+        app.restore_pending=Some(workspace_state::WorkspaceState{active_chat:Some(selected.id.clone()),..Default::default()});
+        app.restore_workspace(window,cx);
+        assert!(app.restore_pending.is_none(),"Saved selection waited for unrelated CLI history scanning");
+        assert_eq!(app.active.as_deref(),Some(selected.id.as_str()));
+        assert!(app.discovering,"Background discovery should continue independently");
+    }));
+}
+
+#[gpui::test]
+fn cached_navigation_and_early_providers_preserve_the_current_chat_and_draft(cx: &mut TestAppContext) {
+    let (view,cx)=fixture(cx);
+    cx.run_until_parked();
+    view.update(cx,|app,cx|{
+        let selected=app.sessions[0].clone();
+        app.active=Some(selected.id.clone());
+        app.composer.update(cx,|input,cx|input.set_text("Keep this draft",cx));
+        let agents=vec![Agent{kind:AgentKind::Codex,name:"Codex".into(),executable:Some(PathBuf::from("/fixture/codex")),available:true}];
+        app.receive(Event::Providers(agents),cx);
+        app.receive(Event::Cached(vec![selected.clone()]),cx);
+        assert_eq!(app.active.as_deref(),Some(selected.id.as_str()));
+        assert_eq!(app.composer.read(cx).text(),"Keep this draft");
+        assert!(app.projects.iter().any(|p|p.path==selected.project_path));
+        assert!(app.agents.iter().any(|a|a.kind==AgentKind::Codex && a.available));
+        assert!(app.discovering);
+        app.receive(Event::Ready(discovery::Discovery::default(),vec![selected.clone()],None),cx);
+        assert_eq!(app.active.as_deref(),Some(selected.id.as_str()));
+        assert_eq!(app.composer.read(cx).text(),"Keep this draft");
+        assert!(app.agents.iter().any(|a|a.kind==AgentKind::Codex && a.available));
+        assert!(!app.discovering);
+    });
+}
+
+#[gpui::test]
 fn delayed_history_metadata_cannot_overwrite_live_reported_usage(cx: &mut TestAppContext) {
     let (view, cx) = fixture(cx);
     view.update(cx, |app, cx| {

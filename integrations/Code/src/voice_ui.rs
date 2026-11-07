@@ -161,7 +161,7 @@ impl Orbit {
         cx.notify();
     }
     fn route_voice_to_codex(&mut self,window:&mut Window,cx:&mut Context<Self>)->Result<Option<SessionSummary>,String> {
-        if self.discovering {
+        if self.agents.is_empty() {
             let codex=discovery::discover_agent(AgentKind::Codex,&self.controls_home);
             self.agents.retain(|agent|agent.kind!=AgentKind::Codex);
             self.agents.push(codex);

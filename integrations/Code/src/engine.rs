@@ -42,6 +42,9 @@ pub enum Event {
         uuid::Uuid,
         Result<(SessionSummary, Arc<crate::handoff::Packet>), String>,
     ),
+    /// Cached navigation and installed providers arrive before the history scan.
+    Cached(Vec<SessionSummary>),
+    Providers(Vec<discovery::Agent>),
     Ready(Discovery, Vec<SessionSummary>, Option<PathBuf>),
     Loaded(String, u64, Vec<ParsedMessage>, bool, bool),
     /// Bounded chronological window at an approximate source-space position.
@@ -97,6 +100,7 @@ enum Command {
     FinishSource(SessionSummary, crate::response_buffer::ResponseSource),
     UpdateSession(SessionSummary),
     Refresh,
+    Discovered(Discovery),
     LoadProject(PathBuf, u64),
     LoadSidebarProject(PathBuf, u64),
     LoadArchived(Vec<String>, u64),
@@ -144,13 +148,31 @@ impl LatestReads {
     }
 }
 pub struct Engine {
-    tx: mpsc::Sender<Command>,
+    tx: Arc<mpsc::Sender<Command>>,
     latest: Arc<LatestReads>,
     pub events: async_channel::Receiver<Event>,
 }
+/// Scanning native histories never owns the SQLite actor or its command queue.
+/// A weak sender lets dropping the engine retire the actor during a slow scan.
+fn start_discovery(home: PathBuf, root: PathBuf, commands: std::sync::Weak<mpsc::Sender<Command>>, events: async_channel::Sender<Event>) -> bool {
+    let errors=events.clone();
+    match std::thread::Builder::new().name("orbit-discovery".into()).spawn(move || {
+        let agents=discovery::discover_agents(&home);
+        crate::launch_metrics::mark("providers-scanned");
+        if events.send_blocking(Event::Providers(agents.clone())).is_err(){return}
+        let found=discovery::discover_with_agents(&home,&root,agents);
+        if let Some(commands)=commands.upgrade(){let _=commands.send(Command::Discovered(found));}
+    }) {
+        Ok(_)=>true,
+        Err(error)=>{let _=errors.send_blocking(Event::Error(format!("Discovery unavailable: {error}")));false}
+    }
+}
+
 impl Engine {
     pub fn new(home: PathBuf, root: PathBuf, database: PathBuf) -> Self {
         let (tx, rx) = mpsc::channel();
+        let tx=Arc::new(tx);
+        let discovery_commands=Arc::downgrade(&tx);
         let (events_tx, events) = async_channel::bounded(32);
         let latest = Arc::new(LatestReads::default());
         let worker_latest = latest.clone();
@@ -165,8 +187,7 @@ impl Engine {
                         return;
                     }
                 };
-                let refresh = |store: &mut Store| -> anyhow::Result<Event> {
-                    let found = discovery::discover(&home, &root);
+                let install = |store: &mut Store, found: Discovery| -> anyhow::Result<Event> {
                     store.upsert_discovered_sessions(&found.sessions)?;
                     let sessions = store.sessions()?;
                     let mut checked = std::collections::HashSet::new();
@@ -184,14 +205,11 @@ impl Engine {
                         });
                     Ok(Event::Ready(found, sessions, preferred))
                 };
-                match refresh(&mut store) {
-                    Ok(event) => {
-                        let _ = events_tx.send_blocking(event);
-                    }
-                    Err(error) => {
-                        let _ = events_tx.send_blocking(Event::Error(error.to_string()));
-                    }
+                match store.sessions() {
+                    Ok(sessions)=>{let _=events_tx.send_blocking(Event::Cached(sessions));}
+                    Err(error)=>{let _=events_tx.send_blocking(Event::Error(error.to_string()));}
                 }
+                let mut discovering=start_discovery(home.clone(),root.clone(),discovery_commands.clone(),events_tx.clone());
                 let viewport_root = database.parent().unwrap_or(&root).join("viewport");
                 let mut histories: VecDeque<(String, HistoryState)> = VecDeque::new();
                 let mut paused_live_history:Option<(String,uuid::Uuid,HistoryState)>=None;
@@ -393,7 +411,11 @@ impl Engine {
                             store.set_session_model(&session.id, model.as_deref())?;
                             Ok(None)
                         }
-                        Command::Refresh => refresh(&mut store).map(Some),
+                        Command::Refresh => {
+                            if !discovering{discovering=start_discovery(home.clone(),root.clone(),discovery_commands.clone(),events_tx.clone());}
+                            Ok(None)
+                        }
+                        Command::Discovered(found)=>{discovering=false;install(&mut store,found).map(Some)}
                         Command::LoadProject(path, generation) => {
                             store.upsert_discovered_sessions(&discovery::discover_project(
                                 &home, &path,
@@ -1790,11 +1812,50 @@ mod tests {
     fn receive_event(engine: &Engine) -> Event {
         loop {
             let event = engine.events.recv_blocking().unwrap();
-            if !matches!(event, Event::HistoryRange(..)) {
+            if !matches!(event, Event::HistoryRange(..) | Event::Cached(..) | Event::Providers(..)) {
                 return event;
             }
         }
     }
+    #[test]
+    fn cached_projects_providers_and_history_commands_do_not_wait_for_slow_discovery() {
+        use std::os::unix::fs::OpenOptionsExt;
+        let root=temp_root();
+        let project=root.join("saved-project");fs::create_dir_all(&project).unwrap();
+        let database=root.join("history.sqlite");
+        let session=SessionSummary{id:"saved-chat".into(),title:"Saved chat".into(),agent:discovery::AgentKind::Codex,project_path:project,execution_path:None,updated_at:1,external_id:None,transcript_path:None};
+        let store=Store::open(&database).unwrap();store.upsert_session(&session).unwrap();drop(store);
+        fs::create_dir_all(root.join(".codex")).unwrap();
+        let pipe=root.join(".codex/.codex-global-state.json");
+        let cpath=std::ffi::CString::new(pipe.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe{libc::mkfifo(cpath.as_ptr(),0o600)},0);
+        // Keep both ends open, with no data: the history scan is truly blocked.
+        let mut release=OpenOptions::new().read(true).write(true).custom_flags(libc::O_NONBLOCK).open(&pipe).unwrap();
+        let engine=Engine::new(root.clone(),root.clone(),database);
+        let deadline=std::time::Instant::now()+std::time::Duration::from_secs(3);
+        let mut cached=false;let mut providers=false;
+        while !cached || !providers {
+            match engine.events.try_recv(){
+                Ok(Event::Cached(sessions))=>{assert!(sessions.iter().any(|s|s.id=="saved-chat"));cached=true;}
+                Ok(Event::Providers(agents))=>{assert_eq!(agents.len(),8);providers=true;}
+                Ok(Event::Ready(..))=>panic!("The blocked scan completed before release"),
+                Ok(Event::Error(error))=>panic!("{error}"),
+                _=>{assert!(std::time::Instant::now()<deadline,"Startup waited for the blocked scan");std::thread::sleep(std::time::Duration::from_millis(5));}
+            }
+        }
+        engine.flush().recv_timeout(std::time::Duration::from_secs(1)).expect("Discovery blocked the state command queue");
+        engine.load(session,1);
+        let history_deadline=std::time::Instant::now()+std::time::Duration::from_secs(1);
+        loop {
+            if matches!(engine.events.try_recv(),Ok(Event::Loaded(..))){break}
+            assert!(std::time::Instant::now()<history_deadline,"Saved history waited for discovery");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        release.write_all(b"{}").unwrap();drop(release);
+        assert!(matches!(receive_event(&engine),Event::Ready(..)));
+        drop(engine);fs::remove_dir_all(root).unwrap();
+    }
+
     fn temp_root() -> PathBuf {
         let root = std::env::temp_dir().join(format!("orbit-engine-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();

@@ -1939,6 +1939,59 @@ impl Orbit {
         self.sidebar = !self.sidebar;
         self.sidebar_transition = Some((Instant::now(), self.sidebar_width));
     }
+    fn install_discovery(&mut self,discovery:discovery::Discovery,sessions:Vec<SessionSummary>,preferred_project:Option<PathBuf>,cx:&mut Context<Self>){
+        self.invalidate_project_branches();
+        if !discovery.agents.is_empty(){self.agents = discovery.agents;}
+        self.queue_ninja_titles(cx);
+        self.advance_chat_titles(cx);
+        self.source_projects = discovery.projects;
+        self.rebuild_projects();
+        let previous = std::mem::take(&mut self.sessions);
+        self.sessions = sessions;
+        let positions: HashMap<_, _> = self
+            .sessions
+            .iter()
+            .enumerate()
+            .map(|(ix, s)| (s.id.clone(), ix))
+            .collect();
+        for old in previous {
+            if let Some(&ix) = positions.get(&old.id) {
+                merge_session_metadata(&mut self.sessions[ix], &old);
+            } else if self.active.as_deref() == Some(&old.id)
+                || self.runs.contains_key(&old.id)
+                || self.finalizing.contains(&old.id)
+                || self.lifecycle.archived_chats.contains(&old.id)
+                || self.lifecycle.pinned_chats.contains(&old.id)
+                || old.transcript_path.is_none()
+            {
+                self.sessions.push(old);
+            }
+        }
+        self.sessions
+            .sort_by_key(|s| std::cmp::Reverse(s.updated_at));
+        if self.project == std::path::Path::new("/")
+            && let Some(path) = preferred_project
+        {
+            self.project = path;
+        }
+        self.visible_sessions = self
+            .sessions
+            .iter()
+            .filter(|session| !self.hidden_sessions.contains(&session.id))
+            .cloned()
+            .collect();
+        self.rebuild_workspace_sessions();
+        self.discovering = false;
+        if self.active.is_none()
+            && !self
+                .agents
+                .iter()
+                .any(|a| a.kind == self.agent && a.available)
+            && let Some(agent) = self.agents.iter().find(|a| a.available)
+        {
+            self.agent = agent.kind;
+        }
+    }
     fn receive(&mut self, event: Event, cx: &mut Context<Self>) {
         match event {
             Event::SidebarProject(path, token, sessions) => {
@@ -2038,59 +2091,25 @@ impl Orbit {
                     self.session_models.insert(id, model);
                 }
             }
+            Event::Cached(sessions)=>{
+                let mut seen=HashSet::new();
+                let projects=sessions.iter().filter_map(|session|{
+                    let path=&session.project_path;
+                    (path.is_absolute() && path != std::path::Path::new("/") && !discovery::internal_probe_project(path) && seen.insert(path.clone())).then(||Project{name:path.file_name().unwrap_or_default().to_string_lossy().into_owned(),path:path.clone()})
+                }).collect();
+                self.install_discovery(discovery::Discovery{projects,..Default::default()},sessions,None,cx);
+                self.discovering=true;
+                launch_metrics::mark("cached-navigation-ready");
+                if std::env::var_os("KAI_PERFORMANCE_LOG").is_some(){eprintln!("KAI_CACHED_NAVIGATION projects={} chats={}",self.projects.len(),self.sessions.len());}
+            }
+            Event::Providers(agents)=>{
+                self.agents=agents;
+                launch_metrics::mark("providers-ready");
+                if std::env::var_os("KAI_PERFORMANCE_LOG").is_some(){eprintln!("KAI_PROVIDERS available={} total={}",self.agents.iter().filter(|a|a.available).count(),self.agents.len());}
+            }
             Event::Ready(discovery, sessions, preferred_project) => {
+                self.install_discovery(discovery,sessions,preferred_project,cx);
                 launch_metrics::mark("discovery-ready");
-                self.invalidate_project_branches();
-                self.agents = discovery.agents;
-                self.queue_ninja_titles(cx);
-                self.advance_chat_titles(cx);
-                self.source_projects = discovery.projects;
-                self.rebuild_projects();
-                let previous = std::mem::take(&mut self.sessions);
-                self.sessions = sessions;
-                let positions: HashMap<_, _> = self
-                    .sessions
-                    .iter()
-                    .enumerate()
-                    .map(|(ix, s)| (s.id.clone(), ix))
-                    .collect();
-                for old in previous {
-                    if let Some(&ix) = positions.get(&old.id) {
-                        merge_session_metadata(&mut self.sessions[ix], &old);
-                    } else if self.active.as_deref() == Some(&old.id)
-                        || self.runs.contains_key(&old.id)
-                        || self.finalizing.contains(&old.id)
-                        || self.lifecycle.archived_chats.contains(&old.id)
-                        || self.lifecycle.pinned_chats.contains(&old.id)
-                        || old.transcript_path.is_none()
-                    {
-                        self.sessions.push(old);
-                    }
-                }
-                self.sessions
-                    .sort_by_key(|s| std::cmp::Reverse(s.updated_at));
-                if self.project == std::path::Path::new("/")
-                    && let Some(path) = preferred_project
-                {
-                    self.project = path;
-                }
-                self.visible_sessions = self
-                    .sessions
-                    .iter()
-                    .filter(|session| !self.hidden_sessions.contains(&session.id))
-                    .cloned()
-                    .collect();
-                self.rebuild_workspace_sessions();
-                self.discovering = false;
-                if self.active.is_none()
-                    && !self
-                        .agents
-                        .iter()
-                        .any(|a| a.kind == self.agent && a.available)
-                    && let Some(agent) = self.agents.iter().find(|a| a.available)
-                {
-                    self.agent = agent.kind;
-                }
             }
             Event::HistoryRange(id, generation, start, end)
                 if self.active.as_deref() == Some(&id) && generation == self.generation =>

@@ -533,7 +533,12 @@ impl Orbit {
         }
     }
     pub(super) fn restore_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.discovering || !self.preferences_ready {
+        // Cached owner metadata and installed providers are enough to restore
+        // the selected chat; unrelated CLI histories continue scanning behind it.
+        let cached_selection_ready = !self.agents.is_empty() && self.restore_pending.as_ref().is_none_or(|saved| {
+            saved.active_chat.as_ref().is_none_or(|id|self.sessions.iter().any(|session|&session.id==id))
+        });
+        if !self.preferences_ready || (self.discovering && !cached_selection_ready) {
             return;
         }
         let Some(saved) = self.restore_pending.take() else {

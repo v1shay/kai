@@ -186,7 +186,22 @@ pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Resul
             "Kai unified: native layer and owner state ready in process {}",
             std::process::id()
         );
-        if std::env::args().any(|arg|arg=="--unified-surface-probe") {
+        if std::env::args().any(|arg|arg=="--unified-discovery-probe") {
+            anyhow::ensure!(std::env::args().any(|arg|arg=="--unified-smoke-test"),"Discovery probe requires isolated data");
+            cx.spawn(async move|cx|{
+                let deadline=std::time::Instant::now()+Duration::from_secs(30);
+                loop {
+                    Timer::after(Duration::from_millis(50)).await;
+                    let finished=window.update(cx,|app,_,_|{
+                        if !app.discovering && !app.agents.is_empty(){
+                            eprintln!("KAI_DISCOVERY_PROBE_OK projects={} chats={} providers={}",app.projects.len(),app.sessions.len(),app.agents.len());true
+                        }else{false}
+                    }).unwrap_or(false);
+                    if finished{let _=cx.update(|cx|cx.quit());break}
+                    if std::time::Instant::now()>deadline{eprintln!("KAI_DISCOVERY_PROBE_TIMEOUT");let _=cx.update(|cx|cx.quit());break}
+                }
+            }).detach();
+        }else if std::env::args().any(|arg|arg=="--unified-surface-probe") {
             anyhow::ensure!(std::env::args().any(|arg|arg=="--unified-smoke-test"),"Surface probe requires isolated data");
             let diagnostics=unsafe{libc::dlsym(library,c"kai_unified_diagnostics".as_ptr())};anyhow::ensure!(!diagnostics.is_null(),"No native diagnostics");let diagnostics:unsafe extern "C" fn()->u32=unsafe{std::mem::transmute(diagnostics)};
             cx.spawn(async move|cx| {

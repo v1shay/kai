@@ -67,7 +67,7 @@ for pet in catalog['pets']:
  source=root/'kai_pets'/pet['spritesheet'];target=resources/'kai_pets'/pet['spritesheet']
  target.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(source,target)
 info=plistlib.loads((root/'integrations/Code/scripts/Info.plist').read_bytes())
-info.update(CFBundleName='Kai Unified',CFBundleDisplayName='Kai Unified',CFBundleIdentifier='com.kai.unified.experimental',CFBundleExecutable='kai-unified',CFBundleVersion='106',CFBundleShortVersionString='0.12.69')
+info.update(CFBundleName='Kai Unified',CFBundleDisplayName='Kai Unified',CFBundleIdentifier='com.kai.unified.experimental',CFBundleExecutable='kai-unified',CFBundleVersion='107',CFBundleShortVersionString='0.12.70')
 icon=root/'integrations/Code/assets/Code.icns'
 if icon.exists():shutil.copy2(icon,resources/'Code-Bonsai.icns')
 info['CFBundleURLTypes']=[{'CFBundleURLName':'Kai workspace','CFBundleURLSchemes':['kai']}]
@@ -79,10 +79,7 @@ info['NSAppleEventsUsageDescription']='Kai uses app automation for tasks you aut
 (product/'Contents/Info.plist').write_bytes(plistlib.dumps(info))
 PY
 python3 "$root/scripts/build-app-intents.py" "$resources/libKaiNotch.dylib" "$resources"
-identity=${KAI_SIGNING_IDENTITY:--}
-for library in "$resources/"*.dylib; do codesign --force --sign "$identity" "$library"; done
-codesign --force --sign "$identity" "$product"
-codesign --verify --deep --strict "$product"
+python3 "$root/scripts/sign-kai-app.py" "$product"
 destination="$root/.build/unified/Kai Unified.app"
 [[ ! -e "$destination" ]] || mv "$destination" "$staging/previous.app"
 if ! mv "$product" "$destination"; then

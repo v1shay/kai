@@ -104,8 +104,8 @@ pub fn discover_agent(kind: AgentKind, home: &Path) -> Agent {
     Agent { kind, name:kind.name().to_owned(), available:executable.is_some(), executable }
 }
 
-pub fn discover(home: &Path, extra_root: &Path) -> Discovery {
-    let agents = [
+pub fn discover_agents(home: &Path) -> Vec<Agent> {
+    [
         AgentKind::Ninja,
         AgentKind::Codex,
         AgentKind::Claude,
@@ -117,8 +117,14 @@ pub fn discover(home: &Path, extra_root: &Path) -> Discovery {
     ]
     .into_iter()
     .map(|kind| discover_agent(kind, home))
-    .collect();
+    .collect()
+}
 
+pub fn discover(home: &Path, extra_root: &Path) -> Discovery {
+    discover_with_agents(home, extra_root, discover_agents(home))
+}
+
+pub fn discover_with_agents(home: &Path, extra_root: &Path, agents: Vec<Agent>) -> Discovery {
     let metadata = native_metadata(home);
     let (mut sessions, _) = native_sessions(home, &metadata, None);
     let mut seen_sessions: HashSet<_> = sessions.iter().map(|session| session.id.clone()).collect();

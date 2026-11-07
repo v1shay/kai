@@ -13,6 +13,22 @@ and dependency notices retained. The original Kai target still builds normally.
 open ".build/unified/Kai Unified.app"
 ```
 
+Local builds use a persistent certificate-backed signing identity in a private
+`~/Library/Application Support/Kai Build` keychain. This gives macOS a stable app
+identity for microphone and other permission prompts across rebuilds. The build
+trusts that identity only for code signing in your user account; it does not
+grant privacy permissions or change system-wide or browser/TLS trust. Set
+`KAI_SIGNING_IDENTITY` (and optionally `KAI_SIGNING_KEYCHAIN`) to use an existing
+development or distribution identity. An explicit `KAI_SIGNING_IDENTITY=-`
+retains ad-hoc signing for isolated test bundles.
+
+Saved projects/chat summaries and installed providers are published before the
+full native-history scan. The scan runs outside the SQLite/history command
+worker, and a cached selected chat can restore while unrelated histories are
+still being indexed. Run `python3 scripts/test-unified-packaged.py discovery`
+to measure cached navigation, providers, and full discovery separately using an
+isolated copy of summary metadata.
+
 The build uses cached Cargo dependencies and checks every Swift ABI export
 before signing the bundle. On a fresh development machine, first run
 `cargo fetch --manifest-path integrations/Code/Cargo.toml`.
