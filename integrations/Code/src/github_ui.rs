@@ -100,11 +100,11 @@ impl Panel {
         if !motion || native::reduced_motion() {
             return if self.closing { 0. } else { 1. };
         }
-        let t = (self.at.elapsed().as_secs_f32() / if self.closing { 0.16 } else { 0.28 }).min(1.);
+        let t = (self.at.elapsed().as_secs_f32() / workspace_motion::surface_duration(self.closing).as_secs_f32()).min(1.);
         if self.closing {
-            self.closing_from * (1. - t * t)
+            self.closing_from * (1. - presentation::ease_out(t))
         } else {
-            presentation::spring(t).clamp(0., 1.)
+            presentation::ease_out(t).clamp(0., 1.)
         }
     }
 }
@@ -253,7 +253,7 @@ impl State {
         }
         self.widget_motion.map_or(target, |(at, from, to)| {
             let t = (at.elapsed().as_secs_f32() / 0.28).min(1.);
-            from + (to - from) * presentation::spring(t).clamp(0., 1.)
+            from + (to - from) * presentation::ease_out(t).clamp(0., 1.)
         })
     }
     fn set_snapshot(&mut self, snapshot: Option<Arc<Snapshot>>, motion: bool) {
@@ -374,11 +374,11 @@ impl Orbit {
         if let Some(p) = self.github.panel.as_ref() {
             if self.motion
                 && !native::reduced_motion()
-                && p.at.elapsed() < Duration::from_millis(300)
+                && p.at.elapsed() < workspace_motion::surface_duration(p.closing)
             {
                 request_motion_frame(window, cx);
             }
-            if p.closing && p.at.elapsed() > Duration::from_millis(160) {
+            if p.closing && p.at.elapsed() >= workspace_motion::CONTROL_DURATION {
                 self.github.panel = None;
                 cx.notify();
             }
@@ -1144,7 +1144,7 @@ impl Orbit {
                                             .as_secs_f32()
                                             / 0.22)
                                             .min(1.);
-                                        1. - (1. - t).powi(3)
+                                        presentation::ease_out(t)
                                     })
                                 } else {
                                     1.

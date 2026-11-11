@@ -24,11 +24,37 @@ import WebKit
         if items.numberOfItems>0 {for index in 1...min(64,items.numberOfItems){if let item=items.atIndex(index)?.coerce(toDescriptorType:DescType(typeFileURL)),let text=String(data:item.data,encoding:.utf8),URL(string:text)?.isFileURL==true{urls.append(text)}}}
         if !urls.isEmpty{EmbeddedCodeRuntime.shared.sendAction("external_urls",["urls":urls])}
     }
+    func copyFile(_ url:URL){FileActionsMenu().copy(url,to:.general)}
+    private var inlinePreviews: [String: (view: QLPreviewView, url: URL)] = [:]
+
+    func inlineQuickLook(slot: String, url: URL?, windowNumber: Int?, rect: CGRect?) {
+        guard let url, url.isFileURL, let windowNumber, let rect,
+              let host = NSApp.windows.first(where: { $0.windowNumber == windowNumber })?.contentView else {
+            if let old = inlinePreviews.removeValue(forKey: slot) {
+                old.view.previewItem = nil
+                old.view.removeFromSuperview()
+            }
+            return
+        }
+        let frame = CGRect(x: rect.minX, y: host.isFlipped ? rect.minY : host.bounds.height - rect.maxY,
+                           width: rect.width, height: rect.height)
+        if let current = inlinePreviews[slot], current.url == url, current.view.superview === host {
+            if current.view.frame != frame { current.view.frame = frame }
+            return
+        }
+        inlineQuickLook(slot: slot, url: nil, windowNumber: nil, rect: nil)
+        guard let view = QLPreviewView(frame: frame, style: .normal) else { return }
+        view.autostarts = false
+        host.addSubview(view)
+        view.previewItem = url as NSURL
+        inlinePreviews[slot] = (view, url)
+    }
+
     func quickLook(_ urls:[URL]){
         guard let url=urls.first,url.isFileURL,FileManager.default.fileExists(atPath:url.path) else{return}
         closePreview()
         let window=makeWindow(url.lastPathComponent)
-        let view=QLPreviewView(frame:NSRect(x:0,y:0,width:840,height:640),style:.normal)!
+        guard let view=QLPreviewView(frame:NSRect(x:0,y:0,width:840,height:640),style:.normal) else{return}
         view.autoresizingMask=[.width,.height];view.previewItem=url as NSURL
         window.contentView=view;show(window)
     }

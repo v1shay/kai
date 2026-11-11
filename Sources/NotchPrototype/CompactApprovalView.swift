@@ -131,7 +131,7 @@ struct CompactApprovalRequest:Equatable {
         scroll.isHidden=false;inlineBody?.isHidden=false
         if expanded{inlineBody?.alphaValue=0}else{scroll.alphaValue=0}
         needsLayout=true;onPreferredHeightChange?()
-        NSAnimationContext.runAnimationGroup{context in context.duration=duration;context.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.85,0.25,1);self.scroll.animator().alphaValue=expanded ? 0:1;self.inlineBody?.animator().alphaValue=expanded ? 1:0}
+        NSAnimationContext.runAnimationGroup{context in  context.duration=duration;context.timingFunction=KaiMotion.interactionCurve;self.scroll.animator().alphaValue=expanded ? 0:1;self.inlineBody?.animator().alphaValue=expanded ? 1:0}
         DispatchQueue.main.asyncAfter(deadline:.now()+duration){[weak self] in guard let self,self.visibilityRevision==revision else{return};self.scroll.isHidden=self.reviewExpanded;self.inlineBody?.isHidden = !self.reviewExpanded}
 
     }

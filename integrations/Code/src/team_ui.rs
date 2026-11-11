@@ -459,7 +459,7 @@ impl Orbit {
             return div().into_any_element();
         };
         let reveal = if self.motion {
-            presentation::spring((panel.started.elapsed().as_secs_f32() / 0.32).min(1.))
+            presentation::ease_out((panel.started.elapsed().as_secs_f32() / 0.32).min(1.))
                 .clamp(0., 1.)
         } else {
             1.

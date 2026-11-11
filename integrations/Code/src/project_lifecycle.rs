@@ -404,7 +404,7 @@ impl Orbit {
     pub(super) fn lifecycle_editor_view(&self, cx: &Context<Self>) -> impl IntoElement {
         let editor = self.lifecycle_editor.as_ref().expect("editor visible");
         let progress = if self.motion {
-            presentation::spring((editor.started.elapsed().as_secs_f32() / 0.32).min(1.))
+            presentation::ease_out((editor.started.elapsed().as_secs_f32() / 0.32).min(1.))
                 .clamp(0., 1.)
         } else {
             1.

@@ -31,6 +31,7 @@ enum Kind {
     Video,
     Pdf,
     Archive,
+    Model,
     Other,
 }
 impl Kind {
@@ -56,6 +57,7 @@ impl Kind {
             "mp4" | "mov" | "mkv" | "webm" | "avi" => Self::Video,
             "pdf" => Self::Pdf,
             "zip" | "gz" | "tar" | "tgz" | "7z" | "rar" | "xz" | "bz2" => Self::Archive,
+            "usd" | "usda" | "usdc" | "usdz" | "obj" | "stl" | "glb" | "gltf" | "fbx" | "dae" | "blend" => Self::Model,
             _ => Self::Other,
         }
     }
@@ -69,7 +71,7 @@ impl Kind {
             Self::Video => "file-video",
             Self::Pdf => "file-pdf",
             Self::Archive => "file-archive",
-            Self::Other => "file",
+            Self::Model | Self::Other => "file",
         }
     }
     fn label(self) -> &'static str {
@@ -82,6 +84,7 @@ impl Kind {
             Self::Video => "Video",
             Self::Pdf => "PDF",
             Self::Archive => "Archive",
+            Self::Model => "3D model",
             Self::Other => "File",
         }
     }
@@ -106,6 +109,16 @@ struct Directory {
     /// natural directory page arrives. Normal pages share one ReadDir cursor.
     revealed: HashSet<PathBuf>,
 }
+#[derive(Clone)]
+pub(super) struct FileDrag(pub PathBuf);
+
+impl Render for FileDrag {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().rounded_md().p_2().bg(rgba(0x242424ee))
+            .child(self.0.file_name().unwrap_or_default().to_string_lossy().into_owned())
+    }
+}
+
 #[derive(Clone)]
 enum TreeRow {
     Entry(Entry, usize),
@@ -769,6 +782,10 @@ impl FileBrowser {
             })
             .child(crate::icon(symbol, 14., if selected { 0xebebeb } else { 0x929292 }).flex_none())
             .child(div().flex_1().min_w(px(0.)).text_ellipsis().child(label))
+            .when_some(match &row {
+                TreeRow::Entry(entry, _) if !entry.directory => Some(FileDrag(entry.path.clone())),
+                _ => None,
+            }, |row, file| row.on_drag(file, |file, _, _, cx| cx.new(|_| file.clone())))
             .on_click(cx.listener(move |this, _, _, cx| match row.clone() {
                 TreeRow::Entry(entry, _) => this.select(entry, cx),
                 TreeRow::More(path, _) => this.load_directory(path, cx),
@@ -923,6 +940,12 @@ impl FileBrowser {
             }
         }
     }
+    pub(super) fn shows_inline_preview(&self) -> bool {
+        self.editor.is_none() && self.preview.as_ref().is_some_and(|preview| {
+            preview.note.is_some() && preview.image.is_none() && preview.blocks.is_empty()
+        })
+    }
+
     fn preview_panel(&self, cx: &Context<Self>) -> AnyElement {
         if let Some(editor) = &self.editor {
             return div()
@@ -1145,6 +1168,10 @@ impl FileBrowser {
                         .child("Paged preview · native editing supports files up to 64 KiB"),
                 );
             }
+            if self.shows_inline_preview() && crate::unified::active() {
+                panel = panel.child(crate::unified::inline_preview("files", &preview.path)
+                    .flex_1().min_h(px(100.)).w_full());
+            }
             if let Some(note) = &preview.note {
                 let path = preview.path.clone();
                 panel = panel.child(
@@ -1164,8 +1191,11 @@ impl FileBrowser {
                                 .rounded_md()
                                 .bg(rgba(0xebebeb10))
                                 .cursor_pointer()
-                                .child("Open in native viewer")
-                                .on_click(move |_, _, cx| cx.open_url(&file_url(&path))),
+                                .child("Quick Look")
+                                .on_click(move |_, _, cx| {
+                                    if crate::unified::active() { crate::unified::quick_look(path.clone()); }
+                                    else { cx.open_url(&file_url(&path)); }
+                                }),
                         ),
                 );
             }
@@ -1243,6 +1273,7 @@ impl FileBrowser {
 impl Render for FileBrowser {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.materialize_editor(window, cx);
+        if !self.shows_inline_preview() { crate::unified::hide_inline_preview("files"); }
         div()
             .id("workspace-files")
             .size_full()
@@ -1544,6 +1575,10 @@ fn read_preview_with_lexer(
         );
         return Ok(preview);
     }
+    if kind == Kind::Model {
+        preview.note = Some("Quick Look previews 3D formats supported by macOS.".into());
+        return Ok(preview);
+    }
     if kind == Kind::Archive {
         preview.note = Some("Open this archive with your native archive application.".into());
         return Ok(preview);
@@ -1808,7 +1843,7 @@ fn byte_label(size: u64) -> String {
         format!("{size} bytes")
     }
 }
-fn file_url(path: &Path) -> String {
+pub(super) fn file_url(path: &Path) -> String {
     use std::os::unix::ffi::OsStrExt;
     let mut url = String::from("file://");
     for byte in path.as_os_str().as_bytes() {

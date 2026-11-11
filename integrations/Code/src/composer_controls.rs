@@ -147,6 +147,7 @@ impl Orbit {
         self.attachment_pending = 0;
         self.attachment_preview_cancel
             .store(true, Ordering::Release);
+        unified::hide_inline_preview("attachment");
         self.attachment_preview = None;
         self.attachment_preview_image = None;
         self.attachment_inserts.clear();
@@ -187,10 +188,10 @@ impl Orbit {
         }
         if count > slots || known.len() + count > 32 {
             if let Some(edit) = &mut self.queue_editing {
-                edit.error = Some("Image slots are full".into());
+                edit.error = Some("Attachment slots are full".into());
             }
             self.notice = Some(format!(
-                "Add up to {} images per prompt. Send or remove existing images to add more.",
+                "Add up to {} files per prompt. Send or remove existing files to add more.",
                 attachments::MAX_ATTACHMENTS
             ));
             cx.notify();
@@ -241,14 +242,14 @@ impl Orbit {
                                     this.unified_attachment_sources.insert(path, attachment.id);
                                 }
                                 let total = this.attachments.iter().map(|a| a.size).sum::<u64>();
-                                if total.saturating_add(attachment.size)
-                                    > attachments::MAX_TOTAL_BYTES
-                                {
+                                let image_bytes = this.attachments.iter().filter(|a| a.is_image()).map(|a| a.size).sum::<u64>();
+                                if total.saturating_add(attachment.size) > attachments::MAX_ATTACHMENT_BYTES
+                                    || (attachment.is_image() && image_bytes.saturating_add(attachment.size) > attachments::MAX_TOTAL_BYTES) {
                                     if let Some(edit) = &mut this.queue_editing {
-                                        edit.error = Some("Image budget exceeded".into());
+                                        edit.error = Some("Attachment budget exceeded".into());
                                     }
                                     this.notice =
-                                        Some("Keep prompt images under32MB combined.".into());
+                                        Some("Keep files under 256 MB total and images under 32 MB total.".into());
                                 } else {
                                     this.attachment_inserts
                                         .insert(attachment.id, Instant::now());
@@ -279,7 +280,7 @@ impl Orbit {
             files: true,
             directories: false,
             multiple: true,
-            prompt: Some("Add images".into()),
+            prompt: Some("Attach files".into()),
         });
         let generation = self.attachment_generation;
         cx.spawn(async move |this, cx| {
@@ -342,6 +343,15 @@ impl Orbit {
         attachment: attachments::Attachment,
         cx: &mut Context<Self>,
     ) {
+        if !attachment.is_image() {
+            self.close_attachment_preview(cx);
+            if unified::active() {
+                self.attachment_preview = Some((attachment, Instant::now()));
+                cx.notify();
+            }
+            return;
+        }
+        unified::hide_inline_preview("attachment");
         self.attachment_preview_cancel
             .store(true, Ordering::Release);
         self.attachment_preview_cancel = Arc::new(AtomicBool::new(false));
@@ -381,6 +391,7 @@ impl Orbit {
     pub(super) fn close_attachment_preview(&mut self, cx: &mut Context<Self>) {
         self.attachment_preview_cancel
             .store(true, Ordering::Release);
+        unified::hide_inline_preview("attachment");
         self.attachment_preview = None;
         self.attachment_preview_image = None;
         cx.notify();
@@ -391,8 +402,8 @@ impl Orbit {
             // Managed paths are absolute and generated; retain image names as alt text.
             let name = attachment.name.replace(['[', ']', '\n', '\r'], " ");
             text.push_str(&format!(
-                "\n\n![{name}](<{}>)",
-                attachment.path.to_string_lossy()
+                "\n\n{}[{name}](<{}>)",
+                if attachment.is_image() { "!" } else { "" }, attachment.path.to_string_lossy()
             ));
         }
         text
@@ -481,15 +492,15 @@ impl Orbit {
             .child(icon("paperclip", 15., MUTED))
             .on_click(cx.listener(|this, _, _, cx| this.choose_images(cx)))
     }
-    pub(super) fn dictation_button(&self, cx: &Context<Self>) -> Stateful<Div> {
-        let active = self.speech.is_some();
+    pub(super) fn dictation_button(&self, peer: Option<&SessionSummary>, cx: &Context<Self>) -> Stateful<Div> {
+        let active = peer.is_none() && self.speech.is_some();
         let listening = active
             && self
                 .dictation_status
                 .is_some_and(|s| s.starts_with("Listening"));
         let progress = self
             .dictation_transition
-            .map(|t| presentation::spring(fade(t, 0.32)))
+            .map(|t| presentation::ease_out(fade(t, 0.32)))
             .unwrap_or(1.);
         div()
             .id("dictate")
@@ -516,10 +527,18 @@ impl Orbit {
                         if listening { 0x8fc89a } else { MUTED },
                     )),
             )
-            .on_click(cx.listener(|this, _, window, cx| this.toggle_dictation(window, cx)))
+            .on_click(Self::chat_control(peer, cx, |this, _, window, cx| this.toggle_dictation(window, cx)))
     }
     pub(super) fn attachment_strip(&self, cx: &Context<Self>) -> AnyElement {
-        if self.attachments.is_empty() && self.attachment_pending == 0 {
+        self.conversation_attachments(None, cx)
+    }
+    pub(super) fn conversation_attachments(&self, peer: Option<&SessionSummary>, cx: &Context<Self>) -> AnyElement {
+        let (attachments, pending) = if let Some(session) = peer {
+            (self.attachment_drafts.get(&session.id).map(Vec::as_slice).unwrap_or_default(), 0)
+        } else {
+            (self.attachments.as_slice(), self.attachment_pending)
+        };
+        if attachments.is_empty() && pending == 0 {
             return div().into_any_element();
         }
         div()
@@ -529,13 +548,13 @@ impl Orbit {
             .items_center()
             .gap_2()
             .overflow_hidden()
-            .children(self.attachments.iter().map(|attachment| {
+            .children(attachments.iter().map(|attachment| {
                 let id = attachment.id;
                 let preview = attachment.clone();
                 let reveal = if let Some(start) = self.attachment_removals.get(&id) {
                     1. - fade(*start, 0.12)
                 } else if let Some(start) = self.attachment_inserts.get(&id) {
-                    presentation::spring(fade(*start, 0.32))
+                    presentation::ease_out(fade(*start, 0.32))
                 } else {
                     1.
                 };
@@ -568,12 +587,13 @@ impl Orbit {
                     .on_hover(cx.listener(move |this, hover: &bool, _, cx| {
                         this.hover_attachment(id, *hover, cx)
                     }))
-                    .child(
-                        img(attachment.thumbnail.clone())
-                            .w(px(72.))
-                            .h(px(62.))
-                            .object_fit(ObjectFit::Cover),
-                    )
+                    .when_some(attachment.thumbnail.clone(), |s, image| s.child(
+                        img(image).w(px(72.)).h(px(62.)).object_fit(ObjectFit::Cover),
+                    ))
+                    .when(!attachment.is_image(), |s| s.child(div().size_full().flex().flex_col()
+                        .items_center().justify_center().gap_1().px_1()
+                        .child(icon(files::icon_for_path(&attachment.path), 18., MUTED))
+                        .child(div().max_w_full().truncate().text_size(theme::ui_px(9.)).child(attachment.name.clone()))))
                     .child(
                         div()
                             .id(SharedString::from(format!("remove-attachment-{id}")))
@@ -589,16 +609,16 @@ impl Orbit {
                             .justify_center()
                             .opacity(hover)
                             .child(icon("close", 11., TEXT))
-                            .on_click(cx.listener(move |this, _, _, cx| {
+                            .on_click(Self::chat_control(peer, cx, move |this, _, _, cx| {
                                 cx.stop_propagation();
                                 this.remove_attachment(id, cx);
                             })),
                     )
-                    .on_click(cx.listener(move |this, _, _, cx| {
+                    .on_click(Self::chat_control(peer, cx, move |this, _, _, cx| {
                         this.open_attachment_preview(preview.clone(), cx)
                     }))
             }))
-            .when(self.attachment_pending > 0, |s| {
+            .when(pending > 0, |s| {
                 s.child(
                     div()
                         .text_size(crate::theme::ui_px(11.))
@@ -617,7 +637,7 @@ impl Orbit {
             return div().into_any_element();
         };
         let reveal = if self.motion {
-            presentation::spring(fade(*start, 0.32)).clamp(0., 1.)
+            presentation::ease_out(fade(*start, 0.32)).clamp(0., 1.)
         } else {
             1.
         };
@@ -659,7 +679,12 @@ impl Orbit {
                                     .text_ellipsis()
                                     .child(attachment.name.clone()),
                             )
-                            .child({let path=attachment.path.clone();div().id("native-quick-look").p_1().rounded_md().cursor_pointer().child("Quick Look").on_click(move|_,_,_|unified::emit(&serde_json::json!({"type":"quickLook","paths":[path]})))})
+                            .child({
+                                let path = attachment.path.clone();
+                                div().id("copy-preview-attachment").p_1().rounded_md().cursor_pointer()
+                                    .child("Copy file").on_click(move |_, _, _| unified::copy_file(path.clone()))
+                            })
+                            .child({let path=attachment.path.clone();div().id("native-quick-look").p_1().rounded_md().cursor_pointer().child("Quick Look").on_click(move|_,_,_|unified::quick_look(path.clone()))})
                             .child(
                                 div()
                                     .id("close-image-preview")
@@ -677,15 +702,14 @@ impl Orbit {
                                     })),
                             ),
                     )
-                    .child(
-                        img(self
-                            .attachment_preview_image
-                            .clone()
-                            .unwrap_or_else(|| attachment.thumbnail.clone()))
-                        .w_full()
-                        .h(px(300.).min(window.viewport_size().height - px(68.)))
-                        .object_fit(ObjectFit::Contain),
-                    ),
+                    .when(!attachment.is_image(), |s| s.child(
+                        unified::inline_preview("attachment", &attachment.path)
+                            .w_full().h(px(280.).min(window.viewport_size().height - px(68.))),
+                    ))
+                    .when_some(self.attachment_preview_image.clone().or_else(|| attachment.thumbnail.clone()), |s, image| s.child(
+                        img(image).w_full().h(px(300.).min(window.viewport_size().height - px(68.)))
+                            .object_fit(ObjectFit::Contain),
+                    )),
             )
             .into_any_element()
     }

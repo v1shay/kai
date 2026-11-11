@@ -41,12 +41,12 @@ impl Orbit{
     pub(super) fn fast_enabled(&self)->bool{self.reasoning_efforts.get("codex:service-tier").is_some_and(|v|v=="fast")}
     pub(super) fn request_service_tier(&self)->Option<String>{if self.agent!=AgentKind::Codex{return None}Some(if self.fast_enabled(){self.controls.get("codex").and_then(|(_,c)|self.request_model().or_else(||self.effective_model_settings().0).and_then(|m|c.defaults.fast_models.get(&m).cloned())).unwrap_or_else(||"default".into())}else{"default".into()})}
     pub(super) fn toggle_fast(&mut self,cx:&mut Context<Self>){if self.fast_supported(){let next=if self.fast_enabled(){"default"}else{"fast"};self.reasoning_efforts.insert("codex:service-tier".into(),next.into());self.fast_transition=Some(Instant::now());self.queue_workspace_save(cx);cx.notify();}}
-    pub(super) fn fast_button(&self,window:&Window,cx:&Context<Self>)->AnyElement{
+    pub(super) fn fast_button(&self,window:&Window,cx:&Context<Self>,peer:Option<&SessionSummary>)->AnyElement{
         let on=self.fast_enabled();let color=if on{0xffd968}else{MUTED};
         let chip=div().id("fast-mode").debug_selector(||"fast-mode".into()).h(px(26.)).w(px(28.)).relative().overflow_hidden().rounded_md().flex().items_center().justify_center().cursor_pointer()
             .bg(linear_gradient(90.,linear_color_stop(rgba(if self.theme.borderless_composer{0}else if on{0xffee9824}else{0xffffff08}),0.),linear_color_stop(rgba(if self.theme.borderless_composer{0}else if on{0xffbd3510}else{0xffffff08}),1.)))
             .on_hover(cx.listener(|this,hover:&bool,_,cx|{if *hover{this.fast_transition=Some(Instant::now());cx.notify();}}))
-            .on_click(cx.listener(|this,_,_,cx|this.toggle_fast(cx)));
+            .on_click(Self::chat_control(peer,cx,|this,_,_,cx|this.toggle_fast(cx)));
         let bolt=move ||div().relative().child(icon("bolt",15.,color));
         if self.motion && !native::reduced_motion() && window.is_window_active(){
             // Same five-second, distance-staggered tile burst as intensity.
@@ -55,22 +55,38 @@ impl Orbit{
             chip.with_animation(SharedString::from(key),Animation::new(Duration::from_secs(5)),move|chip,t|chip.child(shimmer_tiles(Some(t*5.),0xffd968,true)).child(bolt())).into_any_element()
         }else{chip.child(shimmer_tiles(Some(0.),0xffd968,false)).child(bolt()).into_any_element()}
     }
-    pub(super) fn thinking_chip_adaptive(&self,window:&Window,cx:&Context<Self>,detail:f32)->AnyElement{
-        let Some(model)=self.effort_model_choice().filter(|m|!m.reasoning_efforts.is_empty())else{return div().into_any_element()};
-        let value=self.unified_effort().map(str::to_owned).or_else(||self.effective_model_settings().1).unwrap_or_default();let i=model.reasoning_efforts.iter().position(|e|e==&value).unwrap_or(0);let t=i as f32/model.reasoning_efforts.len().saturating_sub(1).max(1)as f32;let color=effort_color(&value,t);let label=if value.is_empty(){"Thinking".into()}else{title(&value)};let label_width=composer_toolbar::text_width(window,&label)*detail;
+    pub(super) fn toolbar_thinking(&self, peer: Option<&SessionSummary>, model: Option<&str>) -> (Option<agent_controls::ModelChoice>, String) {
+        let Some(session) = peer else {
+            return (self.effort_model_choice(), self.unified_effort().map(str::to_owned)
+                .or_else(|| self.effective_model_settings().1).unwrap_or_default());
+        };
+        let controls = self.controls.get(session.agent.command()).map(|(_, info)| info);
+        let selected = self.session_models.get(&session.id).and_then(|model| model.as_deref());
+        let key = format!("{}:{}:{}", session.agent.command(), session.id, selected.unwrap_or(""));
+        let effort = self.reasoning_efforts.get(&key).cloned()
+            .or_else(|| self.usage.get(&session.id).and_then(|usage| usage.reasoning_effort.clone()))
+            .unwrap_or_default();
+        let model = model.or_else(|| controls.and_then(|info| info.defaults.model.as_deref()));
+        let choice = model.and_then(|id| controls.and_then(|info| info.models.iter().find(|choice|
+            choice.id == id || info.defaults.aliases.get(&choice.id).is_some_and(|alias| alias == id)))).cloned();
+        (choice, effort)
+    }
+    pub(super) fn thinking_chip_adaptive(&self,window:&Window,cx:&Context<Self>,detail:f32,peer:Option<&SessionSummary>,agent:AgentKind,model:Option<&agent_controls::ModelChoice>,value:&str)->AnyElement{
+        let Some(model)=model.filter(|m|!m.reasoning_efforts.is_empty())else{return div().into_any_element()};
+        let i=model.reasoning_efforts.iter().position(|e|e==value).unwrap_or(0);let t=i as f32/model.reasoning_efforts.len().saturating_sub(1).max(1)as f32;let color=effort_color(value,t);let label=if value.is_empty(){"Thinking".into()}else{title(value)};let label_width=composer_toolbar::text_width(window,&label)*detail;
         let contents=move||div().relative().flex().items_center()
             .child(div().w(px(14.*(1.-detail))).h(px(14.)).flex_none().overflow_hidden().opacity(1.-detail).child(icon("sparkles",14.,color)))
             .child(div().w(px(label_width)).overflow_hidden().opacity(detail).whitespace_nowrap().child(label.clone()));
         let chip=div().id("thinking-chip").debug_selector(||"thinking-chip".into()).w_full().px(px(6.+2.*detail)).h(px(26.)).relative().overflow_hidden().rounded_md().flex().items_center().text_size(theme::ui_px(11.)).text_color(rgb(color)).when(!self.theme.borderless_composer,|s|s.bg(linear_gradient(90.,linear_color_stop(rgba((color<<8)|0x24),0.),linear_color_stop(rgba((intensity((t+0.25).min(1.))<<8)|0x10),1.)))).cursor_pointer()
-        .on_click(cx.listener(|this,event:&ClickEvent,window,cx|{this.toggle_picker_from_click(true,event.position(),window,cx);}));
+        .on_click(Self::chat_control(peer,cx,|this,event,window,cx|{this.toggle_picker_from_click(true,event.position(),window,cx);}));
         if self.motion && !native::reduced_motion() && window.is_window_active(){
-            chip.with_animation(SharedString::from(format!("thinking-chip-{}-{value}",self.agent.command())),Animation::new(Duration::from_secs(5)),move|chip,t|chip.child(shimmer_tiles(Some(t*5.),color,true)).child(contents())).into_any_element()
+            chip.with_animation(SharedString::from(format!("thinking-chip-{}-{value}",agent.command())),Animation::new(Duration::from_secs(5)),move|chip,t|chip.child(shimmer_tiles(Some(t*5.),color,true)).child(contents())).into_any_element()
         }else{chip.child(shimmer_tiles(Some(0.),color,false)).child(contents()).into_any_element()}
     }
     fn effort_fraction(&self,count:usize,current:usize)->f32{
         let target=current as f32/count.saturating_sub(1).max(1)as f32;
         self.agent_picker.as_ref().and_then(|p|p.effort_motion).filter(|_|self.motion).map_or(target,|(at,from,to)|{
-            let t=(at.elapsed().as_secs_f32()/0.32).min(1.);from+(to-from)*(1.-(1.-t).powi(3))
+            let t=(at.elapsed().as_secs_f32()/0.32).min(1.);from+(to-from)*crate::presentation::ease_out(t)
         })
     }
     pub(super) fn select_reasoning_effort(&mut self,effort:&str,cx:&mut Context<Self>)->bool{

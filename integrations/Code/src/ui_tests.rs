@@ -321,7 +321,11 @@ fn chat_flow_aligns_user_bubbles_and_groups_commands_with_reopenable_finished_wo
         ];app.list.reset(app.rows.len());cx.notify();
     });
     draw_frame(&view,cx);
-    let user=cx.debug_bounds("transcript-content-0").unwrap();let assistant=cx.debug_bounds("transcript-content-1").unwrap();
+    let viewport = view.update(cx, |app, _| (app.list.viewport_bounds(), app.list.logical_scroll_top(), app.rows.len()));
+    let user = cx.debug_bounds("transcript-content-0").unwrap_or_else(|| panic!(
+        "User row absent: viewport={viewport:?} pane={:?} row={:?}",
+        cx.debug_bounds("chat-pane"), cx.debug_bounds("transcript-row-0")));
+    let assistant = cx.debug_bounds("transcript-content-1").unwrap();
     assert!(user.left()>assistant.left(),"User bubble did not anchor to the opposite edge");
     assert!(cx.debug_bounds("interaction-2").is_some());assert!(cx.debug_bounds("interaction-3").is_none(),"Each command rendered a separate row");
     view.update(cx,|app,cx|{app.rows.push(Row{role:Some("continuation:codex".into()),block:MessageBlock::Interaction(chat_interactions::ChatInteraction::Status{title:"Completed".into(),details:String::new(),status:chat_interactions::InteractionStatus::Completed})});app.list.reset(app.rows.len());cx.notify();});
@@ -1647,7 +1651,8 @@ fn project_navigation_opens_its_chats_and_keeps_columns_aligned(cx: &mut TestApp
     assert_eq!(workspace.origin.x, rail.right());
     assert_eq!(chat.origin.x, workspace.right());
     assert_eq!(rail.size.height, workspace.size.height);
-    assert_eq!(workspace.size.height, chat.size.height);
+    assert_eq!(workspace.bottom(), chat.bottom(), "Chat content and project columns end at the same edge");
+    assert!(chat.top() >= workspace.top(), "The chat tab strip sits above the chat content");
     let project = cx
         .debug_bounds("project-1")
         .expect("Second project visible");
@@ -2883,7 +2888,8 @@ fn glass_dropdown_motion_is_finite_and_exit_releases_the_surface(cx: &mut TestAp
     });
     cx.run_until_parked(); // Exit also schedules frames safely.
     view.update(cx, |app, cx| {
-        app.panel_popover.as_mut().unwrap().started = Instant::now() - Duration::from_millis(121);
+        app.panel_popover.as_mut().unwrap().started =
+            Instant::now() - workspace_motion::CONTROL_DURATION - Duration::from_millis(1);
         cx.notify();
     });
     cx.run_until_parked();
@@ -4055,10 +4061,10 @@ fn requested_shortcuts_preserve_drafts_and_toggle_real_native_views(cx: &mut Tes
         assert!(view.read(cx).conversations_visible);
         assert!(view.read(cx).files_visible);
     });
-    cx.simulate_keystrokes("cmd-d");
+    cx.simulate_keystrokes("ctrl-g");
     draw_frame(&view, cx);
     cx.update(|_, cx| assert!(view.read(cx).diff_view.is_some()));
-    cx.simulate_keystrokes("cmd-d cmd-s");
+    cx.simulate_keystrokes("ctrl-g cmd-s");
     draw_frame(&view, cx);
     cx.update(|_, cx| assert!(view.read(cx).modal == Some(Modal::Search)));
     cx.simulate_input("Select this search text");
@@ -5248,5 +5254,42 @@ fn notch_scoped_picker_commands_keep_draft_and_do_not_open_workspace_picker(cx:&
         }
         app.appearance_action(theme_controls::Action::ToggleHorizontalAgentPicker,window,cx);
         let snapshot=app.unified_snapshot(cx);assert_eq!(snapshot["horizontalAgentPicker"],false);
+    }));
+}
+
+#[gpui::test]
+fn opening_another_tab_keeps_an_unsent_blank_draft(cx: &mut TestAppContext) {
+    let (view, cx) = fixture(cx);
+    cx.run_until_parked();
+    cx.update(|window, cx| view.update(cx, |app, cx| {
+        app.new_conversation(window, cx);
+        app.agent = AgentKind::Claude;
+        app.model = Some("draft-model".into());
+        app.composer.update(cx, |input, cx| input.set_text("Unsent draft 🦀", cx));
+        app.new_conversation(window, cx);
+        assert!(app.active.is_none());
+        assert!(app.composer.read(cx).text().is_empty());
+        let saved = app.sessions.iter().find(|session| session.title == "Unsent draft 🦀").unwrap().clone();
+        assert_eq!(saved.agent, AgentKind::Claude);
+        assert!(app.open_tabs.contains(&saved.id));
+        assert_eq!(app.drafts[&saved.id], "Unsent draft 🦀");
+        app.open_session(saved, window, cx);
+        assert_eq!(app.composer.read(cx).text(), "Unsent draft 🦀");
+        assert_eq!(app.model.as_deref(), Some("draft-model"));
+    }));
+}
+
+#[gpui::test]
+fn closing_a_blank_tab_discards_it_without_reopening_it(cx: &mut TestAppContext) {
+    let (view, cx) = fixture(cx);
+    cx.run_until_parked();
+    cx.update(|window, cx| view.update(cx, |app, cx| {
+        app.new_conversation(window, cx);
+        app.composer.update(cx, |input, cx| input.set_text("Explicitly close this draft", cx));
+        let before = app.sessions.len();
+        app.close_blank_tab(window, cx);
+        assert_eq!(app.sessions.len(), before);
+        assert!(app.active.is_none());
+        assert!(app.composer.read(cx).text().is_empty());
     }));
 }

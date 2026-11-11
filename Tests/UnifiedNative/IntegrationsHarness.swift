@@ -16,6 +16,23 @@ private func integrationCommand(_ bytes:UnsafePointer<UInt8>?,_ count:Int)->Bool
   let pasteboard=NSPasteboard.withUniqueName();pasteboard.writeObjects([file as NSURL]);defer{pasteboard.releaseGlobally()}
   var error:NSString="";integration.openInKai(pasteboard,userData:nil,error:&error)
   precondition(error.length==0);precondition((commands.last?["urls"] as? [String])==[file.absoluteString],"Finder service lost the exact URL")
+  let rect = CGRect(x: 24, y: 40, width: 340, height: 280)
+  func inlinePacket(_ geometry: CGRect?) throws {
+      var packet: [String: Any] = ["type": "inlineQuickLook", "slot": "files"]
+      if let geometry {
+          packet["window"] = window.windowNumber
+          packet["path"] = file.path
+          packet["rect"] = [geometry.minX, geometry.minY, geometry.width, geometry.height]
+      }
+      EmbeddedCodeRuntime.shared.receive(try JSONSerialization.data(withJSONObject: packet))
+  }
+  try inlinePacket(rect)
+  let inline = window.contentView!.subviews.compactMap { $0 as? QLPreviewView }.first!
+  precondition(inline.previewItem?.previewItemURL == file)
+  try inlinePacket(rect.offsetBy(dx: 12, dy: 0))
+  precondition(window.contentView!.subviews.contains { $0 === inline } && inline.frame.minX == 36)
+  try inlinePacket(nil)
+  precondition(inline.superview == nil && inline.previewItem == nil)
   integration.quickLook([file]);let preview=field(integration,"preview",as:NSWindowController.self)!
   precondition(preview.window?.contentView is QLPreviewView,"Quick Look did not create a native preview")
   integration.artifact(["title":"Persistent document","kind":"markdown","content":"# A saved document\n\n**Important** context."])

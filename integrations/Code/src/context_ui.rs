@@ -38,8 +38,8 @@ impl Orbit {
     fn chat_has_subagents(&self) -> bool {
         self.active.as_ref().is_some_and(|id| self.subagent_chats.contains(id))
     }
-    pub(super) fn workspace_action_buttons(&self, cx: &Context<Self>) -> AnyElement {
-        let has_children = self.chat_has_subagents();
+    pub(super) fn workspace_action_buttons(&self, peer: Option<&SessionSummary>, cx: &Context<Self>) -> AnyElement {
+        let has_children = peer.map_or_else(|| self.chat_has_subagents(), |session| self.subagent_chats.contains(&session.id));
         div()
             .flex()
             .items_center()
@@ -51,16 +51,16 @@ impl Orbit {
                     .w(px(32.))
                     .overflow_hidden()
                     .child(
-                        header_control("native-children", self.broker_panel.is_some())
+                        header_control("native-children", peer.is_none() && self.broker_panel.is_some())
                             .child(header_icon("kai/status/agents"))
-                            .on_click(cx.listener(|this, _, window, cx| this.toggle_children(window, cx))),
+                            .on_click(Self::chat_control(peer, cx, |this, _, window, cx| this.toggle_children(window, cx))),
                     );
                 if self.motion && !native::reduced_motion() {
                     s.child(button.with_animation(
                         ("header-subagents", self.generation),
                         Animation::new(Duration::from_millis(280)),
                         |s, progress| {
-                            let eased = 1. - (1. - progress).powi(3);
+                            let eased = presentation::ease_out(progress);
                             s.w(px(32. * eased)).opacity(eased)
                         },
                     ))
@@ -69,17 +69,17 @@ impl Orbit {
                 }
             })
             .child(
-                header_control("agent-teams", self.team_panel.is_some())
+                header_control("agent-teams", peer.is_none() && self.team_panel.is_some())
                     .mr(px(4.))
                     .child(header_icon("branch"))
-                    .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
+                    .on_click(Self::chat_control(peer, cx, |this, event, window, cx| {
                         this.toggle_top_control(control_clicks::Control::Teams, event.position(), window, cx)
                     })),
             )
             .child(
-                header_control("native-terminal", self.terminal_visible)
+                header_control("native-terminal", peer.map_or(self.terminal_visible, |session| self.parked_terminals.get(&workspace_ui::TerminalOwner::Chat(session.id.clone())).is_some_and(|deck| deck.visible)))
                     .child(header_icon("terminal"))
-                    .on_click(cx.listener(|this, _, window, cx| this.toggle_terminal(window, cx))),
+                    .on_click(Self::chat_control(peer, cx, |this, _, window, cx| this.toggle_terminal(window, cx))),
             )
             .into_any_element()
     }
@@ -340,7 +340,7 @@ impl Orbit {
             .filter(|s| !self.hidden_sessions.contains(&s.id))
             .take(60);
         let reveal = if self.motion {
-            presentation::spring((picker.started.elapsed().as_secs_f32() / 0.32).min(1.))
+            presentation::ease_out((picker.started.elapsed().as_secs_f32() / 0.32).min(1.))
                 .clamp(0., 1.)
         } else {
             1.

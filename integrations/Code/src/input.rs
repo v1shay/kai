@@ -573,6 +573,7 @@ impl TextInput {
     }
 
     fn select_all(&mut self, _: &SelectAll, _: &mut Window, cx: &mut Context<Self>) {
+        self.history.last_edit = None;
         self.move_to(0, cx);
         self.select_to(self.content.len(), cx)
     }
@@ -721,7 +722,7 @@ impl TextInput {
         let (lines,height,bounds)=self.window_geometry.remove(&id).unwrap_or((Vec::new(),px(24.),None));
         self.last_layout=lines;self.last_line_height=height;self.last_bounds=bounds;self.geometry_window=Some(id);
     }
-    fn index_for_mouse_position(&self, position: Point<Pixels>) -> usize {
+    pub(super) fn index_for_mouse_position(&self, position: Point<Pixels>) -> usize {
         if self.content.is_empty() {
             return 0;
         }

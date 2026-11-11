@@ -34,6 +34,14 @@ pub const PAGE: usize = 64;
 pub struct Repository {
     path: PathBuf,
 }
+#[derive(Debug)]
+pub struct WorkspaceOccupied;
+impl std::fmt::Display for WorkspaceOccupied {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Another prompt or restore owns this workspace. Wait for it to finish.")
+    }
+}
+impl std::error::Error for WorkspaceOccupied {}
 #[derive(Clone, Debug)]
 pub struct Checkpoint {
     pub id: String,
@@ -484,7 +492,7 @@ impl Repository {
         Ok(db)
     }
     fn recover_orphans(&self, db: &Connection) -> Result<()> {
-        let mut query = db.prepare("SELECT id,owner FROM checkpoints WHERE phase IN ('capturing','recording','sealing','seal-failed')")?;
+        let mut query = db.prepare("SELECT id,owner FROM checkpoints WHERE phase IN ('capturing','recording','sealing','seal-failed','applying-worktree')")?;
         let pending = query
             .query_map([], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, i32>(1)?))
@@ -496,6 +504,7 @@ impl Repository {
                 && (unsafe { libc::kill(owner, 0) } == 0
                     || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM));
             if !alive {
+                db.execute("DELETE FROM checkpoints WHERE id=?1 AND owner=?2 AND phase='applying-worktree'", params![id, owner])?;
                 db.execute("UPDATE checkpoints SET phase='interrupted' WHERE id=?1 AND owner=?2 AND phase IN ('capturing','recording','sealing','seal-failed')",params![id,owner])?;
             }
         }
@@ -552,6 +561,36 @@ impl Repository {
             .context("This checkpoint already has an operation in progress")?;
         Ok(OperationLock(file))
     }
+    fn ensure_workspace_available(db: &Connection, root: &Path, except: &str) -> Result<()> {
+        let mut query = db.prepare("SELECT root,owner FROM checkpoints WHERE id!=?1 AND phase IN ('capturing','recording','sealing','seal-failed','applying-undo','applying-redo','applying-worktree')")?;
+        let mut rows = query.query([except])?;
+        while let Some(row) = rows.next()? {
+            let other = PathBuf::from(OsString::from_vec(row.get(0)?));
+            let owner: i32 = row.get(1)?;
+            if root.starts_with(&other) || other.starts_with(root) {
+                let alive = owner > 0 && (unsafe { libc::kill(owner, 0) } == 0
+                    || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM));
+                if alive { return Err(WorkspaceOccupied.into()); }
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn with_workspace_write<T>(&self, root: &Path, work: impl FnOnce() -> Result<T>) -> Result<T> {
+        let root = root.canonicalize()?;
+        let metadata = fs::metadata(&root)?;
+        let id = uuid::Uuid::new_v4().to_string();
+        let mut db = self.index()?;
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        Self::ensure_workspace_available(&tx, &root, &id)?;
+        tx.execute("INSERT INTO checkpoints(id,session,prompt_key,title,root,dev,ino,phase,created,owner) VALUES(?1,'',?1,'Worktree import',?2,?3,?4,'applying-worktree',?5,?6)",
+            params![id,bytes(&root),metadata.dev(),metadata.ino(),chrono::Utc::now().timestamp_millis(),std::process::id()])?;
+        tx.commit()?;
+        let result = work();
+        let released = db.execute("DELETE FROM checkpoints WHERE id=?1 AND phase='applying-worktree'", [&id]);
+        result.and_then(|value| { released?; Ok(value) })
+    }
+
     fn reserve_restore(
         &self,
         id: &str,
@@ -561,22 +600,7 @@ impl Repository {
     ) -> Result<()> {
         let mut db = self.index()?;
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        {
-            let mut query=tx.prepare("SELECT root,owner FROM checkpoints WHERE id!=?1 AND phase IN ('capturing','recording','sealing','seal-failed','applying-undo','applying-redo')")?;
-            let mut rows = query.query([id])?;
-            while let Some(row) = rows.next()? {
-                let other = PathBuf::from(OsString::from_vec(row.get(0)?));
-                let owner: i32 = row.get(1)?;
-                if root.starts_with(&other) || other.starts_with(root) {
-                    let alive = unsafe { libc::kill(owner, 0) } == 0
-                        || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
-                    ensure!(
-                        !alive,
-                        "Another prompt, terminal, or restore owns this workspace. Stop it first."
-                    );
-                }
-            }
-        }
+        Self::ensure_workspace_available(&tx, root, id)?;
         let blobs: u64 =
             tx.query_row("SELECT total FROM blob_usage WHERE id=1", [], |r| r.get(0))?;
         ensure!(
@@ -645,22 +669,7 @@ impl Repository {
             retained < MAX_CHECKPOINTS,
             "Checkpoint retention limit reached (512 prompts). Existing snapshots were kept; free checkpoint storage before starting another mutating prompt."
         );
-        {
-            let mut query=tx.prepare("SELECT root,owner FROM checkpoints WHERE phase IN ('capturing','recording','sealing','seal-failed','applying-undo','applying-redo')")?;
-            let mut rows = query.query([])?;
-            while let Some(row) = rows.next()? {
-                let other = PathBuf::from(OsString::from_vec(row.get(0)?));
-                let owner: i32 = row.get(1)?;
-                if root.starts_with(&other) || other.starts_with(&root) {
-                    let alive = unsafe { libc::kill(owner, 0) } == 0
-                        || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
-                    ensure!(
-                        !alive,
-                        "Another prompt or restore owns this workspace. Wait for it to finish."
-                    );
-                }
-            }
-        }
+        Self::ensure_workspace_available(&tx, &root, &id)?;
         tx.execute("INSERT INTO checkpoints(id,session,prompt_key,title,root,dev,ino,phase,created,owner) VALUES(?1,?2,?3,?4,?5,?6,?7,'capturing',?8,?9)",params![id,session,prompt_key,title.chars().take(256).collect::<String>(),bytes(&root),metadata.dev(),metadata.ino(),chrono::Utc::now().timestamp_millis(),std::process::id()])?;
         tx.commit()?;
         let result = (|| {

@@ -231,10 +231,9 @@ impl Orbit {
             cx.notify();
         } else { self.start_orchestrator(window,cx); }
     }
-    pub(super) fn orchestrator_chip_adaptive(&self, window: &Window, cx: &Context<Self>, detail: f32) -> AnyElement {
-        let active = self.orchestrator_active();
+    pub(super) fn orchestrator_chip_adaptive(&self, window: &Window, cx: &Context<Self>, detail: f32, peer: Option<&SessionSummary>, active: bool) -> AnyElement {
         let color = if active { 0xc3a4ff } else { MUTED };
-        let expansion = self.orchestrator_expansion().max(1. - detail);
+        let expansion = if peer.is_none() { self.orchestrator_expansion() } else if active { 1. } else { 0. }.max(1. - detail);
         let label = if active { "Orchestrator" } else { "Orchestrate" };
         let label_width = composer_toolbar::text_width(window, label) * detail;
         if self.motion && !native::reduced_motion() && window.is_window_active()
@@ -267,7 +266,7 @@ impl Orbit {
             .child(div().debug_selector(|| "orchestrator-label".into()).relative()
                 .w(px(label_width)).overflow_hidden().opacity(detail).flex_none().whitespace_nowrap()
                 .child(label))
-            .on_click(cx.listener(|this, _, window, cx| this.toggle_orchestrator(window, cx)));
+            .on_click(Self::chat_control(peer, cx, |this, _, window, cx| this.toggle_orchestrator(window, cx)));
         if active && self.motion && !native::reduced_motion() && window.is_window_active() {
             chip.with_animation(
                 "orchestrator-entrance",

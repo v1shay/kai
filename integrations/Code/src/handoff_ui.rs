@@ -15,6 +15,7 @@ pub(super) struct Submission {
     pub context_scope: String,
     pub native_command: bool,
     pub queued_prompt_id: Option<String>,
+    pub parallel: bool,
 }
 pub(super) struct Pending {
     pub token: uuid::Uuid,

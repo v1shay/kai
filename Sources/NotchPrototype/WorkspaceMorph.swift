@@ -1,11 +1,65 @@
 import AppKit
 
+enum KaiMotion {
+    // With linear x control points this is the same cubic ease-out as GPUI.
+    static let interactionCurve = CAMediaTimingFunction(controlPoints: 1.0 / 3, 1, 2.0 / 3, 1)
+    static let paneDuration: TimeInterval = 0.22
+    static let controlDuration: TimeInterval = 0.16
+    static let contentDuration: TimeInterval = 0.32
+    static let cycleCurve = CAMediaTimingFunction(name: .easeInEaseOut)
+    static let frameCurve = CAMediaTimingFunction(name: .linear)
+
+    static func configure(_ animation: CAAnimation, inherited: Bool = false) {
+        if let frames = animation as? CAKeyframeAnimation, frames.calculationMode == .discrete {
+            animation.timingFunction = frameCurve
+        } else if inherited {
+            animation.timingFunction = frameCurve
+        } else {
+            animation.timingFunction = animation.repeatCount > 0 || animation.autoreverses
+                ? cycleCurve : interactionCurve
+        }
+        if let group = animation as? CAAnimationGroup {
+            group.animations?.forEach { configure($0, inherited: true) }
+        }
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            animation.duration = 0.001
+            animation.beginTime = 0
+            animation.repeatCount = 0
+            animation.autoreverses = false
+        }
+    }
+
+    static func dismiss(_ window: NSWindow) {
+        window.ignoresMouseEvents = true
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : controlDuration
+            context.timingFunction = interactionCurve
+            window.animator().alphaValue = 0
+        }, completionHandler: {
+            window.orderOut(nil)
+        })
+    }
+}
+
+extension CALayer {
+    func addKai(_ animation: CAAnimation, forKey key: String?) {
+        guard let configured = animation.copy() as? CAAnimation else { return }
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion && animation.repeatCount > 0 {
+            if let key { removeAnimation(forKey: key) }
+            return
+        }
+        KaiMotion.configure(configured)
+        add(configured, forKey: key)
+    }
+}
+
 /// The actual workspace is clipped by one continuous native shape. GPUI paints
 /// its real components at their final size; no tiles or per-frame window resize.
 @MainActor final class WorkspaceMorph {
     var motionEnabled=true
     var openingOnlyOnce=false
     private var hasOpened=false
+    private static let tracePerformance = ProcessInfo.processInfo.environment["KAI_PERFORMANCE_LOG"] != nil
     var onPresentation:((String)->Void)?
     private var revision=0
     private weak var window:NSWindow?,host:NSView?
@@ -24,7 +78,7 @@ import AppKit
     static let expansionDuration:TimeInterval=0.84
     static let collapseDuration:TimeInterval=0.60
     nonisolated static func destination(saved:CGRect?,screen:CGRect)->CGRect {screen}
-    private let curve=CAMediaTimingFunction(controlPoints:0.16,0.84,0.20,1)
+    private let curve=KaiMotion.interactionCurve
     private func present(_ window:NSWindow){
         // GPUI's inactive-window key callback resigns synchronously while its
         // window-state lock is held. AppKit can reenter that same callback and
@@ -82,7 +136,7 @@ import AppKit
         CATransaction.begin();CATransaction.setDisableActions(true);mask.path=to;CATransaction.commit()
         let animation=CABasicAnimation(keyPath:"path");animation.fromValue=from;animation.toValue=to
         animation.duration=duration;animation.beginTime=CACurrentMediaTime()+delay;animation.timingFunction=curve
-        animation.fillMode = .both;mask.add(animation,forKey:"workspaceShape")
+        animation.fillMode = .both;mask.addKai(animation,forKey:"workspaceShape")
     }
     nonisolated static func transitionLevel(_ level:NSWindow.Level)->NSWindow.Level{
         NSWindow.Level(rawValue:max(level.rawValue,NSWindow.Level.statusBar.rawValue+1))
@@ -131,11 +185,11 @@ import AppKit
             let initial:Float=values[ObjectIdentifier(layer)] ?? inherited ?? (appearing ? 0:current)
             fade.fromValue=NSNumber(value:initial)
             fade.toValue=NSNumber(value:appearing ? original:0);fade.duration=duration;fade.timingFunction=curve
-            layer.opacity=appearing ? original:0;layer.add(fade,forKey:"workspaceContent")
+            layer.opacity=appearing ? original:0;layer.addKai(fade,forKey:"workspaceContent")
         }
     }
     func expand(_ window:NSWindow,from source:CGRect,replay:Bool=false,destination:CGRect?=nil,destinationLevel:NSWindow.Level?=nil,sourceNotch:Bool=true,crossfade:Bool=false,sourceRadius:CGFloat=10,destinationRadius:CGFloat=10,completion:@escaping()->Void={}){
-        NSApp.activate(ignoringOtherApps:true)
+        if !NSApp.isActive { NSApp.activate(ignoringOtherApps:true) }
         if expanded && !transitioning && !replay{present(window);completion();return}
         CATransaction.begin();CATransaction.setDisableActions(true);defer{CATransaction.commit()}
         let contour=transitioning ? liveContour():nil
@@ -151,11 +205,18 @@ import AppKit
         // identical frame forces AppKit/GPUI through a synchronous resize on
         // every reveal, although only the contour needs to move.
         surfaceRadius=destinationRadius
-        if window.frame != target{window.setFrame(target,display:true)}
         let animateOpening = !openingOnlyOnce || !hasOpened
+        if window.frame != target { window.setFrame(target, display: animateOpening) }
         hasOpened=true
         if !animateOpening {
-            transitioning=false;window.alphaValue=1;onPresentation?("visible");present(window);completion();return
+            transitioning=false
+            window.alphaValue=1
+            onPresentation?("visible")
+            let at = Self.tracePerformance ? CACurrentMediaTime() : 0
+            present(window)
+            if at != 0 { fputs("KAI_METRIC warm_order_front \((CACurrentMediaTime()-at)*1000)\n", stderr) }
+            completion()
+            return
         }
         onPresentation?(replay ? "reopen":"expand")
         let reduce = !motionEnabled || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
@@ -167,7 +228,7 @@ import AppKit
             }
         }else{
             window.alphaValue=0;window.orderFront(nil)
-            NSAnimationContext.runAnimationGroup{context in context.duration=0.12;window.animator().alphaValue=1}
+            NSAnimationContext.runAnimationGroup{context in context.timingFunction=KaiMotion.interactionCurve; context.duration=0.12;window.animator().alphaValue=1}
         }
         let finish=DispatchWorkItem{[weak self,weak window] in
             guard let self,self.revision==token,let window else{return}
@@ -188,7 +249,7 @@ import AppKit
         onPresentation?("collapse")
         let reduce = !motionEnabled || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         if !reduce{prepare(window,from:source,to:target,duration:0.48,delay:0.10,expanding:false,contour:contour,sourceNotch:false,targetNotch:targetNotch,sourceRadius:surfaceRadius,targetRadius:targetNotch ? 14:targetRadius,backdrop:backdrop)}else{
-            NSAnimationContext.runAnimationGroup{context in context.duration=0.12;window.animator().alphaValue=0}
+            NSAnimationContext.runAnimationGroup{context in context.timingFunction=KaiMotion.interactionCurve; context.duration=0.12;window.animator().alphaValue=0}
         }
         if !reduce && (notch != nil || !retiringOpacity.isEmpty || retireContent){
             // App-to-app transfers keep the original source retirement: the
@@ -226,6 +287,10 @@ import AppKit
         hasOpened=true
         if expanded && !transitioning{return}
         revision += 1;clearVisuals();self.window=window;expanded=true;transitioning=false;window.alphaValue=1;onPresentation?("visible")
+    }
+    func refocus(_ window:NSWindow) {
+        retainOpen(window)
+        present(window)
     }
     func park(_ window:NSWindow){revision += 1;clearVisuals();expanded=false;transitioning=false;window.orderOut(nil);window.alphaValue=1;onPresentation?("hidden")}
     func cancel(){revision += 1;transitioning=false;clearVisuals();window?.alphaValue=1}

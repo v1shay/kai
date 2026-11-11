@@ -2,10 +2,32 @@
 use super::*;
 use terminal_dock::Side;
 
-#[derive(Clone, Debug)]
-enum Node {
-    Pane { id: u64, tabs: Vec<EntityId>, active: EntityId },
-    Split { id: u64, horizontal: bool, ratio: f32, first: Box<Node>, second: Box<Node> },
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub(super) enum Node<T = EntityId> {
+    Pane { id: u64, tabs: Vec<T>, active: T },
+    Split { id: u64, horizontal: bool, ratio: f32, first: Box<Node<T>>, second: Box<Node<T>> },
+}
+impl<T: Copy> Node<T> {
+    fn remap<U: Copy>(&self, next: &mut u64, translate: &mut impl FnMut(T) -> Option<U>) -> Option<Node<U>> {
+        *next += 1;
+        let id = *next;
+        match self {
+            Self::Pane { tabs, active, .. } => {
+                let active = translate(*active);
+                let tabs: Vec<_> = tabs.iter().copied().filter_map(translate).collect();
+                Some(Node::Pane { id, active: active.or_else(|| tabs.first().copied())?, tabs })
+            }
+            Self::Split { horizontal, ratio, first, second, .. } => {
+                match (first.remap(next, translate), second.remap(next, translate)) {
+                    (Some(first), Some(second)) => Some(Node::Split {
+                        id, horizontal: *horizontal, ratio: ratio.clamp(0., 1.),
+                        first: Box::new(first), second: Box::new(second),
+                    }),
+                    (first, second) => first.or(second),
+                }
+            }
+        }
+    }
 }
 impl Node {
     fn pane_for(&self, terminal: EntityId) -> Option<u64> {
@@ -83,6 +105,12 @@ struct Target { pane: u64, side: Option<Side> }
 pub(super) struct Layout { root: Option<Node>, next: u64, hover: Option<Target>, viewport: Size<Pixels> }
 impl Layout {
     fn next_id(&mut self) -> u64 { self.next += 1; self.next }
+    pub fn snapshot(&self, mut id: impl FnMut(EntityId) -> Option<uuid::Uuid>) -> Option<Node<uuid::Uuid>> {
+        self.root.as_ref()?.remap(&mut 0, &mut id)
+    }
+    pub fn restore(&mut self, root: Node<uuid::Uuid>, mut id: impl FnMut(uuid::Uuid) -> Option<EntityId>) {
+        if let Some(root) = root.remap(&mut self.next, &mut id) { self.root = Some(root); }
+    }
     pub fn clear_hover(&mut self) -> bool { self.hover.take().is_some() }
     fn minimum(&self) -> (f32, f32) { self.root.as_ref().map_or((220., 130.), Node::minimum) }
     pub fn insert(&mut self, terminal: EntityId, anchor: Option<EntityId>) {
@@ -140,11 +168,14 @@ impl Render for SplitDrag {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement { div().size(px(1.)) }
 }
 impl Orbit {
-    pub(super) fn render_terminal_panes(&self, cx: &Context<Self>) -> AnyElement {
-        let Some(root) = self.terminal_panes.root.as_ref() else { return div().into_any_element(); };
+    pub(super) fn render_terminal_panes(&self, peer: Option<&SessionSummary>, cx: &Context<Self>) -> AnyElement {
+        let deck = peer.and_then(|session| self.parked_terminals.get(&workspace_ui::TerminalOwner::Chat(session.id.clone())));
+        let (layout, sessions) = deck.map_or((&self.terminal_panes, self.terminals.as_slice()), |deck| (&deck.layout, deck.sessions.as_slice()));
+        let Some(root) = layout.root.as_ref() else { return div().into_any_element(); };
         let minimum = root.minimum();
-        let available = size(px(f32::from(self.terminal_panes.viewport.width).max(minimum.0)), px(f32::from(self.terminal_panes.viewport.height).max(minimum.1)));
+        let available = size(px(f32::from(layout.viewport.width).max(minimum.0)), px(f32::from(layout.viewport.height).max(minimum.1)));
         let owner = cx.entity();
+        let peer_id = peer.map(|session| session.id.clone());
         div().id("terminal-pane-viewport").size_full().min_w(px(0.)).min_h(px(0.)).relative().overflow_x_scroll().overflow_y_scroll()
             .on_drag_move(cx.listener(|app,event: &DragMoveEvent<TabDrag>,_,cx| {
                 if !event.bounds.contains(&event.event.position) {
@@ -152,17 +183,21 @@ impl Orbit {
                     cx.stop_propagation();
                 }
             }))
-            .child(div().w(available.width).h(available.height).flex_none().child(self.render_terminal_node(root, available, cx)))
+            .child(div().w(available.width).h(available.height).flex_none().child(self.render_terminal_node(root, available, sessions, layout, peer, cx)))
             .child(canvas(move |bounds,_,cx| {
                 owner.update(cx, |app,cx| {
-                    if app.terminal_panes.viewport != bounds.size { app.terminal_panes.viewport = bounds.size; cx.notify(); }
+                    let layout = if let Some(id) = peer_id.as_ref() {
+                        let Some(deck) = app.parked_terminals.get_mut(&workspace_ui::TerminalOwner::Chat(id.clone())) else { return; };
+                        &mut deck.layout
+                    } else { &mut app.terminal_panes };
+                    if layout.viewport != bounds.size { layout.viewport = bounds.size; cx.notify(); }
                 });
             }, |_,_,_,_|{}).absolute().size_full())
             .into_any_element()
     }
-    fn render_terminal_node(&self, node: &Node, available: Size<Pixels>, cx: &Context<Self>) -> AnyElement {
+    fn render_terminal_node(&self, node: &Node, available: Size<Pixels>, sessions: &[terminal_ui::Session], layout: &Layout, peer: Option<&SessionSummary>, cx: &Context<Self>) -> AnyElement {
         match node {
-            Node::Pane { id, tabs, active } => self.terminal_pane(*id, tabs, *active, cx),
+            Node::Pane { id, tabs, active } => self.terminal_pane(*id, tabs, *active, sessions, layout, peer, cx),
             Node::Split { id, horizontal, ratio, first, second } => {
                 let split = *id; let horizontal = *horizontal;
                 let (a,b,total) = if horizontal { (first.minimum().0, second.minimum().0, f32::from(available.width)) } else { (first.minimum().1, second.minimum().1, f32::from(available.height)) };
@@ -173,9 +208,9 @@ impl Orbit {
                     .when(!horizontal, |s| s.flex_col())
                     .child(div().flex_none().min_w(px(0.)).min_h(px(0.)).overflow_hidden()
                         .when(horizontal, |s| s.w(relative(ratio)).h_full())
-                        .when(!horizontal, |s| s.h(relative(ratio)).w_full()).child(self.render_terminal_node(first, first_size, cx)))
+                        .when(!horizontal, |s| s.h(relative(ratio)).w_full()).child(self.render_terminal_node(first, first_size, sessions, layout, peer, cx)))
                     .child(div().flex_1().min_w(px(0.)).min_h(px(0.)).overflow_hidden()
-                        .when(horizontal, |s| s.h_full()).when(!horizontal, |s| s.w_full()).child(self.render_terminal_node(second, second_size, cx)))
+                        .when(horizontal, |s| s.h_full()).when(!horizontal, |s| s.w_full()).child(self.render_terminal_node(second, second_size, sessions, layout, peer, cx)))
                     .child(div().id(("terminal-split-grip", split as usize)).debug_selector(move ||format!("terminal-split-grip-{split}"))
                         .absolute().bg(rgba(0xffffff18)).hover(|s| s.bg(rgba(0x88bfff88)))
                         .when(horizontal, |s| s.left(relative(ratio)).ml(px(-2.)).top_0().bottom_0().w(px(5.)).cursor_col_resize())
@@ -188,21 +223,28 @@ impl Orbit {
                             cx.notify();
                         }
                     }))
-                    .on_drop(cx.listener(|_,_: &SplitDrag,window,_|native::panel_drag_guard(window,false)))
+                    .on_drop(cx.listener(|app, _: &SplitDrag, window, cx| {
+                        native::panel_drag_guard(window, false);
+                        app.queue_workspace_save(cx);
+                    }))
                     .into_any_element()
             }
         }
     }
-    fn terminal_pane(&self, pane: u64, tabs: &[EntityId], active: EntityId, cx: &Context<Self>) -> AnyElement {
-        let highlight = self.terminal_panes.hover.filter(|target| target.pane == pane && cx.has_active_drag());
+    fn terminal_pane(&self, pane: u64, tabs: &[EntityId], active: EntityId, sessions: &[terminal_ui::Session], layout: &Layout, peer: Option<&SessionSummary>, cx: &Context<Self>) -> AnyElement {
+        let peer_id = peer.map(|session| session.id.clone());
+        let highlight = layout.hover.filter(|target| target.pane == pane && cx.has_active_drag());
         div().id(("terminal-pane",pane as usize)).debug_selector(move ||format!("terminal-pane-{pane}"))
             .size_full().min_w(px(0.)).min_h(px(0.)).flex().flex_col().relative().overflow_hidden()
             .capture_any_mouse_down(cx.listener(move |app,event: &MouseDownEvent,window,cx| {
-                if event.button == MouseButton::Left && app.active_terminal != Some(active) { app.select_terminal(active,window,cx); }
+                if event.button == MouseButton::Left {
+                    if !peer_id.as_deref().is_none_or(|id| app.focus_split_chat(id, window, cx)) { return; }
+                    if app.active_terminal != Some(active) { app.select_terminal(active,window,cx); }
+                }
             }))
             .child(div().h(px(32.)).flex_none().w_full().min_w(px(0.)).flex().items_center().gap_1().px_1()
                 .child(div().id(("terminal-session-tabs",pane as usize)).flex_1().min_w(px(0.)).h_full().flex().items_center().gap_1().overflow_x_scroll()
-                    .children(tabs.iter().filter_map(|id| self.terminals.iter().find(|session|session.panel.entity_id() == *id)).map(|session| {
+                    .children(tabs.iter().filter_map(|id| sessions.iter().find(|session|session.panel.entity_id() == *id)).map(|session| {
                         let id=session.panel.entity_id(); let number=session.number; let panel=session.panel.clone();
                         let title=session.title(cx);
                         let drag=TabDrag {terminal:id,title:title.clone().into()};
@@ -224,10 +266,10 @@ impl Orbit {
                 .child(div().id(("new-terminal-session",pane as usize)).debug_selector(move ||format!("new-terminal-session-{pane}"))
                     .flex_none().size(px(26.)).flex().items_center().justify_center().rounded_md().cursor_pointer().hover(|s|s.bg(rgba(0xffffff14)))
                     .child(icon("plus",13.,TEXT)).on_click(cx.listener(move|app,_,window,cx|{app.select_terminal(active,window,cx);app.new_terminal(window,cx);}))))
-            .when_some(self.terminals.iter().find(|session|session.panel.entity_id()==active), |s,session|
+            .when_some(sessions.iter().find(|session|session.panel.entity_id()==active), |s,session|
                 s.child(div().flex_1().min_h(px(0.)).child(session.panel.clone())))
             .on_drag_move(cx.listener(move|app,event: &DragMoveEvent<TabDrag>,_,cx|{
-                if !event.bounds.contains(&event.event.position) { return; }
+                if !event.bounds.contains(&event.event.position) || !app.terminals.iter().any(|session| session.panel.entity_id() == event.drag(cx).terminal) { return; }
                 let target=Target {pane,side:Side::target(event.bounds,event.event.position)};
                 if app.terminal_panes.hover != Some(target) {app.terminal_panes.hover=Some(target);cx.notify();}
                 cx.stop_propagation();

@@ -18,11 +18,11 @@ impl PanelPopover {
             return if self.closing { 0. } else { 1. };
         }
         let t =
-            (self.started.elapsed().as_secs_f32() / if self.closing { 0.12 } else { 0.32 }).min(1.);
+            (self.started.elapsed().as_secs_f32() / workspace_motion::surface_duration(self.closing).as_secs_f32()).min(1.);
         if self.closing {
-            self.closing_from * (1. - t * t)
+            self.closing_from * (1. - presentation::ease_out(t))
         } else {
-            presentation::spring(t)
+            presentation::ease_out(t)
         }
     }
     fn dismiss(&mut self, motion: bool) {
@@ -186,8 +186,8 @@ impl Orbit {
         if self.modal != Some(panel.kind) {
             panel.dismiss(self.motion);
         }
-        let duration = if panel.closing { 120 } else { 320 };
-        if !self.motion || panel.started.elapsed() >= Duration::from_millis(duration) {
+        let duration = workspace_motion::surface_duration(panel.closing);
+        if !self.motion || panel.started.elapsed() >= duration {
             if panel.closing {
                 self.panel_popover = None;
             }
@@ -268,6 +268,7 @@ impl Orbit {
                     .child(self.usage_panel(height - px(40.), cx));
             }
             Modal::Permissions => {
+                body = body.child(self.parallel_workspace_controls(cx));
                 let mut modes=vec![
                     (false,runtime::CodexAccess::Workspace,"Read only / plan","Read files; sandbox blocks edits and network."),
                     (true,runtime::CodexAccess::Workspace,"Workspace edits","Edit this workspace; network and writes outside it require approval."),

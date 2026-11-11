@@ -27,9 +27,9 @@ import AppKit
         let now=CACurrentMediaTime()
         for(n,tile) in cells.enumerated() where tile.name=="fill"{
             let distance=hypot((Double(n%32)-15.5)/15.5,(Double(n/32)-2)/2)
-            let pulse=CAKeyframeAnimation(keyPath:"backgroundColor");pulse.values=[NSColor.clear.cgColor,tint.cgColor,tint.withAlphaComponent(0.18).cgColor,NSColor.clear.cgColor];pulse.keyTimes=[0,0.26,0.52,1];pulse.duration=1.4;pulse.repeatCount=3;pulse.beginTime=now+distance*0.42;pulse.timingFunction=CAMediaTimingFunction(name:.easeOut);tile.add(pulse,forKey:"pulse")
+            let pulse=CAKeyframeAnimation(keyPath:"backgroundColor");pulse.values=[NSColor.clear.cgColor,tint.cgColor,tint.withAlphaComponent(0.18).cgColor,NSColor.clear.cgColor];pulse.keyTimes=[0,0.26,0.52,1];pulse.duration=1.4;pulse.repeatCount=3;pulse.beginTime=now+distance*0.42;pulse.timingFunction=KaiMotion.interactionCurve;tile.addKai(pulse,forKey:"pulse")
         }
-        let fade=CAKeyframeAnimation(keyPath:"opacity");fade.values=[1,1,0];fade.keyTimes=[0,0.92,1];fade.duration=5;fade.fillMode = .forwards;fade.isRemovedOnCompletion=false;add(fade,forKey:"feather")
+        let fade=CAKeyframeAnimation(keyPath:"opacity");fade.values=[1,1,0];fade.keyTimes=[0,0.92,1];fade.duration=5;fade.fillMode = .forwards;fade.isRemovedOnCompletion=false;addKai(fade,forKey:"feather")
     }
     func stop(){previewing=false;removeAllAnimations();opacity=0;for tile in cells{tile.removeAllAnimations();tile.backgroundColor=nil}}
 }
@@ -88,7 +88,7 @@ import AppKit
     }
     var visible:Bool{panel?.isVisible == true}
     func dismiss(ifUnchanged token:Int){if generation==token{dismiss()}}
-    func dismiss(){generation &+= 1;key=nil;effortRows.forEach{$0.setPreview(false);$0.onPreview=nil};effortRows=[];hoveredEffort=nil;if let monitor{NSEvent.removeMonitor(monitor)};if let globalMonitor{NSEvent.removeMonitor(globalMonitor)};monitor=nil;globalMonitor=nil;panel?.orderOut(nil);panel=nil}
+    func dismiss(){generation &+= 1;key=nil;effortRows.forEach{$0.setPreview(false);$0.onPreview=nil};effortRows=[];hoveredEffort=nil;if let monitor{NSEvent.removeMonitor(monitor)};if let globalMonitor{NSEvent.removeMonitor(globalMonitor)};monitor=nil;globalMonitor=nil;if let panel{KaiMotion.dismiss(panel)};panel=nil}
     func show(key:String,title:String,rows:[NSView],at anchor:CGPoint){
         if visible,self.key==key{dismiss();return}
         dismiss();self.key=key;let height=CGFloat(rows.count)*38+42,width:CGFloat=264
@@ -100,7 +100,7 @@ import AppKit
         for (i,row) in rows.enumerated(){row.frame=CGRect(x:10,y:height-38-CGFloat(i+1)*38,width:244,height:34);glass.addSubview(row)}
         self.panel=panel;panel.alphaValue=0;panel.orderFrontRegardless()
         effortRows=rows.compactMap{$0 as? EffortTileRow};for row in effortRows{row.onPreview={[weak self] value,hovering in self?.preview(value,hovering)};row.setPreview(row.selected)}
-        NSAnimationContext.runAnimationGroup{c in c.duration=NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0:0.16;panel.animator().alphaValue=1}
+        NSAnimationContext.runAnimationGroup{c in  c.duration=NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0:KaiMotion.contentDuration;c.timingFunction=KaiMotion.interactionCurve;panel.animator().alphaValue=1}
         monitor=NSEvent.addLocalMonitorForEvents(matching:[.leftMouseDown,.rightMouseDown,.keyDown]){[weak self,weak panel] event in if event.type == .keyDown && event.keyCode==53{self?.dismiss();return nil};if event.type != .keyDown,event.window !== panel{DispatchQueue.main.async{[weak self,weak panel] in guard let self,let panel,self.panel === panel else{return};self.dismiss()}};return event}
         globalMonitor=NSEvent.addGlobalMonitorForEvents(matching:[.leftMouseDown,.rightMouseDown]){[weak self] _ in Task{@MainActor in self?.dismiss()}}
     }

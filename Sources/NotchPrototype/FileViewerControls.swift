@@ -14,7 +14,7 @@ enum FileActionSymbols {
             backdrop.cornerRadius=side/2;backdrop.opacity=1
         }else{backdrop.opacity=0}
         CATransaction.commit()
-        if animated{let fade=CABasicAnimation(keyPath:"opacity");fade.fromValue=old;fade.toValue=backdrop.opacity;fade.duration=0.12;backdrop.add(fade,forKey:"fileActionHover")}
+        if animated{let fade=CABasicAnimation(keyPath:"opacity");fade.fromValue=old;fade.toValue=backdrop.opacity;fade.duration=KaiMotion.controlDuration;backdrop.addKai(fade,forKey:"fileActionHover")}
     }
     private static var confirmations=[String:TimeInterval]()
     private static func key(_ action:String,_ url:URL)->String{action+"|"+url.standardizedFileURL.absoluteString}

@@ -20,6 +20,8 @@ pub const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
 // bounds only the source clipboard bytes; normalized storage keeps file quotas.
 const MAX_CLIPBOARD_BYTES: u64 = 64 * 1024 * 1024;
 pub const MAX_TOTAL_BYTES: u64 = 32 * 1024 * 1024;
+pub const MAX_REFERENCE_BYTES: u64 = 128 * 1024 * 1024;
+pub const MAX_ATTACHMENT_BYTES: u64 = 256 * 1024 * 1024;
 pub const MAX_SIDE: u32 = 2048;
 const THUMBNAIL_SIDE: u32 = 160;
 const CACHE_BYTES: u64 = 512 * 1024 * 1024;
@@ -130,12 +132,16 @@ fn native_clipboard_image_from(
 pub struct Attachment {
     pub id: uuid::Uuid,
     pub path: PathBuf,
-    pub thumbnail: Arc<RenderImage>,
+    pub thumbnail: Option<Arc<RenderImage>>,
     pub name: String,
     pub size: u64,
     file: Arc<ManagedFile>,
 }
 impl Attachment {
+    pub fn is_image(&self) -> bool {
+        self.thumbnail.is_some()
+    }
+
     /// Call only after successful native launch. Preserve references in history.
     pub fn mark_submitted(&self) {
         self.file.submitted.store(true, Ordering::Release);
@@ -244,16 +250,98 @@ pub fn import(source: &Path, managed_dir: &Path, cancelled: &AtomicBool) -> Resu
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     check_cancelled(cancelled)?;
-    let file = File::open(source).context("The image is unavailable")?;
+    let mut file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(source)
+        .context("The attachment is unavailable")?;
     let metadata = file.metadata()?;
-    ensure!(metadata.is_file(), "Drop an image file");
-    ensure!(
-        metadata.len() > 0 && metadata.len() <= MAX_FILE_BYTES,
-        "Images must be 16 MB or smaller"
-    );
-    let bytes = read_bounded_image(file, metadata.len(), cancelled)?;
+    ensure!(metadata.is_file(), "Choose a regular file");
     let name = source.file_name().unwrap_or_default().to_string_lossy();
-    import_encoded(&bytes, &name, MAX_FILE_BYTES, managed_dir, cancelled)
+    let mut header = [0; 4096];
+    let mut header_bytes = (&mut file).take(header.len() as u64);
+    let mut count = 0;
+    while count < header.len() {
+        let n = header_bytes.read(&mut header[count..])?;
+        if n == 0 {
+            break;
+        }
+        count += n;
+    }
+    let bytes = &header[..count];
+    let image_extension = source
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if (supported_content(bytes)
+        || matches!(
+            image_extension.as_str(),
+            "png" | "jpeg" | "jpg" | "webp" | "heic" | "tiff" | "tif" | "bmp"
+        ))
+        && !bytes.starts_with(b"GIF87a")
+        && !bytes.starts_with(b"GIF89a")
+    {
+        ensure!(
+            metadata.len() <= MAX_FILE_BYTES,
+            "Images must be 16 MB or smaller"
+        );
+        use std::io::Seek;
+        file.rewind()?;
+        let bytes = read_bounded_image(file, metadata.len(), cancelled)?;
+        return import_encoded(&bytes, &name, MAX_FILE_BYTES, managed_dir, cancelled);
+    }
+    ensure!(
+        metadata.len() <= MAX_REFERENCE_BYTES,
+        "Attached files must be 128 MB or smaller"
+    );
+    let permit = Cleanup::reserve(cancelled)?;
+    check_storage(managed_dir, metadata.len(), cancelled)?;
+    let id = uuid::Uuid::new_v4();
+    let name = clean_name(&name);
+    let path = managed_dir.join(format!("{id}--{name}"));
+    let staging = Staging(managed_dir.join(format!(".{id}.partial")));
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&staging.0)?;
+    output.write_all(bytes)?;
+    let mut size = count as u64;
+    let mut buffer = [0; 64 * 1024];
+    loop {
+        check_cancelled(cancelled)?;
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        size += read as u64;
+        ensure!(
+            size <= metadata.len(),
+            "Attachment changed while it was being copied"
+        );
+        output.write_all(&buffer[..read])?;
+    }
+    ensure!(
+        size == metadata.len(),
+        "Attachment changed while it was being copied"
+    );
+    drop(output);
+    check_cancelled(cancelled)?;
+    fs::rename(&staging.0, &path)?;
+    let file = Arc::new(ManagedFile {
+        path: path.clone(),
+        submitted: AtomicBool::new(false),
+        permit: Some(permit),
+    });
+    Ok(Attachment {
+        id,
+        path,
+        thumbnail: None,
+        name,
+        size,
+        file,
+    })
 }
 
 /// Clipboard bytes use the exact same normalization, private storage, quotas
@@ -276,6 +364,60 @@ pub fn import_clipboard(
     )
 }
 
+fn clean_name(name: &str) -> String {
+    let path = Path::new(name);
+    let clean = |part: &str, limit| -> String {
+        part.chars()
+            .take(limit)
+            .map(|c| {
+                if c.is_alphanumeric() || matches!(c, ' ' | '-' | '_' | '.') {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect()
+    };
+    let stem = clean(
+        path.file_stem()
+            .and_then(|part| part.to_str())
+            .unwrap_or("Attachment"),
+        48,
+    );
+    let ext = clean(
+        path.extension()
+            .and_then(|part| part.to_str())
+            .unwrap_or(""),
+        12,
+    );
+    if ext.is_empty() {
+        stem
+    } else {
+        format!("{stem}.{ext}")
+    }
+}
+fn check_storage(managed_dir: &Path, reservation: u64, cancelled: &AtomicBool) -> Result<()> {
+    fs::create_dir_all(managed_dir)?;
+    let mut total = 0_u64;
+    for (index, entry) in fs::read_dir(managed_dir)?.enumerate() {
+        ensure!(
+            index < CACHE_ENTRIES,
+            "Attachment storage is full. Remove older saved attachments to add more."
+        );
+        check_cancelled(cancelled)?;
+        let entry = entry?;
+        let metadata = entry.metadata()?;
+        if metadata.is_file() {
+            total = total.saturating_add(metadata.len());
+        }
+    }
+    ensure!(
+        total <= CACHE_BYTES.saturating_sub(reservation),
+        "Attachment storage is full. Remove older saved attachments to add more."
+    );
+    Ok(())
+}
+
 fn import_encoded(
     bytes: &[u8],
     name: &str,
@@ -293,24 +435,7 @@ fn import_encoded(
         supported_content(bytes),
         "Use a PNG, JPEG, WebP, GIF, HEIC, TIFF or BMP image"
     );
-    fs::create_dir_all(managed_dir)?;
-    let mut total = 0_u64;
-    for (index, entry) in fs::read_dir(managed_dir)?.enumerate() {
-        ensure!(
-            index < CACHE_ENTRIES,
-            "Image storage is full. Remove older saved attachments to add more."
-        );
-        check_cancelled(cancelled)?;
-        let entry = entry?;
-        let metadata = entry.metadata()?;
-        if metadata.is_file() {
-            total = total.saturating_add(metadata.len());
-        }
-    }
-    ensure!(
-        total <= CACHE_BYTES.saturating_sub(MAX_FILE_BYTES),
-        "Image storage is full. Remove older saved attachments to add more."
-    );
+    check_storage(managed_dir, MAX_FILE_BYTES, cancelled)?;
     let pixels = crate::background::attachment_thumbnail(bytes, MAX_SIDE)
         .or_else(|native_error| {
             // ImageIO cannot thumbnail every valid TIFF/BMP encoding. Prefer
@@ -369,7 +494,7 @@ fn import_encoded(
     Ok(Attachment {
         id,
         path,
-        thumbnail,
+        thumbnail: Some(thumbnail),
         name,
         size,
         file: managed,
@@ -433,6 +558,32 @@ pub fn load_saved(
         path.starts_with(&root),
         "Saved image is outside managed storage"
     );
+    if let Some((id, original)) = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.split_once("--"))
+        && let Ok(id) = uuid::Uuid::parse_str(id)
+    {
+        let metadata = fs::metadata(&path)?;
+        ensure!(
+            metadata.is_file() && metadata.len() <= MAX_REFERENCE_BYTES,
+            "Saved attachment is unavailable"
+        );
+        let name = original.to_owned();
+        let file = Arc::new(ManagedFile {
+            path: path.clone(),
+            submitted: AtomicBool::new(true),
+            permit: None,
+        });
+        return Ok(Attachment {
+            id,
+            path,
+            thumbnail: None,
+            name,
+            size: metadata.len(),
+            file,
+        });
+    }
     let file = File::open(&path)?;
     let size = file.metadata()?.len();
     ensure!(
@@ -465,7 +616,7 @@ pub fn load_saved(
     Ok(Attachment {
         id,
         path,
-        thumbnail,
+        thumbnail: Some(thumbnail),
         name,
         size,
         file,
@@ -605,7 +756,7 @@ mod tests {
                 fs::metadata(&item.path).unwrap().permissions().mode() & 0o777,
                 0o600
             );
-            assert!(item.thumbnail.size(0).width.0 <= THUMBNAIL_SIDE as i32);
+            assert!(item.thumbnail.as_ref().unwrap().size(0).width.0 <= THUMBNAIL_SIDE as i32);
         }
         assert!(validate_clipboard_image(&[]).is_err());
         assert!(validate_clipboard_image(b"<svg><script>no</script></svg>").is_err());
@@ -728,7 +879,7 @@ mod tests {
         );
         let (width, height) = image::image_dimensions(&attachment.path).unwrap();
         assert!(width <= MAX_SIDE && height <= MAX_SIDE);
-        let thumbnail_size = attachment.thumbnail.size(0);
+        let thumbnail_size = attachment.thumbnail.as_ref().unwrap().size(0);
         assert!(
             thumbnail_size.width.0 <= THUMBNAIL_SIDE as i32
                 && thumbnail_size.height.0 <= THUMBNAIL_SIDE as i32
@@ -789,6 +940,26 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_files_keep_their_bytes_name_and_extension_without_a_raster() {
+        let fixture = Fixture::new();
+        let source = fixture.0.join("Test model.usdz");
+        let storage = fixture.0.join("managed");
+        let cancel = AtomicBool::new(false);
+        let bytes = b"PK\0\xfffixture";
+        fs::write(&source, bytes).unwrap();
+        let item = import(&source, &storage, &cancel).unwrap();
+        assert!(!item.is_image());
+        assert_eq!(item.name, "Test model.usdz");
+        assert_eq!(item.path.extension().unwrap(), "usdz");
+        item.mark_submitted();
+        let path = item.path.clone();
+        drop(item);
+        fs::remove_file(&source).unwrap();
+        let item = load_saved(&path, "Queued attachment", &storage, &cancel).unwrap();
+        assert_eq!(item.name, "Test model.usdz");
+        assert_eq!(fs::read(item.path).unwrap(), bytes);
+    }
+    #[test]
     fn saved_images_are_confined_and_previews_are_lazily_bounded() {
         let fixture = Fixture::new();
         let source = fixture.0.join("photo.png");
@@ -813,10 +984,85 @@ mod tests {
     }
 }
 
-/// Finder file copies are references, never inserted as raw composer text.
-pub fn clipboard_paths()->Vec<std::path::PathBuf>{
-    #[cfg(all(target_os="macos",not(test)))]
-    {use objc2::{msg_send,runtime::{AnyClass,AnyObject}};use objc2_foundation::NSString;
-    unsafe{let Some(class)=AnyClass::get(c"NSPasteboard") else{return vec![]};let board:*mut AnyObject=msg_send![class,generalPasteboard];if board.is_null(){return vec![]}let kind=NSString::from_str("NSFilenamesPboardType");let list:*mut AnyObject=msg_send![board,propertyListForType:&*kind];if list.is_null(){return vec![]}let Some(array)=AnyClass::get(c"NSArray") else{return vec![]};let valid:bool=msg_send![list,isKindOfClass:array];if !valid{return vec![]}let count:usize=msg_send![list,count];(0..count.min(9)).filter_map(|i|{let item:*mut AnyObject=msg_send![list,objectAtIndex:i];let raw:*const std::ffi::c_char=msg_send![item,UTF8String];if raw.is_null(){None}else{Some(std::path::PathBuf::from(std::ffi::CStr::from_ptr(raw).to_string_lossy().into_owned()))}}).collect()}}
-    #[cfg(any(not(target_os="macos"),test))]{vec![]}
+/// Read file URLs copied by Finder or Kai's native file actions.
+pub fn clipboard_paths() -> Vec<PathBuf> {
+    #[cfg(all(target_os = "macos", not(test)))]
+    {
+        use objc2::{
+            msg_send,
+            rc::autoreleasepool,
+            runtime::{AnyClass, AnyObject},
+        };
+        use objc2_foundation::NSString;
+        autoreleasepool(|_| unsafe {
+            let Some(class) = AnyClass::get(c"NSPasteboard") else {
+                return vec![];
+            };
+            let board: *mut AnyObject = msg_send![class, generalPasteboard];
+            if board.is_null() {
+                return vec![];
+            }
+            let Some(url_class) = AnyClass::get(c"NSURL") else {
+                return vec![];
+            };
+            let items: *mut AnyObject = msg_send![board, pasteboardItems];
+            let file_url = NSString::from_str("public.file-url");
+            let mut paths = Vec::new();
+            if !items.is_null() {
+                let count: usize = msg_send![items, count];
+                for index in 0..count.min(MAX_ATTACHMENTS + 1) {
+                    let item: *mut AnyObject = msg_send![items, objectAtIndex:index];
+                    let value: *mut AnyObject = msg_send![item, stringForType:&*file_url];
+                    if value.is_null() {
+                        continue;
+                    }
+                    let url: *mut AnyObject = msg_send![url_class, URLWithString:value];
+                    if url.is_null() {
+                        continue;
+                    }
+                    let is_file: objc2::runtime::Bool = msg_send![url, isFileURL];
+                    if !is_file.as_bool() {
+                        continue;
+                    }
+                    let path: *const std::ffi::c_char = msg_send![url, fileSystemRepresentation];
+                    if !path.is_null() {
+                        use std::os::unix::ffi::OsStrExt;
+                        paths.push(PathBuf::from(std::ffi::OsStr::from_bytes(
+                            std::ffi::CStr::from_ptr(path).to_bytes(),
+                        )));
+                    }
+                }
+            }
+            if !paths.is_empty() {
+                return paths;
+            }
+            let filenames = NSString::from_str("NSFilenamesPboardType");
+            let list: *mut AnyObject = msg_send![board, propertyListForType:&*filenames];
+            let Some(array) = AnyClass::get(c"NSArray") else {
+                return paths;
+            };
+            if list.is_null() {
+                return paths;
+            }
+            let valid: objc2::runtime::Bool = msg_send![list, isKindOfClass:array];
+            if !valid.as_bool() {
+                return paths;
+            }
+            let count: usize = msg_send![list, count];
+            for index in 0..count.min(MAX_ATTACHMENTS + 1) {
+                let item: *mut AnyObject = msg_send![list, objectAtIndex:index];
+                let raw: *const std::ffi::c_char = msg_send![item, UTF8String];
+                if !raw.is_null() {
+                    paths.push(PathBuf::from(
+                        std::ffi::CStr::from_ptr(raw).to_string_lossy().into_owned(),
+                    ));
+                }
+            }
+            paths
+        })
+    }
+    #[cfg(any(not(target_os = "macos"), test))]
+    {
+        vec![]
+    }
 }

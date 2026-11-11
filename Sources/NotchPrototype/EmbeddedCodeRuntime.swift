@@ -52,8 +52,12 @@ struct UnifiedDraftWrites {
     private var historyOwner:String?
     private var history=[KaiMessage]()
     private var diagnosticCommands=0
+    #if canImport(libghostty)
+    private lazy var chatTerminal = UnifiedChatTerminal()
+    private lazy var dockTerminals = DockedGhosttyTerminals()
+    #endif
 
-    func start(window:NSWindow,command:@escaping Command) {
+    func start(window:NSWindow,command:@escaping Command,presentInitialNotch:Bool=true) {
         guard !active else{return}
         active=true;self.command=command;workspaceWindow=window
         NativeWorkspaceIntegrations.shared.install()
@@ -62,29 +66,103 @@ struct UnifiedDraftWrites {
             for (key,value) in defaults.persistentDomain(forName:"com.kai.notchprototype") ?? [:] where defaults.object(forKey:key) == nil && key != "experimentalWebMode"{defaults.set(value,forKey:key)}
             defaults.set(true,forKey:"unifiedPreferencesSeeded")
         }
-        window.orderOut(nil)
+        if window.isVisible {window.orderOut(nil)}
         let app=makeApp();self.app=app
         app.applicationDidFinishLaunching(Notification(name:NSApplication.didFinishLaunchingNotification))
-        self.app?.showUnifiedNotchOnLaunch()
+        if presentInitialNotch {self.app?.showUnifiedNotchOnLaunch()}
         NotificationCenter.default.addObserver(forName:NSApplication.willTerminateNotification,object:nil,queue:.main){[weak app] note in
             MainActor.assumeIsolated{app?.applicationWillTerminate(note)}
         }
     }
-    func send(_ data:Data) {
-        guard let command else{return}
+    @discardableResult func send(_ data:Data)->Bool {
+        guard let command else{return false}
         if diagnosticCommands<64,ProcessInfo.processInfo.environment["KAI_PERFORMANCE_LOG"] != nil,
            let value=try? JSONSerialization.jsonObject(with:data) as? [String:Any],let action=value["action"] as? String {
             diagnosticCommands+=1;fputs("KAI_NATIVE_COMMAND \(action)\n",stderr)
         }
         let accepted=data.withUnsafeBytes{raw in command(raw.bindMemory(to:UInt8.self).baseAddress,raw.count)}
         if !accepted{onError?("The workspace is busy; your input is preserved. Try again.")}
+        return accepted
     }
     func receive(_ data:Data) {
         guard data != lastState else{return}
         guard let packet=try? JSONDecoder().decode(OwnerPacket.self,from:data) else{onError?("Could not read Code’s owner state");fputs("Kai unified state decode failed\n",stderr);return}
         if let object=try? JSONSerialization.jsonObject(with:data) as? [String:Any]{
+            #if canImport(libghostty)
+            if let type = object["type"] as? String, type.hasPrefix("dockTerminal"),
+               let id = object["id"] as? String {
+                switch type {
+                case "dockTerminalSlot":
+                    if let rect = object["rect"] as? [Double], rect.count == 4,
+                       let clip = object["clip"] as? [Double], clip.count == 4,
+                       let window = workspaceWindow {
+                        dockTerminals.update(id: id, directory: object["directory"] as? String,
+                            rect: CGRect(x: rect[0], y: rect[1], width: rect[2], height: rect[3]),
+                            clip: CGRect(x: clip[0], y: clip[1], width: clip[2], height: clip[3]),
+                            focused: object["focused"] as? Bool ?? false, window: window)
+                    }
+                case "dockTerminalHide": dockTerminals.hide(id: id)
+                case "dockTerminalClose": dockTerminals.close(id: id)
+                default: break
+                }
+                return
+            }
+            if object["type"] as? String == "chatTerminalOwner" {
+                chatTerminal.setVisibleChats(active: object["id"] as? String, peers: object["peers"] as? [String] ?? [])
+                return
+            }
+            if object["type"] as? String == "chatTerminalSlot",
+               let id = object["id"] as? String, let rect = object["rect"] as? [Double], rect.count == 4 {
+                chatTerminal.setChatBounds(CGRect(x: rect[0], y: rect[1], width: rect[2], height: rect[3]), for: id)
+                return
+            }
+            #endif
+            if let type = object["type"] as? String,
+               ["chatTerminalOpen", "chatTerminalToggle", "chatTerminalClose", "chatTerminalAdopt"].contains(type),
+               let id = object["id"] as? String,
+               let launchId = object["launchId"] as? String, UUID(uuidString: launchId) != nil {
+                let arguments = object["arguments"] as? [String]
+                let directory = object["directory"] as? String
+                let environment = object["environment"] as? [[String]] ?? []
+                let newId = object["newId"] as? String
+                let title = object["title"] as? String
+                let agent = object["agent"] as? String ?? "Agent"
+                let selected = object["selected"] as? Bool ?? true
+                let acknowledge = object["acknowledge"] as? Bool ?? false
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    #if canImport(libghostty)
+                    if type == "chatTerminalToggle" { self.chatTerminal.select(id: id, launchId: launchId, selected: selected) }
+                    else if type == "chatTerminalClose" { self.chatTerminal.close(id: id, launchId: launchId, acknowledge: acknowledge) }
+                    else if type == "chatTerminalAdopt",let newId { self.chatTerminal.adopt(id: id, newId: newId, launchId: launchId) }
+                    else if type == "chatTerminalOpen", let arguments, let directory, let window = self.workspaceWindow {
+                        self.chatTerminal.open(id: id, arguments: arguments,
+                                               directory: directory, title: title ?? "CLI", window: window,
+                                               environment: environment, launchId: launchId, agent: agent)
+                    } else if type == "chatTerminalOpen" {
+                        self.sendAction("chat_terminal_closed", ["id": id, "launchId": launchId, "error": "Cannot open this CLI session.", "requestId": UUID().uuidString])
+                    }
+                    #else
+                    if type == "chatTerminalOpen" {
+                        self.sendAction("chat_terminal_fallback", ["id": id, "launchId": launchId, "requestId": UUID().uuidString])
+                    }
+                    #endif
+                }
+                return
+            }
             if (object["type"] as? String)?.hasPrefix("adaptiveText") == true{AdaptiveTextBackdrop.shared.receive(object);return}
+            if object["type"] as? String == "inlineQuickLook", let slot = object["slot"] as? String {
+                let rect = (object["rect"] as? [Double]).flatMap { values -> CGRect? in
+                    guard values.count == 4 else { return nil }
+                    return CGRect(x: values[0], y: values[1], width: values[2], height: values[3])
+                }
+                NativeWorkspaceIntegrations.shared.inlineQuickLook(slot: slot,
+                    url: (object["path"] as? String).map { URL(fileURLWithPath: $0) },
+                    windowNumber: object["window"] as? Int, rect: rect)
+                return
+            }
             if object["type"] as? String == "quickLook",let paths=object["paths"] as? [String]{NativeWorkspaceIntegrations.shared.quickLook(paths.map{URL(fileURLWithPath:$0)});return}
+            if object["type"] as? String == "copyFile",let path=object["path"] as? String{NativeWorkspaceIntegrations.shared.copyFile(URL(fileURLWithPath:path));return}
             if object["type"] as? String == "artifactPreview",let artifact=object["artifact"] as? [String:Any]{NativeWorkspaceIntegrations.shared.artifact(artifact);return}
         }
         if let object=try? JSONSerialization.jsonObject(with:data) as? [String:Any],object["type"] as? String == "ninjaAtmosphereSlot",let rect=object["rect"] as? [Double],rect.count==4{app?.ninjaAtmosphereGeometry(CGRect(x:rect[0],y:rect[1],width:rect[2],height:rect[3]));return}
@@ -136,7 +214,27 @@ struct UnifiedDraftWrites {
         app?.setWorkspaceWallpaper(image,opacity:opacity)
     }
     func presentation(_ phase:String){var now=timespec();clock_gettime(CLOCK_MONOTONIC_RAW,&now);sendAction("workspace_presentation",["phase":phase,"started":Double(now.tv_sec)+Double(now.tv_nsec)/1_000_000_000])}
-    func sendAction(_ action:String,_ fields:[String:Any]=[:]){var value=fields;value["action"]=action;if action == "quick_dismiss"{var now=timespec();clock_gettime(CLOCK_MONOTONIC_RAW,&now);value["issuedAt"]=Double(now.tv_sec)+Double(now.tv_nsec)/1_000_000_000};if let data=try? JSONSerialization.data(withJSONObject:value){send(data)}}
+    func sendWorkspaceTerminalCommand(_ command: String) -> Bool {
+        #if canImport(libghostty)
+        if let terminal = workspaceWindow?.firstResponder as? WorkspaceGhosttyView {
+            return chatTerminal.sendCommand(command, from: terminal) || dockTerminals.sendCommand(command, from: terminal)
+        }
+        #endif
+        return false
+    }
+
+    @discardableResult
+    func sendAction(_ action: String, _ fields: [String: Any] = [:]) -> Bool {
+        var value = fields
+        value["action"] = action
+        if action == "quick_dismiss" {
+            var now = timespec()
+            clock_gettime(CLOCK_MONOTONIC_RAW, &now)
+            value["issuedAt"] = Double(now.tv_sec) + Double(now.tv_nsec) / 1_000_000_000
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: value) else { return false }
+        return send(data)
+    }
     var voiceHost:NSView?{app?.unifiedVoiceHost()}
     func diagnostics()->UInt32{app?.unifiedPresentationDiagnostics() ?? 0}
     func toggle(){app?.toggleUnifiedSurface()}
@@ -148,10 +246,10 @@ struct UnifiedDraftWrites {
 @_cdecl("kai_unified_wallpaper")
 public func kaiUnifiedWallpaper(_ bytes:UnsafePointer<UInt8>?,_ count:Int,_ width:Int,_ height:Int,_ opacity:Float){guard Thread.isMainThread else{return};MainActor.assumeIsolated{EmbeddedCodeRuntime.shared.receiveWallpaper(bytes,count:count,width:width,height:height,opacity:opacity)}}
 @_cdecl("kai_unified_start")
-public func kaiUnifiedStart(_ window:UnsafeMutableRawPointer?,_ command:(@convention(c)(UnsafePointer<UInt8>?,Int)->Bool)?) {
+public func kaiUnifiedStart(_ window:UnsafeMutableRawPointer?,_ command:(@convention(c)(UnsafePointer<UInt8>?,Int)->Bool)?, _ presentInitialNotch:Bool) {
     guard Thread.isMainThread,let window,let command else{return}
     MainActor.assumeIsolated {
-        EmbeddedCodeRuntime.shared.start(window:Unmanaged<NSWindow>.fromOpaque(window).takeUnretainedValue(),command:command)
+        EmbeddedCodeRuntime.shared.start(window:Unmanaged<NSWindow>.fromOpaque(window).takeUnretainedValue(),command:command,presentInitialNotch:presentInitialNotch)
     }
 }
 @_cdecl("kai_unified_publish")

@@ -113,6 +113,11 @@ pub struct WorkspaceState {
     pub recent_results:Vec<String>,
     pub startup_surface:crate::startup::Surface,
     pub automatic_titles:bool,
+    // Older preferences only selected a text-cell emulator. Saved shells
+    // still carry their original emulator independently.
+    #[serde(rename = "docked_terminal_engine")]
+    pub terminal_backend: crate::terminal::Backend,
+    pub(super) terminal_decks: Vec<crate::workspace_ui::SavedTerminalDeck>,
     pub terminal_dock:crate::terminal_dock::Dock,
     pub inspector_widths:crate::pane_layout::Widths,
     pub activity: crate::sidebar_activity::Saved,
@@ -166,6 +171,8 @@ impl Default for WorkspaceState {
             startup_surface:Default::default(),
             automatic_titles:true,
             terminal_dock:Default::default(),
+            terminal_backend: Default::default(),
+            terminal_decks: Vec::new(),
             inspector_widths:Default::default(),
             activity: Default::default(),
             prompt_queue: Vec::new(),
@@ -219,6 +226,11 @@ impl WorkspaceState {
         if !self.ninja.model.is_empty()&&self.ninja.validate().is_err(){self.ninja=Default::default();}
         self.workflows.retain(crate::daily_driver::Workflow::valid);self.workflows.truncate(32);
         self.recent_results.retain(|id|id.len()<=512);self.recent_results.truncate(32);
+        let mut terminal_ids = std::collections::HashSet::new();
+        for deck in &mut self.terminal_decks {
+            deck.sessions.retain(|session| terminal_ids.len() < 128 && session.project.is_absolute() && terminal_ids.insert(session.id));
+        }
+        self.terminal_decks.retain(|deck| !deck.sessions.is_empty());
         self.inspector_widths=self.inspector_widths.normalized();
         self.activity.normalize();
         self.orchestrator_chats.retain(|id|uuid::Uuid::parse_str(id).is_ok());self.orchestrator_chats.truncate(256);
@@ -321,6 +333,12 @@ impl WorkspaceState {
         });
         self.appearance = self.appearance.normalized();
         self.theme = self.theme.normalized();
+        let shortcut = &self.quick_shortcut;
+        if shortcut.key == "space" && shortcut.control && shortcut.alt
+            && !shortcut.shift && !shortcut.command && shortcut.key_code.is_none()
+        {
+            self.quick_shortcut = Default::default();
+        }
         self.quick_shortcut = self.quick_shortcut.normalized();
         if self.voice_choice != "default"
             && !crate::voice::VOICES.contains(&self.voice_choice.as_str())

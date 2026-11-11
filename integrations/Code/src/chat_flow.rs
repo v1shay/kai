@@ -3,6 +3,42 @@ use super::{Row,MessageBlock,chat_interactions::{ChatInteraction,Speaker,Interac
 use std::ops::Range;
 #[derive(Default,Clone,Debug,PartialEq,Eq)]
 pub(super) struct Index {pub message_ends:Vec<Option<Range<usize>>>,pub completion_ends:Vec<Option<usize>>,pub work:Vec<Option<Range<usize>>>,pub commands:Vec<Option<Range<usize>>>,pub hidden:Vec<bool>,pub has_subagents:bool}
+#[derive(Default)]
+pub(super) struct LayoutKey {
+    rows: Vec<u16>,
+    settled: bool,
+    live_start: Option<usize>,
+    pending: Vec<usize>,
+}
+
+impl LayoutKey {
+    pub fn matches(&self, rows: &[Row], settled: bool, live_start: Option<usize>, pending: &[usize]) -> bool {
+        self.settled == settled && self.live_start == live_start && self.pending == pending
+            && self.rows.len() == rows.len()
+            && self.rows.iter().zip(rows).all(|(previous, row)| *previous == row_kind(row))
+    }
+
+    pub fn new(rows: &[Row], settled: bool, live_start: Option<usize>, pending: Vec<usize>) -> Self {
+        Self { rows: rows.iter().map(row_kind).collect(), settled, live_start, pending }
+    }
+}
+
+// Cache only projection inputs. Changing paragraph text still invalidates its
+// measured list row, but does not need to allocate five folding arrays per frame.
+fn row_kind(row: &Row) -> u16 {
+    let flags = [
+        user(row), starts_turn(row), assistant_start(row),
+        row.role.as_deref().is_some_and(|role| role != "user:continuation" && !role.starts_with("continuation:")),
+        matches!(row.block, MessageBlock::Attachment { .. }),
+        is_checkpoint(&row.block), is_boundary(&row.block), is_success(&row.block),
+        is_terminal(&row.block), body_content(&row.block), work_item(&row.block),
+        attention(&row.block), command(&row.block).is_some(),
+        matches!(&row.block, MessageBlock::Interaction(ChatInteraction::Delegation { agent: Some(_), .. })),
+        matches!(&row.block, MessageBlock::Interaction(_)),
+    ];
+    flags.into_iter().enumerate().fold(0, |bits, (index, enabled)| bits | (u16::from(enabled) << index))
+}
+
 impl Index {
  pub fn new(rows:&[Row])->Self{Self::for_transcript(rows,false,None)}
  pub fn for_transcript(rows:&[Row],settled:bool,live_start:Option<usize>)->Self{
@@ -79,6 +115,29 @@ pub(super) fn placeholder(row:&Row)->Row{
 #[cfg(test)]mod tests{
  use super::*;
  fn row(block:MessageBlock)->Row{Row{role:Some("assistant:codex".into()),block}}
+ #[test]
+ fn cached_projection_tracks_structure_and_live_attention_without_hashing_body_text() {
+  let status = |title: &str| row(MessageBlock::Interaction(ChatInteraction::Status {
+   title: title.into(), details: String::new(), status: InteractionStatus::Completed,
+  }));
+  let mut rows = vec![
+   Row { role: Some("user".into()), block: MessageBlock::Paragraph("Prompt".into()) },
+   row(MessageBlock::Paragraph("Response".into())),
+   status("Working"),
+  ];
+  let key = LayoutKey::new(&rows, false, Some(1), vec![]);
+  assert!(key.matches(&rows, false, Some(1), &[]));
+  rows[1].block = MessageBlock::Paragraph("A streamed response with changed text".into());
+  assert!(key.matches(&rows, false, Some(1), &[]));
+  assert!(!key.matches(&rows, true, Some(1), &[]));
+  assert!(!key.matches(&rows, false, Some(2), &[]));
+  assert!(!key.matches(&rows, false, Some(1), &[2]));
+  rows[2] = status("Completed");
+  assert!(!key.matches(&rows, false, Some(1), &[]));
+  let completed = LayoutKey::new(&rows, true, None, vec![]);
+  rows[0].role = Some("continuation:codex".into());
+  assert!(!completed.matches(&rows, true, None, &[]));
+ }
  #[test]fn commands_group_without_merging_across_an_agent_update(){
   let tool=||row(MessageBlock::Activity{label:"Terminal command".into(),details:"pwd".into()});
   let rows=vec![tool(),tool(),row(MessageBlock::Paragraph("Checking files".into())),tool()];

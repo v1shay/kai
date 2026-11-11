@@ -945,7 +945,12 @@ impl Render for ChatBackground {
             .child(
                 canvas(
                     move |bounds, window, cx| {
-                        let bounds = wallpaper_bounds(bounds, empty);
+                        // Fit once against the window, then let the workspace clip reveal
+                        // the image as sidebars, docks, and chat panes change.
+                        let viewport = window.viewport_size();
+                        let origin = point(px(0.), bounds.top());
+                        let window_bounds = Bounds::new(origin, size(viewport.width, (viewport.height - origin.y).max(px(0.))));
+                        let bounds = wallpaper_bounds(window_bounds, false);
                         if bounds.size.width <= px(0.) || bounds.size.height <= px(0.) {
                             return bounds;
                         }

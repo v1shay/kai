@@ -203,8 +203,8 @@ pub(super) struct Motion {
 }
 impl Motion {
     fn value(&self) -> f32 {
-        let t = (self.at.elapsed().as_secs_f32() / 0.22).min(1.);
-        self.from + (self.to - self.from) * (1. - (1. - t).powi(3))
+        let progress = self.at.elapsed().as_secs_f32() / workspace_motion::PANE_DURATION.as_secs_f32();
+        self.from + (self.to - self.from) * workspace_motion::ease_out(progress)
     }
 }
 #[derive(Default)]
@@ -278,7 +278,7 @@ impl Orbit {
         // Complete once even if the window becomes hidden during the reveal.
         // A new gesture changes the token, so a late completion cannot close it.
         cx.spawn(async move |this, cx| {
-            Timer::after(Duration::from_millis(220)).await;
+            Timer::after(workspace_motion::PANE_DURATION).await;
             let _ = this.update(cx, |app, cx| {
                 if app
                     .pane_layout
@@ -345,6 +345,11 @@ impl Orbit {
             false
         }
     }
+
+    pub(super) fn cancel_terminal_pane_motion(&mut self) {
+        self.pane_layout.motions.remove(&Pane::Terminal);
+        self.pane_layout.seen[Pane::Terminal.index()] = false;
+    }
     pub(super) fn tick_panes(&mut self, window: &Window, cx: &mut Context<Self>) {
         for pane in [Pane::Terminal, Pane::Files, Pane::Children, Pane::Changes] {
             let visible = self.pane_visible(pane);
@@ -374,7 +379,7 @@ impl Orbit {
             if let Some(m) = self.pane_layout.motions.get(&pane) {
                 if !self.motion
                     || native::reduced_motion()
-                    || m.at.elapsed() >= Duration::from_millis(220)
+                    || m.at.elapsed() >= workspace_motion::PANE_DURATION
                 {
                     let closing = m.closing;
                     self.pane_layout.motions.remove(&pane);

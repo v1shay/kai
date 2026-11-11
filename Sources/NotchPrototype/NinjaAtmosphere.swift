@@ -101,17 +101,17 @@ import QuartzCore
         guard motion else{return}
         if sceneEpoch == nil{sceneEpoch=layer!.convertTime(CACurrentMediaTime(),from:nil)}
         let travel=CAKeyframeAnimation(keyPath:"position")
-        travel.values=plan.samples.map{NSValue(point:scenePoint($0.position))};travel.duration=plan.duration;travel.repeatCount = .infinity;travel.calculationMode = .linear;travel.beginTime=sceneEpoch!;actor.add(travel,forKey:"footwork")
+        travel.values=plan.samples.map{NSValue(point:scenePoint($0.position))};travel.duration=plan.duration;travel.repeatCount = .infinity;travel.calculationMode = .linear;travel.beginTime=sceneEpoch!;actor.addKai(travel,forKey:"footwork")
         let gait=CAKeyframeAnimation(keyPath:"contents")
-        gait.values=plan.samples.map{NinjaPixelActor.frame(style:style,action:$0.action,step:$0.step,left:$0.left)};gait.duration=plan.duration;gait.repeatCount = .infinity;gait.calculationMode = .discrete;gait.beginTime=sceneEpoch!;portrait.add(gait,forKey:"actions")
-        let tumble=CAKeyframeAnimation(keyPath:"transform.rotation.z");tumble.values=plan.samples.map{$0.rotation};tumble.duration=plan.duration;tumble.repeatCount = .infinity;tumble.calculationMode = .discrete;tumble.beginTime=sceneEpoch!;portrait.add(tumble,forKey:"tumble")
-        let depth=CAKeyframeAnimation(keyPath:"opacity");depth.values=plan.samples.map{sceneOpacity(y:$0.position.y)};depth.duration=plan.duration;depth.repeatCount = .infinity;depth.beginTime=sceneEpoch!;actor.add(depth,forKey:"depth")
-        let target=CAKeyframeAnimation(keyPath:"position");target.values=plan.samples.map{let p=fieldPoint($0.position);return NSValue(point:CGPoint(x:floor((p.x+12)/7)*7+3.5,y:floor((p.y+12)/7)*7+3.5))};target.duration=plan.duration;target.repeatCount = .infinity;target.calculationMode = .discrete;target.beginTime=sceneEpoch!;actionTile.add(target,forKey:"target")
-        let tap=CAKeyframeAnimation(keyPath:"opacity");tap.values=plan.samples.map{sample -> Float in let contact=sample.action == .inspect || sample.action == .climb;return contact ? sceneOpacity(y:sample.position.y)*(sample.step%4<2 ? 0.8:0.3):0};tap.duration=plan.duration;tap.repeatCount = .infinity;tap.calculationMode = .discrete;tap.beginTime=sceneEpoch!;actionTile.add(tap,forKey:"glow")
+        gait.values=plan.samples.map{NinjaPixelActor.frame(style:style,action:$0.action,step:$0.step,left:$0.left)};gait.duration=plan.duration;gait.repeatCount = .infinity;gait.calculationMode = .discrete;gait.beginTime=sceneEpoch!;portrait.addKai(gait,forKey:"actions")
+        let tumble=CAKeyframeAnimation(keyPath:"transform.rotation.z");tumble.values=plan.samples.map{$0.rotation};tumble.duration=plan.duration;tumble.repeatCount = .infinity;tumble.calculationMode = .discrete;tumble.beginTime=sceneEpoch!;portrait.addKai(tumble,forKey:"tumble")
+        let depth=CAKeyframeAnimation(keyPath:"opacity");depth.values=plan.samples.map{sceneOpacity(y:$0.position.y)};depth.duration=plan.duration;depth.repeatCount = .infinity;depth.beginTime=sceneEpoch!;actor.addKai(depth,forKey:"depth")
+        let target=CAKeyframeAnimation(keyPath:"position");target.values=plan.samples.map{let p=fieldPoint($0.position);return NSValue(point:CGPoint(x:floor((p.x+12)/7)*7+3.5,y:floor((p.y+12)/7)*7+3.5))};target.duration=plan.duration;target.repeatCount = .infinity;target.calculationMode = .discrete;target.beginTime=sceneEpoch!;actionTile.addKai(target,forKey:"target")
+        let tap=CAKeyframeAnimation(keyPath:"opacity");tap.values=plan.samples.map{sample -> Float in let contact=sample.action == .inspect || sample.action == .climb;return contact ? sceneOpacity(y:sample.position.y)*(sample.step%4<2 ? 0.8:0.3):0};tap.duration=plan.duration;tap.repeatCount = .infinity;tap.calculationMode = .discrete;tap.beginTime=sceneEpoch!;actionTile.addKai(tap,forKey:"glow")
         for (i,tile) in tiles.enumerated(){
             let wave=CAKeyframeAnimation(keyPath:"opacity");let base=tile.opacity
-            wave.values=[base*0.35,base*(working ? 1.9:1.1),base*0.35];wave.duration=working ? 3.6:8.5;wave.beginTime=sceneEpoch!+Double(i%11)*0.19;wave.repeatCount = .infinity;wave.timingFunction=CAMediaTimingFunction(name:.easeInEaseOut);tile.add(wave,forKey:"glimmer")
-            let drift=CABasicAnimation(keyPath:"transform.translation.y");drift.fromValue=2;drift.toValue = -3;drift.autoreverses=true;drift.duration=Double(4+i%5);drift.repeatCount = .infinity;drift.beginTime=sceneEpoch!;tile.add(drift,forKey:"drift")
+            wave.values=[base*0.35,base*(working ? 1.9:1.1),base*0.35];wave.duration=working ? 3.6:8.5;wave.beginTime=sceneEpoch!+Double(i%11)*0.19;wave.repeatCount = .infinity;wave.timingFunction=KaiMotion.cycleCurve;tile.addKai(wave,forKey:"glimmer")
+            let drift=CABasicAnimation(keyPath:"transform.translation.y");drift.fromValue=2;drift.toValue = -3;drift.autoreverses=true;drift.duration=Double(4+i%5);drift.repeatCount = .infinity;drift.beginTime=sceneEpoch!;tile.addKai(drift,forKey:"drift")
         }
     }
     private func scenePoint(_ p:CGPoint)->CGPoint{CGPoint(x:p.x,y:bottomAnchored ? bounds.height-Self.dotTravelDepth(fieldHeight:field.bounds.height)+p.y:p.y)}
@@ -124,23 +124,23 @@ import QuartzCore
     private func say(_ text:String,opening:Bool){
         caption.string=text
         guard motion else{caption.removeAllAnimations();return}
-        let opacity=CAKeyframeAnimation(keyPath:"opacity");opacity.values=[0,0.95,0.95,0];opacity.keyTimes=[0,0.12,0.82,1];opacity.duration=5.2;caption.add(opacity,forKey:"moment")
-        if opening && motion{let appear=CABasicAnimation(keyPath:"opacity");appear.fromValue=0;appear.toValue=1;appear.duration=0.9;field.add(appear,forKey:"arrival");let enter=CABasicAnimation(keyPath:"opacity");enter.fromValue=0;enter.toValue=actor.opacity;enter.duration=0.8;actor.add(enter,forKey:"arrival")}
+        let opacity=CAKeyframeAnimation(keyPath:"opacity");opacity.values=[0,0.95,0.95,0];opacity.keyTimes=[0,0.12,0.82,1];opacity.duration=5.2;caption.addKai(opacity,forKey:"moment")
+        if opening && motion{let appear=CABasicAnimation(keyPath:"opacity");appear.fromValue=0;appear.toValue=1;appear.duration=0.9;field.addKai(appear,forKey:"arrival");let enter=CABasicAnimation(keyPath:"opacity");enter.fromValue=0;enter.toValue=actor.opacity;enter.duration=0.8;actor.addKai(enter,forKey:"arrival")}
     }
     override func mouseMoved(with event:NSEvent){
         guard motion,!paused,CACurrentMediaTime()-lastPointer>0.1 else{return};lastPointer=CACurrentMediaTime()
         let rootPoint=convert(event.locationInWindow,from:nil),p=field.convert(rootPoint,from:layer);guard field.bounds.contains(p) else{return}
-        CATransaction.begin();CATransaction.setAnimationDuration(0.35)
+        CATransaction.begin();CATransaction.setAnimationDuration(KaiMotion.controlDuration);CATransaction.setAnimationTimingFunction(KaiMotion.interactionCurve)
         portrait.transform=CATransform3DMakeRotation(max(-0.10,min(0.10,(p.x-bounds.midX)/max(1,bounds.width)*0.2)),0,0,1)
         CATransaction.commit()
         CATransaction.begin();CATransaction.setDisableActions(true)
         hoverTile.frame=CGRect(x:floor(p.x/7)*7+0.5,y:floor(p.y/7)*7+0.5,width:5,height:5);hoverTile.backgroundColor=Self.color(style).withAlphaComponent(0.4).cgColor
         CATransaction.commit()
-        let spark=CABasicAnimation(keyPath:"opacity");spark.fromValue=0.8;spark.toValue=0;spark.duration=0.8;hoverTile.add(spark,forKey:"pointer")
+        let spark=CABasicAnimation(keyPath:"opacity");spark.fromValue=0.8;spark.toValue=0;spark.duration=0.8;hoverTile.addKai(spark,forKey:"pointer")
         let a=actor.presentation()?.position ?? actor.position
-        if hypot(rootPoint.x-a.x,rootPoint.y-a.y)<48,CACurrentMediaTime()-lastGreeting>30{lastGreeting=CACurrentMediaTime();say(NinjaQuips.next(.nearby,name:name),opening:false);let wave=CAKeyframeAnimation(keyPath:"contents");wave.values=(0..<16).map{NinjaPixelActor.frame(style:style,action:.wave,step:$0)};wave.duration=1.3;wave.calculationMode = .discrete;portrait.add(wave,forKey:"wave")}
+        if hypot(rootPoint.x-a.x,rootPoint.y-a.y)<48,CACurrentMediaTime()-lastGreeting>30{lastGreeting=CACurrentMediaTime();say(NinjaQuips.next(.nearby,name:name),opening:false);let wave=CAKeyframeAnimation(keyPath:"contents");wave.values=(0..<16).map{NinjaPixelActor.frame(style:style,action:.wave,step:$0)};wave.duration=1.3;wave.calculationMode = .discrete;portrait.addKai(wave,forKey:"wave")}
     }
-    override func mouseExited(with event:NSEvent){CATransaction.begin();CATransaction.setAnimationDuration(0.4);portrait.transform=CATransform3DIdentity;CATransaction.commit()}
+    override func mouseExited(with event:NSEvent){CATransaction.begin();CATransaction.setAnimationDuration(KaiMotion.controlDuration);CATransaction.setAnimationTimingFunction(KaiMotion.interactionCurve);portrait.transform=CATransform3DIdentity;CATransaction.commit()}
     private func updatePlayback(){
         guard let root=layer else{return}
         let play = !isHidden && window?.isVisible == true && (window?.isKeyWindow == true || window is NSPanel) && motion

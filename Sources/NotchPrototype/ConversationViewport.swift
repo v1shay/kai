@@ -51,19 +51,22 @@ import AppKit
         isHidden = !hasMore && !loading && !earlier
         guard self.loading != loading else{return};self.loading=loading
         button.isEnabled = !loading
-        CATransaction.begin();CATransaction.setAnimationDuration(0.16)
+        CATransaction.begin();CATransaction.setAnimationDuration(NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : KaiMotion.controlDuration)
+        CATransaction.setAnimationTimingFunction(KaiMotion.interactionCurve)
         dots.opacity=loading ? 1:0
         CATransaction.commit()
         NSAnimationContext.runAnimationGroup { context in
-            context.duration=0.16;button.animator().alphaValue=loading ? 0:1
+            context.duration=NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : KaiMotion.controlDuration
+            context.timingFunction=KaiMotion.interactionCurve
+            button.animator().alphaValue=loading ? 0:1
         }
         for (index,dot) in (dots.sublayers ?? []).enumerated() {
-            if loading {
+            if loading && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
                 let jump=CAKeyframeAnimation(keyPath:"transform.translation.y")
                 jump.values=[0, -4, 0, 0];jump.keyTimes=[0,0.3,0.6,1]
                 jump.duration=0.85;jump.beginTime=CACurrentMediaTime()+Double(index)*0.12
-                jump.repeatCount = .infinity;jump.timingFunctions=[CAMediaTimingFunction(name:.easeInEaseOut)]
-                dot.add(jump,forKey:"loading")
+                jump.repeatCount = .infinity;jump.timingFunctions=[KaiMotion.cycleCurve]
+                dot.addKai(jump,forKey:"loading")
             } else {dot.removeAnimation(forKey:"loading")}
         }
     }
@@ -98,7 +101,9 @@ import AppKit
         cover.wantsLayer=true;cover.layer?.backgroundColor=NSColor.black.cgColor
         text.addSubview(cover)
         NSAnimationContext.runAnimationGroup { context in
-            context.duration=0.2;cover.animator().alphaValue=0
+            context.duration=NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : KaiMotion.paneDuration
+            context.timingFunction=KaiMotion.interactionCurve
+            cover.animator().alphaValue=0
         } completionHandler: {cover.removeFromSuperview()}
     }
     static func layout(_ text:NSTextView,in scroll:NSScrollView){
@@ -142,7 +147,7 @@ import AppKit
         expiry?.cancel();expiry=nil;cover=nil;self.threadID=nil
         let document=scroll.documentView
         document?.wantsLayer=true
-        if let layer=document?.layer{let fade=CABasicAnimation(keyPath:"opacity");fade.fromValue=0.45;fade.toValue=1;fade.duration=0.28;fade.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.7,0.25,1);layer.add(fade,forKey:"workFold")}
-        NSAnimationContext.runAnimationGroup({context in context.duration=0.28;context.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.7,0.25,1);view.animator().alphaValue=0},completionHandler:{view.removeFromSuperview()})
+        if let layer=document?.layer{let fade=CABasicAnimation(keyPath:"opacity");fade.fromValue=0.45;fade.toValue=1;fade.duration=KaiMotion.paneDuration;fade.timingFunction=KaiMotion.interactionCurve;layer.addKai(fade,forKey:"workFold")}
+        NSAnimationContext.runAnimationGroup({context in context.duration=KaiMotion.paneDuration;context.timingFunction=KaiMotion.interactionCurve;view.animator().alphaValue=0},completionHandler:{view.removeFromSuperview()})
     }
 }

@@ -27,9 +27,9 @@ struct KaiActiveTask: Decodable, Equatable {
     var ninjaStyle:String?=nil
 }
 struct KaiFinishedTask:Decodable,Equatable {let id:String;var runId:String?=nil;var parentId:String?=nil;var shouldAutoReview:Bool{parentId == nil && !id.hasPrefix("child:")}}
-struct KaiReasoningOption: Decodable { let reasoningEffort: String }
-struct KaiModel: Decodable { var resolvedModel:String?=nil; let model: String; let displayName: String; let supportedReasoningEfforts: [KaiReasoningOption] }
-struct KaiAgent:Decodable {let id:String;let name:String;let available:Bool}
+struct KaiReasoningOption: Decodable, Equatable { let reasoningEffort: String }
+struct KaiModel: Decodable, Equatable { var resolvedModel:String?=nil; let model: String; let displayName: String; let supportedReasoningEfforts: [KaiReasoningOption] }
+struct KaiAgent:Decodable, Equatable {let id:String;let name:String;let available:Bool}
 struct KaiCodeConnectionState:Decodable {let connected:Bool;let enabled:Bool;let error:String?}
 @propertyWrapper struct EmptyHistory:Decodable {
     var wrappedValue:[KaiMessage]
@@ -337,13 +337,15 @@ enum KaiBridgeEvent {
             if (request["requestId"] as? String ?? "").isEmpty{request["requestId"]=UUID().uuidString}
             request["ownerToken"]=ownerToken
             request["draftBase"]=draftWrites.pendingText ?? draftBaseProvider?()
-            if action == "draft",let text=request["text"] as? String{
-                if text == (request["draftBase"] as? String){return}
-                draftWrites.enqueue(id:request["requestId"] as! String,text:text)
-            }
+            if request["draft"] == nil,["chat","project","new","new_project","orchestrator","workspace_expand","navigate"].contains(action){request["draft"]=draftProvider?()}
+            let draftText=action == "draft" ? request["text"] as? String:nil
+            if let draftText,draftText == (request["draftBase"] as? String){return}
             if action == "interrupt"{request["runId"]=selectedRunID}
             if request["targetThreadId"] == nil{request["targetThreadId"]=selectedThreadID}
-            if let data=try? JSONSerialization.data(withJSONObject:request){EmbeddedCodeRuntime.shared.send(data)}
+            if let data=try? JSONSerialization.data(withJSONObject:request),EmbeddedCodeRuntime.shared.send(data),
+               let draftText,let id=request["requestId"] as? String{
+                draftWrites.enqueue(id:id,text:draftText)
+            }
             return
         }
         guard process?.isRunning == true,let input else { onError?("Kai is reconnecting; your prompt is preserved"); return }

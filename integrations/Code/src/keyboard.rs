@@ -1,5 +1,6 @@
 //! One command catalog for bindings, native-notch routing and discoverable help.
 use super::*;
+use serde_json::json;
 #[derive(Clone, Debug, PartialEq, gpui::Action)]
 #[action(namespace = kai, no_json)]
 pub struct Execute {
@@ -9,6 +10,17 @@ pub(super) const MAX_CHAT_TABS:usize=9;
 pub(super) fn tab_index(id:&str)->Option<usize>{id.strip_prefix("tab_")?.parse::<usize>().ok().filter(|n|(1..=MAX_CHAT_TABS).contains(n)).map(|n|n-1)}
 pub const COMMANDS: &[(&str, &str, &str)] = &[
     ("ctrl-t", "new", "New chat"),
+    ("cmd-t", "new", "New chat"),
+    ("cmd-n", "new", "New chat"),
+    ("cmd-e", "conversations", "Conversation sidebar"),
+    ("cmd-f", "files", "Files"),
+    ("cmd-shift-e", "files", "Files"),
+    ("cmd-d", "split_beside", "Split pane right"),
+    ("cmd-shift-d", "split_below", "Split pane below"),
+    ("cmd-k", "search", "Search chats"),
+    ("cmd-b", "sidebar", "Project sidebar"),
+    ("cmd-s", "search", "Commands and files"),
+    ("cmd-,", "settings", "Settings"),
     ("cmd-1", "tab_1", "Select chat tab 1"),
     ("cmd-2", "tab_2", "Select chat tab 2"),
     ("cmd-3", "tab_3", "Select chat tab 3"),
@@ -33,7 +45,8 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ("ctrl-e", "files", "Files"),
     ("ctrl-g", "changes", "Source control"),
     ("ctrl-shift-g", "github", "GitHub repositories and pull requests"),
-    ("ctrl-j", "terminal", "Terminal"),
+    ("cmd-shift-j", "terminalize", "Switch chat and CLI"),
+    ("ctrl-j", "terminal", "Toggle terminal"),
     (
         "ctrl-shift-j",
         "dock_terminal",
@@ -55,12 +68,16 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ("cmd-shift-n", "new", "New chat"),
     ("cmd-shift-k", "notch", "Return to notch"),
 ];
+pub(super) fn split_command(command: &str) -> bool {
+    matches!(command, "split_add" | "split_beside" | "split_below" | "split_left" | "split_right" | "split_up" | "split_down")
+}
+
 pub fn bind(cx: &mut App) {
     cx.bind_keys(COMMANDS.iter().map(|(key, id, _)| {
         KeyBinding::new(
             key,
             Execute { id: (*id).into() },
-            Some(if tab_index(id).is_some(){"Orbit"}else{"Orbit && !CodeTerminal"}),
+            Some(if key.starts_with("ctrl-") && !key.starts_with("ctrl-shift-") { "Orbit && !CodeTerminal" } else { "Orbit" }),
         )
     }));
 }
@@ -72,7 +89,302 @@ pub fn catalog() -> serde_json::Value {
             .collect::<Vec<_>>()
     )
 }
+pub(super) const CLI_DRAFT: &str = "workspace-draft-cli";
+
+pub(super) struct ChatCli {
+    pub launch: Option<(std::path::PathBuf, Vec<String>, Vec<(String, String)>)>,
+    pub agent: AgentKind,
+    pub retained: Option<Box<dyn std::marker::Send>>,
+    pub preparing: bool,
+    pub launch_id: uuid::Uuid,
+    pub fallback: Option<(Entity<terminal_ui::TerminalPanel>, Subscription)>,
+    pub selected: bool,
+    pub metal_visible: bool,
+    pub resumes_chat: bool,
+    pub cursor_history: Option<cursor_cli_history::Sync>,
+    pub send_when_closed: Option<String>,
+}
+
 impl Orbit {
+    pub(super) fn chat_cli_owner(&self) -> Option<std::borrow::Cow<'_, str>> {
+        Some(self.ninja_surface_owner().map_or_else(
+            || std::borrow::Cow::Borrowed(self.active.as_deref().unwrap_or(CLI_DRAFT)),
+            std::borrow::Cow::Owned,
+        ))
+    }
+
+    pub(super) fn active_chat_cli(&self) -> Option<&ChatCli> {
+        self.chat_clis.get(self.chat_cli_owner()?.as_ref())
+    }
+
+    pub(super) fn chat_cli_canvas(&self, owner: &str) -> impl IntoElement {
+        let owner = owner.to_owned();
+        canvas(|bounds, _, _| bounds, move |_, bounds, _, _| unified::chat_cli_slot(&owner, bounds))
+            .absolute().inset_0()
+    }
+
+    pub(super) fn render_chat_cli(&self, owner: &str, cx: &Context<Self>) -> Option<AnyElement> {
+        let cli = self.chat_clis.get(owner).filter(|cli| cli.selected)?;
+        if let Some((panel, _)) = &cli.fallback {
+            let owner = owner.to_owned();
+            Some(self.conversation_pane().key_context("ChatCli")
+                .child(div().h(px(32.)).px_4().flex().items_center().justify_between()
+                    .child(format!("{} CLI · Ghostty VT", cli.agent.name()))
+                    .child(div().id("chat-cli-back").cursor_pointer().child("Back to Chat")
+                        .on_click(cx.listener(move |app, _, window, cx| {
+                            if app.chat_cli_owner().as_deref() == Some(owner.as_str()) || app.focus_split_chat(&owner, window, cx) {
+                                app.terminalize_chat(window, cx);
+                            }
+                        }))))
+                .child(div().flex_1().min_h(px(0.)).child(panel.clone())).into_any_element())
+        } else if cli.metal_visible {
+            Some(self.conversation_pane().child(self.chat_cli_canvas(owner)).into_any_element())
+        } else {
+            None
+        }
+    }
+
+    pub(super) fn close_chat_cli(&mut self, id: &str, cx: &mut Context<Self>) {
+        if let Some(mut cli) = self.chat_clis.remove(id) {
+            if let Some(history) = cli.cursor_history.take().filter(|_| id != CLI_DRAFT) {
+                self.engine.import_cursor_cli(id.to_owned(), history);
+            }
+            if let Some((panel, _)) = cli.fallback.take() {
+                panel.update(cx, |panel, _| panel.stop());
+            }
+            if let Some(retained) = cli.retained.take() {
+                cx.background_executor().spawn(async move { drop(retained); }).detach();
+            }
+            unified::emit(&json!({"type":"chatTerminalClose","id":id,"launchId":cli.launch_id}));
+        }
+    }
+
+    pub(super) fn finish_chat_cli_for_send(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.chat_cli_owner().map(|owner| owner.into_owned()) else { return; };
+        let draft = self.composer.read(cx).text();
+        if draft.trim().is_empty() && self.attachments.is_empty() { return; }
+        let Some(cli) = self.chat_clis.get_mut(&id) else { return; };
+        if cli.send_when_closed.is_some() { return; }
+        if cli.preparing || !cli.metal_visible && cli.fallback.is_none() {
+            self.notice = Some("The CLI is still opening. Your draft is saved.".into());
+            cx.notify();
+            return;
+        }
+        cli.send_when_closed = Some(draft);
+        if let Some((panel, _)) = &cli.fallback {
+            panel.update(cx, |panel, cx| panel.close(cx));
+        } else {
+            unified::emit(&json!({"type":"chatTerminalClose","id":id,"launchId":cli.launch_id,"acknowledge":true}));
+        }
+        cx.notify();
+    }
+
+    pub(super) fn terminalize_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.active.is_none() && self.ninja_surface_owner().is_none()
+            && self.chat_clis.get(CLI_DRAFT).is_some_and(|cli| cli.cursor_history.is_some())
+        {
+            self.preserve_blank_tab(cx);
+            self.sync_chat_terminal_owner(cx);
+        }
+        let Some(id) = self.chat_cli_owner().map(|owner| owner.into_owned()) else { return; };
+        let personal = self.ninjas.panel.as_ref().filter(|panel| panel.profile.revision > 0);
+        if let Some(panel) = personal {
+            let host = self.ninjas.hosts.iter().find(|host| host.id == panel.host);
+            if !host.is_some_and(|host| host.endpoint.is_none()) {
+                self.notice = Some("This Ninja runs on another host. Its current connection provides task controls; open its workspace on that host to use the CLI.".into());
+                cx.notify();
+                return;
+            }
+            if !self.chat_clis.contains_key(&id) && (panel.history_loading || panel.busy || panel.messages.iter().any(ninja_chat::live)) {
+                self.notice = Some("Wait for this Ninja’s active task and history load to finish before opening its CLI.".into());
+                cx.notify();
+                return;
+            }
+        }
+        let agent = personal.map_or(self.agent, |panel| panel.profile.agent);
+        self.notice = None;
+        if self.chat_clis.get(&id).is_some_and(|cli| cli.agent != agent) {
+            self.close_chat_cli(&id, cx);
+        }
+        if let Some(cli) = self.chat_clis.get_mut(&id) {
+            if cli.send_when_closed.is_some() { return; }
+            if cli.preparing {
+                self.close_chat_cli(&id, cx);
+                cx.notify();
+                return;
+            }
+            cli.selected = !cli.selected;
+            if let Some((panel, _)) = &cli.fallback {
+                panel.update(cx, |panel, _| panel.set_visible(cli.selected));
+                if cli.selected { panel.read(cx).focus_handle(cx).focus(window); }
+            } else {
+                unified::emit(&json!({"type":"chatTerminalToggle","id":id,"launchId":cli.launch_id,"selected":cli.selected}));
+            }
+            if !cli.selected {
+                let resumes = cli.resumes_chat;
+                if let Some(history) = cli.cursor_history.clone() {
+                    self.engine.import_cursor_cli(id.clone(), history);
+                }
+                if resumes && let Some(session) = self.sessions.iter().find(|session| session.id == id).cloned() {
+                    self.open_session(session, window, cx);
+                }
+                self.composer.read(cx).focus_handle(cx).focus(window);
+            }
+            cx.notify();
+            return;
+        }
+        if self.quit_pending || (self.ninja_surface_owner().is_none() && self.starting_current()) || self.runs.contains_key(&id)
+            || self.settling.contains_key(&id) || self.finalizing.contains(&id)
+            || self.voice_call.as_ref().is_some_and(|call| call.owner == id)
+            || self.activity.pending_rank(&id).is_some()
+        {
+            self.notice = Some("Wait for the current turn to finish before switching to the CLI.".into());
+            cx.notify();
+            return;
+        }
+        let personal = self.ninjas.panel.as_ref().filter(|panel| panel.profile.revision > 0);
+        let session = self.active.as_ref().and_then(|id| self.sessions.iter().find(|session| &session.id == id));
+        let ninja_selection = if let Some(panel) = personal {
+            (agent == AgentKind::Ninja).then(|| panel.profile.ninja.clone()).flatten()
+        } else {
+            (agent == AgentKind::Ninja).then(|| self.ninja_selection())
+        };
+        let same_provider = session.is_some_and(|session| session.agent == agent)
+            && ninja_selection.as_ref().is_none_or(|next| self.active.as_ref()
+                .and_then(|id| self.ninja.bound.get(id)).is_none_or(|bound| bound.harness == next.harness));
+        let external = if let Some(panel) = personal {
+            panel.messages.iter().rev().filter(|task| task["finished"].is_number()).find_map(|task| {
+                let profile: ninjas::Profile = serde_json::from_value(task["profile"].clone()).ok()?;
+                let compatible = profile.agent == agent && profile.project == panel.profile.project
+                    && profile.ninja.as_ref().map(|route| route.harness) == panel.profile.ninja.as_ref().map(|route| route.harness);
+                compatible.then(|| task["native_id"].as_str().map(str::to_owned)).flatten()
+            })
+        } else {
+            session.filter(|_| same_provider).and_then(|session| session.external_id.clone())
+        };
+        let directory = personal.map_or_else(|| self.execution_root().unwrap_or_else(|| self.project.clone()), |panel| panel.profile.project.clone());
+        let create_workspace = personal.is_none() && directory.parent() == Some(self.unprojected_root().as_path())
+            && directory.file_name().and_then(|name| name.to_str()).is_some_and(|name| uuid::Uuid::parse_str(name).is_ok());
+        let executable = self.agents.iter().find(|provider| provider.kind == agent)
+            .and_then(|provider| provider.executable.clone());
+        let home = self.controls_home.clone();
+        let model = personal.map_or_else(|| self.model.clone(), |panel| panel.profile.model.clone());
+        let title = personal.map_or_else(|| session.map_or_else(|| format!("New {} session", agent.name()), |session| session.title.clone()), |panel| panel.profile.name.clone());
+        let session_can_bind = session.is_none_or(|session| session.agent == agent);
+        let cursor_lookup = (agent == AgentKind::Cursor && personal.is_none() && session_can_bind)
+            .then(|| session.map(|session| self.engine.cursor_cli_id(session.id.clone())))
+            .flatten();
+        let personal = personal.is_some();
+        let launch_id = uuid::Uuid::new_v4();
+        if id == CLI_DRAFT {
+            self.cli_draft_project = Some((self.project.clone(), self.new_execution_path.clone(), agent));
+        }
+        self.chat_clis.insert(id, ChatCli {
+            launch: None, agent, retained: None, preparing: true, launch_id,
+            fallback: None, selected: true, metal_visible: false, resumes_chat: external.is_some(), cursor_history: None, send_when_closed: None,
+        });
+        if personal { self.remember_ninja_draft(cx); }
+        else { self.remember_draft(cx); }
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let cursor_id = match cursor_lookup {
+                Some(lookup) => lookup.recv().await.unwrap_or_else(|_| Err("Could not read the saved Cursor CLI session.".into())),
+                None => Ok(None),
+            };
+            let prepared = cx.background_executor().spawn(async move {
+                if create_workspace {
+                    std::fs::create_dir_all(&directory).map_err(|error| format!("Could not create the chat workspace: {error}"))?;
+                }
+                let executable = if let Some(selection) = &ninja_selection {
+                    ninja::executable(selection.harness, &home)
+                } else {
+                    executable.or_else(|| discovery::discover_agent(agent, &home).executable)
+                }.ok_or_else(|| format!("{} CLI is unavailable.", agent.name()))?;
+                let history = if agent == AgentKind::Cursor && !personal && session_can_bind {
+                    let id = match cursor_id? {
+                        Some(id) => id,
+                        None => {
+                            let mut command = std::process::Command::new(&executable);
+                            command.current_dir(&directory).arg("create-chat");
+                            let bytes = ninja::http::run(command, None, Duration::from_secs(8))
+                                .map_err(|error| format!("Could not create the Cursor chat: {error}"))?;
+                            String::from_utf8_lossy(&bytes).trim().to_owned()
+                        }
+                    };
+                    Some(cursor_cli_history::Sync::start(&home, &directory, id)
+                        .map_err(|error| format!("Could not open Cursor chat history: {error}"))?)
+                } else { None };
+                let resume = history.as_ref().map(|history| history.id.as_str())
+                    .or_else(|| (agent != AgentKind::Cursor || personal).then_some(external.as_deref()).flatten());
+                provider_cli::prepare(agent, &executable, &directory, resume, model.as_deref(), ninja_selection.as_ref())
+                    .map(|prepared| (directory, prepared, history))
+            }).await;
+            // Keep the prepared lease outside the update closure. If the entity
+            // disappeared, dropping the unused closure must not join a gateway
+            // process on the UI thread.
+            let mut pending = Some(prepared);
+            let _ = this.update(cx, |app, cx| {
+                // A blank tab can become a saved local tab during preparation.
+                // Resolve by launch instance instead of the original owner key.
+                let owner = app.chat_clis.iter().find(|(_, cli)| cli.launch_id == launch_id).map(|(id, _)| id.clone());
+                let Some(owner) = owner else { return; };
+                let Some(prepared) = pending.take() else { return; };
+                match prepared {
+                    Ok((directory, prepared, history)) => {
+                        let provider_cli::PreparedLaunch { arguments, environment, retained } = prepared;
+                        if let Some(history) = &history && owner != CLI_DRAFT {
+                            app.engine.bind_cursor_cli(owner.clone(), history.id.clone());
+                        }
+                        let cli = app.chat_clis.get_mut(&owner).unwrap();
+                        cli.resumes_chat |= history.is_some();
+                        cli.cursor_history = history;
+                        cli.preparing = false;
+                        cli.retained = retained;
+                        cli.launch = Some((directory.clone(), arguments.clone(), environment.clone()));
+                        unified::emit(&json!({"type":"chatTerminalOpen","id":owner,"launchId":launch_id,
+                            "arguments":arguments,"environment":environment,"directory":directory,
+                            "title":title,"agent":agent.name()}));
+                    }
+                    Err(error) => {
+                        app.chat_clis.remove(&owner);
+                        if app.chat_cli_owner().as_deref() == Some(owner.as_str()) { app.notice = Some(error); }
+                    }
+                }
+                cx.notify();
+            });
+            if let Some(prepared) = pending {
+                cx.background_executor().spawn(async move { drop(prepared); }).detach();
+            }
+        }).detach();
+    }
+
+    pub(super) fn open_cli_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((project, execution, agent)) = self.cli_draft_project.clone() else { return; };
+        self.reset_conversation(cx);
+        self.project = project;
+        self.new_execution_path = execution;
+        self.agent = agent;
+        self.model = self.agent_models.get(agent.command()).cloned().flatten();
+        self.attachments = self.attachment_drafts.get(CLI_DRAFT).cloned().unwrap_or_default();
+        let draft = self.drafts.get(CLI_DRAFT).cloned().unwrap_or_default();
+        self.composer.update(cx, |input, cx| input.set_text(&draft, cx));
+        if let Some((panel, _)) = self.active_chat_cli().filter(|cli| cli.selected).and_then(|cli| cli.fallback.as_ref()) {
+            panel.read(cx).focus_handle(cx).focus(window);
+        } else {
+            self.composer.read(cx).focus_handle.focus(window);
+        }
+        self.rebuild_workspace_sessions();
+        self.sync_file_root(window, cx);
+        cx.notify();
+    }
+
+    pub(super) fn close_cli_draft(&mut self, cx: &mut Context<Self>) {
+        self.close_chat_cli(CLI_DRAFT, cx);
+        self.cli_draft_project = None;
+        self.drafts.remove(CLI_DRAFT);
+        self.attachment_drafts.remove(CLI_DRAFT);
+    }
+
     pub(super) fn open_tab_sessions(&self)->Vec<&SessionSummary>{self.open_tabs.iter().filter_map(|id|self.sessions.iter().find(|s|&s.id==id && !self.hidden_sessions.contains(id))).collect()}
     pub(super) fn keyboard_controls(&self) -> AnyElement {
         div()
@@ -118,11 +430,21 @@ impl Orbit {
             return;
         }
         match id {
+            "split_beside" | "split_below" => self.workspace_split_key(id, window, cx),
             "new" => self.new_conversation(window, cx),
             "close_tab" => {
-                if self.ninja_surface_owner().is_some(){self.remember_ninja_draft(cx);self.ninjas.desktop=None;self.ninjas.panel=None;cx.notify();return;}
+                if let Some(owner) = self.ninja_surface_owner() {
+                    self.close_chat_cli(&owner, cx);
+                    self.remember_ninja_draft(cx);
+                    self.ninjas.desktop = None;
+                    self.ninjas.panel = None;
+                    cx.notify();
+                    return;
+                }
                 if let Some(id) = self.active.clone() {
                     self.close_tab(&id, window, cx)
+                } else if self.cli_draft_project.is_some() || self.chat_clis.contains_key(CLI_DRAFT) {
+                    self.close_blank_tab(window, cx);
                 }
             }
             "composer" => self.composer.read(cx).focus_handle.focus(window),
@@ -146,6 +468,7 @@ impl Orbit {
             "files" => self.toggle_files(window, cx),
             "changes" => self.toggle_diffs(cx),
             "terminal" => self.toggle_terminal(window, cx),
+            "terminalize" => self.terminalize_chat(window, cx),
             "dock_terminal" => {
                 let sides = terminal_dock::Side::ALL;
                 let i = sides
@@ -200,6 +523,7 @@ impl Orbit {
                     self.select_project(self.projects[(i + step) % n].path.clone(), window, cx)
                 }
             }
+            "settings" => self.show_modal(Modal::Settings, window, cx),
             "keyboard" => {
                 self.show_modal(Modal::Settings, window, cx);
                 if let Some(input) = &self.appearance_search {
@@ -218,6 +542,123 @@ impl Orbit {
 mod tests {
     use super::*;
     use std::prelude::v1::test;
+    fn prepare_cli_fixture(app: &mut Orbit) {
+        app.active = None;
+        app.agent = AgentKind::Claude;
+        app.model = None;
+        app.new_execution_path = None;
+        app.starting = false;
+        let claude = app.agents.iter_mut().find(|agent| agent.kind == AgentKind::Claude).unwrap();
+        claude.executable = Some(PathBuf::from("/bin/sh"));
+        claude.available = true;
+    }
+
+    #[gpui::test]
+    fn cli_preparation_cancellation_keeps_the_unsent_draft(cx: &mut TestAppContext) {
+        let (view, cx) = crate::ui_tests::fixture(cx);
+        cx.update(|window, cx| view.update(cx, |app, cx| {
+            prepare_cli_fixture(app);
+            app.composer.update(cx, |input, cx| input.set_text("Keep unsent text", cx));
+            app.terminalize_chat(window, cx);
+            assert!(app.chat_clis[CLI_DRAFT].preparing);
+            app.terminalize_chat(window, cx);
+            assert!(!app.chat_clis.contains_key(CLI_DRAFT));
+            assert_eq!(app.composer.read(cx).text(), "Keep unsent text");
+        }));
+        cx.run_until_parked();
+        view.update(cx, |app, cx| {
+            assert!(!app.chat_clis.contains_key(CLI_DRAFT));
+            assert_eq!(app.composer.read(cx).text(), "Keep unsent text");
+        });
+    }
+
+    #[gpui::test]
+    fn cli_preparation_follows_a_promoted_draft_owner(cx: &mut TestAppContext) {
+        let (view, cx) = crate::ui_tests::fixture(cx);
+        let (owner, token) = cx.update(|window, cx| view.update(cx, |app, cx| {
+            prepare_cli_fixture(app);
+            app.composer.update(cx, |input, cx| input.set_text("Keep promoted text", cx));
+            app.terminalize_chat(window, cx);
+            let token = app.chat_clis[CLI_DRAFT].launch_id;
+            app.preserve_blank_tab(cx);
+            let owner = app.active.clone().unwrap();
+            assert_eq!(app.chat_clis[&owner].launch_id, token);
+            assert!(!app.chat_clis.contains_key(CLI_DRAFT));
+            (owner, token)
+        }));
+        cx.run_until_parked();
+        view.update(cx, |app, cx| {
+            let cli = &app.chat_clis[&owner];
+            assert_eq!(cli.launch_id, token);
+            assert!(!cli.preparing);
+            assert!(cli.selected);
+            assert_eq!(cli.agent, AgentKind::Claude);
+            let (_, args, _) = cli.launch.as_ref().expect("Preparation completed for promoted owner");
+            assert_eq!(args[3], "/bin/sh");
+            assert!(!args.iter().any(|arg| arg == "resume" || arg == "--resume"));
+            assert_eq!(app.composer.read(cx).text(), "Keep promoted text");
+            assert_eq!(app.drafts[&owner], "Keep promoted text");
+        });
+    }
+
+    #[gpui::test]
+    fn changing_the_selected_provider_replaces_only_that_tabs_cli(cx: &mut TestAppContext) {
+        let (view, cx) = crate::ui_tests::fixture(cx);
+        let previous = uuid::Uuid::new_v4();
+        cx.update(|window, cx| view.update(cx, |app, cx| {
+            prepare_cli_fixture(app);
+            app.composer.update(cx, |input, cx| input.set_text("Provider switch draft", cx));
+            app.chat_clis.insert(CLI_DRAFT.into(), ChatCli {
+                launch: None, agent: AgentKind::Codex, retained: None, preparing: false,
+                launch_id: previous, fallback: None, selected: true, metal_visible: false, resumes_chat: false, cursor_history: None, send_when_closed: None,
+            });
+            app.terminalize_chat(window, cx);
+            let cli = &app.chat_clis[CLI_DRAFT];
+            assert_ne!(cli.launch_id, previous);
+            assert_eq!(cli.agent, AgentKind::Claude);
+            assert_eq!(app.composer.read(cx).text(), "Provider switch draft");
+        }));
+        cx.run_until_parked();
+        view.update(cx, |app, cx| {
+            let cli = &app.chat_clis[CLI_DRAFT];
+            assert_eq!(cli.agent, AgentKind::Claude);
+            assert!(!cli.preparing);
+            assert!(cli.selected);
+            assert_eq!(app.composer.read(cx).text(), "Provider switch draft");
+        });
+    }
+
+    #[gpui::test]
+    fn shortcut_from_peer_cli_targets_its_tab_and_leaves_the_other_cli_selected(cx: &mut TestAppContext) {
+        let (view, cx) = crate::ui_tests::fixture(cx);
+        cx.update(|window, cx| view.update(cx, |app, cx| {
+            let first = app.sessions[0].clone();
+            let mut second = first.clone();
+            second.id = "other-split-chat".into();
+            app.sessions.push(second.clone());
+            app.open_session(first.clone(), window, cx);
+            app.split_chat(second.clone(), terminal_dock::Side::Right, window, cx);
+            assert_eq!(app.split_peer(), Some(second.id.as_str()));
+            let cli = || ChatCli {
+                launch: None, agent: AgentKind::Codex, retained: None, preparing: false,
+                launch_id: uuid::Uuid::new_v4(), fallback: None, selected: true, metal_visible: true,
+                resumes_chat: false, cursor_history: None, send_when_closed: None,
+            };
+            app.chat_clis.insert(first.id.clone(), cli());
+            app.chat_clis.insert(second.id.clone(), cli());
+            let token = app.chat_clis[&second.id].launch_id;
+            app.unified_command(&json!({"action":"chat_terminal_command","id":second.id,
+                "launchId":token,"command":"terminalize"}), window, cx).unwrap();
+            assert_eq!(app.active.as_deref(), Some(second.id.as_str()));
+            assert!(!app.chat_clis[&second.id].selected);
+            assert!(app.chat_clis[&first.id].selected);
+            app.unified_command(&json!({"action":"chat_terminal_command","id":second.id,
+                "launchId":token,"command":"close_tab"}), window, cx).unwrap();
+            assert!(!app.chat_clis.contains_key(&second.id));
+            assert!(app.chat_clis[&first.id].selected);
+        }));
+    }
+
     #[gpui::test]
     fn keyboard_navigation_preserves_chat_drafts_and_focuses_the_existing_composer(
         cx: &mut TestAppContext,

@@ -1,7 +1,58 @@
 #!/usr/bin/env python3
 """Run an isolated signed bundle through its purpose-built native probes."""
-import argparse,base64,contextlib,http.server,json,os,plistlib,re,shutil,signal,struct,subprocess,tempfile,threading,time,zlib
+import argparse,base64,contextlib,ctypes,http.server,json,os,plistlib,re,shutil,signal,struct,subprocess,tempfile,threading,time,zlib
 from pathlib import Path
+
+
+# Use only keyboard, pointer, and scroll events. The aggregate Quartz event
+# counter also sees application/system events and is unsuitable for idle checks.
+def hid_idle_clock():
+    quartz=ctypes.CDLL('/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics')
+    seconds=quartz.CGEventSourceSecondsSinceLastEventType
+    seconds.argtypes=(ctypes.c_int32,ctypes.c_uint32)
+    seconds.restype=ctypes.c_double
+    event_types=(1,2,3,4,5,6,7,10,11,12,22,23,24,25,26,27)
+    return lambda: min(seconds(1,event) for event in event_types)
+
+def process_usage_clock():
+    # RUSAGE_INFO_V0 reports cumulative process CPU in nanoseconds.
+    class Usage(ctypes.Structure):
+        _fields_ = [('uuid', ctypes.c_uint8 * 16)] + [
+            (name, ctypes.c_uint64) for name in (
+                'user', 'system', 'wakeups', 'interrupt_wakeups', 'pageins',
+                'wired', 'resident', 'footprint', 'started', 'exited'
+            )
+        ]
+    libproc=ctypes.CDLL('/usr/lib/libproc.dylib')
+    rusage=libproc.proc_pid_rusage
+    rusage.argtypes=(ctypes.c_int,ctypes.c_int,ctypes.POINTER(Usage))
+    rusage.restype=ctypes.c_int
+    def read(pid):
+        usage=Usage()
+        if rusage(pid,0,ctypes.byref(usage))!=0:
+            return None
+        return (usage.user+usage.system)/1e9,usage.resident//1024,usage.wakeups
+    return read
+
+
+def verified_idle(samples):
+    start=longest_start=longest_end=0
+    for index in range(1,len(samples)):
+        previous,current=samples[index-1:index+1]
+        elapsed=current['seconds']-previous['seconds']
+        # Require one continuous quiet interval. Leave one second after
+        # input for the renderer's input-related presentation tail.
+        if current['hid_idle_seconds']<elapsed+1.05:
+            start=index
+        if current['seconds']-samples[start]['seconds'] > samples[longest_end]['seconds']-samples[longest_start]['seconds']:
+            longest_start,longest_end=start,index
+    first,last=samples[longest_start],samples[longest_end]
+    duration=last['seconds']-first['seconds']
+    return {'seconds':round(duration,2),
+            'start_seconds':first['seconds'],
+            'end_seconds':last['seconds'],
+            'wakeups_per_second':(last['wakeups']-first['wakeups'])/duration if duration>=20 else None,
+            'cpu_percent_from_time_delta':100*(last['cpu_seconds']-first['cpu_seconds'])/duration if duration>=20 else None}
 
 
 @contextlib.contextmanager
@@ -37,10 +88,18 @@ def image_fixture(env,enabled):
 
 def main():
     parser=argparse.ArgumentParser()
-    parser.add_argument('mode',choices=['discovery','surfaces','ninja-chat','menu-bar','wallpaper','glass','startup-workspace','startup-extended','startup-compact','performance','latency','background-idle'])
+    parser.add_argument('mode',choices=['discovery','surfaces','ninja-chat','menu-bar','chat-split','wallpaper','glass','startup-workspace','startup-extended','startup-compact','performance','latency','background-idle'])
+    parser.add_argument('--idle-seconds',type=int,default=30,help='Idle probe duration from 30 to 60 seconds')
+    parser.add_argument('--native-history',action='store_true',help='Use long imported Codex chats in the latency probe')
+    parser.add_argument('--report-dir',type=Path)
+    parser.add_argument('--sample-stacks',action='store_true',help='Sample stacks in a separate diagnostic run')
     parser.add_argument('--bundle',type=Path,help='Verify another signed bundle, including an installed baseline')
     args=parser.parse_args();mode=args.mode
-    if mode in {'ninja-chat','latency','performance'}:
+    if not 30<=args.idle_seconds<=60:parser.error('--idle-seconds must be between 30 and 60')
+    idle_mode=mode in {'performance','background-idle'}
+    input_idle=hid_idle_clock() if idle_mode else None
+    process_usage=process_usage_clock() if idle_mode else None
+    if mode in {'startup-workspace','ninja-chat','latency','performance','background-idle'}:
         # WindowServer suspends display updates at the lock screen. Identity
         # checks can still run there, but visible-frame timings cannot certify UI.
         console=plistlib.loads(subprocess.check_output(['ioreg','-a','-n','Root','-d','1']))
@@ -49,9 +108,12 @@ def main():
             raise RuntimeError('Unlock this Mac before measuring visible-window rendering; macOS has paused display updates.')
     root=Path(__file__).resolve().parent.parent
     source=args.bundle or root/'.build/unified/Kai Unified.app'
-    report=root/'.build/validation';report.mkdir(parents=True,exist_ok=True)
+    report=args.report_dir or root/'.build/validation';report.mkdir(parents=True,exist_ok=True)
     log=report/(mode+'.log')
     env=os.environ.copy();env['KAI_PERFORMANCE_LOG']='1'
+    if args.native_history:
+        if mode!='latency':parser.error('--native-history requires latency')
+        env['KAI_LATENCY_NATIVE_FIXTURE']='1'
     flags=['--unified-smoke-test']
     if mode=='discovery':
         flags+=['--unified-discovery-probe'];marker='KAI_DISCOVERY_PROBE_OK'
@@ -61,6 +123,8 @@ def main():
         flags+=['--unified-surface-probe'];marker='KAI_SURFACE_PROBE_OK'
     elif mode=='ninja-chat':
         flags+=['--unified-ninja-render-probe'];marker='KAI_NINJA_RENDER_PROBE_OK';env['KAI_STARTUP_SURFACE']='workspace'
+    elif mode=='chat-split':
+        flags+=['--unified-chat-split-probe'];marker='KAI_CHAT_SPLIT_PROBE_OK';env['KAI_STARTUP_SURFACE']='workspace'
     elif mode=='menu-bar':
         flags+=['--unified-menu-bar-probe'];marker='KAI_MENU_BAR_PROBE_OK';env['KAI_STARTUP_SURFACE']='workspace'
     elif mode=='latency':
@@ -75,7 +139,8 @@ def main():
     else:
         flags+=['--unified-startup-probe'];marker='KAI_STARTUP_PROBE_OK'
         if mode!='performance':env['KAI_STARTUP_SURFACE']=mode.removeprefix('startup-')
-        else:env['KAI_STARTUP_WAIT_MS']='30000'
+        else:env['KAI_STARTUP_SURFACE']='workspace'
+    if idle_mode:env['KAI_STARTUP_WAIT_MS']=str(1000*args.idle_seconds)
     samples=[];sampled=False
     with image_fixture(env,mode=='ninja-chat') as downloads,tempfile.TemporaryDirectory(prefix='kai-packaged-'+mode+'-') as scratch:
         app=Path(scratch)/'Kai Validation.app'
@@ -114,15 +179,14 @@ os.execve(sys.argv[1],sys.argv[1:],os.environ)
             try:
                 while process.poll() is None:
                     elapsed=time.monotonic()-launched
-                    if elapsed>65:raise TimeoutError('Packaged probe timed out')
-                    if mode in {'performance','background-idle'} and 8<=elapsed<=27:
-                        stat=subprocess.run(['ps','-o','pcpu=,rss=,time=','-p',str(process.pid)],capture_output=True,text=True)
-                        threads=subprocess.run(['ps','-M','-p',str(process.pid)],capture_output=True,text=True)
-                        fields=stat.stdout.split()
-                        if len(fields)==3:
-                            parts=[float(n) for n in fields[2].split(':')];cpu_seconds=sum(n*(60**i) for i,n in enumerate(reversed(parts)))
-                            samples.append({'seconds':round(elapsed,2),'cpu_percent':float(fields[0]),'cpu_seconds':cpu_seconds,'rss_kib':int(fields[1]),'threads':max(0,len(threads.stdout.splitlines())-1)})
-                        if mode in {'performance','background-idle'} and elapsed>=14 and not sampled:
+                    if elapsed>max(65,args.idle_seconds+15):raise TimeoutError('Packaged probe timed out')
+                    if idle_mode and 8<=elapsed<=args.idle_seconds-3:
+                        usage=process_usage(process.pid)
+                        if usage:
+                            cpu_seconds,rss_kib,wakeups=usage
+                            samples.append({'seconds':elapsed,'cpu_seconds':cpu_seconds,'rss_kib':rss_kib,
+                                            'wakeups':wakeups,'hid_idle_seconds':input_idle()})
+                        if args.sample_stacks and elapsed>=14 and not sampled:
                             sampled=True
                             subprocess.run(['sample',str(process.pid),'3','-file',str(report/(mode+'.sample.txt'))],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
                     time.sleep(1 if mode in {'performance','background-idle'} else 0.2)
@@ -145,9 +209,16 @@ os.execve(sys.argv[1],sys.argv[1:],os.environ)
             if timings['cached-navigation-ready']>=timings['discovery-ready']:raise RuntimeError('Cached navigation waited for history discovery')
         native_commands=re.findall(r'KAI_NATIVE_COMMAND (\S+)',text)
         interactions=[name for name in native_commands if name not in {'pet_visuals','workspace_presentation','workspace_wallpaper_visibility'}]
-        result={'mode':mode,'version':info.get('CFBundleShortVersionString'),'elapsed_seconds':round(time.monotonic()-launched,2),'launch_milliseconds':timings,'samples':samples,'native_commands':native_commands,'idle_interactions':interactions,'metrics':{name:[float(ms) for key,ms in re.findall(r'KAI_METRIC (\S+) ([0-9.]+)',text) if key==name] for name in ['warm_chat_switch','cold_chat_switch','warm_reveal','root_render','ninja_frame']},'log':str(log)}
+        result={'mode':mode,'version':info.get('CFBundleShortVersionString'),'elapsed_seconds':round(time.monotonic()-launched,2),'launch_milliseconds':timings,'samples':samples,'native_commands':native_commands,'idle_interactions':interactions,'metrics':{name:[float(ms) for key,ms in re.findall(r'KAI_METRIC (\S+) ([0-9.]+)',text) if key==name] for name in ['warm_chat_switch','cold_chat_switch','warm_reveal','warm_order_front','warm_frame_wake','codex_split_resize_frame','root_render','ninja_frame','chat_open_prepare','chat_model_lookup','chat_history_load','chat_history_apply','project_discovery','project_discovery_install','viewport_prepare','viewport_disk_commit']},'log':str(log)}
+        if args.native_history:
+            metrics=result['metrics']
+            if len(metrics['cold_chat_switch'])!=24 or len(metrics['chat_history_apply'])<48:
+                raise RuntimeError('Native latency probe did not render all 48 imported chat opens')
         if samples:
-            result['idle_average']={'cpu_percent_from_time_delta':100*(samples[-1]['cpu_seconds']-samples[0]['cpu_seconds'])/(samples[-1]['seconds']-samples[0]['seconds']),'cpu_percent':sum(s['cpu_percent'] for s in samples)/len(samples),'rss_mib':sum(s['rss_kib'] for s in samples)/len(samples)/1024,'threads':sum(s['threads'] for s in samples)/len(samples)}
+            result['verified_idle_average']=verified_idle(samples)
+            if args.sample_stacks or (mode=='performance' and 'occlusionVisible=false' in text):
+                result['verified_idle_average']['cpu_percent_from_time_delta']=None
+            result['idle_average']={'cpu_percent_from_time_delta':100*(samples[-1]['cpu_seconds']-samples[0]['cpu_seconds'])/(samples[-1]['seconds']-samples[0]['seconds']),'rss_mib':sum(s['rss_kib'] for s in samples)/len(samples)/1024}
         if mode=='ninja-chat':
             loaded=re.search(r'KAI_NINJA_IMAGE_PREVIEWS (\d+)',text)
             assert loaded and int(loaded[1])==8 and len(downloads)==8,'Image queue did not finish all eight previews'
@@ -159,7 +230,7 @@ os.execve(sys.argv[1],sys.argv[1:],os.environ)
         (report/(mode+'.json')).write_text(json.dumps(result,indent=2))
         if mode=='ninja-chat' and not result['smooth_frame_budget_passed']:
             raise RuntimeError(f'Ninja frame p95 exceeded 34 ms; evidence saved to {report/(mode+".json")}')
-        if mode in {'performance','background-idle'} and interactions:
+        if idle_mode and interactions:
             raise RuntimeError(f'Idle measurement received native input ({interactions}); evidence saved, but this run cannot certify idle CPU')
         print(json.dumps({k:v for k,v in result.items() if k!='samples'},indent=2))
         if samples:print('Idle sample averages:',json.dumps(result['idle_average']))

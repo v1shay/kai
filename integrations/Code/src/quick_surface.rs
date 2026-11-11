@@ -114,7 +114,7 @@ impl Orbit {
         };
         let input = composer.clone();
         let empty=self.rows.is_empty();
-        let transcript=list(scroll.clone(),cx.processor(|this,ix,window,cx|this.row(ix,window,cx))).size_full();
+        let transcript=list(scroll.clone(),cx.processor(|this,ix,window,cx|this.row(ix,window,cx))).flex_1().min_w(px(0.)).min_h(px(0.));
         let artwork = self
             .background
             .read(cx)
@@ -243,6 +243,7 @@ impl Orbit {
                 div()
                     .id("quick-transcript")
                     .debug_selector(|| "quick-transcript".into())
+                    .flex().flex_col()
                     .flex_1()
                     .min_h(px(0.))
                     .w_full()

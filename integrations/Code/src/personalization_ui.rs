@@ -62,6 +62,27 @@ impl Orbit {
             panel=panel.child(div().id("github-settings").p_3().rounded_lg().border_1().border_color(rgba(0xffffff16)).cursor_pointer().flex().items_center().gap_2().child(icon("kai/integrations/github",16.,TEXT)).child("GitHub & source control").child(div().flex_1()).child(icon("chevron-right",12.,MUTED)).on_click(cx.listener(|app,_,w,cx|app.open_github(github_ui::Tab::Repository,w,cx))));
         }
         if theme_controls::matches(&query,"Startup launch window notch workspace automatic chat titles animation opening entrance motion"){panel=panel.child(self.startup_controls(cx));}
+        if theme_controls::matches(&query, "Terminal engine emulator Alacritty Ghostty VT shell") {
+            panel = panel.child(
+                div().id("terminal-engine-settings").flex().flex_col().gap_2()
+                    .child(div().font_weight(FontWeight::SEMIBOLD).child("Terminal engine"))
+                    .child(div().flex().gap_2().children(terminal::Backend::ALL.map(|backend| {
+                        let selected = self.terminal_backend == backend;
+                        div().id(backend.label()).h(px(32.)).px_3().rounded_md().flex().items_center().gap_2()
+                            .cursor_pointer().bg(rgba(if selected { 0xffffff18 } else { 0xffffff06 }))
+                            .hover(|row| row.bg(rgba(GLASS_HOVER)))
+                            .child(icon(if selected { "check" } else { "chevron-right" }, 13., MUTED))
+                            .child(backend.label())
+                            .on_click(cx.listener(move |app, _, _, cx| {
+                                app.terminal_backend = backend;
+                                app.queue_workspace_save(cx);
+                                cx.notify();
+                            }))
+                    })))
+                    .child(div().text_size(theme::ui_px(11.)).text_color(rgb(MUTED))
+                        .child("Ghostty Metal supports graphics and keeps shells open while Kai runs. Persistent engines can reconnect after relaunch.")),
+            );
+        }
         panel = panel.child(theme_controls::controls(
             &self.theme,
             &self.resolved_theme,

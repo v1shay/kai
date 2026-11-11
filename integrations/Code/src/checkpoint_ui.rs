@@ -323,7 +323,12 @@ impl Orbit {
             || !self.settling.is_empty()
             || !self.finalizing.is_empty()
             || self.checkpoint_busy > 0
-            || self.terminals.iter().any(|session| !session.panel.read(cx).is_settled())
+            || self.saved_terminal_decks.iter().flat_map(|deck| &deck.sessions)
+                .any(|terminal| terminal.project == root)
+            || self.all_terminals().any(|session| {
+                let panel = session.panel.read(cx);
+                !panel.is_settled() || panel.resume().is_some_and(|terminal| terminal.project == root)
+            })
         {
             return Some("Stop agents and terminals and wait for their files to finish before restoring a prompt.".into());
         }
@@ -927,7 +932,7 @@ impl Orbit {
             return div().into_any_element();
         };
         let reveal = if self.motion {
-            presentation::spring((panel.started.elapsed().as_secs_f32() / 0.32).min(1.))
+            presentation::ease_out((panel.started.elapsed().as_secs_f32() / 0.32).min(1.))
                 .clamp(0., 1.)
         } else {
             1.

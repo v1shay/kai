@@ -127,7 +127,7 @@ enum FloatingTaskCorner:String,CaseIterable {
             if entry.petFrame != frames.pet || entry.pillFrame != frames.pill{
                 entry.petFrame=frames.pet;entry.pillFrame=frames.pill
                 if !isNew,!NSWorkspace.shared.accessibilityDisplayShouldReduceMotion{
-                    NSAnimationContext.runAnimationGroup{context in context.duration=0.28;context.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.85,0.25,1);entry.petWindow.animator().setFrame(frames.pet,display:true);entry.pillWindow.animator().setFrame(frames.pill,display:true)}
+                    NSAnimationContext.runAnimationGroup{context in  context.duration=KaiMotion.paneDuration;context.timingFunction=KaiMotion.interactionCurve;entry.petWindow.animator().setFrame(frames.pet,display:true);entry.pillWindow.animator().setFrame(frames.pill,display:true)}
                 }else{entry.petWindow.setFrame(frames.pet,display:true);entry.pillWindow.setFrame(frames.pill,display:true)}
             }
             entry.row.layoutSubtreeIfNeeded();entry.pill.layoutSubtreeIfNeeded()
@@ -140,19 +140,19 @@ enum FloatingTaskCorner:String,CaseIterable {
                 entry.pet=pet;entry.motion=motion
                 if let style=task.ninjaStyle,let image=MenuBarIdentityMenu.image(MenuBarMark(kind:"ninja",id:task.id,name:task.name,style:style)),let cg=image.cgImage(forProposedRect:nil,context:nil,hints:nil){
                     entry.loading=nil;entry.row.sprite.removeAllAnimations();CATransaction.begin();CATransaction.setDisableActions(true);entry.row.sprite.contents=cg;entry.row.sprite.contentsRect=CGRect(x:0,y:0,width:1,height:1);CATransaction.commit()
-                    let fade=CATransition();fade.type = .fade;fade.duration=0.22;entry.row.sprite.add(fade,forKey:"ninjaChange")
+                    let fade=CATransition();fade.type = .fade;fade.duration=KaiMotion.paneDuration;entry.row.sprite.addKai(fade,forKey:"ninjaChange")
                 }else if let spec=specs.first(where:{$0.id == pet}),let motion=spec.motions[motion] ?? spec.motions["idle"],let timeline=SpriteTimeline(row:motion.row,rows:spec.rows,columns:motion.columns,durationsMs:motion.durationsMs,loops:motion.loop),let root{
                     let token=UUID();entry.loading=token
                     images.load(spec.sourceURL ?? root.appendingPathComponent(spec.spritesheet)){[weak entry] image in
                         guard let entry,entry.loading == token,let image else{return}
                         CATransaction.begin();CATransaction.setDisableActions(true);entry.row.sprite.contents=image;entry.row.sprite.contentsRect=timeline.frames[0];CATransaction.commit()
                         entry.row.sprite.removeAnimation(forKey:"spriteFrames")
-                        if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion{entry.row.sprite.add(timeline.animation(),forKey:"spriteFrames")}
+                        if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion{entry.row.sprite.addKai(timeline.animation(),forKey:"spriteFrames")}
                         if isNew,let layer=entry.row.layer{
                             entry.transition.reveal(layer,visible:true,fromOpacity:0)
-                            if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion{let pop=CABasicAnimation(keyPath:"transform.scale");pop.fromValue=0.72;pop.toValue=1;pop.duration=0.36;pop.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.72,0.24,1);layer.add(pop,forKey:"statusScale")}
+                            if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion{let pop=CABasicAnimation(keyPath:"transform.scale");pop.fromValue=0.72;pop.toValue=1;pop.duration=KaiMotion.contentDuration;pop.timingFunction=KaiMotion.interactionCurve;layer.addKai(pop,forKey:"statusScale")}
                         }
-                        if !isNew{let fade=CATransition();fade.type = .fade;fade.duration=0.22;entry.row.sprite.add(fade,forKey:"petChange")}
+                        if !isNew{let fade=CATransition();fade.type = .fade;fade.duration=KaiMotion.paneDuration;entry.row.sprite.addKai(fade,forKey:"petChange")}
                     }
                 }
                 if let profile=profiles[pet]{entry.icon.setProfile(profile,wave:false)}
@@ -181,7 +181,7 @@ enum FloatingTaskCorner:String,CaseIterable {
             let fresh=entry.children[task.id]==nil,child=entry.children[task.id] ?? Companion();entry.children[task.id]=child
             if child.row.superview !== entry.row{entry.row.addSubview(child.row)}
             let frame=family.nestedFrame(in:entry.row.bounds,index:index,count:children.count)
-            if !fresh,!NSWorkspace.shared.accessibilityDisplayShouldReduceMotion{NSAnimationContext.runAnimationGroup{context in context.duration=0.28;child.row.animator().frame=frame}}else{child.row.frame=frame}
+            if !fresh,!NSWorkspace.shared.accessibilityDisplayShouldReduceMotion{NSAnimationContext.runAnimationGroup{context in context.timingFunction=KaiMotion.interactionCurve; context.duration=KaiMotion.paneDuration;child.row.animator().frame=frame}}else{child.row.frame=frame}
             child.row.layer?.cornerRadius=frame.width/2;child.row.layer?.borderWidth=0.5;child.row.layer?.borderColor=NSColor.white.withAlphaComponent(0.2).cgColor
             child.row.setAccessibilityLabel(task.name);child.row.toolTip=task.name+"\n"+task.text
             child.row.onSingle={ [weak self] in guard let self else{return};self.onOpen?(task,self.preview) };child.row.onDouble={ [weak self] in guard let self else{return};self.onOpen?(task,self.preview) };child.row.onScroll={ [weak self] delta in self?.pageFamily(family,delta:delta) }
@@ -192,7 +192,7 @@ enum FloatingTaskCorner:String,CaseIterable {
                 images.load(spec.sourceURL ?? root.appendingPathComponent(spec.spritesheet)){[weak child] image in
                     guard let child,child.loading==token,let image else{return}
                     CATransaction.begin();CATransaction.setDisableActions(true);child.row.sprite.contents=image;child.row.sprite.contentsRect=timeline.frames[0];CATransaction.commit();child.row.sprite.removeAnimation(forKey:"spriteFrames")
-                    if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion{child.row.sprite.add(timeline.animation(),forKey:"spriteFrames")}
+                    if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion{child.row.sprite.addKai(timeline.animation(),forKey:"spriteFrames")}
                     if let layer=child.row.layer{child.transition.reveal(layer,visible:true,fromOpacity:fresh ? 0:nil)}
                 }
             }

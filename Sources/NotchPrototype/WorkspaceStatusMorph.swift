@@ -19,10 +19,10 @@ import AppKit
         let start=WorkspaceMorph.outline(source.offsetBy(dx:-frame.minX,dy:-frame.minY),notch:false,radius:10)
         let end=WorkspaceMorph.outline(target.offsetBy(dx:-frame.minX,dy:-frame.minY),notch:true,radius:14)
         layer.path=end;layer.opacity=0;view.layer?.addSublayer(layer)
-        let shape=CABasicAnimation(keyPath:"path");shape.fromValue=start;shape.toValue=end;shape.duration=0.48
-        shape.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.84,0.20,1)
-        let fade=CAKeyframeAnimation(keyPath:"opacity");fade.values=[0,0.20,0.12,0];fade.keyTimes=[0,0.12,0.65,1];fade.duration=0.48
-        layer.add(shape,forKey:"statusContour");layer.add(fade,forKey:"statusFade")
+        let shape=CABasicAnimation(keyPath:"path");shape.fromValue=start;shape.toValue=end;shape.duration=KaiMotion.contentDuration
+        shape.timingFunction=KaiMotion.interactionCurve
+        let fade=CAKeyframeAnimation(keyPath:"opacity");fade.values=[0,0.20,0.12,0];fade.keyTimes=[0,0.12,0.65,1];fade.duration=KaiMotion.contentDuration
+        layer.addKai(shape,forKey:"statusContour");layer.addKai(fade,forKey:"statusFade")
         self.panel=panel;active=true;panel.orderFrontRegardless()
         let finish=DispatchWorkItem{[weak self] in self?.cancel()};retire=finish
         DispatchQueue.main.asyncAfter(deadline:.now()+0.50,execute:finish)

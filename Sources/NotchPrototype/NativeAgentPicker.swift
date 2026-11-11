@@ -17,6 +17,7 @@ import AppKit
     var onNinja:((String,String)->Void)?
     private var ninjaQuery=""
     private var ninjaSearch:NSSearchField?
+    private var deferredSearchState:KaiState?
     var onAgent:((String,String)->Void)?,onModel:((String)->Void)?,onEffort:((String,String)->Void)?
     var visible:Bool{panel?.isVisible == true}
     private var providers:[KaiAgent]{state?.agents?.filter(\.available) ?? []}
@@ -34,9 +35,9 @@ import AppKit
         let old=panel;panel=nil;glass=nil
         if let monitor{NSEvent.removeMonitor(monitor)};if let globalMonitor{NSEvent.removeMonitor(globalMonitor)};monitor=nil;globalMonitor=nil
         effortRows.forEach{$0.setPreview(false)};effortRows=[];columns=[];columnIDs=[];scrolls=[];buttons=[]
-        old?.orderOut(nil)
-        if restoreFocus,let window=previousWindow{window.makeKey();if let responder=previousResponder{window.makeFirstResponder(responder)}}
-        previousWindow=nil;previousResponder=nil;pendingAgent=nil;pendingAgentRequestID=nil
+        if let old { KaiMotion.dismiss(old) }
+        if (restoreFocus || NSApp.keyWindow === old),let window=previousWindow,window.isVisible{window.makeKey();if let responder=previousResponder{window.makeFirstResponder(responder)}}
+        previousWindow=nil;previousResponder=nil;pendingAgent=nil;pendingAgentRequestID=nil;deferredSearchState=nil
     }
     func show(scope:Scope,state:KaiState,at anchor:CGPoint){
         if visible,self.scope==scope{dismiss(restoreFocus:true);return}
@@ -49,7 +50,7 @@ import AppKit
         let glass=composerGlass(in:panel,radius:13)
         self.panel=panel;self.glass=glass
         rebuild(anchor:anchor);panel.alphaValue=0;panel.makeKeyAndOrderFront(nil)
-        NSAnimationContext.runAnimationGroup{c in c.duration=NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0:0.16;panel.animator().alphaValue=1}
+        NSAnimationContext.runAnimationGroup{c in  c.duration=NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0:KaiMotion.contentDuration;c.timingFunction=KaiMotion.interactionCurve;panel.animator().alphaValue=1}
         monitor=NSEvent.addLocalMonitorForEvents(matching:[.keyDown,.leftMouseDown,.rightMouseDown]){[weak self,weak panel] event in
             guard let self,let panel,self.panel === panel else{return event}
             if event.type == .keyDown,NSApp.keyWindow === panel,self.handleKey(event.keyCode,modifiers:event.modifierFlags){return nil}
@@ -63,11 +64,13 @@ import AppKit
         guard state.project==sourceProject,state.threadId==sourceThread else{dismiss();return}
         if self.state?.ownerToken != state.ownerToken,pendingAgent != state.selectedAgent{dismiss();return}
         if let reply=pendingAgentRequestID.flatMap(state.requestResult),reply.error != nil{dismiss();return}
-        let changed=state.ninja != self.state?.ninja || self.state?.selectedAgent != state.selectedAgent || self.state?.selectedModel != state.selectedModel || self.state?.effectiveModel != state.effectiveModel || self.state?.reasoningEffort != state.reasoningEffort || self.state?.effectiveReasoningEffort != state.effectiveReasoningEffort || self.state?.horizontalAgentPicker != state.horizontalAgentPicker || self.state?.models?.map{$0.model+":"+$0.supportedReasoningEfforts.map(\.reasoningEffort).joined(separator:",")} != state.models?.map{$0.model+":"+$0.supportedReasoningEfforts.map(\.reasoningEffort).joined(separator:",")}
+        if let editor=ninjaSearch?.currentEditor() as? NSTextView,editor.hasMarkedText(){deferredSearchState=state;return}
+        deferredSearchState=nil
+        let changed=state.ninja != self.state?.ninja || self.state?.selectedAgent != state.selectedAgent || self.state?.selectedModel != state.selectedModel || self.state?.effectiveModel != state.effectiveModel || self.state?.providerDefaultModel != state.providerDefaultModel || self.state?.reasoningEffort != state.reasoningEffort || self.state?.effectiveReasoningEffort != state.effectiveReasoningEffort || self.state?.horizontalAgentPicker != state.horizontalAgentPicker || self.state?.agents != state.agents || self.state?.models != state.models || self.state?.modelsLoading != state.modelsLoading
         let modelChanged=self.state?.selectedModel != state.selectedModel
         self.state=state
         if modelChanged{selectedModel=state.selectedModel ?? "";cursors[1]=models.firstIndex{$0.model==selectedModel} ?? 0}
-        if let pendingAgent,pendingAgent != state.selectedAgent{return}
+        if let pendingAgent,pendingAgent != state.selectedAgent{if changed{rebuild()};return}
         if pendingAgent != nil{pendingAgent=nil;pendingAgentRequestID=nil;selectedModel=state.selectedModel ?? "";cursors[1]=models.firstIndex{$0.model==selectedModel} ?? 0}
         if changed{rebuild()}
     }
@@ -86,6 +89,8 @@ import AppKit
         let width=baseWidth+(ninjaSide ? 244:0)
         let agents=providers,catalog=models,efforts=levels
         let counts=[agents.count,catalog.count,efforts.count]
+        for id in cursors.indices{cursors[id]=min(max(0,cursors[id]),max(0,counts[id]-1))}
+        if !visibleIDs.contains(column){column=visibleIDs.last ?? 0}
         let desiredHeights=visibleIDs.map{CGFloat(min(counts[$0],8))*34+30}
         let fit=horizontal ? 1:min(1,(screen.height-32)/max(1,desiredHeights.reduce(0,+)))
         let heights=desiredHeights.map{$0*fit}
@@ -142,7 +147,12 @@ import AppKit
         if ninja.canCancel == true{let stop=NSButton(title:"Stop",target:self,action:#selector(cancelNinja));stop.isBordered=false;stop.font=AppTypography.ui(ofSize:11);stop.frame=CGRect(x:width-66,y:top-105-extra,width:54,height:22);host.addSubview(stop)}
     }
     @objc private func selectNinja(_ sender:NSPopUpButton){guard let field=sender.identifier?.rawValue,let value=sender.selectedItem?.representedObject as? String else{return};onNinja?(field,value)}
-    @objc private func searchNinja(_ sender:NSSearchField){ninjaQuery=sender.stringValue;cursors[1]=0;onNinja?("search",ninjaQuery);rebuild()}
+    @objc private func searchNinja(_ sender:NSSearchField){
+        ninjaQuery=sender.stringValue;cursors[1]=0
+        guard (sender.currentEditor() as? NSTextView)?.hasMarkedText() != true else{return}
+        if let deferred=deferredSearchState{deferredSearchState=nil;update(deferred)}
+        onNinja?("search",ninjaQuery);rebuild()
+    }
     @objc private func cancelNinja(){onNinja?("cancel","")}
     private func updateHighlights(){
         guard let state else{return}
@@ -157,6 +167,9 @@ import AppKit
     @objc private func selectRow(_ button:NSButton){column=button.tag/10000;cursors[column]=button.tag%10000;commitColumn()}
     @discardableResult func handleKey(_ code:UInt16,modifiers:NSEvent.ModifierFlags=[])->Bool{
         guard visible,modifiers.intersection([.command,.control,.option,.shift]).isEmpty else{return false}
+        if let editor=ninjaSearch?.currentEditor() as? NSTextView,panel?.firstResponder === editor {
+            if editor.hasMarkedText() || code==123 || code==124{return false}
+        }
         switch code{
         case 53:dismiss(restoreFocus:true)
         case 126,125:

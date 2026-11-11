@@ -3,7 +3,7 @@ import AVFoundation
 
 final class FileGlyphLayer: CAShapeLayer {
     private let glyphSize:CGSize
-    private let curve=CAMediaTimingFunction(controlPoints:0.16,0.7,0.25,1)
+    private let curve=KaiMotion.interactionCurve
 
     init(size:CGSize=CGSize(width:28,height:18)) {
         glyphSize=size;super.init();bounds=CGRect(origin:.zero,size:size);fillColor=nil;strokeColor=NSColor.white.cgColor;lineWidth=size.width/17.5;lineCap = .round;lineJoin = .round;setOpen(false,animated:false)
@@ -15,7 +15,7 @@ final class FileGlyphLayer: CAShapeLayer {
         let target=Self.path(open:open,size:glyphSize),from=presentation()?.path ?? path
         CATransaction.begin();CATransaction.setDisableActions(true);path=target;CATransaction.commit()
         guard animated else{return}
-        let morph=CABasicAnimation(keyPath:"path");morph.fromValue=from;morph.toValue=target;morph.duration=0.42;morph.timingFunction=curve;add(morph,forKey:"fileOpen")
+        let morph=CABasicAnimation(keyPath:"path");morph.fromValue=from;morph.toValue=target;morph.duration=KaiMotion.contentDuration;morph.timingFunction=curve;addKai(morph,forKey:"fileOpen")
     }
 
     private static func path(open:Bool,size:CGSize)->CGPath {
@@ -56,6 +56,8 @@ struct GradientStop: Codable { let location: Double, color: String }
     private var poses = IndicatorScenes.listening.firstPoses
     private var levels: [CGFloat] = [0.25, 0.3, 0.35, 0.4], profile: PetGradientProfile?
     private var timer: Timer?, demoWork: DispatchWorkItem?
+    private var stopDisplayLink: (() -> Void)?
+    weak var animationWindow: NSWindow?
     private var lastTick = ProcessInfo.processInfo.systemUptime, themeToken = 0, sceneToken = 0
     private var cycleToken = 0, currentSceneID: String?
     private var themeKind: ThemeKind = .ambient
@@ -100,16 +102,16 @@ struct GradientStop: Codable { let location: Double, color: String }
     func setAccentExpanded(_ expanded:Bool,duration:Double) {
         let compact:Float=expanded ? 0:1, soft:Float=expanded ? 1:0
         for (layer,target) in [(compactAccent,compact),(compactLeftAccent,compact),(softAccent,soft),(softLeftAccent,soft)] {
-            let fade=CABasicAnimation(keyPath:"opacity"); fade.fromValue=layer.presentation()?.opacity ?? layer.opacity; fade.toValue=target; fade.duration=duration; fade.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.65,0.25,1)
-            CATransaction.begin(); CATransaction.setDisableActions(true); layer.opacity=target; CATransaction.commit(); if duration > 0 { layer.add(fade,forKey:"sizeBlend") }
+            let fade=CABasicAnimation(keyPath:"opacity"); fade.fromValue=layer.presentation()?.opacity ?? layer.opacity; fade.toValue=target; fade.duration=duration; fade.timingFunction=KaiMotion.interactionCurve
+            CATransaction.begin(); CATransaction.setDisableActions(true); layer.opacity=target; CATransaction.commit(); if duration > 0 { layer.addKai(fade,forKey:"sizeBlend") }
         }
     }
 
     func moveAccents(toBottom bottom:CGFloat,expanded:Bool,duration:Double){
         for accent in [leftAccentLayer,accentLayer]{
             let target=bottom+accent.bounds.height/2
-            let move=CABasicAnimation(keyPath:"position.y");move.fromValue=accent.presentation()?.position.y ?? accent.position.y;move.toValue=target;move.duration=duration;move.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.65,0.25,1)
-            CATransaction.begin();CATransaction.setDisableActions(true);accent.position.y=target;CATransaction.commit();accent.add(move,forKey:"cornerTravel")
+            let move=CABasicAnimation(keyPath:"position.y");move.fromValue=accent.presentation()?.position.y ?? accent.position.y;move.toValue=target;move.duration=duration;move.timingFunction=KaiMotion.interactionCurve
+            CATransaction.begin();CATransaction.setDisableActions(true);accent.position.y=target;CATransaction.commit();accent.addKai(move,forKey:"cornerTravel")
         }
         setAccentExpanded(expanded,duration:duration)
     }
@@ -165,7 +167,7 @@ struct GradientStop: Codable { let location: Double, color: String }
             displayScene("tool",looping:looping);primitives.forEach{$0.isHidden=true}
             integrationMask.frame=CGRect(x:5,y:0,width:18,height:18)
             integrationMask.contents=image.cgImage(forProposedRect:nil,context:nil,hints:nil);integrationMask.isHidden=false
-            let fade=CABasicAnimation(keyPath:"opacity");fade.fromValue=0;fade.toValue=1;fade.duration=0.24;integrationMask.add(fade,forKey:"providerIn")
+            let fade=CABasicAnimation(keyPath:"opacity");fade.fromValue=0;fade.toValue=1;fade.duration=KaiMotion.paneDuration;integrationMask.addKai(fade,forKey:"providerIn")
         }else{displayScene(id,looping:looping)}
     }
 
@@ -185,7 +187,7 @@ struct GradientStop: Codable { let location: Double, color: String }
 
     private func retire(_ previous:CALayer){
         retiringMask?.removeFromSuperlayer();retiringMask=previous;maskLayer.addSublayer(previous)
-        let fade=CABasicAnimation(keyPath:"opacity");fade.fromValue=1;fade.toValue=0;fade.duration=0.24;fade.fillMode = .forwards;fade.isRemovedOnCompletion=false;previous.add(fade,forKey:"providerOut")
+        let fade=CABasicAnimation(keyPath:"opacity");fade.fromValue=1;fade.toValue=0;fade.duration=KaiMotion.paneDuration;fade.fillMode = .forwards;fade.isRemovedOnCompletion=false;previous.addKai(fade,forKey:"providerOut")
         DispatchQueue.main.asyncAfter(deadline:.now()+0.25){[weak self,weak previous] in previous?.removeFromSuperlayer();if self?.retiringMask === previous{self?.retiringMask=nil}}
     }
     private func cancelCycle(){
@@ -225,13 +227,30 @@ struct GradientStop: Codable { let location: Double, color: String }
 
     private func startTimer() {
         stopTimer(); lastTick = ProcessInfo.processInfo.systemUptime
-        let rate=ProcessInfo.processInfo.isLowPowerModeEnabled || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 30.0:60.0
+        let lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        if #available(macOS 14.0, *), let animationWindow, let screen = animationWindow.screen {
+            let rate = lowPower ? Float(30) : Float(screen.maximumFramesPerSecond)
+            let link = animationWindow.displayLink(target: self, selector: #selector(displayFrame(_:)))
+            link.preferredFrameRateRange = CAFrameRateRange(minimum: min(30, rate), maximum: rate, preferred: rate)
+            link.add(to: .main, forMode: .common)
+            stopDisplayLink = { link.invalidate() }
+            return
+        }
+        let rate = lowPower ? 30.0 : 60.0
         timer = Timer(timeInterval: 1/rate, target: self, selector: #selector(timerFired), userInfo: nil, repeats: true)
         timer?.tolerance=0.002
         if let timer {RunLoop.main.add(timer,forMode:.common)}
     }
 
-    private func stopTimer() { timer?.invalidate(); timer = nil }
+    private func stopTimer() {
+        stopDisplayLink?()
+        stopDisplayLink = nil
+        timer?.invalidate()
+        timer = nil
+    }
+
+    @available(macOS 14.0, *)
+    @objc private func displayFrame(_ link: CADisplayLink) { tick() }
 
     @objc private func timerFired() { tick() }
 
@@ -305,7 +324,7 @@ struct GradientStop: Codable { let location: Double, color: String }
         guard fileLoading != loading else{return};fileLoading=loading
         fileShine.removeAnimation(forKey:"shine")
         if loading {
-            let sweep=CABasicAnimation(keyPath:"locations");sweep.fromValue=[-0.35,-0.18,0];sweep.toValue=[1,1.18,1.35];sweep.duration=0.65;sweep.repeatCount = .infinity;sweep.timingFunction=CAMediaTimingFunction(name:.easeInEaseOut);fileShine.add(sweep,forKey:"fileLoading")
+            let sweep=CABasicAnimation(keyPath:"locations");sweep.fromValue=[-0.35,-0.18,0];sweep.toValue=[1,1.18,1.35];sweep.duration=0.65;sweep.repeatCount = .infinity;sweep.timingFunction=KaiMotion.cycleCurve;fileShine.addKai(sweep,forKey:"fileLoading")
         } else {
             fileShine.removeAnimation(forKey:"fileLoading")
             if let profile {configureShine(profile.palette.highlight,duration:mode == .thinking ? 1.4:2.1)}
@@ -335,8 +354,8 @@ struct GradientStop: Codable { let location: Double, color: String }
                 basic("bounds",NSValue(rect:NSRect(x:0,y:0,width:a.width,height:a.height)),NSValue(rect:NSRect(x:0,y:0,width:b.width,height:b.height))),
                 basic("cornerRadius",a.radius,b.radius), basic("transform.rotation.z",a.rotation,b.rotation), basic("opacity",a.opacity,b.opacity)
             ]
-            group.duration = duration; group.timingFunction = CAMediaTimingFunction(controlPoints: 0.2,0.72,0.24,1)
-            primitives[i].add(group, forKey: "sceneTransition")
+            group.duration = duration; group.timingFunction = KaiMotion.interactionCurve
+            primitives[i].addKai(group, forKey: "sceneTransition")
         }
         DispatchQueue.main.asyncAfter(deadline: .now()+duration) { [weak self] in
             guard let self, self.sceneToken == token else { return }; self.mode = finalMode; self.installLoop(scene,looping:looping); completion?()
@@ -355,7 +374,7 @@ struct GradientStop: Codable { let location: Double, color: String }
             ]
             if track.poses.allSatisfy({ $0.shape != .capsule }) { group.animations?.append(keyframes("path",track.poses.map { shapePath($0) })) }
             group.duration = scene.duration; group.beginTime = now+track.phase; group.repeatCount = looping ? .infinity:0
-            group.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut); primitives[i].add(group, forKey: "sceneLoop")
+            group.timingFunction = KaiMotion.cycleCurve; primitives[i].addKai(group, forKey: "sceneLoop")
         }
     }
 
@@ -408,7 +427,7 @@ struct GradientStop: Codable { let location: Double, color: String }
             let target=accentColor(recipe,alpha)
             let start=layer.presentation()?.backgroundColor ?? layer.backgroundColor ?? target; layer.backgroundColor=target
             let flow=CAKeyframeAnimation(keyPath:"backgroundColor"); flow.values=huePath(from:start,to:target); flow.duration=max(0.68,duration)
-            flow.calculationMode = .linear; flow.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.7,0.25,1); layer.add(flow,forKey:"colorFlow")
+            flow.calculationMode = .linear; flow.timingFunction=KaiMotion.interactionCurve; layer.addKai(flow,forKey:"colorFlow")
         }
         CATransaction.commit()
     }
@@ -426,10 +445,10 @@ struct GradientStop: Codable { let location: Double, color: String }
         fileIncoming.frame=fileLayer.bounds; commit(recipe,to:fileIncoming); fileReveal.frame=fileLayer.bounds; fileReveal.startPoint=reveal.startPoint; fileReveal.endPoint=reveal.endPoint; fileReveal.colors=reveal.colors; fileReveal.locations=reveal.locations; fileIncoming.mask=fileReveal; fileLayer.insertSublayer(fileIncoming,above:fileBase)
         fileEdge.frame=fileLayer.bounds; fileEdge.startPoint=edge.startPoint; fileEdge.endPoint=edge.endPoint; fileEdge.colors=edge.colors; fileEdge.locations=edge.locations; fileLayer.insertSublayer(fileEdge,above:fileIncoming)
         paletteTransitionLayers=[incoming,edge,fileIncoming,fileEdge]
-        let wipe = CABasicAnimation(keyPath: "locations"); wipe.fromValue = reveal.locations; wipe.toValue = [1,1.1,1.25,1.4]; wipe.duration = duration; wipe.timingFunction = CAMediaTimingFunction(controlPoints: 0.18,0.72,0.24,1)
+        let wipe = CABasicAnimation(keyPath: "locations"); wipe.fromValue = reveal.locations; wipe.toValue = [1,1.1,1.25,1.4]; wipe.duration = duration; wipe.timingFunction = KaiMotion.interactionCurve
         let streak = CABasicAnimation(keyPath: "locations"); streak.fromValue = edge.locations; streak.toValue = [0.85,1,1.15]; streak.duration = duration; streak.timingFunction = wipe.timingFunction
         reveal.locations=[1,1.1,1.25,1.4]; edge.locations=[0.85,1,1.15]; fileReveal.locations=reveal.locations; fileEdge.locations=edge.locations
-        reveal.add(wipe,forKey:"reveal"); edge.add(streak,forKey:"edge"); fileReveal.add(wipe.copy() as! CAAnimation,forKey:"reveal"); fileEdge.add(streak.copy() as! CAAnimation,forKey:"edge")
+        reveal.addKai(wipe,forKey:"reveal"); edge.addKai(streak,forKey:"edge"); fileReveal.addKai(wipe.copy() as! CAAnimation,forKey:"reveal"); fileEdge.addKai(streak.copy() as! CAAnimation,forKey:"edge")
         DispatchQueue.main.asyncAfter(deadline: .now()+duration) { [weak self, weak incoming, weak edge, weak fileIncoming, weak fileEdge] in
             guard let self, self.themeToken == token else { incoming?.removeFromSuperlayer(); edge?.removeFromSuperlayer(); fileIncoming?.removeFromSuperlayer(); fileEdge?.removeFromSuperlayer(); return }
             self.commit(recipe,to:self.base); self.commit(recipe,to:self.fileBase); incoming?.removeFromSuperlayer(); edge?.removeFromSuperlayer(); fileIncoming?.removeFromSuperlayer(); fileEdge?.removeFromSuperlayer()
@@ -441,9 +460,9 @@ struct GradientStop: Codable { let location: Double, color: String }
         guard mode != .off || fileLoading else{return}
         guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else{return}
         let animation = CABasicAnimation(keyPath: "locations"); animation.fromValue = shine.locations; animation.toValue = [1,1.18,1.35]
-        animation.duration=duration; animation.timingFunction=CAMediaTimingFunction(name:.easeInEaseOut)
-        if mode != .off{shine.add(animation,forKey:"shine")}
-        if fileLoading {let fileAnimation=animation.copy() as! CABasicAnimation;fileAnimation.duration=0.65;fileAnimation.repeatCount = .infinity;fileShine.add(fileAnimation,forKey:"fileLoading")}
+        animation.duration=duration; animation.timingFunction=KaiMotion.cycleCurve
+        if mode != .off{shine.addKai(animation,forKey:"shine")}
+        if fileLoading {let fileAnimation=animation.copy() as! CABasicAnimation;fileAnimation.duration=0.65;fileAnimation.repeatCount = .infinity;fileShine.addKai(fileAnimation,forKey:"fileLoading")}
     }
 
     private func endpoints(_ degrees: Double) -> (CGPoint,CGPoint) {

@@ -199,7 +199,9 @@ impl Orbit {
                 .collect();
             self.rebuild_workspace_sessions();
         }
+        self.adopt_draft_terminals(&id);
         self.active = Some(id.clone());
+        self.sync_chat_terminal_owner(cx);
         if !self.open_tabs.contains(&id) {
             self.open_tabs.push(id.clone());
         }
@@ -795,7 +797,7 @@ impl Orbit {
         let phase = pending
             .map(|p| {
                 if self.motion {
-                    presentation::spring((p.started.elapsed().as_secs_f32() / 0.32).min(1.))
+                    presentation::ease_out((p.started.elapsed().as_secs_f32() / 0.32).min(1.))
                 } else {
                     1.
                 }

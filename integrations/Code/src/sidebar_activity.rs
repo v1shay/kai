@@ -212,8 +212,10 @@ impl Orbit {
             session.id,
             self.activity.pending_rank(&session.id).unwrap_or(0)
         ));
+        let drag = self.chat_drag(&session);
         let row = div()
             .id(SharedString::from(format!("activity-{}", session.id)))
+            .on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.clone()))
             .debug_selector({
                 let id = session.id.clone();
                 move || format!("activity-{id}")
@@ -274,11 +276,11 @@ impl Orbit {
         if self.motion && !native::reduced_motion() && window.is_window_active() {
             row.with_animation(
                 animation_id,
-                Animation::new(Duration::from_millis(320)),
+                Animation::new(crate::workspace_motion::CONTENT_DURATION),
                 |row, t| {
-                    row.opacity(t.min(1.))
+                    row.opacity(presentation::ease_out(t))
                         .relative()
-                        .left(px((1. - presentation::spring(t)) * 6.))
+                        .left(px((1. - presentation::ease_out(t)) * 6.))
                 },
             )
             .into_any_element()

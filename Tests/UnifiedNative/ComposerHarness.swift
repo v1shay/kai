@@ -1,9 +1,10 @@
 import AppKit
 private func unwrap(_ value:Any)->Any{let m=Mirror(reflecting:value);if m.displayStyle == .optional,let child=m.children.first{return unwrap(child.value)};return value}
 private func member(_ object:Any,_ name:String)->Any?{Mirror(reflecting:object).children.first{$0.label==name}.map{unwrap($0.value)}}
-private func auditCommand(_ bytes:UnsafePointer<UInt8>?,_ count:Int)->Bool{guard let bytes else{return false};let data=Data(bytes:bytes,count:count);MainActor.assumeIsolated{if let value=try? JSONSerialization.jsonObject(with:data) as? [String:Any]{ComposerAudit.commands.append(value)}};return true}
+private func auditCommand(_ bytes:UnsafePointer<UInt8>?,_ count:Int)->Bool{guard let bytes else{return false};let data=Data(bytes:bytes,count:count);MainActor.assumeIsolated{if let value=try? JSONSerialization.jsonObject(with:data) as? [String:Any]{ComposerAudit.commands.append(value)}};return MainActor.assumeIsolated{ComposerAudit.acceptCommands}}
 @main struct ComposerAudit{
  @MainActor static var commands=[[String:Any]]()
+ @MainActor static var acceptCommands=true
  @MainActor static func main()throws{
   _=NSApplication.shared;UserDefaults.standard.set(ProcessInfo.processInfo.environment["KAI_COMPOSER_WALLPAPER"]=="1",forKey:"notchCodeWallpaper");UserDefaults.standard.set(true,forKey:"unifiedPreferencesSeeded");UserDefaults.standard.set(false,forKey:"soundsEnabled");UserDefaults.standard.set(false,forKey:"spotifyMedia");UserDefaults.standard.set(false,forKey:"youtubeMedia")
   let window=NSWindow(contentRect:CGRect(x:0,y:0,width:1000,height:700),styleMask:[.titled],backing:.buffered,defer:false);window.isReleasedWhenClosed=false
@@ -18,6 +19,17 @@ private func auditCommand(_ bytes:UnsafePointer<UInt8>?,_ count:Int)->Bool{guard
    return try! JSONSerialization.data(withJSONObject:value)
   }
   runtime.receive(packet("workspace","gpt-6.1-sol"));pump();app.expandToRunningChat();pump()
+  let transport=KaiBridge();transport.draftBaseProvider={"accepted base"}
+  acceptCommands=false
+  transport.send("draft",["text":"rejected change"])
+  precondition(commands.last?["draftBase"] as? String == "accepted base","Rejected request did not use the accepted base")
+  acceptCommands=true
+  transport.send("draft",["text":"retry after queue pressure"])
+  precondition(commands.last?["draftBase"] as? String == "accepted base","A rejected draft poisoned the next draft's base")
+  transport.send("draft",["text":"next queued change"])
+  precondition(commands.last?["draftBase"] as? String == "retry after queue pressure","Accepted queued drafts lost their ordered handoff")
+  print("Native draft transport: rejected command preserves the accepted base; subsequent accepted edits progress")
+  runtime.receive(packet("workspace","gpt-6.1-sol"));pump(0.1)
   guard let transcript=member(app,"conversationText") as? ConversationTextView,let scroll=member(app,"conversationScroll") as? NSScrollView else{fatalError("Missing bottom-aligned native transcript")}
   precondition(transcript.string.contains("Replies stay"),"The real notch did not render its history")
   precondition(transcript.leadingSpace>0,"Short native conversation stayed at the top")

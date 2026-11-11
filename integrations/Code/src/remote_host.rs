@@ -189,6 +189,7 @@ pub(super) struct State {
     pub workflow_result:RefCell<Option<Value>>,
     replies: RefCell<HashMap<(String, String), String>>,
     signature: std::cell::Cell<[u8; 32]>,
+    snapshot_task: Option<Task<()>>,
 }
 impl Default for State {
     fn default() -> Self {
@@ -202,6 +203,7 @@ impl Default for State {
             workflow_result:Default::default(),
             replies: Default::default(),
             signature: std::cell::Cell::new([0; 32]),
+            snapshot_task: None,
         }
     }
 }
@@ -452,6 +454,18 @@ impl Orbit {
         }
         json!({"tasks":tasks.into_values().collect::<Vec<_>>()})
     }
+    pub(super) fn queue_remote_snapshot(&mut self, cx: &mut Context<Self>) {
+        if self.remote.service.is_none() || self.remote.snapshot_task.is_some() { return; }
+        let generation = self.remote.generation;
+        self.remote.snapshot_task = Some(cx.spawn(async move |this, cx| {
+            Timer::after(Duration::from_millis(100)).await;
+            let _ = this.update(cx, |app, _| {
+                app.remote.snapshot_task = None;
+                if app.remote.generation == generation { app.publish_remote(); }
+            });
+        }));
+    }
+
     pub(super) fn publish_remote(&self) {
         use sha2::{Digest, Sha256};
         let Some(service) = &self.remote.service else {

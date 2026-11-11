@@ -155,8 +155,8 @@ impl Orbit {
     }
     pub(super) fn animated_ninja_chat_title(&self,id:&str,title:String)->AnyElement{
         let body=div().min_w(px(0.)).overflow_hidden().text_ellipsis().child(title.clone());
-        if self.motion && !native::reduced_motion() && self.title_motions.get(id).is_some_and(|(_,at)|at.elapsed()<Duration::from_millis(650)){
-            body.with_animation(SharedString::from(format!("generated-title-{id}-{title}")),Animation::new(Duration::from_millis(600)),|v,t|v.opacity((t/0.65).min(1.)).relative().top(px(8.*(1.-presentation::spring(t))))).into_any_element()
+        if self.motion && !native::reduced_motion() && self.title_motions.get(id).is_some_and(|(_,at)|at.elapsed()<crate::workspace_motion::CONTENT_DURATION){
+            body.with_animation(SharedString::from(format!("generated-title-{id}-{title}")),Animation::new(crate::workspace_motion::CONTENT_DURATION),|v,t|v.opacity(presentation::ease_out(t)).relative().top(px(8.*(1.-presentation::ease_out(t))))).into_any_element()
         }else{body.into_any_element()}
     }
     pub(super) fn animated_chat_title(&self, session: &SessionSummary) -> AnyElement {
@@ -171,15 +171,15 @@ impl Orbit {
             && self
                 .title_motions
                 .get(&session.id)
-                .is_some_and(|(_, at)| at.elapsed() < Duration::from_millis(650))
+                .is_some_and(|(_, at)| at.elapsed() < crate::workspace_motion::CONTENT_DURATION)
         {
             view.with_animation(
                 SharedString::from(format!("generated-title-{}-{title}", session.id)),
-                Animation::new(Duration::from_millis(600)),
+                Animation::new(crate::workspace_motion::CONTENT_DURATION),
                 |view, t| {
-                    view.opacity((t / 0.65).min(1.))
+                    view.opacity(presentation::ease_out(t))
                         .relative()
-                        .top(px(8. * (1. - presentation::spring(t))))
+                        .top(px(8. * (1. - presentation::ease_out(t))))
                 },
             )
             .into_any_element()

@@ -1,8 +1,9 @@
-//! GPUI terminal viewport. Alacritty handles terminal state; this view paints
-//! only visible cells and forwards native keyboard/IME input to its owned PTY.
+//! GPUI terminal viewport. Both terminal engines submit glyphs and quads to
+//! the workspace Metal renderer and receive native keyboard/IME input.
 use crate::terminal::{self, Frame, Size, Terminal};
 use crate::theme::{rgb, rgba};
 use gpui::{prelude::*, *};
+use serde_json::json;
 use std::{
     ops::Range,
     path::PathBuf,
@@ -16,18 +17,24 @@ pub fn bind_keys(cx: &mut App) {
     let context=Some("CodeTerminal");
     cx.bind_keys([
         KeyBinding::new("cmd-c",Copy,context), KeyBinding::new("cmd-v",Paste,context),
-        KeyBinding::new("cmd-a",SelectAll,context), KeyBinding::new("cmd-t",NewTerminal,context),
+        KeyBinding::new("cmd-a",SelectAll,context),
         KeyBinding::new("cmd-w",CloseTerminal,context),
         KeyBinding::new("cmd-left",SendHome,context), KeyBinding::new("cmd-right",SendEnd,context),
         KeyBinding::new("cmd-backspace",DeleteToStart,context),
     ]);
+    cx.bind_keys([KeyBinding::new(
+        "cmd-w", crate::keyboard::Execute { id: "close_tab".into() },
+        Some("Orbit && ChatCli && CodeTerminal"),
+    )]);
 }
 
 pub enum TerminalEvent {
+    Focused,
     Close,
     Dock(crate::terminal_dock::Side),
     DockStarted,
     TitleChanged,
+    PersistenceChanged,
     New,
 }
 pub struct Session {
@@ -46,11 +53,16 @@ impl Session {
 
 pub struct TerminalPanel {
     runtime: Option<Terminal>,
+    metal: Option<MetalDock>,
+    resume: Option<terminal::Resume>,
+    profile: PathBuf,
+    ending: bool,
     frame: Arc<Frame>,
     focus: FocusHandle,
     bounds: Option<Bounds<Pixels>>,
     size: Size,
     selecting: bool,
+    scroll_remainder: f32,
     marked: String,
     starting: bool,
     stopping: bool,
@@ -60,6 +72,16 @@ pub struct TerminalPanel {
     pending_input: Vec<u8>,
     startup_cancel: Arc<AtomicBool>,
 }
+struct MetalDock {
+    id: uuid::Uuid,
+    open: bool,
+    directory_ready: bool,
+    ready: bool,
+    stopped: bool,
+    close_on_stop: bool,
+    geometry: Option<(Bounds<Pixels>, Bounds<Pixels>, bool)>,
+}
+
 impl EventEmitter<TerminalEvent> for TerminalPanel {}
 impl Drop for TerminalPanel {
     fn drop(&mut self) {
@@ -72,6 +94,7 @@ impl Focusable for TerminalPanel {
     }
 }
 impl TerminalPanel {
+    pub(super) fn error(&self) -> Option<&str> { self.error.as_deref() }
     pub fn title(&self) -> &str { self.frame.title.trim() }
     fn refresh_frame(&mut self, cx: &mut Context<Self>) {
         if let Some(runtime) = &self.runtime {
@@ -81,26 +104,77 @@ impl TerminalPanel {
             if title_changed { cx.emit(TerminalEvent::TitleChanged); }
         }
     }
-    pub fn new(project: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        Self::new_workspace(project,false,window,cx)
+    pub fn resume(&self) -> Option<&terminal::Resume> { self.resume.as_ref() }
+
+    pub fn new(project: PathBuf, _window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self::new_workspace(project, false, terminal::Backend::default(), PathBuf::new(), None, cx)
     }
-    pub fn new_workspace(project: PathBuf, create_workspace: bool, _window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let root = project.clone();
+    pub fn new_workspace(project: PathBuf, create_workspace: bool, backend: terminal::Backend, profile: PathBuf, resume: Option<terminal::Resume>, cx: &mut Context<Self>) -> Self {
+        Self::start(project, create_workspace, backend, profile, resume, None, cx)
+    }
+    pub(super) fn agent_cli(project: PathBuf, args: Vec<String>, environment: Vec<(String, String)>, cx: &mut Context<Self>) -> Self {
+        Self::start(project, false, terminal::Backend::Ghostty, PathBuf::new(), None, Some((args, environment)), cx)
+    }
+    fn start(project: PathBuf, create_workspace: bool, backend: terminal::Backend, profile: PathBuf,
+             resume: Option<terminal::Resume>, command: Option<(Vec<String>, Vec<(String, String)>)>, cx: &mut Context<Self>) -> Self {
+        let use_metal = backend == terminal::Backend::Metal && resume.is_none() && command.is_none()
+            && crate::unified::active() && !std::env::args().any(|arg| arg == "--unified-smoke-test");
+        let reconnect = resume.is_some();
+        let direct = command.is_some();
+        let session = resume.unwrap_or_else(|| terminal::Resume { id: uuid::Uuid::new_v4(), project: project.clone(), backend });
         let startup_cancel = Arc::new(AtomicBool::new(false));
         let cancel = startup_cancel.clone();
-        cx.on_release(|this, _| this.stop()).detach();
-        cx.spawn(async move |this, cx| {
-            let task = cx
-                .background_executor()
-                .spawn(async move {
-                if create_workspace && !cancel.load(Ordering::Acquire) {
-                    std::fs::create_dir_all(&root).map_err(|error|anyhow::anyhow!("Could not create this chat's workspace: {error}"))?;
+        let worker_profile = profile.clone();
+        let worker_session = session.clone();
+        if use_metal && create_workspace {
+            let directory = project.clone();
+            cx.spawn(async move |this, cx| {
+                let result = cx.background_executor().spawn(async move { std::fs::create_dir_all(directory) }).await;
+                let _ = this.update(cx, |panel, cx| {
+                    match result {
+                        Ok(()) => {
+                            if let Some(metal) = &mut panel.metal { metal.directory_ready = true; }
+                            cx.notify();
+                        }
+                        Err(error) => panel.finish_metal(Some(format!("Could not create the terminal workspace: {error}")), cx),
+                    }
+                });
+            }).detach();
+        }
+        if !use_metal { cx.spawn(async move |this, cx| {
+            let task = cx.background_executor().spawn(async move {
+                let root = &worker_session.project;
+                if let Some((command, environment)) = command {
+                    let args: Vec<_> = command.iter().map(String::as_str).collect();
+                    return Terminal::spawn_command_with_env_cancellable(root, std::path::Path::new("/bin/sh"), &args,
+                        &environment, Size::new(100, 16), cancel, backend).map(|runtime| (runtime, false));
                 }
-                Terminal::spawn(&root, cancel)
+                if create_workspace && !cancel.load(Ordering::Acquire) {
+                    std::fs::create_dir_all(root).map_err(|error|anyhow::anyhow!("Could not create this chat's workspace: {error}"))?;
+                }
+                let server = (!worker_profile.as_os_str().is_empty())
+                    .then(|| terminal::SessionServer::find(&worker_profile)).flatten();
+                if let Some(server) = server {
+                    Terminal::attach(&server, &worker_session, reconnect, cancel).map(|runtime| (runtime, true))
+                } else if reconnect {
+                    anyhow::bail!("Install tmux to reconnect to this terminal")
+                } else {
+                    Terminal::spawn(root, cancel, backend).map(|runtime| (runtime, false))
+                }
             });
             let result = task.await;
             let _ = this.update(cx, |this, cx| {
                 this.starting = false;
+                let (result, durable) = match result {
+                    Ok((runtime, durable)) => (Ok(runtime), durable),
+                    Err(error) => {
+                        let durable = this.stopping || (reconnect && !error.is::<terminal::SessionEnded>());
+                        (Err(error), durable)
+                    }
+                };
+                if !durable && this.resume.take().is_some() {
+                    cx.emit(TerminalEvent::PersistenceChanged);
+                }
                 match result {
                     Ok(runtime) => {
                         if this.stopping {
@@ -129,24 +203,36 @@ impl TerminalPanel {
                             }
                             let _ = this.update(cx, |this, cx| {
                                 this.refresh_frame(cx);
+                                if direct { cx.emit(TerminalEvent::Close); }
                                 cx.notify();
                             });
                         })
                         .detach();
                     }
-                    Err(error) => this.error = Some(error.to_string()),
+                    Err(error) => {
+                        this.error = Some(error.to_string());
+                        if direct { cx.emit(TerminalEvent::Close); }
+                    },
                 }
                 cx.notify();
             });
         })
-        .detach();
+        .detach(); }
         Self {
             runtime: None,
+            metal: use_metal.then(|| MetalDock {
+                id: session.id, open: false, directory_ready: !create_workspace, ready: false,
+                stopped: false, close_on_stop: false, geometry: None,
+            }),
+            resume: (!use_metal && !profile.as_os_str().is_empty()).then_some(session),
+            profile,
+            ending: false,
             frame: Arc::new(terminal::blank_frame()),
             focus: cx.focus_handle(),
             bounds: None,
             size: Size::new(100, 16),
             selecting: false,
+            scroll_remainder: 0.,
             marked: String::new(),
             starting: true,
             stopping: false,
@@ -157,49 +243,136 @@ impl TerminalPanel {
             startup_cancel,
         }
     }
+    pub(super) fn is_visible(&self) -> bool { self.visible }
+
     pub fn set_visible(&mut self, visible: bool) {
         if self.visible == visible { return; }
         self.visible = visible;
+        if let Some(metal) = &mut self.metal {
+            metal.geometry = None;
+            if !visible && metal.open && !metal.stopped {
+                crate::unified::emit(&json!({"type":"dockTerminalHide","id":metal.id}));
+            }
+        }
         if let Some(runtime) = &self.runtime {
             runtime.set_visible(visible);
         }
     }
+    pub(super) fn probe_command(&self, command: &str) -> bool {
+        self.runtime.as_ref().is_some_and(|runtime| runtime.input(command.as_bytes().to_vec()).is_ok())
+    }
+    pub(super) fn probe_has_text(&self, text: &str) -> bool {
+        self.frame.rows.iter().any(|row| {
+            row.iter().map(|cell| cell.text.as_str()).collect::<String>().contains(text)
+        })
+    }
     pub fn stop(&mut self) {
         self.stopping = true;
+        if let Some(metal) = &mut self.metal {
+            if metal.open && !metal.stopped {
+                crate::unified::emit(&json!({"type":"dockTerminalClose","id":metal.id}));
+            } else {
+                metal.stopped = true;
+            }
+        }
         self.startup_cancel.store(true, Ordering::Release);
         if let Some(runtime) = &self.runtime {
             runtime.stop();
         }
     }
     pub fn close(&mut self, cx: &mut Context<Self>) {
-        self.stop();
-        // Keep the entity's active-session guard until cleanup finishes. A
-        // checkpoint restore immediately after Close must not race shell IO.
-        cx.spawn(async move |this, cx| {
-            loop {
-                let Ok(done) = this.update(cx, |this, cx| {
-                    if this.is_settled() {
-                        cx.emit(TerminalEvent::Close);
-                        true
-                    } else {
-                        false
-                    }
-                }) else {
-                    return;
-                };
-                if done {
-                    return;
-                }
-                cx.background_executor()
-                    .timer(std::time::Duration::from_millis(10))
-                    .await;
-            }
-        })
-        .detach();
+        self.end(true, cx);
     }
-    pub fn is_settled(&self) -> bool {
+
+    fn end(&mut self, close: bool, cx: &mut Context<Self>) {
+        if self.ending { return; }
+        self.ending = true;
+        if let Some(metal) = &mut self.metal {
+            metal.close_on_stop |= close;
+            self.stop();
+            if self.metal.as_ref().is_some_and(|metal| metal.stopped) {
+                self.finish_metal(None, cx);
+            }
+            return;
+        }
+        self.stop();
+        // A closing terminal remains a checkpoint blocker until its shell
+        // has actually stopped, including a session still being created.
+        cx.spawn(async move |this, cx| {
+            let session = loop {
+                let Ok(state) = this.update(cx, |panel, _| panel.client_settled()
+                    .then(|| panel.resume.clone().map(|session| (panel.profile.clone(), session)))) else { return; };
+                if let Some(session) = state { break session; }
+                cx.background_executor().timer(std::time::Duration::from_millis(10)).await;
+            };
+            let result = if let Some((profile, session)) = session {
+                cx.background_executor().spawn(async move {
+                    terminal::SessionServer::find(&profile)
+                        .ok_or_else(|| anyhow::anyhow!("Install tmux to stop this terminal"))?
+                        .end(session.id)
+                }).await
+            } else {
+                Ok(())
+            };
+            let _ = this.update(cx, |panel, cx| {
+                panel.ending = false;
+                match result {
+                    Ok(()) => {
+                        if panel.resume.take().is_some() { cx.emit(TerminalEvent::PersistenceChanged); }
+                        if close { cx.emit(TerminalEvent::Close); }
+                    }
+                    Err(error) => panel.error = Some(error.to_string()),
+                }
+                cx.notify();
+            });
+        }).detach();
+    }
+    fn client_settled(&self) -> bool {
+        if let Some(metal) = &self.metal { return metal.stopped; }
         !self.starting && self.runtime.as_ref().is_none_or(Terminal::is_settled)
     }
+    pub fn is_settled(&self) -> bool {
+        !self.ending && self.client_settled()
+    }
+    pub(super) fn metal_id(&self) -> Option<uuid::Uuid> { self.metal.as_ref().map(|metal| metal.id) }
+
+    pub(super) fn metal_ready(&mut self, cx: &mut Context<Self>) {
+        if let Some(metal) = &mut self.metal {
+            if self.stopping || metal.stopped { return; }
+            metal.ready = true;
+            self.starting = false;
+            cx.notify();
+        }
+    }
+
+    pub(super) fn finish_metal(&mut self, error: Option<String>, cx: &mut Context<Self>) {
+        let Some(metal) = &mut self.metal else { return; };
+        metal.stopped = true;
+        metal.ready = false;
+        self.starting = false;
+        self.ending = false;
+        self.error = error;
+        if metal.close_on_stop { cx.emit(TerminalEvent::Close); }
+        cx.notify();
+    }
+
+    fn sync_metal_geometry(&mut self, bounds: Bounds<Pixels>, clip: Bounds<Pixels>, focused: bool) {
+        let Some(metal) = &mut self.metal else { return; };
+        if !self.visible || self.stopping || metal.stopped || !metal.directory_ready { return; }
+        if metal.geometry == Some((bounds, clip, focused)) { return; }
+        metal.geometry = Some((bounds, clip, focused));
+        if clip.size.width < px(2.) || clip.size.height < px(2.) {
+            if metal.open { crate::unified::emit(&json!({"type":"dockTerminalHide","id":metal.id})); }
+            return;
+        }
+        let rect = |bounds: Bounds<Pixels>| [f32::from(bounds.origin.x), f32::from(bounds.origin.y),
+            f32::from(bounds.size.width), f32::from(bounds.size.height)];
+        let directory = (!metal.open).then_some(&self.project);
+        crate::unified::emit(&json!({"type":"dockTerminalSlot","id":metal.id,
+            "directory":directory,"rect":rect(bounds),"clip":rect(clip),"focused":focused}));
+        metal.open = true;
+    }
+
     fn input(&mut self, bytes: Vec<u8>, cx: &mut Context<Self>) {
         if self.stopping {
             return;
@@ -403,19 +576,23 @@ impl Render for TerminalPanel {
         let painted = entity.clone();
         let frame = self.frame.clone();
         let cursor_focus = self.focus.clone();
-        let stop_label = if self.frame.running { "Stop" } else { "Stopped" };
+        let native = self.metal.is_some();
+        let running = self.metal.as_ref().map_or(self.frame.running, |metal| metal.ready && !metal.stopped);
+        let stop_label = if running { "Stop" } else { "Stopped" };
         let text_width = |text: &str| crate::composer_toolbar::text_width(window, text);
         // Account for every fixed control and gap before adding optional labels.
         // Omit whole labels instead of squeezing the title or project to an ellipsis.
         let fixed_width = 16. + 24. + 6. * 4. + 16. + text_width(stop_label)
             + crate::terminal_dock::Side::ALL.iter().map(|side| 8. + text_width(side.glyph())).sum::<f32>();
         let available = self.bounds.map_or(0., |bounds| f32::from(bounds.size.width) + 16.) - fixed_width;
-        let status = self.error.clone().unwrap_or_else(|| if self.starting { "Starting…".into() } else { self.frame.status.clone() });
+        let status = self.error.clone().unwrap_or_else(|| if self.starting { "Starting…".into() } else if native { if running { "Running".into() } else { "Stopped".into() } } else { self.frame.status.clone() });
         let mut metadata = String::new();
         let project = self.project.file_name().unwrap_or_default().to_string_lossy().into_owned();
         let project = if project == self.title() { String::new() } else { project };
         for label in [project, status,
-            if self.frame.alternate { "Full screen".into() } else { String::new() },
+            if self.starting || self.error.is_some() || !running { String::new() }
+            else if self.resume.is_some() { "Persistent".into() } else { "Temporary".into() },
+            if self.frame.alternate && self.resume.is_none() { "Full screen".into() } else { String::new() },
             if self.frame.display_offset > 0 { format!("↑ {}",self.frame.display_offset) } else { String::new() }] {
             if label.is_empty() { continue; }
             let candidate = if metadata.is_empty() { label } else { format!("{metadata} · {label}") };
@@ -469,14 +646,13 @@ impl Render for TerminalPanel {
                             .rounded_md()
                             .cursor_pointer()
                             .hover(|s| s.bg(rgba(0xffffff10)))
-                            .child(if self.frame.running {
+                            .child(if running {
                                 "Stop"
                             } else {
                                 "Stopped"
                             })
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.stop();
-                                cx.notify();
+                                this.end(false, cx);
                             })),
                     )
             )
@@ -491,8 +667,9 @@ impl Render for TerminalPanel {
                     .cursor(CursorStyle::IBeam)
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(move |this, event: &MouseDownEvent, window, _| {
+                        cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                             focus.focus(window);
+                            cx.emit(TerminalEvent::Focused);
                             this.selecting = true;
                             this.select(event.position, true);
                         }),
@@ -518,8 +695,13 @@ impl Render for TerminalPanel {
                                 .y,
                         );
                         if let Some(runtime) = &this.runtime {
-                            let _ = runtime
-                                .scroll((delta / crate::theme::mono_cell_height()).round() as i32);
+                            // Trackpads often deliver less than one row per event.
+                            let total = this.scroll_remainder + delta / crate::theme::mono_cell_height();
+                            let lines = total.trunc();
+                            this.scroll_remainder = total - lines;
+                            if lines != 0. {
+                                let _ = runtime.scroll(lines as i32);
+                            }
                         }
                         cx.stop_propagation();
                     }))
@@ -547,6 +729,12 @@ impl Render for TerminalPanel {
                                 });
                             },
                             move |bounds, _, window, cx| {
+                                if native {
+                                    let clip = bounds.intersect(&window.content_mask().bounds);
+                                    let focused = cursor_focus.is_focused(window);
+                                    painted.update(cx, |panel, _| panel.sync_metal_geometry(bounds, clip, focused));
+                                    return;
+                                }
                                 window.handle_input(
                                     &cursor_focus,
                                     ElementInputHandler::new(bounds, painted.clone()),
@@ -587,21 +775,23 @@ fn paint_frame(
     let cell_height = crate::theme::mono_cell_height();
     for (row, cells) in frame.rows.iter().enumerate() {
         let y = bounds.origin.y + px(row as f32 * cell_height);
+        // Foreground styling can split a continuous background into many
+        // cell runs. Emit one GPU quad for each contiguous same-color span.
+        let mut remaining = cells.iter().peekable();
+        while let Some(cell) = remaining.next() {
+            let Some(bg) = cell.bg else { continue; };
+            let mut end = cell.column + cell.columns;
+            while let Some(next) = remaining.next_if(|next| next.column == end && next.bg == Some(bg)) {
+                end += next.columns;
+            }
+            let x = bounds.origin.x + px(cell.column as f32 * cell_width);
+            window.paint_quad(fill(
+                Bounds::new(point(x, y), size(px(cell_width * (end - cell.column) as f32), px(cell_height))),
+                if bg == 0x202326 { rgb(bg) } else { gpui::rgb(bg) },
+            ));
+        }
         for cell in cells {
             let x = bounds.origin.x + px(cell.column as f32 * cell_width);
-            if let Some(bg) = cell.bg {
-                window.paint_quad(fill(
-                    Bounds::new(
-                        point(x, y),
-                        size(px(cell_width * cell.columns as f32), px(cell_height)),
-                    ),
-                    if bg == 0x202326 {
-                        rgb(bg)
-                    } else {
-                        gpui::rgb(bg)
-                    },
-                ));
-            }
             if cell.text.chars().all(|ch| ch == ' ') {
                 continue;
             }

@@ -117,7 +117,7 @@ impl Render for ResizeTerminal {
 impl Orbit {
     pub(super) fn dock_terminal(&mut self, side: Side, cx: &mut Context<Self>) {
         self.terminal_dock.side = side;
-        self.pane_layout.terminal_reposition=Some(Instant::now());
+        self.pane_layout.terminal_reposition = Some(Instant::now());
         self.terminal_dock_hover = None;
         self.queue_workspace_save(cx);
         cx.notify();
@@ -128,16 +128,50 @@ impl Orbit {
         window: &Window,
         cx: &Context<Self>,
     ) -> AnyElement {
-        if !self.terminal_visible {
+        if self.active_chat_cli().is_some_and(|cli| cli.selected && (cli.metal_visible || cli.fallback.is_some())) {
+            return content;
+        }
+        self.docked_chat(content, None, window, cx)
+    }
+    pub(super) fn docked_peer_conversation(
+        &self,
+        content: AnyElement,
+        peer: &SessionSummary,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        self.docked_chat(content, Some(peer), window, cx)
+    }
+    fn docked_chat(
+        &self,
+        content: AnyElement,
+        peer: Option<&SessionSummary>,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let visible = peer.map_or(self.terminal_visible, |session| {
+            self.parked_terminals
+                .get(&workspace_ui::TerminalOwner::Chat(session.id.clone()))
+                .is_some_and(|deck| deck.visible)
+        });
+        let resize_owner = peer.map(|session| session.id.clone());
+        if !visible {
             return content;
         }
         let dock = self.terminal_dock.normalized();
         let horizontal = dock.side.horizontal();
-        let extent = self.pane_extent(pane_layout::Pane::Terminal).min(dock.extent(window.viewport_size()));
-        let body_extent = self.pane_body_extent(pane_layout::Pane::Terminal).min(dock.extent(window.viewport_size()));
+        // Clip a full-size terminal during the reveal. Resizing the grid on
+        // each animation frame would force full-screen programs to redraw.
+        let body_extent = dock.extent(window.viewport_size());
+        let extent = if self.split_peer().is_some() {
+            body_extent
+        } else {
+            self.pane_extent(pane_layout::Pane::Terminal).min(body_extent)
+        };
         let terminal = |this: &Self| {
             div()
                 .debug_selector(|| "terminal-dock".into())
+                .overflow_hidden()
                 .flex_none()
                 .relative()
                 .min_w(px(0.))
@@ -148,10 +182,32 @@ impl Orbit {
                 .when(!horizontal, |s| {
                     s.h(px(extent)).max_h(relative(0.65)).w_full()
                 })
-                .on_mouse_down(MouseButton::Left,|_,_,cx|cx.stop_propagation())
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .map(|s| {
-                    let body=div().flex().flex_col().min_w(px(0.)).min_h(px(0.)).when(horizontal,|s|s.w(px(body_extent)).h_full()).when(!horizontal,|s|s.h(px(body_extent)).w_full()).child(this.render_terminal_panes(cx));
-                    if this.motion&&!native::reduced_motion(){if let Some(at)=this.pane_layout.terminal_reposition.filter(|at|at.elapsed()<Duration::from_millis(280)){return s.child(body.with_animation(SharedString::from(format!("terminal-position-{at:?}")),Animation::new(Duration::from_millis(280)),|s,t|s.opacity(t).relative().top(px(8.*(1.-presentation::spring(t))))))}}
+                    let body = div()
+                        .flex()
+                        .flex_col()
+                        .min_w(px(0.))
+                        .min_h(px(0.))
+                        .when(horizontal, |s| s.w(px(body_extent)).h_full())
+                        .when(!horizontal, |s| s.h(px(body_extent)).w_full())
+                        .child(this.render_terminal_panes(peer, cx));
+                    if this.motion && !native::reduced_motion() {
+                        if let Some(at) = this
+                            .pane_layout
+                            .terminal_reposition
+                            .filter(|at| at.elapsed() < workspace_motion::PANE_DURATION)
+                        {
+                            return s.child(body.with_animation(
+                                SharedString::from(format!("terminal-position-{at:?}")),
+                                Animation::new(workspace_motion::PANE_DURATION),
+                                |s, t| {
+                                    let progress = workspace_motion::ease_out(t);
+                                    s.opacity(progress).relative().top(px(8. * (1. - progress)))
+                                },
+                            ));
+                        }
+                    }
                     s.child(body)
                 })
                 .child(
@@ -176,28 +232,38 @@ impl Orbit {
                                 .when(dock.side == Side::Bottom, |s| s.top_0())
                         })
                         .hover(|s| s.bg(rgba(0x88bfff88)))
-                        .on_mouse_down(MouseButton::Left,|_,window,cx|{native::panel_drag_guard(window,true);cx.stop_propagation();})
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener({
+                                let owner = resize_owner.clone();
+                                move |app, _, window, cx| {
+                                    if owner
+                                        .as_deref()
+                                        .is_none_or(|id| app.focus_split_chat(id, window, cx))
+                                    {
+                                        native::panel_drag_guard(window, true);
+                                        cx.stop_propagation();
+                                    }
+                                }
+                            }),
+                        )
                         .on_drag(ResizeTerminal, |_, _, _, cx| cx.new(|_| ResizeTerminal)),
                 )
         };
-        let highlighted = self.terminal_dock_hover.filter(|_| cx.has_active_drag());
+        let highlighted = self.terminal_dock_hover.filter(|_| peer.is_none() && cx.has_active_drag());
         div()
             .id("conversation-dock-area")
             .debug_selector(|| "conversation-dock-area".into())
             .flex_1()
-            .h_full()
+            .size_full()
             .min_w(px(0.))
             .min_h(px(0.))
             .relative()
             .flex()
             .when(!horizontal, |s| s.flex_col())
-            .when(self.terminal_visible && dock.side.before(), |s| {
-                s.child(terminal(self))
-            })
+            .when(visible && dock.side.before(), |s| s.child(terminal(self)))
             .child(content)
-            .when(self.terminal_visible && !dock.side.before(), |s| {
-                s.child(terminal(self))
-            })
+            .when(visible && !dock.side.before(), |s| s.child(terminal(self)))
             .on_drag_move(
                 cx.listener(|this, event: &DragMoveEvent<MoveTerminal>, _, cx| {
                     let next = Side::target(event.bounds, event.event.position);
@@ -208,7 +274,7 @@ impl Orbit {
                 }),
             )
             .on_drop(cx.listener(|this, _: &MoveTerminal, window, cx| {
-                native::panel_drag_guard(window,false);
+                native::panel_drag_guard(window, false);
                 if let Some(side) = this.terminal_dock_hover {
                     this.dock_terminal(side, cx);
                 }
@@ -224,10 +290,13 @@ impl Orbit {
                         Side::Top => p.y - b.top(),
                         Side::Bottom => b.bottom() - p.y,
                     });
-                    this.resize_pane(pane_layout::Pane::Terminal,value,cx);
+                    this.resize_pane(pane_layout::Pane::Terminal, value, cx);
                 }),
             )
-            .on_drop(cx.listener(|this, _: &ResizeTerminal, window, cx| {native::panel_drag_guard(window,false);this.queue_workspace_save(cx)}))
+            .on_drop(cx.listener(|this, _: &ResizeTerminal, window, cx| {
+                native::panel_drag_guard(window, false);
+                this.queue_workspace_save(cx)
+            }))
             .when_some(highlighted, |s, side| {
                 s.child(
                     canvas(
@@ -279,7 +348,10 @@ mod tests {
             let area = cx.debug_bounds("conversation-dock-area").unwrap();
             let header = cx.debug_bounds("terminal-drag-handle").unwrap();
             let chrome = cx.debug_bounds("workspace-tab-strip").unwrap();
-            assert!(header.top() >= chrome.bottom(), "terminal grip overlaps window chrome");
+            assert!(
+                header.top() >= chrome.bottom(),
+                "terminal grip overlaps window chrome"
+            );
             let from = header.center();
             let target = match side {
                 Side::Left => point(area.left() + px(8.), area.center().y),

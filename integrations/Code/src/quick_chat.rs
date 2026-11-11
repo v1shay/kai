@@ -7,7 +7,6 @@ pub struct Controller {
     orbit: Entity<Orbit>,
     window: Option<WindowHandle<QuickChat>>,
     hotkey: Option<GlobalHotkey>,
-    menu_hotkey: Option<GlobalHotkey>,
     menu_surface:bool,
 }
 impl gpui::Global for Controller {}
@@ -16,7 +15,7 @@ impl Controller {
         Self {
             orbit,
             window: None,
-            hotkey: None,menu_hotkey:None,menu_surface:false,
+            hotkey: None,menu_surface:false,
         }
     }
     /// Install after placing this Controller in App globals. Rebinding preserves
@@ -77,12 +76,6 @@ impl Controller {
         Ok(())
     }
     #[cfg(test)] pub(super) fn is_menu_surface(&self)->bool{self.menu_surface}
-    pub fn bind_menu(&mut self,cx:&mut App)->anyhow::Result<()>{
-        if self.menu_hotkey.is_some(){return Ok(())}
-        let hotkey=GlobalHotkey::new(Shortcut{key:"j".into(),command:true,control:false,alt:false,shift:false,key_code:None})?;
-        let events=hotkey.events.clone();self.menu_hotkey=Some(hotkey);
-        cx.spawn(async move|cx|{while events.recv().await.is_ok(){if cx.update(|_|unified::emit(&serde_json::json!({"type":"menuBarToggle"}))).is_err(){break}}}).detach();Ok(())
-    }
     pub fn toggle_menu(&mut self,cx:&mut App)->anyhow::Result<()>{
         let switching=!self.menu_surface;self.menu_surface=true;
         if switching{self.open(cx)}else{self.toggle_surface(cx)}
@@ -379,11 +372,11 @@ impl Render for QuickChat {
         if self.visible && self.orbit.read(cx).motion && !native::reduced_motion() {
             view.with_animation(
                 ("quick-chat-enter", self.show_generation),
-                Animation::new(Duration::from_millis(360)),
+                Animation::new(crate::workspace_motion::CONTENT_DURATION),
                 |view, t| {
-                    view.opacity((t / 0.55).min(1.))
+                    view.opacity(presentation::ease_out(t))
                         .relative()
-                        .top(px((1. - presentation::spring(t)) * 10.))
+                        .top(px((1. - presentation::ease_out(t)) * 10.))
                 },
             )
             .into_any_element()
@@ -515,7 +508,7 @@ impl Render for ShortcutRecorder {
                     .child(
                         div()
                             .text_size(theme::ui_px(12.))
-                            .child("Mini Code shortcut · menu bar: ⌘J"),
+                            .child("Floating Code shortcut"),
                     )
                     .child(
                         div()

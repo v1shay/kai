@@ -471,7 +471,9 @@ impl Orbit {
             self.engine.update_session(session);
         }
         self.following_bottom = true;
+        self.adopt_draft_terminals(&id);
         self.active = Some(id.clone());
+        self.sync_chat_terminal_owner(cx);
         if !self.open_tabs.contains(&id) {
             self.open_tabs.push(id.clone())
         }

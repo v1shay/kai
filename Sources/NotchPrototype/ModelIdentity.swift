@@ -83,9 +83,9 @@ enum EffortAppearance {
         setAccessibilityValue(selected.map{EffortAppearance.title(levels[$0])} ?? "Unselected")
         CATransaction.commit()
         if animated && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
-            let move=CASpringAnimation(keyPath:"position");move.fromValue=oldPosition;move.toValue=thumb.position;move.mass=1;move.stiffness=290;move.damping=28;move.duration=0.34;thumb.add(move,forKey:"effortSlide")
-            let width=CABasicAnimation(keyPath:"bounds.size.width");width.fromValue=oldWidth;width.toValue=fill.bounds.width;width.duration=0.28;width.timingFunction=CAMediaTimingFunction(name:.easeInEaseOut);fill.add(width,forKey:"effortFill")
-            let colors=CABasicAnimation(keyPath:"colors");colors.fromValue=oldColors;colors.toValue=fill.colors;colors.duration=0.28;fill.add(colors,forKey:"effortIntensity")
+            let move=CABasicAnimation(keyPath:"position");move.fromValue=oldPosition;move.toValue=thumb.position;move.duration=KaiMotion.paneDuration;thumb.addKai(move,forKey:"effortSlide")
+            let width=CABasicAnimation(keyPath:"bounds.size.width");width.fromValue=oldWidth;width.toValue=fill.bounds.width;width.duration=KaiMotion.paneDuration;width.timingFunction=KaiMotion.cycleCurve;fill.addKai(width,forKey:"effortFill")
+            let colors=CABasicAnimation(keyPath:"colors");colors.fromValue=oldColors;colors.toValue=fill.colors;colors.duration=KaiMotion.paneDuration;fill.addKai(colors,forKey:"effortIntensity")
         }
     }
     func select(_ index:Int,commit:Bool){guard !levels.isEmpty else{return};let next=max(0,min(levels.count-1,index));if selected != next{selected=next;render(animated:true)};if commit{onCommit?(levels[next])}}

@@ -100,11 +100,13 @@ struct WindowInvalidatorInner {
 #[derive(Clone)]
 pub(crate) struct WindowInvalidator {
     inner: Rc<RefCell<WindowInvalidatorInner>>,
+    wake_frame: Option<Rc<dyn Fn()>>,
 }
 
 impl WindowInvalidator {
-    pub fn new() -> Self {
+    pub fn new(wake_frame: Option<Box<dyn Fn()>>) -> Self {
         WindowInvalidator {
+            wake_frame: wake_frame.map(Rc::from),
             inner: Rc::new(RefCell::new(WindowInvalidatorInner {
                 dirty: true,
                 draw_phase: DrawPhase::None,
@@ -118,6 +120,8 @@ impl WindowInvalidator {
         inner.dirty_views.insert(entity);
         if inner.draw_phase == DrawPhase::None {
             inner.dirty = true;
+            drop(inner);
+            self.wake();
             cx.push_effect(Effect::Notify { emitter: entity });
             true
         } else {
@@ -130,7 +134,16 @@ impl WindowInvalidator {
     }
 
     pub fn set_dirty(&self, dirty: bool) {
-        self.inner.borrow_mut().dirty = dirty
+        self.inner.borrow_mut().dirty = dirty;
+        if dirty {
+            self.wake();
+        }
+    }
+
+    fn wake(&self) {
+        if let Some(wake) = &self.wake_frame {
+            wake();
+        }
     }
 
     pub fn set_phase(&self, phase: DrawPhase) {
@@ -866,6 +879,7 @@ pub struct Window {
     pub(crate) appearance_observers: SubscriberSet<(), AnyObserver>,
     active: Rc<Cell<bool>>,
     hovered: Rc<Cell<bool>>,
+    frame_submitted_callbacks: Vec<FrameCallback>,
     pub(crate) needs_present: Rc<Cell<bool>>,
     pub(crate) last_input_timestamp: Rc<Cell<Instant>>,
     pub(crate) refreshing: bool,
@@ -991,7 +1005,7 @@ impl Window {
         let scale_factor = platform_window.scale_factor();
         let appearance = platform_window.appearance();
         let text_system = Arc::new(WindowTextSystem::new(cx.text_system().clone()));
-        let invalidator = WindowInvalidator::new();
+        let invalidator = WindowInvalidator::new(platform_window.frame_waker());
         let active = Rc::new(Cell::new(platform_window.is_active()));
         let hovered = Rc::new(Cell::new(platform_window.is_hovered()));
         let needs_present = Rc::new(Cell::new(false));
@@ -1046,7 +1060,8 @@ impl Window {
                     || (active.get()
                         && last_input_timestamp.get().elapsed() < Duration::from_secs(1));
 
-                if invalidator.is_dirty() || request_frame_options.force_render {
+                let needs_draw = invalidator.is_dirty() || request_frame_options.force_render;
+                if needs_draw {
                     measure("frame duration", || {
                         handle
                             .update(&mut cx, |_, window, cx| {
@@ -1064,8 +1079,20 @@ impl Window {
                 }
 
                 handle
-                    .update(&mut cx, |_, window, _| {
+                    .update(&mut cx, |_, window, cx| {
                         window.complete_frame();
+                        if needs_draw || needs_present {
+                            for callback in mem::take(&mut window.frame_submitted_callbacks) {
+                                callback(window, cx);
+                            }
+                        }
+                        if !window.invalidator.is_dirty()
+                            && !window.needs_present.get()
+                            && window.next_frame_callbacks.borrow().is_empty()
+                            && !(active.get() && last_input_timestamp.get().elapsed() < Duration::from_secs(1))
+                        {
+                            window.platform_window.park_frame_clock();
+                        }
                     })
                     .log_err();
             }
@@ -1250,6 +1277,7 @@ impl Window {
             appearance_observers: SubscriberSet::new(),
             active,
             hovered,
+            frame_submitted_callbacks: Vec::new(),
             needs_present,
             last_input_timestamp,
             refreshing: false,
@@ -1276,7 +1304,8 @@ impl Window {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct DispatchEventResult {
+#[doc(hidden)]
+pub struct DispatchEventResult {
     pub propagate: bool,
     pub default_prevented: bool,
 }
@@ -1658,6 +1687,19 @@ impl Window {
     /// Schedule the given closure to be run directly after the current frame is rendered.
     pub fn on_next_frame(&self, callback: impl FnOnce(&mut Window, &mut App) + 'static) {
         RefCell::borrow_mut(&self.next_frame_callbacks).push(Box::new(callback));
+        self.invalidator.wake();
+    }
+
+    /// Run after the next frame is submitted to the platform renderer.
+    pub fn on_frame_submitted(&mut self, callback: impl FnOnce(&mut Window, &mut App) + 'static) {
+        self.frame_submitted_callbacks.push(Box::new(callback));
+        self.needs_present.set(true);
+        self.invalidator.wake();
+    }
+
+    /// Request one immediate presentation after the host orders this window on screen.
+    pub fn request_visible_frame(&self) {
+        self.platform_window.request_visible_frame();
     }
 
     /// Schedule a frame to be drawn on the next animation frame.
@@ -3602,6 +3644,7 @@ impl Window {
     #[profiling::function]
     pub fn dispatch_event(&mut self, event: PlatformInput, cx: &mut App) -> DispatchEventResult {
         self.last_input_timestamp.set(Instant::now());
+        self.invalidator.wake();
         // Handlers may set this to false by calling `stop_propagation`.
         cx.propagate_event = true;
         // Handlers may set this to true by calling `prevent_default`.

@@ -16,30 +16,80 @@ struct MediaNowPlaying: Equatable {
     var onStatus: ((String) -> Void)?
     var youtube = false, spotify = false
     private var timer: Timer?, busy = false, generation = 0
+    private var appObservers: [NSObjectProtocol] = []
+    private var idleDelay: TimeInterval = 1
     private var current: MediaNowPlaying?
     private var suppressed=false
     private let meter = PlaybackMeter()
     static func codexNeedsNotch(_ state:KaiState)->Bool {
         state.activeTurnId != nil || !state.activeTasks.isEmpty || state.approval || !["off","failure"].contains(state.activity.scene)
     }
-    func configure(youtube:Bool,spotify:Bool) {
-        generation += 1; self.youtube=youtube;self.spotify=spotify;timer?.invalidate();timer=nil
-        if !youtube && !spotify {current=nil;onChange?(nil);meter.stop();return}
+    func configure(youtube: Bool, spotify: Bool) {
+        stop()
+        self.youtube = youtube
+        self.spotify = spotify
+        guard youtube || spotify else {
+            current = nil
+            onChange?(nil)
+            return
+        }
+        let center = NSWorkspace.shared.notificationCenter
+        appObservers = [
+            NSWorkspace.didLaunchApplicationNotification,
+            NSWorkspace.didActivateApplicationNotification,
+            NSWorkspace.didTerminateApplicationNotification,
+        ].map { name in
+            center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notice in
+                let name = (notice.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.localizedName
+                Task { @MainActor [weak self] in
+                    guard let self, self.supports(name) else { return }
+                    self.startPolling()
+                }
+            }
+        }
         startPolling()
     }
-    func setSuppressed(_ suppressed:Bool){
-        guard self.suppressed != suppressed else{return}
-        self.suppressed=suppressed;generation += 1
-        timer?.invalidate();timer=nil
-        if suppressed{meter.stop()}else{startPolling()}
+
+    func setSuppressed(_ suppressed: Bool) {
+        guard self.suppressed != suppressed else { return }
+        self.suppressed = suppressed
+        generation += 1
+        timer?.invalidate()
+        timer = nil
+        if suppressed { meter.stop() } else { startPolling() }
     }
-    private func startPolling(){
-        guard !suppressed,youtube || spotify else{return}
-        timer=Timer.scheduledTimer(withTimeInterval:1,repeats:true){[weak self] _ in Task{ @MainActor [weak self] in self?.poll()}}
-        timer?.tolerance=0.2
-        if let timer {RunLoop.main.add(timer,forMode:.common)}
+
+    private func supports(_ name: String?) -> Bool {
+        switch name {
+        case "Spotify": return spotify
+        case "Webby", "Dia", "Google Chrome": return youtube
+        default: return false
+        }
+    }
+
+    private func startPolling() {
+        guard !suppressed, youtube || spotify else { return }
+        generation += 1
+        idleDelay = 1
+        timer?.invalidate()
+        timer = nil
         poll()
     }
+
+    private func schedulePoll(after delay: TimeInterval) {
+        let gen = generation
+        let timer = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, gen == self.generation else { return }
+                self.timer = nil
+                self.poll()
+            }
+        }
+        timer.tolerance = delay * 0.2
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
+    }
+
     func diagnose(){meter.diagnose()}
     func capture(_ enabled:Bool) {
         if enabled,!suppressed, let current {
@@ -47,24 +97,49 @@ struct MediaNowPlaying: Equatable {
         }else{meter.stop()}
     }
     private func poll() {
-        guard !busy,!suppressed else{return};busy=true
-        let gen=generation, useYouTube=youtube,useSpotify=spotify
-        let apps=NSWorkspace.shared.runningApplications.filter { app in
-            (useSpotify && app.localizedName == "Spotify") || (useYouTube && ["Webby","Dia","Google Chrome"].contains(app.localizedName ?? ""))
-        }.map{($0.processIdentifier,$0.localizedName ?? "",$0.isActive)}.sorted{$0.2 && !$1.2}
-        DispatchQueue.global(qos:.utility).async { [weak self] in
-            var found:MediaNowPlaying?
-            for (pid,name,_) in apps {
-                if name == "Spotify" {found=Self.spotifyState()}
-                else {found=Self.youtubeState(pid:pid,name:name)}
-                if found != nil{break}
+        guard !busy, !suppressed, youtube || spotify else { return }
+        let apps = NSWorkspace.shared.runningApplications.compactMap { app -> (pid_t, String, Bool)? in
+            guard let name = app.localizedName, supports(name) else { return nil }
+            return (app.processIdentifier, name, app.isActive)
+        }.sorted { $0.2 && !$1.2 }
+        guard !apps.isEmpty else {
+            updatePlaying(nil)
+            return
+        }
+
+        busy = true
+        let gen = generation
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            var found: MediaNowPlaying?
+            for (pid, name, _) in apps {
+                found = name == "Spotify" ? Self.spotifyState() : Self.youtubeState(pid: pid, name: name)
+                if found != nil { break }
             }
-            let value=found
+            let value = found
             DispatchQueue.main.async { [weak self] in
-                guard let self else{return};self.busy=false;guard gen == self.generation else{return}
-                if self.current != value {self.current=value;self.onChange?(value)}
+                guard let self else { return }
+                self.busy = false
+                guard gen == self.generation else {
+                    if !self.appObservers.isEmpty { self.poll() }
+                    return
+                }
+                self.updatePlaying(value)
+                guard gen == self.generation else { return }
+                if value == nil {
+                    self.schedulePoll(after: self.idleDelay)
+                    self.idleDelay = min(self.idleDelay * 2, 8)
+                } else {
+                    self.idleDelay = 1
+                    self.schedulePoll(after: 1)
+                }
             }
         }
+    }
+
+    private func updatePlaying(_ value: MediaNowPlaying?) {
+        guard current != value else { return }
+        current = value
+        onChange?(value)
     }
     private nonisolated static func spotifyState()->MediaNowPlaying? {
         let source="""
@@ -98,8 +173,11 @@ struct MediaNowPlaying: Equatable {
                     if videoID(string) != nil {url=string}
                 }
                 let role=attribute(node,kAXRoleAttribute) as? String ?? ""
-                let label=[kAXTitleAttribute,kAXDescriptionAttribute,kAXHelpAttribute].compactMap{attribute(node,$0) as? String}.joined(separator:" ").lowercased()
-                if role == kAXButtonRole && (label == "pause" || label.hasPrefix("pause ") || label.contains("pause (k)")) {playing=true}
+                if !playing, role == kAXButtonRole {
+                    let label = [kAXTitleAttribute, kAXDescriptionAttribute, kAXHelpAttribute]
+                        .compactMap { attribute(node, $0) as? String }.joined(separator: " ").lowercased()
+                    playing = label == "pause" || label.hasPrefix("pause ") || label.contains("pause (k)")
+                }
                 if playing,url != nil {break}
                 if queue.count<1500,let children=attribute(node,kAXChildrenAttribute) as? [AXUIElement] {queue.append(contentsOf:children.prefix(min(200,1500-queue.count)))}
             }
@@ -120,7 +198,15 @@ struct MediaNowPlaying: Equatable {
         else {id=url.queryItems?.first{$0.name == "v"}?.value}
         guard let id,id.count == 11,id.allSatisfy({$0.isLetter || $0.isNumber || $0 == "_" || $0 == "-"}) else{return nil};return id
     }
-    func stop(){generation += 1;timer?.invalidate();timer=nil;meter.stop()}
+    func stop() {
+        generation += 1
+        timer?.invalidate()
+        timer = nil
+        let center = NSWorkspace.shared.notificationCenter
+        appObservers.forEach { center.removeObserver($0) }
+        appObservers.removeAll()
+        meter.stop()
+    }
 }
 
 /// Measures the speaker mix while media is visible. Audio/video buffers are discarded.

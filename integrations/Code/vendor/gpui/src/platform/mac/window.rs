@@ -473,28 +473,39 @@ impl MacWindowState {
         }
     }
 
-    fn start_display_link(&mut self) {
-        self.stop_display_link();
-        unsafe {
-            if !self
-                .native_window
-                .occlusionState()
+    fn wake_frame_clock(&mut self, state: &Arc<Mutex<Self>>) {
+        if self.display_link.as_ref().is_some_and(DisplayLink::is_running) {
+            return;
+        }
+        let visible = unsafe {
+            self.native_window.occlusionState()
                 .contains(NSWindowOcclusionState::NSWindowOcclusionStateVisible)
-            {
-                return;
+        };
+        if !visible {
+            return;
+        }
+        if self.display_link.is_none() {
+            let display_id = unsafe { display_id_for_screen(self.native_window.screen()) };
+            self.display_link =
+                DisplayLink::new(display_id, self.native_view.as_ptr() as *mut c_void, step).log_err();
+        }
+        if let Some(link) = &mut self.display_link {
+            link.start().log_err();
+        }
+        // The first draw after an idle window wakes can use the next main
+        // queue turn. Let the display link pace subsequent frames.
+        let state = Arc::downgrade(state);
+        self.executor.spawn(async move {
+            if let Some(state) = state.upgrade() {
+                request_frame(&state, false);
             }
-        }
-        let display_id = unsafe { display_id_for_screen(self.native_window.screen()) };
-        if let Some(mut display_link) =
-            DisplayLink::new(display_id, self.native_view.as_ptr() as *mut c_void, step).log_err()
-        {
-            display_link.start().log_err();
-            self.display_link = Some(display_link);
-        }
+        }).detach();
     }
 
     fn stop_display_link(&mut self) {
-        self.display_link = None;
+        if let Some(link) = &mut self.display_link {
+            link.stop().log_err();
+        }
     }
 
     fn is_maximized(&self) -> bool {
@@ -1376,6 +1387,39 @@ impl PlatformWindow for MacWindow {
         }
     }
 
+    fn frame_waker(&self) -> Option<Box<dyn Fn()>> {
+        let state = Arc::downgrade(&self.0);
+        let executor = self.0.lock().executor.clone();
+        Some(Box::new(move || {
+            let Some(window) = state.upgrade() else { return };
+            if let Some(mut locked) = window.try_lock() {
+                locked.wake_frame_clock(&window);
+            } else {
+                // Cocoa can send notifications synchronously inside window
+                // operations. Wake after that operation releases its lock.
+                let state = state.clone();
+                executor.spawn(async move {
+                    if let Some(window) = state.upgrade() {
+                        window.lock().wake_frame_clock(&window);
+                    }
+                }).detach();
+            };
+        }))
+    }
+
+    fn park_frame_clock(&self) {
+        self.0.lock().stop_display_link();
+    }
+
+    fn request_visible_frame(&self) {
+        let state = Arc::downgrade(&self.0);
+        self.0.lock().executor.spawn(async move {
+            if let Some(state) = state.upgrade() {
+                request_frame(&state, true);
+            }
+        }).detach();
+    }
+
     fn on_request_frame(&self, callback: Box<dyn FnMut(RequestFrameOptions)>) {
         self.0.as_ref().lock().request_frame_callback = Some(callback);
     }
@@ -1914,7 +1958,7 @@ extern "C" fn window_did_change_occlusion_state(this: &Object, _: Sel, _: id) {
             .contains(NSWindowOcclusionState::NSWindowOcclusionStateVisible)
         {
             lock.move_traffic_light();
-            lock.start_display_link();
+            lock.wake_frame_clock(&window_state);
         } else {
             lock.stop_display_link();
         }
@@ -1970,7 +2014,8 @@ extern "C" fn window_did_move(this: &Object, _: Sel, _: id) {
 extern "C" fn window_did_change_screen(this: &Object, _: Sel, _: id) {
     let window_state = unsafe { get_window_state(this) };
     let mut lock = window_state.as_ref().lock();
-    lock.start_display_link();
+    lock.display_link = None;
+    lock.wake_frame_clock(&window_state);
 }
 
 extern "C" fn window_did_change_key_status(this: &Object, selector: Sel, _: id) {
@@ -1988,10 +2033,13 @@ extern "C" fn window_did_change_key_status(this: &Object, selector: Sel, _: id) 
     // in theory, we're not supposed to invoke this method manually but it balances out
     // the spurious `becomeKeyWindow` event and helps us work around that bug.
     if selector == sel!(windowDidBecomeKey:) && !is_active {
+        let native_window = lock.native_window;
+        // AppKit synchronously calls this observer again when the window resigns.
+        drop(lock);
         unsafe {
-            let _: () = msg_send![lock.native_window, resignKeyWindow];
-            return;
+            let _: () = msg_send![native_window, resignKeyWindow];
         }
+        return;
     }
 
     let executor = lock.executor.clone();
@@ -2011,7 +2059,6 @@ extern "C" fn window_did_change_key_status(this: &Object, selector: Sel, _: id) 
             if let Some(mut callback) = lock.request_frame_callback.take() {
                 #[cfg(not(feature = "macos-blade"))]
                 lock.renderer.set_presents_with_transaction(true);
-                lock.stop_display_link();
                 drop(lock);
                 callback(Default::default());
 
@@ -2019,7 +2066,6 @@ extern "C" fn window_did_change_key_status(this: &Object, selector: Sel, _: id) 
                 lock.request_frame_callback = Some(callback);
                 #[cfg(not(feature = "macos-blade"))]
                 lock.renderer.set_presents_with_transaction(false);
-                lock.start_display_link();
             }
         } else {
             lock.activated_least_once = true;
@@ -2139,7 +2185,6 @@ extern "C" fn display_layer(this: &Object, _: Sel, _: id) {
     if let Some(mut callback) = lock.request_frame_callback.take() {
         #[cfg(not(feature = "macos-blade"))]
         lock.renderer.set_presents_with_transaction(true);
-        lock.stop_display_link();
         drop(lock);
         callback(Default::default());
 
@@ -2147,18 +2192,33 @@ extern "C" fn display_layer(this: &Object, _: Sel, _: id) {
         lock.request_frame_callback = Some(callback);
         #[cfg(not(feature = "macos-blade"))]
         lock.renderer.set_presents_with_transaction(false);
-        lock.start_display_link();
     }
 }
 
 unsafe extern "C" fn step(view: *mut c_void) {
     let view = view as id;
     let window_state = unsafe { get_window_state(&*view) };
-    let mut lock = window_state.lock();
+    request_frame(&window_state, false);
+}
 
+fn request_frame(window_state: &Arc<Mutex<MacWindowState>>, ordered: bool) {
+    let mut lock = window_state.lock();
+    // A newly ordered window can draw before WindowServer posts occlusion.
+    let ready = if ordered {
+        let visible: BOOL = unsafe { msg_send![lock.native_window, isVisible] };
+        visible == YES
+    } else {
+        lock.display_link.as_ref().is_some_and(DisplayLink::is_running)
+    };
+    if !ready {
+        return;
+    }
     if let Some(mut callback) = lock.request_frame_callback.take() {
         drop(lock);
-        callback(Default::default());
+        callback(RequestFrameOptions {
+            require_presentation: ordered,
+            ..Default::default()
+        });
         window_state.lock().request_frame_callback = Some(callback);
     }
 }

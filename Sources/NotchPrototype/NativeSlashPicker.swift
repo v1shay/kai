@@ -24,6 +24,8 @@ struct NativeSlashToken:Equatable {
     var onAccept:((String)->Void)?
     private(set) var matches=[KaiSlashCommand](),selected=0
     private var rows=[NSButton](),signature="",suppressed:String?
+    private var dismissGeneration = 0
+    private var closing = false
     override init(frame:NSRect){
         super.init(frame:frame);material = .popover;state = .active;blendingMode = .withinWindow
         wantsLayer=true;layer?.cornerRadius=10;layer?.masksToBounds=true;isHidden=true
@@ -43,16 +45,27 @@ struct NativeSlashToken:Equatable {
             self.signature=signature;matches=values;selected=0;render()
         }
         frame=CGRect(x:anchor.minX,y:anchor.maxY+6,width:anchor.width,height:CGFloat(min(matches.count,6))*25+8)
-        let opening=isHidden;isHidden=false
+        let opening=isHidden || closing;dismissGeneration &+= 1;closing=false;isHidden=false
         if opening,!NSWorkspace.shared.accessibilityDisplayShouldReduceMotion{
-            layer?.add(CABasicAnimation(keyPath:"opacity").configured(from:0,to:1,duration:0.16),forKey:"slashReveal")
+            layer?.addKai(CABasicAnimation(keyPath:"opacity").configured(from:layer?.presentation()?.opacity ?? 0,to:1,duration:KaiMotion.contentDuration),forKey:"slashReveal")
         }
     }
-    var active:Bool{!isHidden && !matches.isEmpty}
+    var active:Bool{!isHidden && !closing && !matches.isEmpty}
     func move(_ delta:Int){guard active else{return};selected=(selected+delta+matches.count)%matches.count;render()}
     func accept(){guard active else{return};onAccept?(matches[selected].name);hide()}
     func dismiss(){suppressed=signature;hide()}
-    func hide(){isHidden=true}
+    func hide(){
+        guard !isHidden, !closing else{return}
+        closing=true;dismissGeneration &+= 1
+        let generation=dismissGeneration
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else{isHidden=true;closing=false;return}
+        layer?.addKai(CABasicAnimation(keyPath:"opacity").configured(from:layer?.presentation()?.opacity ?? 1,to:0,duration:KaiMotion.controlDuration),forKey:"slashReveal")
+        DispatchQueue.main.asyncAfter(deadline:.now()+KaiMotion.controlDuration){[weak self] in
+            guard let self,self.dismissGeneration==generation else{return}
+            self.isHidden=true;self.closing=false
+            self.layer?.removeAnimation(forKey:"slashReveal")
+        }
+    }
     private func render(){
         rows.forEach{$0.removeFromSuperview()};rows=[]
         let start=min(max(0,selected-5),max(0,matches.count-6))

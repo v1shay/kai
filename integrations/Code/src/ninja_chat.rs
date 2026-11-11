@@ -167,6 +167,7 @@ impl Orbit {
                 block,
                 decoded.as_deref(),
                 p.profile.agent,
+                None,
                 cx,
             ));
         }
@@ -200,7 +201,7 @@ impl Orbit {
             .on_click(cx.listener(move|app,_,_,cx|{cx.stop_propagation();let from=app.interaction_reveal(ix);let open=if app.expanded_tools.remove(&ix){false}else{app.expanded_tools.insert(ix);true};if motion{app.interaction_animations.insert(ix,(Instant::now(),open,from));}cx.notify();})));
         if expanded||reveal>0.{
             let mut details=div().id(("ninja-work-details",ix)).w_full().min_w(px(0.)).max_h(px(640.)).overflow_y_scroll().flex().flex_col().gap_1();
-            for i in (0..blocks.len()).filter(|i|!response_block(&blocks[*i],*i,&answer)){details=details.child(self.render_message_block(div().w_full().min_w(px(0.)),block_key(&format!("{task}:false"),i),&blocks[i],None,p.profile.agent,cx));}
+            for i in (0..blocks.len()).filter(|i|!response_block(&blocks[*i],*i,&answer)){details=details.child(self.render_message_block(div().w_full().min_w(px(0.)),block_key(&format!("{task}:false"),i),&blocks[i],None,p.profile.agent,None,cx));}
             group=group.child(div().w_full().max_h(px(640.*reveal)).overflow_hidden().opacity(reveal).child(details));
         }
         group

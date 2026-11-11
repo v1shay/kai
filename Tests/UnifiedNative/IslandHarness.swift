@@ -9,6 +9,8 @@ private func member(_ object:Any,_ key:String)->Any?{guard let value=Mirror(refl
 @main struct MorphMatrixAudit {
  @MainActor static func main()throws{
     _=NSApplication.shared
+    let forceFloating = CommandLine.arguments.contains("--floating")
+    KaiPetApp.testDisplayWithoutNotch = forceFloating
     UserDefaults.standard.set(true,forKey:"unifiedPreferencesSeeded");UserDefaults.standard.set(false,forKey:"soundsEnabled");UserDefaults.standard.set(false,forKey:"speakResponses");UserDefaults.standard.set(false,forKey:"spotifyMedia");UserDefaults.standard.set(false,forKey:"youtubeMedia")
     let workspace=FocusAuditWindow(contentRect:CGRect(x:100,y:100,width:1000,height:700),styleMask:[.titled],backing:.buffered,defer:false)
     // GPUI's borderless mini window explicitly permits key focus. Plain
@@ -33,7 +35,11 @@ private func member(_ object:Any,_ key:String)->Any?{guard let value=Mirror(refl
     func settle(){let end=Date().addingTimeInterval(3);repeat{pump(0.02)}while (morph.transitioning || mini.transitioning) && Date()<end;precondition(!morph.transitioning && !mini.transitioning,"A morph never completed")}
     func show(){app.prepareQuickOpening();precondition(app.transitionQuickSurface(quick,show:true));settle();precondition(quick.isVisible && !quick.ignoresMouseEvents,"Mini Code did not become interactive");precondition(!panel.isVisible,"Mini Code duplicated the notch");precondition(quick.level == .floating,"Transition level was not restored");precondition(app.unifiedVoiceHost() === quick.contentView,"Mini Code voice selected a hidden window");precondition((member(app,"workspacePet") as? NSView)?.superview === quick.contentView,"Mini Code lost the shared local pet")}
     func hide(){precondition(app.transitionQuickSurface(quick,show:false));settle();precondition(!quick.isVisible && !quick.ignoresMouseEvents,"Mini Code did not retire cleanly")}
-    if member(app,"islandMode") as? Bool == true {
+    let floating = member(app,"islandMode") as? Bool == true
+    let physicalNotch = NSScreen.screens.contains { $0.auxiliaryTopLeftArea != nil && $0.auxiliaryTopRightArea != nil }
+    precondition(floating == (forceFloating || !physicalNotch), "Surface did not match the display")
+    print("Testing \(floating ? "floating island" : "physical notch")")
+    if floating {
         app.showUnifiedNotchOnLaunch();pump(0.4)
         let screen=panel.screen!,mask=member(app,"mask") as! CAShapeLayer,sprite=member(app,"sprite") as! CALayer
         let drop=member(app,"dropPanel") as! NSPanel

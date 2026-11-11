@@ -437,10 +437,17 @@ mod tests {
         let copy = cx.debug_bounds("message-copy-5").unwrap();
         assert!(card.bottom() <= copy.top() + px(2.));
         assert!(cx.debug_bounds("completion-undo-5").is_some());
+        let control = cx.debug_bounds("completion-more-files-5").unwrap();
+        let viewport = view.update(cx, |app, _| app.list.viewport_bounds());
+        let pane = cx.debug_bounds("chat-pane").unwrap();
+        assert!(viewport.intersect(&pane).contains(&control.center()),
+            "More-files button is clipped: control={control:?}, viewport={viewport:?}, pane={pane:?}");
         crate::ui_tests::click_selector(cx, "completion-more-files-5");
+        let selected = view.update(cx, |app, _| app.expanded_tools.contains(&5));
         crate::ui_tests::draw_frame(&view, cx);
         let after = cx.debug_bounds("completion-changes-5").unwrap();
-        assert!(after.size.height > card.size.height);
+        assert!(after.size.height > card.size.height,
+            "More-files button failed: expanded={selected}, control={control:?}, viewport={viewport:?}, pane={pane:?}, before={card:?}, after={after:?}");
         assert!(cx.debug_bounds("response-sync-5").is_some());
         let expanded_row = cx.debug_bounds("transcript-row-5").unwrap();
         view.update(cx, |app, cx| {

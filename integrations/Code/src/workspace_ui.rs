@@ -3,6 +3,29 @@ use super::*;
 use std::hash::{Hash, Hasher};
 use workspace_state::{TranscriptAnchor, WindowState, WorkspaceState};
 
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
+pub(super) enum TerminalOwner {
+    Chat(String),
+    Draft(PathBuf),
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub(super) struct SavedTerminalDeck {
+    pub owner: TerminalOwner,
+    pub sessions: Vec<terminal::Resume>,
+    #[serde(default)]
+    pub layout: Option<terminal_panes::Node<uuid::Uuid>>,
+    #[serde(default)]
+    pub active: Option<uuid::Uuid>,
+}
+
+pub(super) struct TerminalDeck {
+    pub sessions: Vec<terminal_ui::Session>,
+    pub active: Option<EntityId>,
+    pub layout: terminal_panes::Layout,
+    pub visible: bool,
+}
+
 pub(super) fn capture_window(window: &Window) -> WindowState {
     let bounds = window.window_bounds();
     let rect = bounds.get_bounds();
@@ -77,19 +100,119 @@ fn fit_rect(state: &WindowState, displays: &[Bounds<Pixels>]) -> Bounds<Pixels> 
 }
 
 impl Orbit {
+    pub(super) fn sync_chat_terminal_owner(&mut self, cx: &mut Context<Self>) {
+        let ninja = self.ninja_surface_owner();
+        let cli_owner = self.chat_cli_owner();
+        unified::chat_cli_owner(cli_owner.as_deref(), self.split_companions());
+        for (id, cli) in &self.chat_clis {
+            if let Some((panel, _)) = &cli.fallback {
+                let visible = cli.selected && (cli_owner.as_deref() == Some(id.as_str()) || self.split_companions().any(|peer| peer == id));
+                if panel.read(cx).is_visible() != visible {
+                    panel.update(cx, |panel, _| panel.set_visible(visible));
+                }
+            }
+        }
+        let chat = ninja.as_deref().or(self.active.as_deref());
+        let already_owned = match &self.terminal_owner {
+            Some(TerminalOwner::Chat(id)) => chat == Some(id.as_str()),
+            Some(TerminalOwner::Draft(project)) => chat.is_none() && project == &self.project,
+            None => false,
+        };
+        if !already_owned {
+            let owner = chat.map_or_else(|| TerminalOwner::Draft(self.project.clone()), |id| TerminalOwner::Chat(id.to_owned()));
+            self.switch_terminal_owner(owner, cx);
+        }
+        self.sync_split_terminal_visibility(cx);
+    }
+
+    pub(super) fn adopt_draft_terminals(&mut self, chat: &str) {
+        if self.active.is_none() && matches!(self.terminal_owner, Some(TerminalOwner::Draft(_))) {
+            let next = TerminalOwner::Chat(chat.to_owned());
+            for deck in &mut self.saved_terminal_decks {
+                if Some(&deck.owner) == self.terminal_owner.as_ref() { deck.owner = next.clone(); }
+            }
+            self.terminal_owner = Some(next);
+        }
+    }
+
+    fn switch_terminal_owner(&mut self, owner: TerminalOwner, cx: &mut Context<Self>) {
+        if self.terminal_owner.as_ref() == Some(&owner) { return; }
+        self.cancel_terminal_pane_motion();
+        self.terminal_panes.clear_hover();
+        self.terminal_dock_hover = None;
+        let mut next = self.parked_terminals.remove(&owner).unwrap_or_else(|| TerminalDeck {
+            sessions: Vec::new(), active: None, layout: Default::default(), visible: false,
+        });
+        let old = self.terminal_owner.replace(owner);
+        std::mem::swap(&mut self.terminals, &mut next.sessions);
+        std::mem::swap(&mut self.active_terminal, &mut next.active);
+        std::mem::swap(&mut self.terminal_panes, &mut next.layout);
+        std::mem::swap(&mut self.terminal_visible, &mut next.visible);
+        for session in &next.sessions {
+            session.panel.update(cx, |panel, _| panel.set_visible(false));
+        }
+        if !next.sessions.is_empty() && let Some(old) = old {
+            self.parked_terminals.insert(old, next);
+        }
+        self.sync_terminal_visibility(cx);
+    }
+
+    pub(super) fn sync_split_terminal_visibility(&mut self, cx: &mut Context<Self>) {
+        let peers: Vec<_> = if self.terminal_workspace_visible {
+            self.split_companions().map(str::to_owned).collect()
+        } else { Vec::new() };
+        let previous = std::mem::replace(&mut self.split_terminal_owners, peers.clone());
+        for owner in previous.into_iter().filter(|owner| !peers.contains(owner)) {
+            if let Some(deck) = self.parked_terminals.get(&TerminalOwner::Chat(owner)) {
+                for session in &deck.sessions { session.panel.update(cx, |panel, _| panel.set_visible(false)); }
+            }
+        }
+        for owner in peers {
+            let show_metal = self.modal.is_none() && !self.chat_clis.get(&owner)
+                .is_some_and(|cli| cli.selected && (cli.metal_visible || cli.fallback.is_some()));
+            if let Some(deck) = self.parked_terminals.get(&TerminalOwner::Chat(owner)) {
+                for session in &deck.sessions {
+                    let panel = session.panel.read(cx);
+                    let visible = deck.visible && deck.layout.visible(session.panel.entity_id())
+                        && (panel.metal_id().is_none() || show_metal);
+                    if panel.is_visible() != visible { session.panel.update(cx, |panel, _| panel.set_visible(visible)); }
+                }
+            }
+        }
+    }
+
+    pub(super) fn all_terminals(&self) -> impl Iterator<Item = &terminal_ui::Session> {
+        self.terminals.iter().chain(self.parked_terminals.values().flat_map(|deck| &deck.sessions))
+    }
+
     pub(super) fn active_terminal_panel(&self) -> Option<&Entity<terminal_ui::TerminalPanel>> {
         self.terminals.iter().find(|session| Some(session.panel.entity_id()) == self.active_terminal).map(|session| &session.panel)
     }
     pub(super) fn sync_terminal_visibility(&self, cx: &mut Context<Self>) {
+        let show_metal = self.modal.is_none() && !self.active_chat_cli()
+            .is_some_and(|cli| cli.selected && (cli.metal_visible || cli.fallback.is_some()));
         for session in &self.terminals {
-            let visible = self.terminal_visible && self.terminal_panes.visible(session.panel.entity_id());
-            session.panel.update(cx, |panel, _| panel.set_visible(visible));
+            let panel = session.panel.read(cx);
+            let visible = self.terminal_workspace_visible && self.terminal_visible
+                && self.terminal_panes.visible(session.panel.entity_id())
+                && (panel.metal_id().is_none() || show_metal);
+            if panel.is_visible() != visible { session.panel.update(cx, |panel, _| panel.set_visible(visible)); }
+        }
+    }
+    pub(super) fn set_terminal_workspace_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+        if self.terminal_workspace_visible != visible {
+            self.terminal_workspace_visible = visible;
+            self.sync_terminal_visibility(cx);
+            self.sync_split_terminal_visibility(cx);
         }
     }
     pub(super) fn select_terminal(&mut self, id: EntityId, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.terminals.iter().any(|session| session.panel.entity_id() == id) { return; }
+        let Some(tab) = self.terminals.iter().find(|session| session.panel.entity_id() == id) else { return; };
+        let save = tab.panel.read(cx).resume().is_some()
+            && (self.active_terminal != Some(id) || !self.terminal_panes.visible(id));
         self.active_terminal = Some(id);
         self.terminal_panes.select(id);
+        if save { self.queue_workspace_save(cx); }
         self.terminal_visible = true;
         self.reopen_closing_pane(pane_layout::Pane::Terminal, cx);
         self.sync_terminal_visibility(cx);
@@ -98,8 +221,15 @@ impl Orbit {
     }
     pub(super) fn new_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.quit_pending { return; }
+        self.sync_chat_terminal_owner(cx);
         if self.checkpoint_busy > 0 {
             self.notice = Some("Wait for file checkpoint work before opening a terminal.".into());
+            cx.notify();
+            return;
+        }
+        let saved_count: usize = self.saved_terminal_decks.iter().map(|deck| deck.sessions.len()).sum();
+        if saved_count + self.all_terminals().count() >= 128 {
+            self.notice = Some("Close a terminal before opening another.".into());
             cx.notify();
             return;
         }
@@ -107,13 +237,73 @@ impl Orbit {
         let chats_root = self.unprojected_root();
         let create_workspace = self.project == chats_root && root.parent() == Some(chats_root.as_path())
             && root.file_name().and_then(|name|name.to_str()).is_some_and(|name|uuid::Uuid::parse_str(name).is_ok());
-        let panel = cx.new(|cx| terminal_ui::TerminalPanel::new_workspace(root, create_workspace, window, cx));
+        self.restore_terminal_tabs(window, cx);
+        let backend = self.terminal_backend;
+        let id = self.add_terminal(root, create_workspace, backend, None, window, cx);
+        self.select_terminal(id, window, cx);
+    }
+
+    fn restore_terminal_tabs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(index) = self.saved_terminal_decks.iter().position(|deck| Some(&deck.owner) == self.terminal_owner.as_ref()) else { return; };
+        let deck = self.saved_terminal_decks.remove(index);
+        let mut tabs = HashMap::new();
+        for resume in deck.sessions {
+            let session = resume.id;
+            let id = self.add_terminal(resume.project.clone(), false, resume.backend, Some(resume), window, cx);
+            tabs.insert(session, id);
+            self.active_terminal = Some(id);
+        }
+        if let Some(layout) = deck.layout {
+            self.terminal_panes.restore(layout, |id| tabs.get(&id).copied());
+        }
+        if let Some(active) = deck.active.and_then(|id| tabs.get(&id).copied()) {
+            self.active_terminal = Some(active);
+        }
+    }
+
+    fn add_terminal(
+        &mut self,
+        root: PathBuf,
+        create_workspace: bool,
+        backend: terminal::Backend,
+        resume: Option<terminal::Resume>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> EntityId {
+        let profile = if cfg!(test) || std::env::args().any(|arg| arg == "--unified-smoke-test") {
+            PathBuf::new()
+        } else {
+            self.attachment_dir.parent().unwrap_or(&self.attachment_dir).to_owned()
+        };
+        let panel = cx.new(|cx| terminal_ui::TerminalPanel::new_workspace(root, create_workspace, backend, profile, resume, cx));
         let id = panel.entity_id();
         let subscription = cx.subscribe_in(&panel, window, |this, panel, event, window, cx| {
+            if matches!(event, terminal_ui::TerminalEvent::PersistenceChanged) {
+                this.queue_workspace_save(cx);
+                cx.notify();
+                return;
+            }
+            if !this.terminals.iter().any(|session| session.panel.entity_id() == panel.entity_id()) {
+                if matches!(event, terminal_ui::TerminalEvent::Close)
+                    && let Some((owner, deck)) = this.parked_terminals.iter_mut().find(|(_, deck)| deck.sessions.iter().any(|session| session.panel.entity_id() == panel.entity_id()))
+                {
+                    let replacement = deck.layout.remove(panel.entity_id());
+                    deck.sessions.retain(|session| session.panel.entity_id() != panel.entity_id());
+                    if deck.active == Some(panel.entity_id()) { deck.active = replacement; }
+                    if deck.sessions.is_empty() { deck.visible = false; }
+                    let visible = deck.visible && matches!(owner, TerminalOwner::Chat(id) if this.split_terminal_owners.contains(id));
+                    for session in &deck.sessions {
+                        session.panel.update(cx, |panel, _| panel.set_visible(visible && deck.layout.visible(session.panel.entity_id())));
+                    }
+                    cx.notify();
+                }
+                return;
+            }
             match event {
                 terminal_ui::TerminalEvent::Dock(side) => this.dock_terminal(*side, cx),
                 terminal_ui::TerminalEvent::DockStarted => this.terminal_dock_hover = None,
                 terminal_ui::TerminalEvent::TitleChanged => cx.notify(),
+                terminal_ui::TerminalEvent::PersistenceChanged | terminal_ui::TerminalEvent::Focused => {},
                 terminal_ui::TerminalEvent::New => this.new_terminal(window,cx),
                 terminal_ui::TerminalEvent::Close => {
                     if let Some(index) = this.terminals.iter().position(|session| session.panel.entity_id() == panel.entity_id()) {
@@ -137,17 +327,25 @@ impl Orbit {
         self.terminal_panes.insert(id, self.active_terminal);
         self.terminals.push(terminal_ui::Session { number: self.next_terminal_number, panel, _subscription: subscription });
         self.next_terminal_number += 1;
-        self.select_terminal(id, window, cx);
+        id
     }
     pub(super) fn toggle_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sync_chat_terminal_owner(cx);
         if self.reopen_closing_pane(pane_layout::Pane::Terminal,cx) {
             self.sync_terminal_visibility(cx);
             if let Some(panel) = self.active_terminal_panel() { panel.read(cx).focus_handle(cx).focus(window); }
             return;
         }
-        if self.terminal_visible { self.close_pane(pane_layout::Pane::Terminal,cx); return; }
-        if self.terminals.is_empty() { self.new_terminal(window, cx); return; }
+        if self.terminal_visible {
+            if self.active_terminal_panel().is_some_and(|panel| panel.read(cx).focus_handle(cx).is_focused(window)) {
+                self.composer.read(cx).focus_handle(cx).focus(window);
+            }
+            self.close_pane(pane_layout::Pane::Terminal,cx);
+            return;
+        }
         if self.quit_pending { return; }
+        if self.checkpoint_busy == 0 { self.restore_terminal_tabs(window, cx); }
+        if self.terminals.is_empty() { self.new_terminal(window, cx); return; }
         if let Some(id) = self.active_terminal { self.select_terminal(id, window, cx); }
     }
     /// GPUI's platform shutdown hook has a 100 ms deadline. Normal Quit waits
@@ -162,7 +360,7 @@ impl Orbit {
             .update(cx, |background, cx| background.set_quitting(true, cx));
         self.cancel_pending_launches();
         let broker_shutdown = self.shutdown_app_brokers();
-        for session in &self.terminals {
+        for session in self.all_terminals() {
             session.panel.update(cx, |terminal, _| terminal.stop());
         }
         self.stop_dictation(cx);
@@ -197,7 +395,7 @@ impl Orbit {
                     for id in settled {
                         this.poll(&id, cx);
                     }
-                    !broker_shutdown.is_closed() || this.starting || !this.team_starting.is_empty() || !this.runs.is_empty() || this.pending_project_creations > 0 || this.checkpoint_busy > 0 || this.file_browser.as_ref().is_some_and(|browser|browser.read(cx).editor_busy(cx)) || this.terminals.iter().any(|session| !session.panel.read(cx).is_settled())
+                    !broker_shutdown.is_closed() || this.starting || !this.team_starting.is_empty() || !this.runs.is_empty() || this.pending_project_creations > 0 || this.checkpoint_busy > 0 || this.file_browser.as_ref().is_some_and(|browser|browser.read(cx).editor_busy(cx)) || this.all_terminals().any(|session| !session.panel.read(cx).is_settled())
                 }) else {
                     return;
                 };
@@ -316,6 +514,7 @@ impl Orbit {
         self.appearance.opacity.to_bits().hash(&mut hash);
         self.theme.hash(&mut hash);
         self.voice_choice.hash(&mut hash);
+        self.terminal_backend.hash(&mut hash);
         (
             &self.quick_shortcut.key,
             self.quick_shortcut.control,
@@ -419,6 +618,29 @@ impl Orbit {
         cx.notify();
         false
     }
+    fn terminal_decks_snapshot(&self, cx: &App) -> Vec<SavedTerminalDeck> {
+        let mut decks = self.saved_terminal_decks.clone();
+        for (owner, tabs, layout, active) in self.terminal_owner.iter()
+            .map(|owner| (owner, &self.terminals, &self.terminal_panes, self.active_terminal))
+            .chain(self.parked_terminals.iter().map(|(owner, deck)| (owner, &deck.sessions, &deck.layout, deck.active)))
+        {
+            let saved: HashMap<_, _> = tabs.iter().filter_map(|tab| {
+                let resume = tab.panel.read(cx).resume()?;
+                Some((tab.panel.entity_id(), resume.id))
+            }).collect();
+            let sessions: Vec<_> = tabs.iter().filter_map(|tab| tab.panel.read(cx).resume().cloned()).collect();
+            if !sessions.is_empty() {
+                decks.push(SavedTerminalDeck {
+                    owner: owner.clone(), sessions,
+                    layout: layout.snapshot(|id| saved.get(&id).copied()),
+                    active: active.and_then(|id| saved.get(&id).copied()),
+                });
+            }
+        }
+        decks.sort_unstable_by(|a, b| a.owner.cmp(&b.owner));
+        decks
+    }
+
     pub(super) fn workspace_snapshot(&self, cx: &App) -> WorkspaceState {
         let mut drafts: std::collections::BTreeMap<_, _> = self
             .open_tabs
@@ -447,6 +669,8 @@ impl Orbit {
             startup_surface:self.startup_surface,
             automatic_titles:self.automatic_titles,
             terminal_dock:self.terminal_dock.normalized(),
+            terminal_backend: self.terminal_backend,
+            terminal_decks: self.terminal_decks_snapshot(cx),
             inspector_widths:self.inspector_widths.normalized(),
             activity: self.activity.saved.clone(),
             prompt_queue: self.prompt_queue.clone(),

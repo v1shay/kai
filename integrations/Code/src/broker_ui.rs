@@ -578,7 +578,7 @@ impl Orbit {
             .border_color(rgba(0xebebeb12))
             .bg(rgba(appearance::MENU_SURFACE))
             .opacity(if self.motion {
-                presentation::spring((panel.started.elapsed().as_secs_f32() / 0.32).min(1.))
+                presentation::ease_out((panel.started.elapsed().as_secs_f32() / 0.32).min(1.))
                     .clamp(0., 1.)
             } else {
                 1.

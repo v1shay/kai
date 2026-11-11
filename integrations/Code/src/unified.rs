@@ -10,7 +10,7 @@ type Publish = unsafe extern "C" fn(*const u8, usize);
 type Collapse = unsafe extern "C" fn();
 type Wallpaper=unsafe extern "C" fn(*const u8,usize,usize,usize,f32);
 type QuickSurface=unsafe extern "C" fn(*mut c_void,bool)->bool;
-type Start = unsafe extern "C" fn(*mut c_void, extern "C" fn(*const u8, usize) -> bool);
+type Start = unsafe extern "C" fn(*mut c_void, extern "C" fn(*const u8, usize) -> bool, bool);
 static COMMANDS: OnceLock<async_channel::Sender<Value>> = OnceLock::new();
 thread_local! {static HOST:RefCell<Option<Host>>=const{RefCell::new(None)};}
 struct Host {
@@ -65,6 +65,48 @@ pub(super) fn collapse() {
 pub(super) fn quick_surface(window:*mut c_void,visible:bool)->bool{
     let callback=HOST.with(|host|host.borrow().as_ref().map(|h|h.quick_surface));
     callback.is_some_and(|callback|unsafe{callback(window,visible)})
+}
+thread_local! {
+    static INLINE_PREVIEWS: RefCell<HashMap<&'static str, (i64, PathBuf, [f32; 4])>> = Default::default();
+}
+
+pub(super) fn inline_preview(slot: &'static str, path: &std::path::Path) -> impl IntoElement + Styled {
+    let path = path.to_owned();
+    canvas(|_, _, _| (), move |bounds, _, window, _| {
+        if !active() { return; }
+        let clipped = bounds.intersect(&window.content_mask().bounds);
+        if clipped.size.width <= px(1.) || clipped.size.height <= px(1.) {
+            hide_inline_preview(slot);
+            return;
+        }
+        let host = native::window_number(window);
+        let rect = [f32::from(clipped.origin.x), f32::from(clipped.origin.y),
+            f32::from(clipped.size.width), f32::from(clipped.size.height)];
+        let changed = INLINE_PREVIEWS.with(|slots| {
+            let mut slots = slots.borrow_mut();
+            if slots.get(slot).is_some_and(|(window, previous, geometry)| *window == host && previous == &path && *geometry == rect) {
+                return false;
+            }
+            slots.insert(slot, (host, path.clone(), rect));
+            true
+        });
+        if changed {
+            emit(&json!({"type":"inlineQuickLook","slot":slot,"window":host,"path":path,"rect":rect}));
+        }
+    })
+}
+
+pub(super) fn hide_inline_preview(slot: &'static str) {
+    if INLINE_PREVIEWS.with(|slots| slots.borrow_mut().remove(slot).is_some()) {
+        emit(&json!({"type":"inlineQuickLook","slot":slot}));
+    }
+}
+
+pub(super) fn quick_look(path: PathBuf) {
+    emit(&json!({"type":"quickLook","paths":[path]}));
+}
+pub(super) fn copy_file(path: PathBuf) {
+    emit(&json!({"type":"copyFile","path":path}));
 }
 pub(super) fn reveal() {
     emit(&json!({"type":"workspaceReveal"}));
@@ -161,7 +203,10 @@ pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Resul
             };
             let native: *mut AnyObject =
                 unsafe { msg_send![handle.ns_view.as_ptr().cast::<AnyObject>(), window] };
-            unsafe { start(native.cast(), command) };
+            let opens_workspace = app.startup_surface == startup::Surface::Workspace
+                && (!std::env::args().any(|arg| arg == "--unified-smoke-test") || std::env::args().any(|arg| matches!(arg.as_str(),
+                    "--unified-startup-probe" | "--unified-latency-probe" | "--unified-ninja-render-probe" | "--unified-chat-split-probe")));
+            unsafe { start(native.cast(), command, !opens_workspace) };
             app.tick_adaptive(window,false,cx);
             cx.entity()
         })?;
@@ -234,7 +279,7 @@ pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Resul
                 }
                 eprintln!("KAI_SURFACE_PROBE_OK");let _=cx.update(|cx|cx.quit());
             }).detach();
-        }else if std::env::args().any(|arg|matches!(arg.as_str(),"--unified-latency-probe"|"--unified-background-idle-probe"|"--unified-ninja-render-probe")){
+        }else if std::env::args().any(|arg|matches!(arg.as_str(),"--unified-latency-probe"|"--unified-background-idle-probe"|"--unified-ninja-render-probe"|"--unified-chat-split-probe")){
             anyhow::ensure!(std::env::args().any(|arg|arg=="--unified-smoke-test"),"Performance probes require isolated data");
         }else if std::env::args().any(|arg|arg=="--unified-menu-bar-probe"){
             anyhow::ensure!(std::env::args().any(|arg|arg=="--unified-smoke-test"),"Menu probe requires isolated app data");
@@ -243,13 +288,20 @@ pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Resul
             cx.spawn(async move|cx|{
                 Timer::after(Duration::from_millis(600)).await;
                 for _ in 0..3 {
-                    let _=cx.update(|_|emit(&json!({"type":"probeMenuBarClick"})));
-                    Timer::after(Duration::from_millis(700)).await;
-                    assert_ne!(unsafe{diagnostics()}&128,0,"The actual status-item handler did not open mini Code");
-                    assert_eq!(unsafe{diagnostics()}&1,0,"The workspace remained live beside menu mini Code");
-                    let _=cx.update(|_|emit(&json!({"type":"probeMenuBarClick"})));
-                    Timer::after(Duration::from_millis(700)).await;
-                    assert_eq!(unsafe{diagnostics()}&128,0,"A repeated status-item click did not close mini Code");
+                    for opening in [true, false] {
+                        let _=cx.update(|_|emit(&json!({"type":"probeMenuBarClick"})));
+                        // The first opening builds a second Metal window. Wait
+                        // for the actual handoff, with a bounded deadline.
+                        Timer::after(Duration::from_millis(700)).await;
+                        let deadline = Instant::now() + Duration::from_millis(1300);
+                        loop {
+                            let state = unsafe { diagnostics() };
+                            let settled = if opening { state & 128 != 0 && state & 1 == 0 } else { state & 128 == 0 };
+                            if settled { break }
+                            assert!(Instant::now() < deadline, "Menu mini Code handoff did not settle, opening={opening}, flags={state}");
+                            Timer::after(Duration::from_millis(20)).await;
+                        }
+                    }
                 }
                 eprintln!("KAI_MENU_BAR_PROBE_OK");let _=cx.update(|cx|cx.quit());
             }).detach();
@@ -325,11 +377,19 @@ pub(super) fn attach(window: WindowHandle<Orbit>, cx: &mut App) -> anyhow::Resul
             }).detach();
         }
         emit(&json!({"type":"keyboardCatalog","commands":keyboard::catalog()}));
-        if !std::env::args().any(|arg|arg=="--unified-smoke-test") || std::env::args().any(|arg|matches!(arg.as_str(),"--unified-startup-probe"|"--unified-latency-probe"|"--unified-background-idle-probe"|"--unified-ninja-render-probe")) {
+        if !std::env::args().any(|arg|arg=="--unified-smoke-test") || std::env::args().any(|arg|matches!(arg.as_str(),"--unified-startup-probe"|"--unified-latency-probe"|"--unified-background-idle-probe"|"--unified-ninja-render-probe"|"--unified-chat-split-probe")) {
             let surface=entity.read(cx).startup_surface;
             // The native owner already has a state packet. Present immediately;
             // discovery and provider catalogs continue independently.
-            cx.defer(move|_|{emit(&json!({"type":surface.packet()}));launch_metrics::mark(surface.packet());});
+            cx.defer(move |cx| {
+                emit(&json!({"type":surface.packet()}));
+                launch_metrics::mark(surface.packet());
+                if surface == startup::Surface::Workspace {
+                    let _ = window.update(cx, |_, window, _| {
+                        window.on_frame_submitted(|_, _| launch_metrics::mark("first-workspace-frame"));
+                    });
+                }
+            });
         }
         cx.spawn(async move |cx| {
             while let Ok(request) = receiver.recv().await {
@@ -424,7 +484,11 @@ impl Orbit {
             return;
         }
         if request["action"] == "workspace_presentation"{
+            self.set_terminal_workspace_visible(request["phase"].as_str() != Some("hidden"), cx);
             HOST.with(|host|{if let Some(host)=host.borrow_mut().as_mut(){host.workspace_motion.set_at(request["phase"].as_str().unwrap_or("hidden"),request["started"].as_f64().filter(|t|t.is_finite()&&*t>0.).unwrap_or_else(workspace_motion::now))}});
+            if request["phase"] == "visible" {
+                window.request_visible_frame();
+            }
             if matches!(request["phase"].as_str(),Some("expand"|"reopen")){
                 self.project_reveal=self.motion.then(||ListReveal::new(Some(0)));
                 self.sessions_reveal=self.motion.then(||ListReveal::new(Some(0)));
@@ -513,6 +577,15 @@ impl Orbit {
                 | "refresh"
                 | "workspace_settings"
                 | "workspace_wallpaper_visibility"
+                | "chat_terminal_closed"
+                | "chat_terminal_close_tab"
+                | "chat_terminal_command"
+                | "workspace_split_key"
+                | "dock_terminal_ready"
+                | "dock_terminal_closed"
+                | "dock_terminal_command"
+                | "chat_terminal_metal_visibility"
+                | "chat_terminal_fallback"
                 | "adaptive_text_samples"
                 | "typography"
         ) {
@@ -623,6 +696,88 @@ impl Orbit {
                 self.unified_navigating=true;self.open_session(target,window,cx);self.unified_navigating=false;
             }
             "adaptive_text_samples"=>{let profiles=request["profiles"].as_array().filter(|v|v.len()<=32).map(|v|v.iter().filter_map(|p|serde_json::from_value::<adaptive_text::Profile>(p.clone()).ok()).collect()).unwrap_or_default();self.accept_adaptive(profiles,request["status"].as_str().map(str::to_owned),cx);}
+            "dock_terminal_ready" | "dock_terminal_closed" | "dock_terminal_command" => {
+                let Some(id) = request["id"].as_str().and_then(|id| uuid::Uuid::parse_str(id).ok()) else { return Ok(()); };
+                let Some(panel) = self.all_terminals()
+                    .find(|session| session.panel.read(cx).metal_id() == Some(id))
+                    .map(|session| session.panel.clone()) else { return Ok(()); };
+                match action {
+                    "dock_terminal_ready" => panel.update(cx, |panel, cx| panel.metal_ready(cx)),
+                    "dock_terminal_closed" => panel.update(cx, |panel, cx|
+                        panel.finish_metal(request["error"].as_str().map(str::to_owned), cx)),
+                    _ => {
+                        let Some(command) = request["command"].as_str()
+                            .filter(|id| keyboard::split_command(id) || keyboard::COMMANDS.iter().any(|(_, known, _)| id == known))
+                            else { return Ok(()); };
+                        if command == "close_tab" { panel.update(cx, |panel, cx| panel.close(cx)); }
+                        else if keyboard::split_command(command) { self.workspace_split_key(command, window, cx); }
+                        else { self.execute_shortcut(command, window, cx); }
+                    }
+                }
+            }
+            "workspace_split_key" => {
+                if let Some(command) = request["command"].as_str().filter(|id| keyboard::split_command(id)) {
+                    self.workspace_split_key(command, window, cx);
+                }
+            }
+            "chat_terminal_fallback" => {
+                let Some(id) = self.cli_message_owner(&request) else { return Ok(()); };
+                let visible = (self.chat_cli_owner().as_deref() == Some(id.as_str()) || self.split_companions().any(|peer| peer == id))
+                    && self.chat_clis.get(&id).is_some_and(|cli| cli.selected);
+                let Some((root, args, environment)) = self.chat_clis.get_mut(&id).and_then(|cli| cli.launch.take()) else { return Ok(()); };
+                let panel = cx.new(|cx| terminal_ui::TerminalPanel::agent_cli(root, args, environment, cx));
+                panel.update(cx, |panel, _| panel.set_visible(visible));
+                let subscription = cx.subscribe_in(&panel, window, move |app, panel, event, window, cx| {
+                    if !matches!(event, terminal_ui::TerminalEvent::Close | terminal_ui::TerminalEvent::Focused) { return; }
+                    let owner = app.chat_clis.iter().find_map(|(id, cli)| cli.fallback.as_ref()
+                        .filter(|(candidate, _)| candidate.entity_id() == panel.entity_id()).map(|_| id.clone()));
+                    let Some(owner) = owner else { return; };
+                    if matches!(event, terminal_ui::TerminalEvent::Close) {
+                        app.chat_cli_exited(&owner, panel.read(cx).error().map(str::to_owned), window, cx);
+                    } else if app.split_companions().any(|peer| peer == owner) {
+                        app.focus_split_chat(&owner, window, cx);
+                    }
+                });
+                if visible && self.chat_cli_owner().as_deref() == Some(id.as_str()) { panel.read(cx).focus_handle(cx).focus(window); }
+                self.chat_clis.get_mut(&id).unwrap().fallback = Some((panel, subscription));
+                cx.notify();
+            }
+            "chat_terminal_metal_visibility" => {
+                let Some(id) = self.cli_message_owner(&request) else { return Ok(()); };
+                if let Some(cli) = self.chat_clis.get_mut(&id) {
+                    cli.launch = None;
+                    cli.metal_visible = request["visible"].as_bool().unwrap_or(false);
+                    cx.notify();
+                }
+            }
+            "chat_terminal_command" | "chat_terminal_close_tab" => {
+                let Some(owner) = self.cli_message_owner(&request) else { return Ok(()); };
+                let command = if action == "chat_terminal_close_tab" { "close_tab" } else {
+                    request["command"].as_str().filter(|id| keyboard::split_command(id) || keyboard::COMMANDS.iter().any(|(_, known, _)| id == known))
+                        .ok_or("Unknown keyboard command")?
+                };
+                if command == "close_tab" && self.split_companions().any(|peer| peer == owner) {
+                    self.close_tab(&owner, window, cx);
+                    return Ok(());
+                }
+                if self.chat_cli_owner().as_deref() != Some(owner.as_str())
+                    && !self.focus_split_chat(&owner, window, cx)
+                {
+                    return Ok(());
+                }
+                if matches!(command, "composer" | "conversation")
+                    && self.active_chat_cli().is_some_and(|cli| cli.selected)
+                {
+                    self.terminalize_chat(window, cx);
+                }
+                if keyboard::split_command(command) { self.workspace_split_key(command, window, cx); }
+                else { self.execute_shortcut(command, window, cx); }
+            }
+            "chat_terminal_closed" => {
+                let Some(owner) = self.cli_message_owner(&request) else { return Ok(()); };
+                let id = owner.as_str();
+                self.chat_cli_exited(id, request["error"].as_str().map(str::to_owned), window, cx);
+            }
             "ui_command"=>{let id=request["command"].as_str().filter(|id|keyboard::COMMANDS.iter().any(|(_,known,_)|id==known)).ok_or("Unknown keyboard command")?;self.execute_shortcut(id,window,cx);if id=="github"{reveal();}},
             "new" => self.new_unprojected_conversation(window, cx),
             "new_project" => self.new_conversation(window, cx),
@@ -715,13 +870,13 @@ impl Orbit {
                 let text = request["text"].as_str().unwrap_or("");
                 if let Some(paths) = request["paths"].as_array() {
                     if paths.len() + self.attachments.len() > attachments::MAX_ATTACHMENTS {
-                        return Err("Image slots are full".into());
+                        return Err("Attachment slots are full".into());
                     }
                 }
                 self.unified_context = Some(bounded(text, 12000));
                 if let Some(paths) = request["paths"].as_array().filter(|v| !v.is_empty()) {
                     if paths.len() + self.attachments.len() > attachments::MAX_ATTACHMENTS {
-                        return Err("Image slots are full".into());
+                        return Err("Attachment slots are full".into());
                     }
                     self.add_attachments(
                         paths
@@ -735,11 +890,11 @@ impl Orbit {
             }
             "attachments" => {
                 if !self.unified_send_ready() {
-                    return Err("Wait for this chat before attaching images".into());
+                    return Err("Wait for this chat before attaching files".into());
                 }
-                let paths = request["paths"].as_array().ok_or("Missing images")?;
+                let paths = request["paths"].as_array().ok_or("Missing files")?;
                 if paths.len() > attachments::MAX_ATTACHMENTS {
-                    return Err("Attach up to four images".into());
+                    return Err("Attach up to four files".into());
                 }
                 let paths: Vec<PathBuf> = paths
                     .iter()
@@ -748,7 +903,7 @@ impl Orbit {
                     .collect();
                 let additions:Vec<_>=paths.iter().filter(|p|!self.attachments.iter().any(|a|&a.path==*p)&&!self.unified_notch_sources.contains(p)).cloned().collect();
                 let retained=self.attachments.iter().filter(|a|paths.contains(&a.path)||self.unified_attachment_sources.iter().any(|(p,id)|*id==a.id&&paths.contains(p))).count();
-                if additions.len()+retained>attachments::MAX_ATTACHMENTS{return Err("Image slots are full".into())}
+                if additions.len()+retained>attachments::MAX_ATTACHMENTS{return Err("Attachment slots are full".into())}
                 self.attachments.retain(|a|paths.contains(&a.path)||self.unified_attachment_sources.iter().any(|(p,id)|*id==a.id&&paths.contains(p)));
                 self.unified_attachment_expected=Some(self.attachments.len()+additions.len());
                 self.unified_notch_sources=paths;
@@ -1576,9 +1731,84 @@ impl Orbit {
     }
 }
 
+impl Orbit {
+    fn cli_message_owner(&self, request: &Value) -> Option<String> {
+        let launch = uuid::Uuid::parse_str(request["launchId"].as_str()?).ok()?;
+        let requested = request["id"].as_str()?;
+        if self.chat_clis.get(requested).is_some_and(|cli| cli.launch_id == launch) {
+            return Some(requested.to_owned());
+        }
+        // Native events queued before a draft is promoted still belong to
+        // the same process. Never apply them to a replacement launch.
+        self.chat_clis.iter().find_map(|(id, cli)| (cli.launch_id == launch).then(|| id.clone()))
+    }
+
+    fn chat_cli_exited(&mut self, id: &str, error: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        let promoted = if id == keyboard::CLI_DRAFT && self.active.is_none()
+            && self.chat_clis.get(id).is_some_and(|cli| cli.cursor_history.is_some())
+        {
+            self.preserve_blank_tab(cx);
+            self.sync_chat_terminal_owner(cx);
+            self.active.clone()
+        } else { None };
+        let id = promoted.as_deref().unwrap_or(id);
+        let Some(mut cli) = self.chat_clis.remove(id) else { return; };
+        if let Some(history) = cli.cursor_history.take().filter(|_| id != keyboard::CLI_DRAFT) {
+            self.engine.import_cursor_cli(id.to_owned(), history);
+        }
+        if let Some(retained) = cli.retained.take() {
+            cx.background_executor().spawn(async move { drop(retained); }).detach();
+        }
+        if !cli.resumes_chat {
+            // New provider sessions are discovered by their real persisted IDs.
+            self.engine.refresh();
+        }
+        if self.chat_cli_owner().as_deref() == Some(id) {
+            if let Some(error) = error {
+                self.notice = Some(error);
+            } else if cli.resumes_chat
+                && let Some(session) = self.sessions.iter().find(|session| session.id == id).cloned()
+            {
+                self.open_session(session, window, cx);
+            }
+            self.composer.read(cx).focus_handle(cx).focus(window);
+            if cli.send_when_closed.is_some_and(|draft| self.composer.read(cx).text() == draft) {
+                self.send(window, cx);
+            }
+        }
+        self.refresh_split_tail(id, cx);
+        cx.notify();
+    }
+}
+
 pub(super) fn decode_enabled(motion:bool)->bool{
     #[cfg(not(test))]{active()&&motion&&!native::reduced_motion()}
     #[cfg(test)]{let _=motion;false}
+}
+pub(super) fn chat_cli_owner<'a>(chat: Option<&str>, peers: impl Iterator<Item = &'a str>) {
+    thread_local! {
+        static OWNERS: std::cell::RefCell<(Option<String>, Vec<String>)> = Default::default();
+    }
+    if !active() { return; }
+    OWNERS.with(|owners| {
+        let mut previous = owners.borrow_mut();
+        let peers: Vec<_> = peers.collect();
+        if previous.0.as_deref() == chat && previous.1.iter().map(String::as_str).eq(peers.iter().copied()) { return; }
+        *previous = (chat.map(str::to_owned), peers.iter().map(|id| (*id).to_owned()).collect());
+        CHAT_CLI_SLOTS.with(|slots| slots.borrow_mut().retain(|id, _| Some(id.as_str()) == chat || peers.contains(&id.as_str())));
+        emit(&json!({"type":"chatTerminalOwner","id":chat,"peers":peers}));
+    });
+}
+thread_local! {
+    static CHAT_CLI_SLOTS: std::cell::RefCell<HashMap<String, [f32; 4]>> = Default::default();
+}
+pub(super) fn chat_cli_slot(id: &str, bounds: Bounds<Pixels>) {
+    if !active() { return; }
+    let rect = [f32::from(bounds.origin.x), f32::from(bounds.origin.y),
+                f32::from(bounds.size.width), f32::from(bounds.size.height)];
+    if CHAT_CLI_SLOTS.with(|slots| slots.borrow_mut().insert(id.to_owned(), rect) != Some(rect)) {
+        emit(&json!({"type":"chatTerminalSlot","id":id,"rect":rect}));
+    }
 }
 pub(super) fn atmosphere_slot(bounds:Bounds<Pixels>){
     thread_local!{static SLOT:std::cell::Cell<Option<[f32;4]>>=const{std::cell::Cell::new(None)};}

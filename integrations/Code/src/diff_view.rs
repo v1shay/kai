@@ -586,7 +586,7 @@ impl DiffView {
 impl Render for DiffView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let files = self.changes.as_ref().map_or(0, |c| c.files.len());
-        let tree_count=self.tree.len();let tree_reveal=if self.motion&&!crate::native::reduced_motion(){self.tree_at.map_or(1.,|at|crate::presentation::spring((at.elapsed().as_secs_f32()/0.18).min(1.)).clamp(0.,1.))}else{1.};
+        let tree_count=self.tree.len();let tree_reveal=if self.motion&&!crate::native::reduced_motion(){self.tree_at.map_or(1.,|at|crate::presentation::ease_out((at.elapsed().as_secs_f32()/0.18).min(1.)).clamp(0.,1.))}else{1.};
         if self.tree_at.is_some_and(|at|at.elapsed()<Duration::from_millis(180))&&tree_reveal<1.{let owner=cx.entity().downgrade();window.on_next_frame(move|_,cx|{if let Some(owner)=owner.upgrade(){cx.notify(owner.entity_id());}});}
         let lines = self.patch.as_ref().map_or(0, |p| p.lines.len());
         let width = self.patch.as_ref().map_or(440., |p| p.width);
@@ -619,6 +619,15 @@ impl Render for DiffView {
                 div().h(px(28.)).flex_none().flex().items_center().gap_2().px_3()
                     .border_b_1().border_color(rgba(0xffffff12)).text_size(crate::theme::ui_px(10.))
                     .child(div().flex_1().min_w(px(0.)).text_ellipsis().child(self.selected.and_then(|ix| self.changes.as_ref()?.files.get(ix)).map_or("Changes".to_owned(), |file| file.label.clone())))
+                    .when_some(self.selected_path(), |s, path| s.child(div().id("diff-quick-look").px_2()
+                        .cursor_pointer().child("Quick Look")
+                        .on_click(move |_, _, cx| {
+                            if crate::unified::active() { crate::unified::quick_look(path.clone()); }
+                            else { cx.open_url(&crate::files::file_url(&path)); }
+                        })))
+                    .when_some(self.selected_path().filter(|_| crate::unified::active()), |s, path| s.child(
+                        div().id("diff-copy-file").px_2().cursor_pointer().child("Copy file")
+                            .on_click(move |_, _, _| crate::unified::copy_file(path.clone()))))
                     .child(crate::github_ui::counts(&self.selected.and_then(|ix|self.changes.as_ref()?.files.get(ix)?.counts.clone()).unwrap_or(crate::github::Counts{added:patch.added as u64,removed:patch.removed as u64,binary:false})))
             ))
             .when(lines > 0, |s| s.child(div().id("diff-scroll-x").flex_1().min_h(px(0.)).overflow_x_scroll()

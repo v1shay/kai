@@ -94,14 +94,8 @@ pub enum MessageBlock {
     },
 }
 
-pub fn spring(progress: f32) -> f32 {
-    if progress <= 0. {
-        return 0.;
-    }
-    if progress >= 1. {
-        return 1.;
-    }
-    1. - (-8. * progress).exp() * ((12. * progress).cos() + (8. / 12.) * (12. * progress).sin())
+pub fn ease_out(progress: f32) -> f32 {
+    1. - (1. - progress.clamp(0., 1.)).powi(3)
 }
 
 /// Native harness context names. Unknown XML/HTML remains ordinary message text.
@@ -2351,12 +2345,13 @@ mod tests {
         assert_eq!(highlight("string\": 42", "json", &mut state)[0].0, 0..7);
     }
     #[test]
-    fn spring_starts_overshoots_and_settles() {
-        assert_eq!(spring(0.), 0.);
-        assert_eq!(spring(1.), 1.);
-        assert_eq!(spring(2.), 1.);
-        assert!(spring(0.3) > 1.);
-        assert!((spring(0.99) - 1.).abs() < 0.001);
+    fn interaction_easing_is_bounded_and_monotonic() {
+        assert_eq!(ease_out(-1.), 0.);
+        assert_eq!(ease_out(0.), 0.);
+        assert_eq!(ease_out(0.5), 0.875);
+        assert_eq!(ease_out(1.), 1.);
+        assert_eq!(ease_out(2.), 1.);
+        assert!((0..100).all(|i| ease_out(i as f32 / 100.) <= ease_out((i + 1) as f32 / 100.)));
     }
     #[test]
     fn known_approval_envelopes_are_removed_without_touching_user_json() {

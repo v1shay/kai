@@ -72,8 +72,12 @@ func displayCitations(in text:String)->(String,[(NSRange,URL)]){
     return(rendered,links)
 }
 
+private func draggedFiles(_ pasteboard:NSPasteboard)->[URL] {
+    (pasteboard.readObjects(forClasses:[NSURL.self],options:[.urlReadingFileURLsOnly:true]) as? [URL]) ?? []
+}
+
 private func draggedImages(_ pasteboard:NSPasteboard)->[NSImage] {
-    let urls=(pasteboard.readObjects(forClasses:[NSURL.self],options:[.urlReadingFileURLsOnly:true]) as? [URL]) ?? []
+    let urls=draggedFiles(pasteboard)
     let images=urls.compactMap(NSImage.init(contentsOf:));if !images.isEmpty{return images}
     return NSImage(pasteboard:pasteboard).map{[$0]} ?? []
 }
@@ -82,10 +86,11 @@ private func draggedImages(_ pasteboard:NSPasteboard)->[NSImage] {
 private func hasDraggedImages(_ pasteboard:NSPasteboard)->Bool {
     if pasteboard.availableType(from:[.png,.tiff]+NSImage.imageTypes.map{NSPasteboard.PasteboardType($0)}) != nil{return true}
     let urls=(pasteboard.readObjects(forClasses:[NSURL.self],options:[.urlReadingFileURLsOnly:true]) as? [URL]) ?? []
-    return urls.contains{UTType(filenameExtension:$0.pathExtension)?.conforms(to:.image) == true}
+    return !urls.isEmpty
 }
 
 final class NotchPanel:NSPanel {
+    var pasteFiles:(()->Bool)?
     override var canBecomeKey:Bool{true}
     override var canBecomeMain:Bool{false}
     override func performKeyEquivalent(with event:NSEvent)->Bool {
@@ -98,7 +103,7 @@ final class NotchPanel:NSPanel {
             switch (key,flags.contains(.shift)) {
             case ("a",false):selector=NSSelectorFromString("selectAll:")
             case ("c",false):selector=NSSelectorFromString("copy:")
-            case ("v",false):selector=NSSelectorFromString("paste:")
+            case ("v",false):if pasteFiles?() == true{return true};selector=NSSelectorFromString("paste:")
             case ("x",false):selector=NSSelectorFromString("cut:")
             case ("z",false):selector=NSSelectorFromString("undo:")
             case ("z",true):selector=NSSelectorFromString("redo:")
@@ -114,13 +119,13 @@ final class NotchPanel:NSPanel {
 }
 
 private class ImageDropView:NSView {
-    var dragEntered:(()->Void)?,imageDropped:(([NSImage])->Void)?
+    var dragEntered:(()->Void)?,imageDropped:(([NSImage])->Void)?,filesDropped:(([URL])->Bool)?
     override init(frame:NSRect){super.init(frame:frame);registerForDraggedTypes([.fileURL,.png,.tiff]+NSImage.imageTypes.map{NSPasteboard.PasteboardType($0)})}
     required init?(coder:NSCoder){fatalError()}
     private func images(_ sender:NSDraggingInfo)->[NSImage]{draggedImages(sender.draggingPasteboard)}
     override func draggingEntered(_ sender:NSDraggingInfo)->NSDragOperation{guard hasDraggedImages(sender.draggingPasteboard) else{return []};dragEntered?();return .copy}
     override func draggingUpdated(_ sender:NSDraggingInfo)->NSDragOperation{hasDraggedImages(sender.draggingPasteboard) ? .copy:[]}
-    override func performDragOperation(_ sender:NSDraggingInfo)->Bool{let images=images(sender);guard !images.isEmpty else{return false};imageDropped?(images);return true}
+    override func performDragOperation(_ sender:NSDraggingInfo)->Bool{let files=draggedFiles(sender.draggingPasteboard);if !files.isEmpty,filesDropped?(files) == true{return true};let images=images(sender);guard !images.isEmpty else{return false};imageDropped?(images);return true}
 }
 
 /// NSTextField's default field editor hugs the top of a taller editing row.
@@ -139,13 +144,13 @@ final class ComposerTextCell:NSTextFieldCell {
 private final class ComposerField:NSTextField {
     override class var cellClass:AnyClass?{get{ComposerTextCell.self}set{}}
     override func acceptsFirstMouse(for event:NSEvent?)->Bool{true}
-    var imagesEntered:(()->Void)?,imagesDropped:(([NSImage])->Void)?
+    var imagesEntered:(()->Void)?,imagesDropped:(([NSImage])->Void)?,filesDropped:(([URL])->Bool)?
     override init(frame:NSRect){super.init(frame:frame);registerForDraggedTypes([.fileURL,.png,.tiff]+NSImage.imageTypes.map{NSPasteboard.PasteboardType($0)})}
     required init?(coder:NSCoder){fatalError()}
     override func performKeyEquivalent(with event:NSEvent)->Bool{let flags=event.modifierFlags.intersection(.deviceIndependentFlagsMask);if flags == .command,event.charactersIgnoringModifiers?.lowercased() == "a"{if let editor=currentEditor(){editor.selectAll(nil)}else{window?.makeFirstResponder(self);selectText(nil)};return true};return super.performKeyEquivalent(with:event)}
     override func draggingEntered(_ sender:NSDraggingInfo)->NSDragOperation{guard hasDraggedImages(sender.draggingPasteboard) else{return []};imagesEntered?();return .copy}
     override func draggingUpdated(_ sender:NSDraggingInfo)->NSDragOperation{hasDraggedImages(sender.draggingPasteboard) ? .copy:[]}
-    override func performDragOperation(_ sender:NSDraggingInfo)->Bool{let images=draggedImages(sender.draggingPasteboard);guard !images.isEmpty else{return false};imagesDropped?(images);return true}
+    override func performDragOperation(_ sender:NSDraggingInfo)->Bool{let files=draggedFiles(sender.draggingPasteboard);if !files.isEmpty,filesDropped?(files) == true{return true};let images=draggedImages(sender.draggingPasteboard);guard !images.isEmpty else{return false};imagesDropped?(images);return true}
 }
 
 @MainActor private final class PetMenuRow:NSView {
@@ -218,6 +223,7 @@ private final class NotchSurfaceHost:NSView {
     private var unifiedMenuItems=[NSMenuItem]()
     private let menuBarIdentity=MenuBarIdentityMenu()
     private var statusContextMenu:NSMenu?,menuQuickAnchor:CGRect?
+    private var menuQuickWasForeground=false
     private let nativeReview=NativeRequestReview()
     private let inlinePetImages=SpriteAssetCache(maxPixelSize:960)
     private var inlinePetLoading=Set<URL>(),inlinePetVisuals=[String:InlineTaskPet](),lastPetVisualPayload:Data?
@@ -253,6 +259,8 @@ private final class NotchSurfaceHost:NSView {
     private var workspaceStatusRetire:DispatchWorkItem?
     private var workspaceHold=WorkspaceHoldGesture(),workspaceHoldJobs=[DispatchWorkItem]()
     private let workspacePet=WorkspacePetView(frame:.zero)
+    private var splitTabHeld = false
+    private var splitArrowUsed = false
     private var workspacePetMenu:NSMenu?,workspacePetSlot=CGRect(x:215,y:36,width:48,height:34)
     private var reviewedFinished=[String]()
     private let glassBackground=NotchGlassBackground(frame:.zero)
@@ -373,6 +381,9 @@ private final class NotchSurfaceHost:NSView {
     private var surfaceScreen: NSScreen? {
         NSScreen.screens.first(where: { $0.auxiliaryTopLeftArea != nil && $0.auxiliaryTopRightArea != nil }) ?? NSScreen.main ?? NSScreen.screens.first
     }
+    #if KAI_NATIVE_TESTS
+    static var testDisplayWithoutNotch = false
+    #endif
     private var islandMode = false
     private var surfaceTopInset: CGFloat { islandMode ? 12 : 0 }
     private var islandRadius: CGFloat { min(26, notchHeight / 2) }
@@ -677,11 +688,24 @@ private final class NotchSurfaceHost:NSView {
         // the user's simultaneous keyboard input can arm extra voice/notch
         // shortcuts in the test process and invalidate its surface assertions.
         if !CommandLine.arguments.contains("--unified-smoke-test"){
-            localMonitor = NSEvent.addLocalMonitorForEvents(matching:[.flagsChanged,.keyDown]) { [weak self] e in
+            localMonitor = NSEvent.addLocalMonitorForEvents(matching:[.flagsChanged,.keyDown,.keyUp,.leftMouseDown]) { [weak self] e in
+                #if canImport(libghostty)
+                if let workspace = EmbeddedCodeRuntime.shared.workspaceWindow,
+                   workspace.isKeyWindow, e.window === workspace {
+                    if e.type == .leftMouseDown {
+                        WorkspaceInputFocus.reclaimForEditorClick(e, in: workspace)
+                    } else if e.type == .keyDown {
+                        WorkspaceInputFocus.repairMissingEditorResponder(in: workspace)
+                    }
+                }
+                #endif
+                if e.type == .leftMouseDown { return e }
+                if self?.performWorkspaceSplitKey(e) == true { return nil }
+                if e.type == .keyUp { return e }
                 if e.type == .flagsChanged {self?.flags(e)}
                 else {
                     self?.cancelModifierShortcut()
-                    if self?.performApprovalKey(e) == true{return nil}
+                    if self?.performLocalApprovalKey(e) == true{return nil}
                     if self?.performNativeKeyboardCommand(e) == true{return nil}
                     if e.keyCode == 53,self?.panel.isKeyWindow == true,self?.open == true {self?.dismissNotchView();return nil}
                 }
@@ -704,24 +728,82 @@ private final class NotchSurfaceHost:NSView {
         DistributedNotificationCenter.default().addObserver(self,selector:#selector(previewCompactApproval),name:NSNotification.Name("com.kai.approval.preview"),object:nil)
     }
 
+    private func performLocalApprovalKey(_ event: NSEvent) -> Bool {
+        // An approval at the notch must not consume numbers typed in the
+        // workspace, a terminal, or another window in this application.
+        if let target = event.window ?? NSApp.keyWindow, target !== approvalUI.window {
+            return false
+        }
+        return performApprovalKey(event)
+    }
+
     private func performApprovalKey(_ event:NSEvent)->Bool{
         guard approvalPopout else{return false};return approvalUI.performDecisionKey(event)
     }
+    private func performWorkspaceSplitKey(_ event: NSEvent) -> Bool {
+        let runtime = EmbeddedCodeRuntime.shared
+        guard let workspace = runtime.workspaceWindow, workspace.isKeyWindow,
+              event.window == nil || event.window === workspace else {
+            splitTabHeld = false
+            return false
+        }
+        guard event.type == .keyDown || event.type == .keyUp else { return false }
+        let command: String
+        if event.keyCode == 48 {
+            if event.type == .keyDown {
+                guard event.modifierFlags.intersection([.shift, .control, .option, .command]).isEmpty,
+                      (workspace.firstResponder as? NSTextInputClient)?.hasMarkedText() != true else { return false }
+                if !event.isARepeat { splitTabHeld = true; splitArrowUsed = false }
+                return splitTabHeld
+            }
+            guard splitTabHeld else { return false }
+            splitTabHeld = false
+            guard !splitArrowUsed else { return true }
+            command = "split_add"
+        } else {
+            guard splitTabHeld, event.type == .keyDown,
+                  let direction = [123: "split_left", 124: "split_right", 125: "split_down", 126: "split_up"][Int(event.keyCode)] else { return false }
+            splitArrowUsed = true
+            if event.isARepeat { return true }
+            command = direction
+        }
+        #if canImport(libghostty)
+        if workspace.firstResponder is WorkspaceGhosttyView,
+           runtime.sendWorkspaceTerminalCommand(command) { return true }
+        #endif
+        return runtime.sendAction("workspace_split_key", ["command": command])
+    }
+
     func performNativeKeyboardCommand(_ event:NSEvent)->Bool {
-        guard event.type == .keyDown,EmbeddedCodeRuntime.shared.active,miniOpen,panel.isKeyWindow else{return false}
+        guard event.type == .keyDown,EmbeddedCodeRuntime.shared.active else{return false}
+        #if canImport(libghostty)
+        let terminalFocused = EmbeddedCodeRuntime.shared.workspaceWindow?.isKeyWindow == true
+            && (event.window == nil || event.window === EmbeddedCodeRuntime.shared.workspaceWindow)
+            && EmbeddedCodeRuntime.shared.workspaceWindow?.firstResponder is WorkspaceGhosttyView
+        #else
+        let terminalFocused = false
+        #endif
+        let miniFocused = miniOpen && panel.isKeyWindow && (event.window == nil || event.window === panel)
+        guard miniFocused || terminalFocused else{return false}
         let flags=event.modifierFlags.intersection([.control,.shift,.command,.option])
+        if terminalFocused,flags == .control{return false}
         let prefix:String
         switch flags{case [.control]:prefix="ctrl-";case [.control,.shift]:prefix="ctrl-shift-";case [.command]:prefix="cmd-";case [.command,.shift]:prefix="cmd-shift-";default:return false}
-        guard let char=event.charactersIgnoringModifiers?.lowercased(),let command=EmbeddedCodeRuntime.shared.keyboardCommands.first(where:{$0.key==prefix+char}) else{return false}
-        if command.id != "close_tab",(composerField.currentEditor() as? NSTextView)?.hasMarkedText() == true{return false}
+        let key = event.charactersIgnoringModifiers?.lowercased()
+        guard let key,let command=EmbeddedCodeRuntime.shared.keyboardCommands.first(where:{$0.key==prefix+key}) else{return false}
+        if miniFocused,command.id != "close_tab",(composerField.currentEditor() as? NSTextView)?.hasMarkedText() == true{return false}
         if flags.contains(.command){
             // A Command shortcut is not a bare Command tap. Repeated Cmd-W
             // must never also trigger the double-Command surface dismissal.
             cancelModifierShortcut()
         }
-        if command.id == "composer"{panel.makeFirstResponder(composerField)}
+        if terminalFocused {
+            if event.isARepeat, ["new", "close_tab", "terminalize", "split_beside", "split_below"].contains(command.id) { return true }
+            return EmbeddedCodeRuntime.shared.sendWorkspaceTerminalCommand(command.id)
+        }
+        else if command.id == "composer"{panel.makeFirstResponder(composerField)}
         else if miniUI.performKeyboardCommand(command.id){}
-        else {bridge.send("ui_command",["command":command.id]);if ["terminal","files","changes","children","keyboard","projects","search","open_project"].contains(command.id){revealWorkspace()}}
+        else {bridge.send("ui_command",["command":command.id,"draft":composerField?.stringValue ?? ""]);if ["terminal","terminalize","files","changes","children","keyboard","projects","search","open_project"].contains(command.id){revealWorkspace()}}
         return true
     }
 
@@ -737,6 +819,11 @@ private final class NotchSurfaceHost:NSView {
         button.setAccessibilityLabel(button.toolTip)
     }
 
+    @objc private func switchWorkspaceChatTerminal() {
+        bridge.send("ui_command", ["command": "terminalize"])
+        if !EmbeddedCodeRuntime.shared.workspaceIsForeground { revealWorkspace() }
+    }
+
     private func buildMenu() {
         status = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         menuBarIdentity.onChange={ [weak self] in self?.applyMenuBarIdentity($0) }
@@ -746,7 +833,10 @@ private final class NotchSurfaceHost:NSView {
             let workspace=menu.addItem(withTitle:"Open Code workspace",action:#selector(expandWorkspace),keyEquivalent:"");workspace.target=self
             let compact=menu.addItem(withTitle:"Bring workspace to notch",action:#selector(collapseWorkspace),keyEquivalent:"");compact.target=self
             let settings=menu.addItem(withTitle:"Workspace settings",action:#selector(workspaceSettings),keyEquivalent:"");settings.target=self
-            unifiedMenuItems=[workspace,compact,settings]
+            let terminal = menu.addItem(withTitle: "Switch Chat and CLI", action: #selector(switchWorkspaceChatTerminal), keyEquivalent: "j")
+            terminal.keyEquivalentModifierMask = [.command, .shift]
+            terminal.target = self
+            unifiedMenuItems=[workspace,compact,settings,terminal]
             menu.addItem(.separator())
         }
         let identity=menu.addItem(withTitle:"Menu bar icon",action:nil,keyEquivalent:"");identity.submenu=menuBarIdentity.menu
@@ -916,7 +1006,7 @@ private final class NotchSurfaceHost:NSView {
         cancelModifierShortcut()
         guard EmbeddedCodeRuntime.shared.active else{toggleFromMenu();return}
         if quickChatVisible,menuQuickAnchor != nil{EmbeddedCodeRuntime.shared.sendAction("quick_dismiss");return}
-        guard let host=button.window else{return};let anchor=host.convertToScreen(button.convert(button.bounds,to:nil));menuQuickAnchor=anchor
+        guard let host=button.window else{return};let anchor=host.convertToScreen(button.convert(button.bounds,to:nil));menuQuickAnchor=anchor;menuQuickWasForeground=false
         let fromWorkspace=EmbeddedCodeRuntime.shared.workspaceWindow?.isVisible == true
         quickPrepared=(fromWorkspace,fromWorkspace ? EmbeddedCodeRuntime.shared.workspaceWindow!.frame:anchor,.hidden)
         let mark=menuBarIdentity.mark
@@ -927,12 +1017,17 @@ private final class NotchSurfaceHost:NSView {
     private func layoutPanel(present:Bool,approvalDuration:TimeInterval=0) {
         defer{floatingTasks.refresh()}
         let previousMaskSize=mask.bounds.size,previousDestination=mask.path
-        let notchedScreen = NSScreen.screens.first(where: { $0.auxiliaryTopLeftArea != nil && $0.auxiliaryTopRightArea != nil })
+        var notchedScreen = NSScreen.screens.first {
+            $0.auxiliaryTopLeftArea != nil && $0.auxiliaryTopRightArea != nil
+        }
+        #if KAI_NATIVE_TESTS
+        if Self.testDisplayWithoutNotch { notchedScreen = nil }
+        #endif
         guard let screen = notchedScreen ?? NSScreen.main ?? NSScreen.screens.first else { panel?.orderOut(nil); return }
         CATransaction.begin();CATransaction.setDisableActions(true);defer{CATransaction.commit()}
         islandMode = notchedScreen == nil
         let center: CGFloat
-        if let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea {
+        if let left = notchedScreen?.auxiliaryTopLeftArea, let right = notchedScreen?.auxiliaryTopRightArea {
             notchHeight = screen.safeAreaInsets.top + 1
             let gapCenter = (left.maxX + right.minX) / 2
             center = abs(gapCenter - screen.frame.midX) <= 1 ? screen.frame.midX : gapCenter
@@ -955,13 +1050,14 @@ private final class NotchSurfaceHost:NSView {
                           width: canvasWidth, height: canvasHeight)
         if panel == nil {
             panel = NotchPanel(contentRect: rect, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+            indicator.animationWindow = panel
             panel.backgroundColor = .clear; panel.isOpaque = false; panel.hasShadow = false; panel.ignoresMouseEvents = true
             panel.level = .statusBar; panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
-            let host=NotchView(frame:CGRect(origin:.zero,size:rect.size));host.click={ [weak self] point,count in self?.handleClick(point,count:count) };host.scroll={ [weak self] point,delta in self?.handleScroll(point,delta) };host.beginScrollDrag={ [weak self] point in guard let self,self.miniOpen,!self.petGalleryVisible else{return false};return self.miniUI.beginSidebarScroll(at:self.miniPoint(point)) };host.scrollDrag={ [weak self] point in guard let self else{return};self.miniUI.dragSidebarScroll(to:self.miniPoint(point)) };host.endScrollDrag={ [weak self] in self?.miniUI.endSidebarScroll() };host.hover={ [weak self] point in self?.handleHover(point) };host.dragEntered={ [weak self] in guard self?.experimentalWebMode != true else{return};self?.handleImageEntered() };host.imageDropped={ [weak self] images in guard self?.experimentalWebMode != true else{return};self?.handleImageDrop(images) };panel.contentView=host;host.wantsLayer=true;panel.acceptsMouseMovedEvents=true
+            let host=NotchView(frame:CGRect(origin:.zero,size:rect.size));host.click={ [weak self] point,count in self?.handleClick(point,count:count) };host.scroll={ [weak self] point,delta in self?.handleScroll(point,delta) };host.beginScrollDrag={ [weak self] point in guard let self,self.miniOpen,!self.petGalleryVisible else{return false};return self.miniUI.beginSidebarScroll(at:self.miniPoint(point)) };host.scrollDrag={ [weak self] point in guard let self else{return};self.miniUI.dragSidebarScroll(to:self.miniPoint(point)) };host.endScrollDrag={ [weak self] in self?.miniUI.endSidebarScroll() };host.hover={ [weak self] point in self?.handleHover(point) };host.dragEntered={ [weak self] in guard self?.experimentalWebMode != true else{return};self?.handleImageEntered() };host.imageDropped={ [weak self] images in guard self?.experimentalWebMode != true else{return};self?.handleImageDrop(images) };host.filesDropped={ [weak self] in self?.attachLocalFiles($0) ?? false };panel.contentView=host;host.wantsLayer=true;panel.acceptsMouseMovedEvents=true
             host.addSubview(glassBackground)
             host.addSubview(workspaceBackground)
             scalableUI.wantsLayer=true;host.addSubview(scalableUI)
-            composerField=ComposerField();composerField.isBordered=false;composerField.drawsBackground=false;composerField.focusRingType = .none;composerField.font=AppTypography.ui(ofSize:10);composerField.textColor=NSColor.white.withAlphaComponent(0.88);composerField.delegate=self;composerField.isHidden=true;composerField.imagesEntered={ [weak self] in self?.handleImageEntered() };composerField.imagesDropped={ [weak self] images in self?.handleImageDrop(images) };scalableUI.addSubview(composerField)
+            composerField=ComposerField();composerField.isBordered=false;composerField.drawsBackground=false;composerField.focusRingType = .none;composerField.font=AppTypography.ui(ofSize:10);composerField.textColor=NSColor.white.withAlphaComponent(0.88);composerField.delegate=self;composerField.isHidden=true;composerField.imagesEntered={ [weak self] in self?.handleImageEntered() };composerField.imagesDropped={ [weak self] images in self?.handleImageDrop(images) };(composerField as? ComposerField)?.filesDropped={ [weak self] in self?.attachLocalFiles($0) ?? false };(panel as? NotchPanel)?.pasteFiles={ [weak self] in guard let self,self.composerField.currentEditor() != nil else{return false};return self.attachLocalFiles(draggedFiles(.general)) };scalableUI.addSubview(composerField)
             miniUI.composerFrameChanged={ [weak self] frame,animated in self?.layoutComposer(frame,animated:animated) }
             let scroll=ConversationScrollView(),text=ConversationTextView()
             historyControl.onLatest={[weak self] in guard let self else{return};self.earlierHistoryRequest=nil;self.bridge.send("history_latest",[:])}
@@ -996,12 +1092,12 @@ private final class NotchSurfaceHost:NSView {
         panel.ignoresMouseEvents = !NotchInputRegion.mainAcceptsInput(expanded:miniOpen,web:experimentalWebMode)
         approvalUI.maximumReviewHeight=max(80,min(480,screen.frame.maxY-screen.visibleFrame.minY-notchHeight-80))
         let dropRect=NotchInputRegion.compactFrame(screen:screen.frame.offsetBy(dx:0,dy:-surfaceTopInset),center:center,width:expandedWidth,height:approvalPopout ? popoutHeight:notchHeight)
-        if dropPanel == nil { dropPanel=NotchPanel(contentRect:dropRect,styleMask:[.borderless,.nonactivatingPanel],backing:.buffered,defer:false);dropPanel.backgroundColor = .clear;dropPanel.isOpaque=false;dropPanel.level = .popUpMenu;dropPanel.collectionBehavior=[.canJoinAllSpaces,.fullScreenAuxiliary,.stationary];let drop=NotchView(frame:NSRect(origin:.zero,size:dropRect.size));drop.autoresizingMask=[.width,.height];drop.click={ [weak self] _,_ in guard let self else{return};if self.compactVoiceMode{self.handleCompactVoiceClick();return};guard self.compactWhileWorking || self.islandMode else{return};self.expandToRunningChat() };drop.dragEntered={ [weak self] in self?.handleImageEntered() };drop.imageDropped={ [weak self] images in self?.handleImageDrop(images) };dropPanel.contentView=drop }
+        if dropPanel == nil { dropPanel=NotchPanel(contentRect:dropRect,styleMask:[.borderless,.nonactivatingPanel],backing:.buffered,defer:false);dropPanel.backgroundColor = .clear;dropPanel.isOpaque=false;dropPanel.level = .popUpMenu;dropPanel.collectionBehavior=[.canJoinAllSpaces,.fullScreenAuxiliary,.stationary];let drop=NotchView(frame:NSRect(origin:.zero,size:dropRect.size));drop.autoresizingMask=[.width,.height];drop.click={ [weak self] _,_ in guard let self else{return};if self.compactVoiceMode{self.handleCompactVoiceClick();return};guard self.compactWhileWorking || self.islandMode else{return};self.expandToRunningChat() };drop.dragEntered={ [weak self] in self?.handleImageEntered() };drop.imageDropped={ [weak self] images in self?.handleImageDrop(images) };drop.filesDropped={ [weak self] in self?.attachLocalFiles($0) ?? false };dropPanel.contentView=drop }
         if approvalUI.superview == nil {dropPanel.contentView?.addSubview(approvalUI);approvalUI.onDecision={ [weak self] action,request in self?.decidePopout(action,request:request) }}
         let approvalFrame=CGRect(x:16,y:12,width:dropRect.width-32,height:approvalUI.preferredHeight)
         if approvalDuration>0,approvalPopout,dropPanel.isVisible{
             NSAnimationContext.runAnimationGroup{context in
-                context.duration=approvalDuration;context.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.85,0.25,1);context.allowsImplicitAnimation=true
+                context.duration=approvalDuration;context.timingFunction=KaiMotion.interactionCurve;context.allowsImplicitAnimation=true
                 self.dropPanel.animator().setFrame(dropRect,display:true);self.approvalUI.animator().frame=approvalFrame;self.approvalUI.layoutSubtreeIfNeeded()
             }
         }else{dropPanel.setFrame(dropRect,display:true);approvalUI.frame=approvalFrame}
@@ -1363,7 +1459,7 @@ private final class NotchSurfaceHost:NSView {
         openFloatingTask(floatingReviews.removeFirst(),preview:false)
     }
 
-    private func setOpen(_ requested: Bool, mini requestedMini: Bool = false,userInitiated:Bool=false,forceReveal:Bool=false) {
+    private func setOpen(_ requested: Bool, mini requestedMini: Bool = false,userInitiated:Bool=false,forceReveal:Bool=false,parked:Bool=false) {
         if !requested || !requestedMini{slashPicker.hide();miniUI.dismissComposerPickers()}
         if approvalPopout && (!requested || requestedMini){approvalPopout=false;approvalUI.reset()}
         if compactVoiceMode,userInitiated {voiceExpanded=requested && requestedMini}
@@ -1372,6 +1468,7 @@ private final class NotchSurfaceHost:NSView {
         if desired && mini {autoCompact=false}
         if !desired || mini{passiveCompact=false;passiveVoice=false;passiveRetire?.cancel();passiveRetire=nil}
         if mediaVisible && (mini || compactWhileWorking || dictating || experimentalWebMode){dismissMedia()}
+        if parked { panel?.orderOut(nil); dropPanel?.orderOut(nil) }
         guard panel != nil, forceReveal || desired != open || (desired && mini != miniOpen) || presentedCompact != compactWhileWorking || presentedApproval != approvalPopout || (approvalPopout && abs(presentedApprovalHeight-popoutHeight)>0.5) else { refreshChecks();return }
         CATransaction.begin();CATransaction.setDisableActions(true);defer{CATransaction.commit()}
         let wasApproval=presentedApproval
@@ -1383,6 +1480,18 @@ private final class NotchSurfaceHost:NSView {
             DispatchQueue.main.async{[weak self] in guard let self,self.panelRevision==revision,self.open,!self.miniOpen,!self.approvalPopout,let state=self.latestState,request.matches(state),!self.workspaceIsForeground else{return};self.presentCompactApproval(request,automatic:true)}
         }
         media.setSuppressed(mediaSuppressed)
+        if parked {
+            miniUI.setVisible(false, duration: 0)
+            if wasMini {
+                textReveal.finish()
+                mathRenderer.suspend()
+                mathRefreshWork?.cancel()
+                mathRefreshWork = nil
+                historyControl.update(hasMore: false, loading: false)
+                miniListening = false
+            }
+            return
+        }
         let previousPath=forceReveal ? path(width:notchWidth,height:notchHeight):(mask.presentation()?.path ?? mask.path)
         let oldIndicatorX=indicator.layer.presentation()?.position.x ?? indicator.layer.position.x
         let oldAccentY=[indicator.leftAccentLayer,indicator.accentLayer].map{$0.presentation()?.position.y ?? $0.position.y}
@@ -1398,11 +1507,11 @@ private final class NotchSurfaceHost:NSView {
         CATransaction.commit()
         let destination = path(width:desired ? expandedWidth:notchWidth,height:desired ? popoutHeight:notchHeight), animation = CABasicAnimation(keyPath:"path")
         animation.fromValue = previousPath; animation.toValue = destination
-        animation.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0.1:(desired ? (mini || approvalPopout ? 0.28:0.24):0.22); animation.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 0.85, 0.25, 1)
+        animation.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0.1:(desired ? (mini || approvalPopout ? 0.28:0.24):0.22); animation.timingFunction = KaiMotion.interactionCurve
         for (index,layer) in traveling.enumerated() {
             let move=CABasicAnimation(keyPath:layer === sprite ? "position":"position.x")
             if layer === sprite{move.fromValue=oldPositions[index];move.toValue=layer.position}else{move.fromValue=oldPositions[index].x;move.toValue=layer.position.x}
-            move.duration=animation.duration;move.timingFunction=animation.timingFunction;layer.add(move,forKey:"responsiveTravel")
+            move.duration=animation.duration;move.timingFunction=animation.timingFunction;layer.addKai(move,forKey:"responsiveTravel")
         }
         animateTopAccessories(forMini:miniOpen,duration:animation.duration)
         animateCornerAccents(toBottom:miniOpen || approvalPopout,duration:animation.duration)
@@ -1413,7 +1522,7 @@ private final class NotchSurfaceHost:NSView {
         else if wasMini && !miniOpen { textReveal.finish();mathRenderer.suspend();mathRefreshWork?.cancel();mathRefreshWork=nil;historyControl.update(hasMore:false,loading:false);miniListening=false;if compactWhileWorking,let state=latestState {currentScene="";showActivity(displayActivity(state))}else{applyIndicator()};syncMotion(force:true) }
         mask.path=destination
         animation.beginTime=mask.convertTime(CACurrentMediaTime(),from:nil);animation.fillMode = .backwards
-        mask.add(animation,forKey:"width")
+        mask.addKai(animation,forKey:"width")
         if showsNotchSurface{panel.orderFrontRegardless();if !dropPanel.ignoresMouseEvents{dropPanel.orderFrontRegardless()}else{dropPanel.orderOut(nil)}}else{panel.orderOut(nil);dropPanel?.orderOut(nil)}
         if miniOpen && !wasMini && showsNotchSurface && morphingText,let view=conversationText{
             textReveal.reveal([NSRange(location:0,length:view.textStorage?.length ?? 0)],in:view,loading:true)
@@ -1439,8 +1548,29 @@ private final class NotchSurfaceHost:NSView {
         if workspaceMorph.expanded && workspaceIsForeground && !workspaceNotchOverlay && !workspaceMorph.transitioning{window.makeKeyAndOrderFront(nil);return}
         revealWorkspace()
     }
-    func launchUnifiedWorkspace(){guard !quickChatVisible,quickPrepared == nil else{return};revealWorkspace()}
-    func revealWorkspace(from explicitSource:CGRect?=nil,sourceIsNotch:Bool=true){
+    func launchUnifiedWorkspace() {
+        guard !quickChatVisible, quickPrepared == nil,
+              let window = EmbeddedCodeRuntime.shared.workspaceWindow else { return }
+        let screen = panel?.screen ?? window.screen ?? NSScreen.main
+        pinned = true
+        compactWhileWorking = true
+        compactThreadID = latestState?.threadId
+        let target = screen?.visibleFrame ?? window.frame
+        let source = panel.map {
+            CGRect(x: $0.frame.midX - notchWidth / 2, y: $0.frame.maxY - notchHeight,
+                   width: notchWidth, height: notchHeight)
+        } ?? CGRect(x: target.midX - notchWidth / 2, y: target.maxY - notchHeight,
+                    width: notchWidth, height: notchHeight)
+        workspaceMorph.expand(window, from: source, destination: target,
+                              sourceNotch: !islandMode, sourceRadius: islandMode ? islandRadius : 10) { [weak self] in
+            self?.syncWorkspacePet()
+            self?.workspaceFocusChanged()
+        }
+        setOpen(true, parked: !approvalPopout)
+        floatingTasks.setSuppressed(true)
+        syncWorkspacePet()
+    }
+    func revealWorkspace(from explicitSource:CGRect?=nil,sourceIsNotch:Bool=true,replayEntrance:Bool=true){
         guard let window=EmbeddedCodeRuntime.shared.workspaceWindow,let panel else{return}
         passiveCompact=false;passiveVoice=false;passiveRetire?.cancel();passiveRetire=nil
         workspaceAutomaticStatus=false;workspaceStatusRetire?.cancel();workspaceStatusRetire=nil;workspaceStatusMorph.cancel()
@@ -1455,8 +1585,13 @@ private final class NotchSurfaceHost:NSView {
         miniUI.cancelPending();compactWhileWorking=true;compactThreadID=latestState?.threadId;autoCompact=false;pinned=true
         workspaceNotchOverlay=false;voiceExpanded=false
         workspaceMorph.openingOnlyOnce=latestState?.workspaceOpeningOnce ?? true
-        workspaceMorph.expand(window,from:source,replay:replay,sourceNotch:quickSource == nil && sourceIsNotch && !islandMode,crossfade:quickSource != nil || !sourceIsNotch,sourceRadius:islandMode ? islandRadius:(quickSource != nil || !sourceIsNotch ? 20:10)){[weak self] in self?.syncWorkspacePet();self?.workspaceFocusChanged()}
-        setOpen(true,mini:false);if !approvalPopout{panel.orderOut(nil);dropPanel?.orderOut(nil)};floatingTasks.setSuppressed(true);syncWorkspacePet()
+        if replayEntrance {
+            workspaceMorph.expand(window,from:source,replay:replay,sourceNotch:quickSource == nil && sourceIsNotch && !islandMode,crossfade:quickSource != nil || !sourceIsNotch,sourceRadius:islandMode ? islandRadius:(quickSource != nil || !sourceIsNotch ? 20:10)){[weak self] in self?.syncWorkspacePet();self?.workspaceFocusChanged()}
+        } else {
+            workspaceMorph.refocus(window)
+        }
+        setOpen(true,mini:false,parked:!approvalPopout)
+        floatingTasks.setSuppressed(true);syncWorkspacePet()
     }
     @objc func collapseWorkspace(){
         if workspaceMorph.expanded && !workspaceIsForeground{expandToRunningChat();return}
@@ -1467,6 +1602,14 @@ private final class NotchSurfaceHost:NSView {
     // shortcut uses focus to choose a background overlay instead of a fold.
     func foldWorkspace(){
         workspaceNotchOverlay=false
+        if quickChatVisible, quickWindow != nil {
+            // Mini Code already owns the visible window. Let its current
+            // contour fold directly to the notch instead of folding hidden Code.
+            quickReturn = .extended
+            menuQuickAnchor = nil
+            EmbeddedCodeRuntime.shared.sendAction("quick_dismiss")
+            return
+        }
         guard let window=EmbeddedCodeRuntime.shared.workspaceWindow,let panel else{return}
         pinned=true;compactWhileWorking=false;autoCompact=false
         let width=expandedSize?.width ?? notchWidth+160
@@ -1511,14 +1654,21 @@ private final class NotchSurfaceHost:NSView {
     }
     @objc func workspaceFocusChanged(){
         guard EmbeddedCodeRuntime.shared.active else{return}
-        if menuQuickAnchor != nil,quickChatVisible,!quickMorph.transitioning,!EmbeddedCodeRuntime.shared.isForeground(quickWindow){EmbeddedCodeRuntime.shared.sendAction("quick_dismiss");return}
+        if menuQuickAnchor != nil,quickChatVisible {
+            if EmbeddedCodeRuntime.shared.isForeground(quickWindow) {
+                menuQuickWasForeground=true
+            } else if menuQuickWasForeground && !quickMorph.transitioning {
+                menuQuickWasForeground=false
+                EmbeddedCodeRuntime.shared.sendAction("quick_dismiss");return
+            }
+        }
         let foreground=workspaceIsForeground,returned=workspaceWasForeground == false && foreground
         workspaceWasForeground=foreground
         if workspaceMorph.expanded,!workspaceMorph.transitioning,!quickChatVisible{
             if EmbeddedCodeRuntime.shared.workspaceIsForeground{
                 if let state=latestState{updateCompactApproval(state)}
                 if workspaceNotchOverlay && returned{
-                    if open || panel?.isVisible == true{revealWorkspace()}else{workspaceNotchOverlay=false;workspaceAutomaticStatus=false;workspaceStatusMorph.cancel();syncWorkspacePet()}
+                    if open || panel?.isVisible == true{revealWorkspace(replayEntrance:false)}else{workspaceNotchOverlay=false;workspaceAutomaticStatus=false;workspaceStatusMorph.cancel();syncWorkspacePet()}
                 }
             }else if workspaceNeedsStatus{
                 workspaceStatusRetire?.cancel();workspaceStatusRetire=nil
@@ -1675,7 +1825,7 @@ private final class NotchSurfaceHost:NSView {
         if workspaceMorph.transitioning{value |= 16}
         if let window=EmbeddedCodeRuntime.shared.workspaceWindow,let screen=window.screen{
             if window.frame == screen.visibleFrame{value |= 64}
-            if CommandLine.arguments.contains("--unified-startup-probe"){fputs("KAI_STARTUP_FRAME actual=\(window.frame) visible=\(screen.visibleFrame) transitioning=\(workspaceMorph.transitioning)\n",stderr)}
+            if CommandLine.arguments.contains("--unified-startup-probe"){fputs("KAI_STARTUP_FRAME actual=\(window.frame) visible=\(screen.visibleFrame) transitioning=\(workspaceMorph.transitioning) occlusionVisible=\(window.occlusionState.contains(.visible))\n",stderr)}
         }
         if quickChatVisible{value |= 128}
         if !workspaceBackground.isHidden && workspaceBackground.hasImage{value |= 256}
@@ -1690,7 +1840,7 @@ private final class NotchSurfaceHost:NSView {
         guard quickChatVisible || (workspaceMorph.expanded && !workspaceNotchOverlay),let host=(quickChatVisible ? quickWindow:EmbeddedCodeRuntime.shared.workspaceWindow)?.contentView else{return}
         if workspacePet.superview !== host{workspacePet.removeFromSuperview();host.addSubview(workspacePet)}
         // Notch travel uses notch coordinates; the same layer now belongs to a local header slot.
-        let slot=quickChatVisible ? quickPetSlot:workspacePetSlot
+        let slot = quickChatVisible ? quickPetSlot : workspacePetSlot.insetBy(dx: workspacePetSlot.width * 0.125, dy: workspacePetSlot.height * 0.125)
         workspacePet.frame=CGRect(x:slot.minX,y:host.bounds.height-slot.maxY,width:slot.width,height:slot.height)
         if sprite.superlayer !== workspacePet.layer{sprite.removeFromSuperlayer();workspacePet.layer?.addSublayer(sprite)}
         CATransaction.begin();CATransaction.setDisableActions(true);sprite.removeAnimation(forKey:"responsiveTravel");sprite.frame=workspacePet.bounds.insetBy(dx:1,dy:0);sprite.opacity=1;sprite.isHidden=false;CATransaction.commit()
@@ -1761,7 +1911,7 @@ private final class NotchSurfaceHost:NSView {
     private func showPetGallery(){guard miniOpen else{return};petGalleryVisible=true;miniUI.setVisible(false,duration:0.3);composerField?.isHidden=true;conversationScroll?.isHidden=true;petGallery.layout(in:petGallery.layer.bounds,selected:petID);petGallery.show(selected:petID,motion:motionID)}
     private func hidePetGallery(restore:Bool=true){guard petGalleryVisible else{return};petGalleryVisible=false;petGallery.hide();if restore{miniUI.setVisible(miniOpen,duration:0.32);composerField?.isHidden = !miniOpen;conversationScroll?.isHidden = !miniOpen}}
 
-    private func layoutComposer(_ frame:CGRect,animated:Bool){guard let field=composerField else{return};let root=miniUI.layer.frame,modern=frame.height>40,h:CGFloat=modern ? 24:18,target=CGRect(x:root.minX+frame.minX+10,y:root.minY+(modern ? frame.maxY-28:frame.midY-h/2-2.25),width:max(20,frame.width-(modern ? 20:73)),height:h);if animated{NSAnimationContext.runAnimationGroup{context in context.duration=0.42;context.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.7,0.25,1);field.animator().frame=target}}else{field.frame=target}}
+    private func layoutComposer(_ frame:CGRect,animated:Bool){guard let field=composerField else{return};let root=miniUI.layer.frame,modern=frame.height>40,h:CGFloat=modern ? 24:18,target=CGRect(x:root.minX+frame.minX+10,y:root.minY+(modern ? frame.maxY-28:frame.midY-h/2-2.25),width:max(20,frame.width-(modern ? 20:73)),height:h);if animated{NSAnimationContext.runAnimationGroup{context in  context.duration=KaiMotion.contentDuration;context.timingFunction=KaiMotion.interactionCurve;field.animator().frame=target}}else{field.frame=target}}
     private func layoutConversation(_ frame:CGRect){guard let scroll=conversationScroll else{return};let root=miniUI.layer.frame;scroll.frame=CGRect(x:root.minX+frame.minX,y:root.minY+frame.minY,width:frame.width,height:frame.height)}
     private func setPrompt(_ text:String,dictation:Bool=false){
         slashPicker.hide();dictationTextReveal.finish()
@@ -1803,7 +1953,7 @@ private final class NotchSurfaceHost:NSView {
         if selector == #selector(NSResponder.insertNewline(_:)){sendPrompt();return true};return false
     }
 
-    private func sendPrompt(){if attachmentEncoding || attachmentRequest != nil{pendingAttachmentSend=true;miniUI.setCodexMessage("Preparing images…");return};guard pendingSlashID == nil,expandedChatRequest == nil,sendingPrompt == nil, !shortcutPreparation.busy else{return};if !EmbeddedCodeRuntime.shared.active,latestState?.threadId?.hasPrefix("code:") == true,latestState?.inputBlocked == true{miniUI.setCodexMessage("Code is busy or loading — your prompt is kept here.");return};let prompt=(composerField?.stringValue ?? "").trimmingCharacters(in:.whitespacesAndNewlines);guard !prompt.isEmpty || queuedImageCount>0 else{return};sendingPrompt=prompt;setMotion("running-left",replay:true);speech.cancelAudio();let requestID=UUID().uuidString;sendingPromptRequestID=requestID;bridge.send("send",["text":prompt,"requestId":requestID]);if compactOnSend{hidePetGallery(restore:false);autoCompact=false;compactWhileWorking=true;compactThreadID=latestState?.threadId;compactStartHistoryCount=latestState?.history.count ?? 0;pinned=true;setOpen(true,mini:false)}}
+    private func sendPrompt(){if attachmentEncoding || attachmentRequest != nil{pendingAttachmentSend=true;miniUI.setCodexMessage("Preparing attachments…");return};guard pendingSlashID == nil,expandedChatRequest == nil,sendingPrompt == nil, !shortcutPreparation.busy else{return};if !EmbeddedCodeRuntime.shared.active,latestState?.threadId?.hasPrefix("code:") == true,latestState?.inputBlocked == true{miniUI.setCodexMessage("Code is busy or loading — your prompt is kept here.");return};let prompt=(composerField?.stringValue ?? "").trimmingCharacters(in:.whitespacesAndNewlines);guard !prompt.isEmpty || queuedImageCount>0 else{return};sendingPrompt=prompt;setMotion("running-left",replay:true);speech.cancelAudio();let requestID=UUID().uuidString;sendingPromptRequestID=requestID;bridge.send("send",["text":prompt,"requestId":requestID]);if compactOnSend{hidePetGallery(restore:false);autoCompact=false;compactWhileWorking=true;compactThreadID=latestState?.threadId;compactStartHistoryCount=latestState?.history.count ?? 0;pinned=true;setOpen(true,mini:false)}}
     private func answerApproval(_ action:String){
         if action == "interrupt"{speech.cancelAudio()}
         var response=action,fields:[String:Any]=["requestId":miniUI.pendingRequestID ?? ""]
@@ -1869,17 +2019,39 @@ private final class NotchSurfaceHost:NSView {
         bridge.send(response,fields)
     }
 
+    private func attachLocalFiles(_ urls:[URL])->Bool{
+        guard EmbeddedCodeRuntime.shared.active,!experimentalWebMode,!urls.isEmpty else{return false}
+        guard !attachmentEncoding,attachmentRequest == nil else{
+            miniUI.setCodexMessage("Wait for the current attachments to finish.");return true
+        }
+        let ninja=latestState?.personalNinja != nil
+        let retained=ninja ? [] : attachmentOwnerPaths
+        var seen=Set(retained)
+        let paths=retained+urls.map(\.path).filter{seen.insert($0).inserted}
+        let request=UUID().uuidString
+        if !ninja{attachmentRequest=(request,paths.count)}
+        bridge.send("attachments",["paths":paths,"requestId":request])
+        if !miniOpen{expandToRunningChat()}
+        return true
+    }
+
     private func synchronizeOwnerAttachments(_ state:KaiState){
         guard !attachmentEncoding,state.attachments != attachmentOwnerPaths else{return}
         attachmentOwnerPaths=state.attachments
         let paths=state.attachments,generation=UUID();attachmentGeneration=generation
         queuedImageCount=paths.count
         imageEncodingQueue.addOperation{[weak self] in
-            let pixels=paths.compactMap{path -> (String,CGImage)? in
-                guard let source=CGImageSourceCreateWithURL(URL(fileURLWithPath:path) as CFURL,nil),let cg=CGImageSourceCreateThumbnailAtIndex(source,0,[kCGImageSourceCreateThumbnailFromImageAlways:true,kCGImageSourceThumbnailMaxPixelSize:168,kCGImageSourceCreateThumbnailWithTransform:true] as CFDictionary) else{return nil}
-                return (path,cg)
+            let pixels=paths.map{path -> (String,CGImage?) in
+                guard !URL(fileURLWithPath:path).lastPathComponent.contains("--"),
+                      let source=CGImageSourceCreateWithURL(URL(fileURLWithPath:path) as CFURL,nil) else{return (path,nil)}
+                return (path,CGImageSourceCreateThumbnailAtIndex(source,0,[kCGImageSourceCreateThumbnailFromImageAlways:true,kCGImageSourceThumbnailMaxPixelSize:168,kCGImageSourceCreateThumbnailWithTransform:true] as CFDictionary))
             }
-            DispatchQueue.main.async{[weak self] in guard let self,self.attachmentGeneration==generation,self.attachmentOwnerPaths==paths else{return};self.ownerAttachmentImages=pixels.map{(path:$0.0,image:NSImage(cgImage:$0.1,size:NSSize(width:$0.1.width,height:$0.1.height)))};self.miniUI.synchronizeImages(self.ownerAttachmentImages.map(\.image))}
+            DispatchQueue.main.async{[weak self] in guard let self,self.attachmentGeneration==generation,self.attachmentOwnerPaths==paths else{return};self.ownerAttachmentImages=pixels.map{path,pixel in
+                let image=pixel.map{NSImage(cgImage:$0,size:NSSize(width:$0.width,height:$0.height))}
+                    ?? NSImage(systemSymbolName:"doc",accessibilityDescription:URL(fileURLWithPath:path).lastPathComponent)
+                    ?? NSImage(size:NSSize(width:16,height:16))
+                return (path:path,image:image)
+            };self.miniUI.synchronizeImages(self.ownerAttachmentImages.map(\.image))}
         }
     }
     private func queueImages(_ images:[NSImage]){
@@ -1952,7 +2124,7 @@ private final class NotchSurfaceHost:NSView {
             if let request=attachmentRequest,let reply=state.requestResult(request.id),reply.error != nil || !state.inputBlocked {
                 attachmentRequest=nil
                 if let error=reply.error{pendingAttachmentSend=false;miniUI.setCodexMessage(error)}
-                else if request.count != state.attachments.count{pendingAttachmentSend=false;miniUI.setCodexMessage("An image could not be imported. Review the draft before sending.")}
+                else if request.count != state.attachments.count{pendingAttachmentSend=false;miniUI.setCodexMessage("An attachment could not be imported. Review the draft before sending.")}
                 else if pendingAttachmentSend{
                     pendingAttachmentSend=false
                     let owner=state.ownerToken
@@ -2266,7 +2438,7 @@ private final class NotchSurfaceHost:NSView {
             let current=tasks.firstIndex(where:{$0.id==self.compactPetCycleID}) ?? 0
             self.compactPetCycleID=tasks[(current+1)%tasks.count].id
             self.syncTaskPet(state);self.showActivity(self.displayActivity(state))
-            if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion{let fade=CATransition();fade.type = .fade;fade.duration=0.3;self.sprite.add(fade,forKey:"familyPetChange")}
+            if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion{let fade=CATransition();fade.type = .fade;fade.duration=KaiMotion.contentDuration;self.sprite.addKai(fade,forKey:"familyPetChange")}
         };compactPetCycle=work;DispatchQueue.main.asyncAfter(deadline:.now()+3.2,execute:work)
     }
     private func syncTaskPet(_ state:KaiState){
@@ -2512,11 +2684,11 @@ private final class NotchSurfaceHost:NSView {
     private func enterMiniListening(trigger:DictationTrigger) {
         guard miniOpen,!miniListening else{return};hidePetGallery();miniListening=true;if miniUI.isFilesOpen{miniUI.toggleFiles()};indicator.setFileOpen(false);beginDictation(trigger:trigger)
         let center=(canvasWidth+notchWidth)/2+(expandedWidth-notchWidth)/4,duration=0.62
-        for layer in [indicator.layer,indicator.fileLayer] { let move=CABasicAnimation(keyPath:"position.x");move.fromValue=layer.presentation()?.position.x ?? layer.position.x;move.toValue=center;move.duration=duration;move.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.7,0.25,1);CATransaction.begin();CATransaction.setDisableActions(true);layer.position.x=center;CATransaction.commit();layer.add(move,forKey:"listenMerge") }
+        for layer in [indicator.layer,indicator.fileLayer] { let move=CABasicAnimation(keyPath:"position.x");move.fromValue=layer.presentation()?.position.x ?? layer.position.x;move.toValue=center;move.duration=duration;move.timingFunction=KaiMotion.interactionCurve;CATransaction.begin();CATransaction.setDisableActions(true);layer.position.x=center;CATransaction.commit();layer.addKai(move,forKey:"listenMerge") }
         setFileButtonVisible(false,duration:duration)
     }
 
-    private func exitMiniListening(){guard miniListening else{return};miniListening=false;let center=(canvasWidth+notchWidth)/2+(expandedWidth-notchWidth)/4,duration=0.62;indicator.showScene("settings");for(layer,target) in [(indicator.layer,center-20),(indicator.fileLayer,center+20)]{let move=CABasicAnimation(keyPath:"position.x");move.fromValue=layer.presentation()?.position.x ?? layer.position.x;move.toValue=target;move.duration=duration;move.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.7,0.25,1);CATransaction.begin();CATransaction.setDisableActions(true);layer.position.x=target;CATransaction.commit();layer.add(move,forKey:"listenSeparate")};setFileButtonVisible(true,duration:duration)}
+    private func exitMiniListening(){guard miniListening else{return};miniListening=false;let center=(canvasWidth+notchWidth)/2+(expandedWidth-notchWidth)/4,duration=0.62;indicator.showScene("settings");for(layer,target) in [(indicator.layer,center-20),(indicator.fileLayer,center+20)]{let move=CABasicAnimation(keyPath:"position.x");move.fromValue=layer.presentation()?.position.x ?? layer.position.x;move.toValue=target;move.duration=duration;move.timingFunction=KaiMotion.interactionCurve;CATransaction.begin();CATransaction.setDisableActions(true);layer.position.x=target;CATransaction.commit();layer.addKai(move,forKey:"listenSeparate")};setFileButtonVisible(true,duration:duration)}
 
     private func handleImageEntered(){guard !miniOpen else{return};sounds.playScene("image");pinned=true;if !open{setOpen(true)};indicator.showScene("image")}
     private func handleImageDrop(_ images:[NSImage]){guard !images.isEmpty,ProcessInfo.processInfo.systemUptime-lastImageDrop>0.35 else{return};lastImageDrop=ProcessInfo.processInfo.systemUptime;approachImages.removeAll();approachActive=false;miniUI.addImages(images);if miniOpen{return};sounds.playScene("success");indicator.showScene("success");imageExpandWork?.cancel();let work=DispatchWorkItem{[weak self] in guard let self,self.open,!self.miniOpen else{return};self.setOpen(true,mini:true)};imageExpandWork=work;DispatchQueue.main.asyncAfter(deadline:.now()+0.72,execute:work)}
@@ -2539,8 +2711,8 @@ private final class NotchSurfaceHost:NSView {
 
     private func animateTopAccessories(forMini mini:Bool,duration:Double) {
         let shift:CGFloat=mini ? -20:0, currentX=indicator.layer.presentation()?.position.x ?? indicator.layer.position.x, targetX=(canvasWidth+notchWidth)/2+(expandedWidth-notchWidth)/4+shift
-        let move=CABasicAnimation(keyPath:"position.x"); move.fromValue=currentX; move.toValue=targetX; move.duration=duration; move.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.65,0.25,1)
-        CATransaction.begin(); CATransaction.setDisableActions(true); indicator.layer.position.x=targetX; CATransaction.commit(); indicator.layer.add(move,forKey:"miniShift")
+        let move=CABasicAnimation(keyPath:"position.x"); move.fromValue=currentX; move.toValue=targetX; move.duration=duration; move.timingFunction=KaiMotion.interactionCurve
+        CATransaction.begin(); CATransaction.setDisableActions(true); indicator.layer.position.x=targetX; CATransaction.commit(); indicator.layer.addKai(move,forKey:"miniShift")
         setFileButtonVisible(mini && !miniListening,duration:duration)
     }
 
@@ -2550,8 +2722,8 @@ private final class NotchSurfaceHost:NSView {
         button.removeAnimation(forKey:"miniReveal");button.removeAnimation(forKey:"miniScale");button.removeAnimation(forKey:"listenMergeFade");button.removeAnimation(forKey:"listenFileReveal");button.removeAnimation(forKey:"fileVisibility");button.removeAnimation(forKey:"fileScale")
         CATransaction.begin();CATransaction.setDisableActions(true);button.opacity=target;button.transform=CATransform3DMakeScale(targetScale,targetScale,1);CATransaction.commit()
         guard duration>0 else{return}
-        let fade=CABasicAnimation(keyPath:"opacity");fade.fromValue=oldOpacity;fade.toValue=target;fade.duration=duration;fade.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.65,0.25,1);button.add(fade,forKey:"fileVisibility")
-        let scale=CABasicAnimation(keyPath:"transform.scale");scale.fromValue=oldScale;scale.toValue=targetScale;scale.duration=duration;scale.timingFunction=fade.timingFunction;button.add(scale,forKey:"fileScale")
+        let fade=CABasicAnimation(keyPath:"opacity");fade.fromValue=oldOpacity;fade.toValue=target;fade.duration=duration;fade.timingFunction=KaiMotion.interactionCurve;button.addKai(fade,forKey:"fileVisibility")
+        let scale=CABasicAnimation(keyPath:"transform.scale");scale.fromValue=oldScale;scale.toValue=targetScale;scale.duration=duration;scale.timingFunction=fade.timingFunction;button.addKai(scale,forKey:"fileScale")
     }
 
     private func animateCornerAccents(toBottom bottom:Bool,duration:Double) {
@@ -2567,7 +2739,7 @@ private final class NotchSurfaceHost:NSView {
         ninjaSpriteStyle=style;playToken += 1;CATransaction.begin();CATransaction.setDisableActions(true);sprite.contents=cg;sprite.contentsRect=CGRect(x:0,y:0,width:1,height:1);sprite.isHidden=false;sprite.opacity=1;CATransaction.commit()
         if animate {
             if ninjaFrames[style]==nil,let url=Bundle.main.resourceURL?.appendingPathComponent("providers/ninja-"+style+".gif"),let source=CGImageSourceCreateWithURL(url as CFURL,nil){ninjaFrames[style]=(0..<min(24,CGImageSourceGetCount(source))).compactMap{CGImageSourceCreateImageAtIndex(source,$0,nil)}}
-            if let frames=ninjaFrames[style],frames.count>1{let loop=CAKeyframeAnimation(keyPath:"contents");loop.values=frames;loop.duration=Double(frames.count)*0.08;loop.repeatCount = .infinity;loop.calculationMode = .discrete;sprite.add(loop,forKey:"ninjaLoop")}
+            if let frames=ninjaFrames[style],frames.count>1{let loop=CAKeyframeAnimation(keyPath:"contents");loop.values=frames;loop.duration=Double(frames.count)*0.08;loop.repeatCount = .infinity;loop.calculationMode = .discrete;sprite.addKai(loop,forKey:"ninjaLoop")}
         }
     }
 
@@ -2604,7 +2776,7 @@ private final class NotchSurfaceHost:NSView {
         petSelection.lastUsedID=petID
         petAppIcon.play(petID:petID,sheet:image,rows:pet.grid.rows,row:motion.row,columns:motion.columns,durationsMs:motion.durationsMs,loops:motion.loop)
         if mediaVisible {return}
-        if renderedPetID != petID && !renderedPetID.isEmpty {let blend=CATransition();blend.type = .fade;blend.duration=0.36;blend.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.7,0.25,1);sprite.add(blend,forKey:"petBlend")}
+        if renderedPetID != petID && !renderedPetID.isEmpty {let blend=CATransition();blend.type = .fade;blend.duration=KaiMotion.contentDuration;blend.timingFunction=KaiMotion.interactionCurve;sprite.addKai(blend,forKey:"petBlend")}
         CATransaction.begin(); CATransaction.setDisableActions(true); sprite.contents = image;sprite.isHidden=false;sprite.opacity=1; CATransaction.commit()
         renderedPetID=petID
         syncConversationTheme()
@@ -2620,7 +2792,7 @@ private final class NotchSurfaceHost:NSView {
         CATransaction.begin();CATransaction.setDisableActions(true)
         sprite.contentsRect=motion.loop || reduceMotion ? timeline.frames[0]:timeline.frames[timeline.frames.count-1]
         CATransaction.commit()
-        if !reduceMotion,timeline.frames.count>1 {sprite.add(timeline.animation(),forKey:"spriteFrames")}
+        if !reduceMotion,timeline.frames.count>1 {sprite.addKai(timeline.animation(),forKey:"spriteFrames")}
     }
 
     @objc private func changeDefaultNotchSize(_ slider:NSSlider){
@@ -2642,7 +2814,7 @@ private final class NotchSurfaceHost:NSView {
         let previous=mask.presentation()?.path ?? mask.path,oldHeight=canvasHeight,oldWidth=canvasWidth
         placePanel()
         guard let previous else{return};var translation=CGAffineTransform(translationX:(canvasWidth-oldWidth)/2,y:canvasHeight-oldHeight)
-        let animation=CABasicAnimation(keyPath:"path");animation.fromValue=previous.copy(using:&translation);animation.toValue=mask.path;animation.duration=0.42;animation.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.65,0.25,1);mask.add(animation,forKey:"width")
+        let animation=CABasicAnimation(keyPath:"path");animation.fromValue=previous.copy(using:&translation);animation.toValue=mask.path;animation.duration=KaiMotion.contentDuration;animation.timingFunction=KaiMotion.interactionCurve;mask.addKai(animation,forKey:"width")
     }
     @objc private func toggleFromMenu() { cancelSizeTest();if EmbeddedCodeRuntime.shared.active,workspaceMorph.expanded,!miniOpen{prepareNotchOverlay();pinned=true;compactWhileWorking=false;setOpen(true,mini:true,userInitiated:true);return};if compactVoiceMode{setOpen(true,mini:!miniOpen,userInitiated:true);return};if compactWhileWorking {compactWhileWorking=false;compactThreadID=nil;pinned=true;setOpen(true,mini:true)}else if open{closeNotch()}else{pinned=true;setOpen(true,mini:true)} }
     @objc private func toggleExperimentalWebMode(){

@@ -1,4 +1,4 @@
-//! Demand-created native PTY with Alacritty's Rust terminal state machine.
+//! Demand-created native PTY with a per-session terminal engine.
 //! The worker owns parsing/process IO; the UI receives only one coalesced,
 //! viewport-sized frame. Clipboard OSC52 is disabled and never executes links.
 use alacritty_terminal::{
@@ -30,6 +30,107 @@ use std::{
 const HISTORY_LINES: usize = 2000;
 const INPUT_LIMIT: usize = 64 * 1024;
 const WRITE_BUDGET: usize = 256 * 1024;
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Backend {
+    #[default]
+    Metal,
+    Alacritty,
+    Ghostty,
+}
+impl Backend {
+    pub const ALL: [Self; 3] = [Self::Metal, Self::Alacritty, Self::Ghostty];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Metal => "Ghostty Metal",
+            Self::Alacritty => "Alacritty · persistent",
+            Self::Ghostty => "Ghostty VT · persistent",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(super) struct SessionEnded;
+
+impl std::fmt::Display for SessionEnded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("This terminal session has ended")
+    }
+}
+impl std::error::Error for SessionEnded {}
+
+/// The server owns the shell. Kai owns only the attached PTY client.
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub(super) struct Resume {
+    pub id: uuid::Uuid,
+    pub project: PathBuf,
+    pub backend: Backend,
+}
+
+#[derive(Clone)]
+pub(super) struct SessionServer {
+    executable: PathBuf,
+    socket: String,
+}
+
+impl SessionServer {
+    pub fn find(profile: &Path) -> Option<Self> {
+        use sha2::{Digest, Sha256};
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+        let executable = crate::process_env::dirs(&home)
+            .into_iter()
+            .map(|dir| dir.join("tmux"))
+            .find(|file| file.is_file())?;
+        let digest = format!("{:x}", Sha256::digest(profile.as_os_str().as_encoded_bytes()));
+        Some(Self { executable, socket: format!("kai-{}", &digest[..24]) })
+    }
+
+    fn command(&self) -> Command {
+        let mut command = Command::new(&self.executable);
+        crate::process_env::apply(&mut command);
+        command
+            .env_remove("TMUX")
+            .env_remove("TMUX_PANE")
+            .env_remove("TMUX_TMPDIR")
+            .args(["-L", &self.socket, "-f", "/dev/null"]);
+        command
+    }
+
+    fn create(&self, session: &Resume) -> Result<()> {
+        let name = session.id.simple().to_string();
+        let output = self.command()
+            .args(["new-session", "-d", "-x", "100", "-y", "16", "-s", &name, "-c"])
+            .arg(&session.project)
+            .args([
+                ";", "set-option", "-g", "status", "off",
+                ";", "set-option", "-g", "prefix", "None",
+                ";", "set-option", "-g", "mouse", "on",
+                ";", "set-option", "-g", "set-titles", "on",
+                ";", "set-option", "-g", "set-titles-string", "#{pane_title}",
+                ";", "set-option", "-g", "terminal-overrides", "xterm-256color:RGB",
+            ])
+            .output()?;
+        if !output.status.success() {
+            let _ = self.end(session.id);
+            anyhow::bail!("Could not start persistent terminal: {}", String::from_utf8_lossy(&output.stderr).trim());
+        }
+        Ok(())
+    }
+
+    fn exists(&self, id: uuid::Uuid) -> Result<bool> {
+        Ok(self.command().args(["has-session", "-t", &format!("={}", id.simple())])
+            .stdout(Stdio::null()).stderr(Stdio::null()).status()?.success())
+    }
+
+    pub fn end(&self, id: uuid::Uuid) -> Result<()> {
+        let output = self.command().args(["kill-session", "-t", &format!("={}", id.simple())]).output()?;
+        ensure!(output.status.success() || !self.exists(id)?,
+            "Could not stop persistent terminal: {}", String::from_utf8_lossy(&output.stderr).trim());
+        Ok(())
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Size {
     pub columns: usize,
@@ -120,9 +221,22 @@ enum Control {
     SelectAll,
 }
 #[derive(Clone)]
-struct Proxy {
+pub(super) struct Proxy {
     writes: Arc<Mutex<VecDeque<Vec<u8>>>>,
     metadata: Arc<Mutex<(String, Size)>>,
+}
+impl Proxy {
+    pub(super) fn set_title(&self, title: &str) {
+        let mut title: String = title.chars().filter(|ch| !ch.is_control()).take(240).collect();
+        if title.is_empty() { title = "Terminal".into(); }
+        self.metadata.lock().unwrap_or_else(|e| e.into_inner()).0 = title;
+    }
+
+    pub(super) fn reply(&self, bytes: &[u8]) {
+        if bytes.len() > 4096 { return; }
+        let mut writes = self.writes.lock().unwrap_or_else(|e| e.into_inner());
+        if writes.len() < 32 { writes.push_back(bytes.to_vec()); }
+    }
 }
 impl EventListener for Proxy {
     fn send_event(&self, event: Event) {
@@ -131,11 +245,7 @@ impl EventListener for Proxy {
         let value = match event {
             Event::PtyWrite(text) => Some(text),
             Event::Title(title) => {
-                self.metadata.lock().unwrap_or_else(|e| e.into_inner()).0 = title
-                    .chars()
-                    .filter(|ch| !ch.is_control())
-                    .take(240)
-                    .collect();
+                self.set_title(&title);
                 None
             }
             Event::ResetTitle => {
@@ -168,15 +278,11 @@ impl EventListener for Proxy {
             }
             _ => None,
         };
-        if let Some(value) = value.filter(|v| v.len() <= 4096) {
-            let mut writes = self.writes.lock().unwrap_or_else(|e| e.into_inner());
-            if writes.len() < 32 {
-                writes.push_back(value.into_bytes());
-            }
-        }
+        if let Some(value) = value { self.reply(value.as_bytes()); }
     }
 }
 pub struct Terminal {
+    persistent: bool,
     control: SyncSender<Control>,
     signal: UnixStream,
     stopped: Arc<AtomicBool>,
@@ -187,7 +293,7 @@ pub struct Terminal {
     pub settled: async_channel::Receiver<()>,
 }
 impl Terminal {
-    pub fn spawn(project: &Path, stopped: Arc<AtomicBool>) -> Result<Self> {
+    pub fn spawn(project: &Path, stopped: Arc<AtomicBool>, backend: Backend) -> Result<Self> {
         ensure!(
             !stopped.load(Ordering::Acquire),
             "Terminal startup canceled"
@@ -196,8 +302,35 @@ impl Terminal {
             .map(PathBuf::from)
             .filter(|path| path.is_absolute() && path.is_file())
             .unwrap_or_else(|| PathBuf::from("/bin/zsh"));
-        Self::spawn_command_cancellable(project, &shell, &["-l", "-i"], Size::new(100, 16), stopped)
+        Self::spawn_command_cancellable(project, &shell, &["-l", "-i"], Size::new(100, 16), stopped, backend)
     }
+    pub(super) fn attach(
+        server: &SessionServer,
+        session: &Resume,
+        reconnect: bool,
+        stopped: Arc<AtomicBool>,
+    ) -> Result<Self> {
+        ensure!(!stopped.load(Ordering::Acquire), "Terminal startup canceled");
+        if reconnect {
+            if !server.exists(session.id)? { return Err(SessionEnded.into()); }
+        } else {
+            ensure!(session.project.is_dir(), "Terminal project folder is unavailable");
+            server.create(session)?;
+        }
+        let mut command = server.command();
+        command.args(["attach-session", "-t", &format!("={}", session.id.simple())]);
+        // A shell can outlive its original directory. Attaching only needs a
+        // valid cwd for the client and does not change the shell's cwd.
+        let result = Self::spawn_pty(Path::new("/"), command, Size::new(100, 16), stopped.clone(), session.backend);
+        if result.is_err() && !reconnect && !stopped.load(Ordering::Acquire) {
+            let _ = server.end(session.id);
+        }
+        result.map(|mut terminal| {
+            terminal.persistent = true;
+            terminal
+        })
+    }
+
     #[cfg(test)]
     fn spawn_command(project: &Path, shell: &Path, args: &[&str], size: Size) -> Result<Self> {
         Self::spawn_command_cancellable(
@@ -206,19 +339,44 @@ impl Terminal {
             args,
             size,
             Arc::new(AtomicBool::new(false)),
+            Backend::Alacritty,
         )
     }
-    fn spawn_command_cancellable(
+    pub(super) fn spawn_command_cancellable(
         project: &Path,
         shell: &Path,
         args: &[&str],
         size: Size,
         stopped: Arc<AtomicBool>,
+        backend: Backend,
     ) -> Result<Self> {
-        ensure!(
-            !stopped.load(Ordering::Acquire),
-            "Terminal startup canceled"
-        );
+        Self::spawn_command_with_env_cancellable(project, shell, args, &[], size, stopped, backend)
+    }
+
+    pub(super) fn spawn_command_with_env_cancellable(
+        project: &Path,
+        shell: &Path,
+        args: &[&str],
+        environment: &[(String, String)],
+        size: Size,
+        stopped: Arc<AtomicBool>,
+        backend: Backend,
+    ) -> Result<Self> {
+        let mut command = Command::new(shell);
+        crate::process_env::apply(&mut command);
+        command.args(args);
+        command.envs(environment.iter().map(|(key, value)| (key, value)));
+        Self::spawn_pty(project, command, size, stopped, backend)
+    }
+
+    fn spawn_pty(
+        project: &Path,
+        mut command: Command,
+        size: Size,
+        stopped: Arc<AtomicBool>,
+        backend: Backend,
+    ) -> Result<Self> {
+        ensure!(!stopped.load(Ordering::Acquire), "Terminal startup canceled");
         ensure!(project.is_dir(), "Terminal project folder is unavailable");
         let mut master = -1;
         let mut slave = -1;
@@ -247,11 +405,7 @@ impl Terminal {
             );
         }
         nonblocking(master.as_raw_fd())?;
-        let mut command = Command::new(shell);
-        crate::process_env::apply(&mut command);
-        command
-            .args(args)
-            .current_dir(project)
+        command.current_dir(project)
             .env("TERM", "xterm-256color")
             .env("COLORTERM", "truecolor")
             .stdin(Stdio::from(slave.try_clone()?))
@@ -281,6 +435,9 @@ impl Terminal {
             !stopped.load(Ordering::Acquire),
             "Terminal startup canceled"
         );
+        let writes = Arc::new(Mutex::new(VecDeque::new()));
+        let metadata = Arc::new(Mutex::new(("Terminal".into(), size)));
+        let emulator = Emulator::new(backend, size, Proxy { writes: writes.clone(), metadata: metadata.clone() })?;
         let child = command.spawn().context("Could not start terminal shell")?;
         let owner = Arc::new(Mutex::new(Some(child.id() as i32)));
         let child = OwnedChild {
@@ -306,12 +463,13 @@ impl Terminal {
             frame: frame.clone(),
             wake: wake_tx,
             settled: settled_tx,
-            metadata: Arc::new(Mutex::new(("Terminal".into(), size))),
+            metadata,
         };
         std::thread::Builder::new()
             .name("code-terminal".into())
-            .spawn(move || worker(master, worker_signal, child, size, controls, shared))?;
+            .spawn(move || worker(master, worker_signal, child, size, controls, shared, emulator, writes))?;
         Ok(Self {
+            persistent: false,
             control,
             signal,
             stopped,
@@ -356,9 +514,16 @@ impl Terminal {
         Ok(())
     }
     pub fn resize(&self, size: Size) -> Result<()> {
-        self.send(Control::Resize(Size::new(size.columns, size.lines)))
+        self.send(Control::Resize(Size::new(size.columns, size.lines).with_cell(f32::from(size.cell_width), f32::from(size.cell_height))))
     }
     pub fn scroll(&self, lines: i32) -> Result<()> {
+        if lines == 0 { return Ok(()); }
+        if self.persistent {
+            // tmux owns the shell's scrollback, including while Kai is closed.
+            // Forward only wheel events. Kai still owns drag selection and copy.
+            let wheel = if lines > 0 { b"\x1b[<64;1;1M" } else { b"\x1b[<65;1;1M" };
+            return self.input(wheel.repeat(lines.unsigned_abs().div_ceil(3).min(24) as usize));
+        }
         self.send(Control::Scroll(lines.clamp(-2000, 2000)))
     }
     pub fn select(&self, row: usize, column: usize, start: bool) -> Result<()> {
@@ -469,6 +634,98 @@ fn window_size(size: Size) -> libc::winsize {
         ws_ypixel: (size.lines * usize::from(size.cell_height)).min(u16::MAX as usize) as u16,
     }
 }
+enum Emulator {
+    Alacritty(Box<(Term<Proxy>, Processor)>),
+    Ghostty(super::terminal_ghostty::Ghostty),
+}
+impl Emulator {
+    fn new(backend: Backend, size: Size, proxy: Proxy) -> Result<Self> {
+        Ok(match backend {
+            Backend::Metal | Backend::Alacritty => Self::Alacritty(Box::new((
+                Term::new(Config { scrolling_history: HISTORY_LINES, osc52: Osc52::Disabled, ..Default::default() }, &size, proxy),
+                Processor::new(),
+            ))),
+            Backend::Ghostty => Self::Ghostty(super::terminal_ghostty::Ghostty::new(size, HISTORY_LINES, proxy)?),
+        })
+    }
+
+    fn reset_viewport(&mut self) {
+        match self {
+            Self::Alacritty(state) => {
+                state.0.scroll_display(Scroll::Bottom);
+                state.0.selection = None;
+            }
+            Self::Ghostty(terminal) => terminal.scroll(0),
+        }
+    }
+
+    fn resize(&mut self, size: Size) -> bool {
+        match self {
+            Self::Alacritty(state) => {
+                state.0.resize(size);
+                true
+            }
+            Self::Ghostty(terminal) => terminal.resize(size),
+        }
+    }
+
+    fn scroll(&mut self, lines: i32) {
+        if lines == 0 { return; }
+        match self {
+            Self::Alacritty(state) => state.0.scroll_display(Scroll::Delta(lines)),
+            Self::Ghostty(terminal) => terminal.scroll(lines),
+        }
+    }
+
+    fn select(&mut self, row: usize, column: usize, start: bool) {
+        match self {
+            Self::Alacritty(state) => {
+                let term = &mut state.0;
+                let point = Point::new(Line(row as i32 - term.grid().display_offset() as i32), Column(column));
+                if start {
+                    term.selection = Some(Selection::new(SelectionType::Simple, point, Side::Left));
+                } else if let Some(selection) = &mut term.selection {
+                    selection.update(point, Side::Right);
+                }
+            }
+            Self::Ghostty(terminal) => terminal.select(row, column, start),
+        }
+    }
+
+    fn select_all(&mut self) {
+        match self {
+            Self::Alacritty(state) => {
+                let term = &mut state.0;
+                let mut selection = Selection::new(SelectionType::Simple, Point::new(term.topmost_line(), Column(0)), Side::Left);
+                selection.update(Point::new(term.bottommost_line(), term.last_column()), Side::Right);
+                term.selection = Some(selection);
+            }
+            Self::Ghostty(terminal) => terminal.select_all(),
+        }
+    }
+
+    fn copy(&self) -> Option<String> {
+        match self {
+            Self::Alacritty(state) => state.0.selection_to_string().filter(|text| text.len() <= 256 * 1024),
+            Self::Ghostty(terminal) => terminal.copy(),
+        }
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        match self {
+            Self::Alacritty(state) => state.1.advance(&mut state.0, bytes),
+            Self::Ghostty(terminal) => terminal.write(bytes),
+        }
+    }
+
+    fn snapshot(&mut self, frame: &mut Frame) {
+        match self {
+            Self::Alacritty(state) => alacritty_snapshot(&state.0, frame),
+            Self::Ghostty(terminal) => terminal.snapshot(frame),
+        }
+    }
+}
+
 fn worker(
     mut master: File,
     mut signal: UnixStream,
@@ -476,21 +733,9 @@ fn worker(
     mut size: Size,
     controls: mpsc::Receiver<Control>,
     shared: Shared,
+    mut emulator: Emulator,
+    writes: Arc<Mutex<VecDeque<Vec<u8>>>>,
 ) {
-    let writes = Arc::new(Mutex::new(VecDeque::new()));
-    let mut term = Term::new(
-        Config {
-            scrolling_history: HISTORY_LINES,
-            osc52: Osc52::Disabled,
-            ..Default::default()
-        },
-        &size,
-        Proxy {
-            writes: writes.clone(),
-            metadata: shared.metadata.clone(),
-        },
-    );
-    let mut parser: Processor = Processor::new();
     let mut buffer = [0u8; 8192];
     let mut dirty = true;
     let mut published = Instant::now() - Duration::from_secs(1);
@@ -510,15 +755,13 @@ fn worker(
                     if !bytes.is_empty() {
                         input.push_back((bytes, true));
                     }
-                    term.scroll_display(Scroll::Bottom);
-                    term.selection = None;
+                    emulator.reset_viewport();
                     dirty = true;
                 }
                 Control::Resize(next) => {
-                    if next != size {
+                    if next != size && emulator.resize(next) {
                         size = next;
                         shared.metadata.lock().unwrap_or_else(|e| e.into_inner()).1 = size;
-                        term.resize(size);
                         let next = window_size(size);
                         unsafe {
                             libc::ioctl(master.as_raw_fd(), libc::TIOCSWINSZ as _, &next);
@@ -527,32 +770,19 @@ fn worker(
                     }
                 }
                 Control::Scroll(lines) => {
-                    term.scroll_display(Scroll::Delta(lines));
+                    emulator.scroll(lines);
                     dirty = true;
                 }
                 Control::Select { row, column, start } => {
-                    let point = Point::new(
-                        Line(row.min(size.lines - 1) as i32 - term.grid().display_offset() as i32),
-                        Column(column.min(size.columns - 1)),
-                    );
-                    if start {
-                        term.selection =
-                            Some(Selection::new(SelectionType::Simple, point, Side::Left));
-                    } else if let Some(selection) = &mut term.selection {
-                        selection.update(point, Side::Right);
-                    }
+                    emulator.select(row.min(size.lines - 1), column.min(size.columns - 1), start);
                     dirty = true;
                 }
                 Control::SelectAll => {
-                    let mut selection = Selection::new(SelectionType::Simple, Point::new(term.topmost_line(), Column(0)), Side::Left);
-                    selection.update(Point::new(term.bottommost_line(), term.last_column()), Side::Right);
-                    term.selection = Some(selection);
+                    emulator.select_all();
                     dirty = true;
                 }
                 Control::Copy(tx) => {
-                    let value = term
-                        .selection_to_string()
-                        .filter(|text| text.len() <= 256 * 1024);
+                    let value = emulator.copy();
                     let _ = tx.try_send(value);
                 }
             }
@@ -564,7 +794,7 @@ fn worker(
                     break;
                 }
                 Ok(n) => {
-                    parser.advance(&mut term, &buffer[..n]);
+                    emulator.write(&buffer[..n]);
                     dirty = true;
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
@@ -609,8 +839,8 @@ fn worker(
             && shared.visible.load(Ordering::Acquire)
             && (done || published.elapsed() >= Duration::from_millis(16))
         {
-            publish(
-                &term,
+            publish_frame(
+                |frame| emulator.snapshot(frame),
                 size,
                 &shared,
                 if status.is_empty() {
@@ -663,8 +893,8 @@ fn worker(
     drop(master);
     // Cleanup happens before publishing settled, and only targets this session.
     drop(child);
-    publish(
-        &term,
+    publish_frame(
+        |frame| emulator.snapshot(frame),
         size,
         &shared,
         if stopped {
@@ -678,7 +908,12 @@ fn worker(
     );
     drop(shared.settled);
 }
+#[cfg(test)]
 fn publish(term: &Term<Proxy>, size: Size, shared: &Shared, status: &str, running: bool) {
+    publish_frame(|frame| alacritty_snapshot(term, frame), size, shared, status, running);
+}
+
+fn publish_frame(snapshot: impl FnOnce(&mut Frame), size: Size, shared: &Shared, status: &str, running: bool) {
     let mut frame = Frame::empty(size);
     frame.status = status.into();
     frame.title = shared
@@ -688,6 +923,13 @@ fn publish(term: &Term<Proxy>, size: Size, shared: &Shared, status: &str, runnin
         .0
         .clone();
     frame.running = running;
+    snapshot(&mut frame);
+    *shared.frame.lock().unwrap_or_else(|e| e.into_inner()) = Arc::new(frame);
+    let _ = shared.wake.try_send(());
+}
+
+fn alacritty_snapshot(term: &Term<Proxy>, frame: &mut Frame) {
+    let size = frame.size;
     let content = term.renderable_content();
     frame.display_offset = content.display_offset;
     frame.app_cursor = content.mode.contains(TermMode::APP_CURSOR);
@@ -772,8 +1014,6 @@ fn publish(term: &Term<Proxy>, size: Size, shared: &Shared, status: &str, runnin
             }
         }
     }
-    *shared.frame.lock().unwrap_or_else(|e| e.into_inner()) = Arc::new(frame);
-    let _ = shared.wake.try_send(());
 }
 fn color(color: Color, colors: &Colors) -> u32 {
     let index = match color {
@@ -850,6 +1090,51 @@ mod tests {
         }
     }
     #[test]
+    fn persistent_terminal_reattaches_to_same_shell_and_ends_explicitly() {
+        let root = root();
+        let Some(server) = SessionServer::find(&root) else {
+            eprintln!("tmux unavailable; skipping the real persistent PTY probe");
+            return;
+        };
+        let session = Resume { id: uuid::Uuid::new_v4(), project: root.clone(), backend: Backend::Alacritty };
+        struct Cleanup(SessionServer, Resume);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = self.0.end(self.1.id);
+                let _ = std::fs::remove_dir_all(&self.1.project);
+            }
+        }
+        let _cleanup = Cleanup(server.clone(), session.clone());
+        let cancel = || Arc::new(AtomicBool::new(false));
+        let first = Terminal::attach(&server, &session, false, cancel()).unwrap();
+        first.input(b"export KAI_REATTACH_TOKEN=alive; echo $$ > shell.pid; echo \"first-$KAI_REATTACH_TOKEN\"; (sleep 1; touch job-completed) &\r".to_vec()).unwrap();
+        wait(&first, "first-alive");
+        let pid = std::fs::read_to_string(root.join("shell.pid")).unwrap();
+        let pid = pid.trim();
+        first.stop();
+        settled(&first);
+        assert!(server.exists(session.id).unwrap());
+        let next = Terminal::attach(&server, &session, true, cancel()).unwrap();
+        next.resize(Size::new(120, 20)).unwrap();
+        next.input(b"echo \"second-$KAI_REATTACH_TOKEN-$$\"; stty size\r".to_vec()).unwrap();
+        wait(&next, &format!("second-alive-{pid}"));
+        wait(&next, "20 120");
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !root.join("job-completed").is_file() {
+            assert!(Instant::now() < deadline, "Background job stopped when Kai detached");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        next.input(b"i=0; while [ \"$i\" -lt 80 ]; do printf 'history-%03d\\n' \"$i\"; i=$((i+1)); done\r".to_vec()).unwrap();
+        wait(&next, "history-079");
+        next.scroll(120).unwrap();
+        wait(&next, "history-000");
+        server.end(session.id).unwrap();
+        settled(&next);
+        let result = Terminal::attach(&server, &session, true, cancel());
+        assert!(matches!(result, Err(error) if error.is::<SessionEnded>()));
+    }
+
+    #[test]
     fn canceled_terminal_startup_never_executes_the_shell() {
         let root = root();
         let result = Terminal::spawn_command_cancellable(
@@ -858,6 +1143,7 @@ mod tests {
             &["-c", "touch must-not-run"],
             Size::new(80, 8),
             Arc::new(AtomicBool::new(true)),
+            Backend::Alacritty,
         );
         assert!(result.is_err());
         assert!(!root.join("must-not-run").exists());

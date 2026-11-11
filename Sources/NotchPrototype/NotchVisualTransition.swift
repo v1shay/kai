@@ -4,7 +4,7 @@ import AppKit
 @MainActor final class NotchVisualTransition {
     private var outgoing:CALayer?
     private var revision=0
-    private let curve=CAMediaTimingFunction(controlPoints:0.16,0.85,0.22,1)
+    private let curve=KaiMotion.interactionCurve
     private var duration:Double {NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0.1:0.26}
 
     func artwork(_ image:CGImage,on layer:CALayer) {
@@ -28,10 +28,10 @@ import AppKit
         let target:Float=visible ? 1:0
         let fade=CABasicAnimation(keyPath:"opacity");fade.fromValue=opacity;fade.toValue=target;fade.duration=duration;fade.timingFunction=curve
         CATransaction.begin();CATransaction.setDisableActions(true);layer.opacity=target;CATransaction.commit()
-        layer.add(fade,forKey:"statusFade")
+        layer.addKai(fade,forKey:"statusFade")
         guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else{return}
-        let scale=CABasicAnimation(keyPath:"transform.scale");scale.fromValue=fromOpacity != nil ? 0.92:layer.presentation()?.value(forKeyPath:"transform.scale") ?? (visible ? 0.86:1);scale.toValue=visible ? 1:0.86;scale.duration=duration;scale.timingFunction=curve;layer.add(scale,forKey:"statusScale")
-        let drift=CABasicAnimation(keyPath:"transform.translation.y");drift.fromValue=layer.presentation()?.value(forKeyPath:"transform.translation.y") ?? (visible ? -3:0);drift.toValue=visible ? 0:3;drift.duration=duration;drift.timingFunction=curve;layer.add(drift,forKey:"statusDrift")
+        let scale=CABasicAnimation(keyPath:"transform.scale");scale.fromValue=fromOpacity != nil ? 0.92:layer.presentation()?.value(forKeyPath:"transform.scale") ?? (visible ? 0.86:1);scale.toValue=visible ? 1:0.86;scale.duration=duration;scale.timingFunction=curve;layer.addKai(scale,forKey:"statusScale")
+        let drift=CABasicAnimation(keyPath:"transform.translation.y");drift.fromValue=layer.presentation()?.value(forKeyPath:"transform.translation.y") ?? (visible ? -3:0);drift.toValue=visible ? 0:3;drift.duration=duration;drift.timingFunction=curve;layer.addKai(drift,forKey:"statusDrift")
     }
     func hideArtwork(_ layer:CALayer) {
         revision += 1;let token=revision;outgoing?.removeFromSuperlayer();outgoing=nil
@@ -44,8 +44,8 @@ import AppKit
         let previous=layer.presentation()?.frame ?? layer.frame
         CATransaction.begin();CATransaction.setDisableActions(true);layer.frame=frame;layer.cornerRadius=min(8,frame.height*0.22);CATransaction.commit()
         guard animated else{return}
-        let bounds=CABasicAnimation(keyPath:"bounds");bounds.fromValue=CGRect(origin:.zero,size:previous.size);bounds.toValue=layer.bounds;bounds.duration=0.22;bounds.timingFunction=curve;layer.add(bounds,forKey:"mediaResize")
-        let position=CABasicAnimation(keyPath:"position");position.fromValue=CGPoint(x:previous.midX,y:previous.midY);position.toValue=layer.position;position.duration=0.22;position.timingFunction=curve;layer.add(position,forKey:"mediaResizePosition")
+        let bounds=CABasicAnimation(keyPath:"bounds");bounds.fromValue=CGRect(origin:.zero,size:previous.size);bounds.toValue=layer.bounds;bounds.duration=KaiMotion.paneDuration;bounds.timingFunction=curve;layer.addKai(bounds,forKey:"mediaResize")
+        let position=CABasicAnimation(keyPath:"position");position.fromValue=CGPoint(x:previous.midX,y:previous.midY);position.toValue=layer.position;position.duration=KaiMotion.paneDuration;position.timingFunction=curve;layer.addKai(position,forKey:"mediaResizePosition")
     }
     nonisolated static func artworkFrame(size:CGFloat,notchHeight:CGFloat,center:CGPoint,scale:CGFloat)->CGRect {
         let requested=size.isFinite ? size:32

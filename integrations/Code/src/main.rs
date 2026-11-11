@@ -17,6 +17,7 @@ mod broker_ui;
 mod task_pets;
 mod chat_interactions;
 mod chat_navigation;
+mod chat_split;
 mod adaptive_text;
 mod adaptive_ui;
 mod github;
@@ -33,6 +34,7 @@ mod composer_design;
 mod composer_toolbar;
 mod control_clicks;
 mod pane_layout;
+mod parallel_workspace;
 mod context_refs;
 mod context_ui;
 mod diff_view;
@@ -55,10 +57,13 @@ mod loading_logo;
 mod native;
 mod startup;
 mod keyboard;
+mod provider_cli;
+mod cursor_cli_history;
 mod chat_titles;
 mod launch_metrics;
 mod performance;
 mod terminal_dock;
+mod terminal_ghostty;
 mod terminal_panes;
 mod orchestrator;
 mod remote_host;
@@ -148,7 +153,6 @@ actions!(
         ToggleConversations,
         ToggleSettings,
         ReturnToNotch,
-        ToggleDiffs,
         Escape,
         Send
     ]
@@ -321,9 +325,6 @@ fn short(text: &str, max: usize) -> String {
         out.push('…');
     }
     out
-}
-fn spring_animation() -> Animation {
-    Animation::new(Duration::from_millis(650))
 }
 fn agent_color(agent: AgentKind) -> u32 {
     match agent {
@@ -568,7 +569,7 @@ impl ListReveal {
         let t =
             ((elapsed - self.rank(index) as f32 * Self::STAGGER) / Self::DURATION).clamp(0., 1.);
         // Opacity stays monotonic while position has a subtle spring overshoot.
-        (1. - (1. - t).powi(3), 1. - presentation::spring(t))
+        (presentation::ease_out(t), 1. - presentation::ease_out(t))
     }
     fn advance(state: &mut Option<Self>, motion: bool, visible: bool, active: bool) -> bool {
         if !motion {
@@ -608,7 +609,7 @@ struct Orbit {
     orchestrator_chats:HashSet<String>,
     orchestrator_new:bool,
     orchestrator_transition:Option<(Instant,f32)>,
-    composer_toolbars:std::cell::RefCell<HashMap<WindowId,composer_toolbar::State>>,
+    composer_toolbars:std::cell::RefCell<HashMap<(WindowId, usize),composer_toolbar::State>>,
     startup_surface:startup::Surface,
     automatic_titles:bool,
     title_queue:std::collections::VecDeque<chat_titles::Seed>,
@@ -644,9 +645,17 @@ struct Orbit {
     terminals: Vec<terminal_ui::Session>,
     active_terminal: Option<EntityId>,
     terminal_panes: terminal_panes::Layout,
+    saved_terminal_decks: Vec<workspace_ui::SavedTerminalDeck>,
+    terminal_owner: Option<workspace_ui::TerminalOwner>,
+    parked_terminals: HashMap<workspace_ui::TerminalOwner, workspace_ui::TerminalDeck>,
+    split_terminal_owners: Vec<String>,
+    chat_split: Option<chat_split::Split>,
+    chat_split_hover: Option<terminal_dock::Side>,
     next_terminal_number: u64,
     terminal_visible: bool,
+    terminal_workspace_visible: bool,
     terminal_dock:terminal_dock::Dock,
+    terminal_backend: terminal::Backend,
     inspector_widths:pane_layout::Widths,
     pane_layout:pane_layout::Layout,
     closed_control_press:Option<control_clicks::ClosedPress>,
@@ -701,6 +710,7 @@ struct Orbit {
     following_bottom: bool,
     window_state: Option<workspace_state::WindowState>,
     background: Entity<background::ChatBackground>,
+    background_data: PathBuf,
     live_indicator: Entity<kai_indicator::KaiIndicator>,
     loading_logo: Entity<loading_logo::LoadingLogo>,
     file_indicator: Entity<kai_indicator::KaiFileGlyph>,
@@ -751,6 +761,7 @@ struct Orbit {
     session_models: HashMap<String, Option<String>>,
     agent_models: HashMap<&'static str, Option<String>>,
     new_execution_path: Option<PathBuf>,
+    parallel_draft: bool,
     recently_removed: Option<Project>,
     hidden_sessions: HashSet<String>,
     restored_sessions: HashSet<String>,
@@ -786,6 +797,7 @@ struct Orbit {
     interaction_animations: HashMap<usize, (Instant, bool, f32)>,
     expanded_work: HashSet<usize>,
     flow_index:chat_flow::Index,
+    flow_layout_key: Option<chat_flow::LayoutKey>,
     flow_revision:u64,
     work_animations: HashMap<usize,(Instant,bool,f32)>,
     question_choices: HashMap<String, (String, Instant)>,
@@ -824,6 +836,8 @@ struct Orbit {
     rows: Vec<Row>,
     list: ListState,
     runs: HashMap<String, Running>,
+    chat_clis: HashMap<String, keyboard::ChatCli>,
+    cli_draft_project: Option<(PathBuf, Option<PathBuf>, AgentKind)>,
     finalizing: HashSet<String>,
     generation: u64,
     search_generation: u64,
@@ -1185,9 +1199,17 @@ impl Orbit {
             terminals: Vec::new(),
             active_terminal: None,
             terminal_panes: Default::default(),
+            saved_terminal_decks: restored.as_ref().map_or_else(Vec::new, |state| state.terminal_decks.clone()),
+            terminal_owner: None,
+            parked_terminals: HashMap::new(),
+            split_terminal_owners: Vec::new(),
+            chat_split: None,
+            chat_split_hover: None,
             next_terminal_number: 1,
             terminal_visible: false,
+            terminal_workspace_visible: true,
             terminal_dock:restored.as_ref().map_or_else(Default::default,|s|s.terminal_dock.normalized()),
+            terminal_backend: restored.as_ref().map_or_else(Default::default, |state| state.terminal_backend),
             inspector_widths:restored.as_ref().map_or_else(Default::default,|s|s.inspector_widths.normalized()),pane_layout:Default::default(),closed_control_press:None,
             terminal_dock_hover:None,
             teams: Vec::new(),
@@ -1252,6 +1274,7 @@ impl Orbit {
             following_bottom: true,
             window_state: Some(workspace_ui::capture_window(window)),
             background,
+            background_data: data.clone(),
             live_indicator,
             loading_logo,
             file_indicator,
@@ -1304,6 +1327,7 @@ impl Orbit {
             session_models: HashMap::new(),
             agent_models: HashMap::new(),
             new_execution_path: None,
+            parallel_draft: false,
             recently_removed: None,
             hidden_sessions: HashSet::new(),
             restored_sessions: HashSet::new(),
@@ -1338,7 +1362,7 @@ impl Orbit {
             expanded_tools: HashSet::new(),
             interaction_animations: HashMap::new(),
             expanded_work:HashSet::new(),work_animations:HashMap::new(),
-            flow_index:Default::default(),flow_revision:0,
+            flow_index:Default::default(),flow_layout_key: None,flow_revision:0,
             question_choices: HashMap::new(),
             project_generation: 0,
             project: root,
@@ -1376,6 +1400,8 @@ impl Orbit {
             rows: vec![],
             list,
             runs: HashMap::new(),
+            chat_clis: HashMap::new(),
+            cli_draft_project: None,
             finalizing: HashSet::new(),
             generation: 0,
             search_generation: 0,
@@ -1667,14 +1693,18 @@ impl Orbit {
             && !menu.closing
         {
             menu.closing_from =
-                presentation::spring((menu.started.elapsed().as_secs_f32() / 0.32).min(1.))
+                presentation::ease_out((menu.started.elapsed().as_secs_f32() / 0.32).min(1.))
                     .clamp(0., 1.);
             menu.closing = true;
             menu.started = Instant::now();
         }
     }
     fn can_delete_chat(&self, id: &str) -> bool {
-        !(self.hidden_sessions.contains(id)
+        let owner = workspace_ui::TerminalOwner::Chat(id.to_owned());
+        !((self.terminal_owner.as_ref() == Some(&owner) && !self.terminals.is_empty())
+            || self.parked_terminals.get(&owner).is_some_and(|deck| !deck.sessions.is_empty())
+            || self.saved_terminal_decks.iter().any(|deck| deck.owner == owner)
+            || self.hidden_sessions.contains(id)
             || self.runs.contains_key(id)
             || self.finalizing.contains(id)
             || (self.launches.contains_key(id) || (self.starting_current() && self.active.as_deref()==Some(id))))
@@ -1727,13 +1757,13 @@ impl Orbit {
         let progress = if !self.motion {
             1.
         } else {
-            let duration = if menu.closing { 0.12 } else { 0.32 };
+            let duration = workspace_motion::surface_duration(menu.closing).as_secs_f32();
             (menu.started.elapsed().as_secs_f32() / duration).min(1.)
         };
         let reveal = if menu.closing {
-            menu.closing_from * (1. - progress * progress)
+            menu.closing_from * (1. - presentation::ease_out(progress))
         } else {
-            presentation::spring(progress)
+            presentation::ease_out(progress)
         };
         let (target, selector, action_id, label, enabled) = match &menu.target {
             MenuTarget::Project(project) => (
@@ -1917,6 +1947,7 @@ impl Orbit {
     }
     fn select_project(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         if self.project != path {
+            self.preserve_blank_tab(cx);
             self.stop_voice(cx);
         }
         self.all_projects = false;
@@ -2181,6 +2212,7 @@ impl Orbit {
             Event::Loaded(id, generation, messages, has_older, has_newer)
                 if self.active.as_deref() == Some(&id) && generation == self.generation =>
             {
+                let _span = performance::Span::new("chat_history_apply");
                 let final_refresh=self.final_history_load.as_ref()==Some(&(id.clone(),generation));
                 if final_refresh{self.final_history_load=None;self.finalizing.remove(&id);self.pending_response_start=None;}
                 self.navigation_previous = None;
@@ -2218,7 +2250,7 @@ impl Orbit {
                 self.update_stream(&id, cx);
                 self.transcript_reveal =
                     (self.motion && !final_refresh && !self.rows.is_empty()).then(|| ListReveal::new(None));
-                if self.send_after_load.is_some() {
+                if self.take_split_send(&id, cx) || self.send_after_load.is_some() {
                     self.composer
                         .update(cx, |_, cx| cx.emit(InputEvent::Submit));
                 }
@@ -2392,6 +2424,7 @@ impl Orbit {
                 }
             }
             Event::PagedFinished(id) => {
+                self.refresh_split_tail(&id, cx);
                 self.finalizing.remove(&id);
                 self.saved_viewport = None;
                 if self.navigation_history && self.active.as_deref() == Some(&id) {
@@ -2516,7 +2549,8 @@ impl Orbit {
     }
     fn remember_draft(&mut self, cx: &Context<Self>) {
         self.finish_attachment_removals();
-        if let Some(id) = &self.active {
+        let owner = self.active.clone().or_else(|| self.cli_draft_project.as_ref().map(|_| keyboard::CLI_DRAFT.to_owned()));
+        if let Some(id) = &owner {
             if self.attachments.is_empty() {
                 self.attachment_drafts.remove(id);
             } else {
@@ -2532,23 +2566,46 @@ impl Orbit {
         }
     }
     fn close_tab(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let _span = performance::Span::new("chat_tab_close");
+        if performance::enabled() {
+            let started = Instant::now();
+            window.on_frame_submitted(move |_, _| performance::sample("chat_tab_close_frame", started.elapsed()));
+        }
+        let split_neighbor = self.remove_split_pane(id);
         self.open_tabs.retain(|tab| tab != id);
+        self.close_chat_cli(id, cx);
         if self.ninja_surface_owner().is_some(){if self.active.as_deref()==Some(id){self.reset_conversation(cx);}cx.notify();return;}
         if self.active.as_deref() == Some(id) {
-            if let Some(next) = self
-                .open_tabs
-                .last()
+            if let Some(next) = split_neighbor.as_ref().or_else(|| self.open_tabs.last())
                 .and_then(|id| self.sessions.iter().find(|s| &s.id == id))
                 .cloned()
             {
                 self.open_session(next, window, cx);
+            } else if self.cli_draft_project.is_some() {
+                self.open_cli_draft(window, cx);
             } else {
                 self.new_conversation(window, cx);
             }
         }
+        if split_neighbor.is_some() {
+            self.sync_chat_terminal_owner(cx);
+            self.sync_split_composer(cx);
+        }
         cx.notify();
     }
+    fn release_chat_rows(&mut self, cx: &Context<Self>) {
+        let rows = std::mem::take(&mut self.rows);
+        let deferred = std::mem::take(&mut self.deferred_rows);
+        let live = self.live_history.take();
+        if !rows.is_empty() || !deferred.is_empty() || live.is_some() {
+            cx.background_executor().spawn(async move {
+                drop((rows, deferred, live));
+            }).detach();
+        }
+    }
+
     fn reset_conversation(&mut self, cx: &mut Context<Self>) {
+        self.parallel_draft = false;
         self.transcript_reveal = None;
         self.restore_scroll = None;
         self.following_bottom = true;
@@ -2561,18 +2618,18 @@ impl Orbit {
         self.attachments.clear();
         self.send_after_load = None;
         self.active = None;
+        self.sync_chat_terminal_owner(cx);
         self.history_offset = 0;
         self.has_newer = false;
         self.has_older = false;
         self.history_anchor = None;
         self.loading_earlier = false;
-        self.rows.clear();
+        self.release_chat_rows(cx);
         self.expanded_tools.clear();
         self.interaction_animations.clear();
-        self.expanded_work.clear();self.work_animations.clear();self.live_history=None;
+        self.expanded_work.clear();self.work_animations.clear();
         self.question_choices.clear();
         self.history_pages.clear();
-        self.deferred_rows.clear();
         self.history_pending.clear();
         self.history_failed.clear();
         self.history_visible = 0..0;
@@ -2588,17 +2645,84 @@ impl Orbit {
         self.notice = None;
         self.composer.update(cx, |input, cx| input.set_text("", cx));
     }
+    fn preserve_blank_tab(&mut self, cx: &mut Context<Self>) {
+        self.materialize_blank_tab(false, cx);
+    }
+
+    fn materialize_blank_tab(&mut self, include_empty: bool, cx: &mut Context<Self>) {
+        if self.active.is_some() || self.ninja_surface_owner().is_some() { return; }
+        let text = self.composer.read(cx).text();
+        if !include_empty && text.trim().is_empty() && self.attachments.is_empty() && !self.chat_clis.contains_key(keyboard::CLI_DRAFT) {
+            return;
+        }
+        let id = uuid::Uuid::new_v4().to_string();
+        let session = SessionSummary {
+            id: id.clone(),
+            title: if text.trim().is_empty() { "New session".into() } else { short(text.trim(), 60) },
+            agent: self.agent,
+            project_path: self.project.clone(),
+            execution_path: self.new_execution_path.clone(),
+            updated_at: chrono::Utc::now().timestamp(),
+            external_id: None,
+            transcript_path: None,
+        };
+        if let Some(cli) = self.chat_clis.remove(keyboard::CLI_DRAFT) {
+            let launch_id = cli.launch_id;
+            self.chat_clis.insert(id.clone(), cli);
+            unified::emit(&serde_json::json!({"type":"chatTerminalAdopt","id":keyboard::CLI_DRAFT,"newId":id,"launchId":launch_id}));
+        }
+        self.cli_draft_project = None;
+        self.drafts.remove(keyboard::CLI_DRAFT);
+        self.attachment_drafts.remove(keyboard::CLI_DRAFT);
+        self.engine.set_model(session.clone(), self.model.clone());
+        if let Some(history) = self.chat_clis.get(&id).and_then(|cli| cli.cursor_history.as_ref()) {
+            self.engine.bind_cursor_cli(id.clone(), history.id.clone());
+        }
+        self.sessions.insert(0, session);
+        self.session_models.insert(id.clone(), self.model.clone());
+        self.open_tabs.push(id.clone());
+        if self.open_tabs.len() > keyboard::MAX_CHAT_TABS {
+            let closed = self.open_tabs.remove(0);
+            self.close_chat_cli(&closed, cx);
+        }
+        self.active = Some(id);
+        self.remember_draft(cx);
+        self.rebuild_workspace_sessions();
+        self.queue_workspace_save(cx);
+    }
+
+    fn close_blank_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.active.is_none()
+            && self.chat_clis.get(keyboard::CLI_DRAFT).is_some_and(|cli| cli.cursor_history.is_some())
+        {
+            self.preserve_blank_tab(cx);
+            if let Some(id) = self.active.clone() {
+                self.close_tab(&id, window, cx);
+                return;
+            }
+        }
+        self.close_cli_draft(cx);
+        self.composer.update(cx, |input, cx| input.set_text("", cx));
+        self.attachments.clear();
+        self.new_conversation(window, cx);
+    }
+
     fn new_conversation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.ninja_surface_owner().is_some(){self.remember_ninja_draft(cx);self.ninjas.desktop=None;self.ninjas.panel=None;}
+        self.preserve_blank_tab(cx);
         self.orchestrator_new=false;
         self.orchestrator_transition=None;
         if !self.unified_navigating{if let Some(old)=self.active.as_ref().and_then(|id|self.sessions.iter().find(|s|&s.id==id)).cloned(){self.unified_back.push(old);if self.unified_back.len()>100{self.unified_back.remove(0);}self.unified_forward.clear();}}
         self.stop_voice(cx);
         self.new_execution_path = if self.project == self.unprojected_root() {
             Some(self.project.join(uuid::Uuid::new_v4().to_string()))
+        } else if self.active.as_ref().and_then(|id| self.sessions.iter().find(|session| &session.id == id))
+            .is_some_and(|session| self.has_parallel_workspace(session)) {
+            None
         } else {
             self.execution_root()
         };
+        self.close_cli_draft(cx);
         self.reset_conversation(cx);
         self.agent_picker = None;
         self.model = self
@@ -2618,11 +2742,16 @@ impl Orbit {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if std::env::args().any(|arg|arg=="--unified-orchestrator-probe") {
+        if self.hidden_sessions.contains(&session.id) { return; }
+        static TRACE_SELECTION: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *TRACE_SELECTION.get_or_init(|| std::env::args().any(|arg| arg == "--unified-orchestrator-probe")) {
             eprintln!("KAI_ORCHESTRATOR_SELECTION from={:?} to={} caller={}",self.active,session.id,std::panic::Location::caller());
         }
         self.performance.begin(&session.id);
+        let _span = performance::Span::new("chat_open_prepare");
+        let was_pending = self.activity.pending_rank(&session.id).is_some();
         if self.ninja_surface_owner().is_some(){self.remember_ninja_draft(cx);self.ninjas.desktop=None;self.ninjas.panel=None;}
+        self.preserve_blank_tab(cx);
         if !self.unified_navigating && self.active.as_ref()!=Some(&session.id){
             if let Some(old)=self.active.as_ref().and_then(|id|self.sessions.iter().find(|s|&s.id==id)).cloned(){
                 self.unified_back.push(old);if self.unified_back.len()>100{self.unified_back.remove(0);}
@@ -2632,9 +2761,6 @@ impl Orbit {
 
         if self.active.as_ref() != Some(&session.id) {
             self.stop_voice(cx);
-        }
-        if self.hidden_sessions.contains(&session.id) {
-            return;
         }
         if self
             .restore_model
@@ -2690,16 +2816,21 @@ impl Orbit {
         }
         self.agent_picker = None;
         self.new_execution_path = None;
+        self.parallel_draft = false;
         self.agent = session.agent;
         self.model = self.session_models.get(&session.id).cloned().flatten();
         self.active = Some(session.id.clone());
+        self.sync_chat_terminal_owner(cx);
+        self.sync_split_composer(cx);
         self.sync_file_root(window, cx);
         if !self.open_tabs.contains(&session.id) {
             self.open_tabs.push(session.id.clone());
             if self.open_tabs.len() > keyboard::MAX_CHAT_TABS {
-                self.open_tabs.remove(0);
+                let closed = self.open_tabs.remove(0);
+                self.close_chat_cli(&closed, cx);
             }
         }
+        let mut expanded_project = false;
         if !self.sidebar_split
             && self
                 .restore_model
@@ -2710,19 +2841,24 @@ impl Orbit {
                 .ancestors()
                 .find(|path| self.projects.iter().any(|p| p.path == *path))
         {
-            self.expanded_projects.insert(path.to_path_buf());
+            expanded_project = self.expanded_projects.insert(path.to_path_buf());
         }
-        self.rebuild_workspace_sessions();
+        if self.sessions_scope.as_ref().is_none_or(|(all, project)| {
+            *all != self.all_projects || (!self.all_projects && *project != self.project)
+        }) {
+            self.rebuild_workspace_sessions();
+        } else if expanded_project || was_pending != self.activity.pending_rank(&session.id).is_some() {
+            self.rebuild_project_tree();
+        }
         self.pending_response_start = None;
         self.modal = None;
         self.generation += 1;
-        self.rows.clear();
+        self.release_chat_rows(cx);
         self.expanded_tools.clear();
         self.interaction_animations.clear();
-        self.expanded_work.clear();self.work_animations.clear();self.live_history=None;
+        self.expanded_work.clear();self.work_animations.clear();
         self.question_choices.clear();
         self.history_pages.clear();
-        self.deferred_rows.clear();
         self.history_pending.clear();
         self.history_failed.clear();
         self.history_visible = 0..0;
@@ -2739,7 +2875,11 @@ impl Orbit {
         } else {
             self.engine.load(session, self.generation);
         }
-        self.composer.read(cx).focus_handle.focus(window);
+        if let Some((panel, _)) = self.active_chat_cli().filter(|cli| cli.selected).and_then(|cli| cli.fallback.as_ref()) {
+            panel.read(cx).focus_handle(cx).focus(window);
+        } else {
+            self.composer.read(cx).focus_handle.focus(window);
+        }
         cx.notify();
     }
     fn load_history_page(&mut self, older: bool, cx: &mut Context<Self>) {
@@ -2923,6 +3063,10 @@ impl Orbit {
         }
     }
     fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.active_chat_cli().is_some_and(|cli| cli.resumes_chat) {
+            self.finish_chat_cli_for_send(cx);
+            return;
+        }
         if self.ninja_surface_owner().is_some() {
             self.ninja_submit_task(cx);
             return;
@@ -2953,6 +3097,9 @@ impl Orbit {
             if self.active.as_deref() == Some(&submission.session.id) {
                 self.route_submission(submission, window, cx);
             }
+            return;
+        }
+        if self.defer_split_send(cx) {
             return;
         }
         if self.checkpoint_busy > 0
@@ -3088,7 +3235,7 @@ impl Orbit {
             cx.notify();
             return;
         }
-        if !self.attachments.is_empty() && !runtime::supports_images(self.agent) {
+        if self.attachments.iter().any(attachments::Attachment::is_image) && !runtime::supports_images(self.agent) {
             self.notice = Some(format!(
                 "{} does not expose image input here. Choose Codex, Claude Code, Gemini or OpenCode to send these images.",
                 agent_name(self.agent)
@@ -3097,7 +3244,7 @@ impl Orbit {
             return;
         }
         let prompt = if prompt.is_empty() && !self.attachments.is_empty() {
-            "Describe these images.".to_owned()
+            "Review the attached files.".to_owned()
         } else {
             prompt
         };
@@ -3167,7 +3314,7 @@ impl Orbit {
             return;
         }
         let references = self.context_references();
-        let native_prompt = match context_refs::with_context(
+        let mut native_prompt = match context_refs::with_context(
             &delegation_prompt.unwrap_or_else(|| prompt.clone()),
             &references,
         ) {
@@ -3178,6 +3325,11 @@ impl Orbit {
                 return;
             }
         };
+        for file in self.attachments.iter().filter(|file| !file.is_image()) {
+            native_prompt.push_str(&format!("\n\nAttached local file: {}", serde_json::json!({
+                "name": file.name, "path": file.path,
+            })));
+        }
         let context_scope = self.context_scope();
         let request = RunRequest { identity:None, ninja:(self.agent==AgentKind::Ninja).then(||self.ninja_selection()), orchestrator:self.orchestrator_active(), service_tier:self.request_service_tier(), reasoning_effort:self.request_effort(),
             agent: self.agent,
@@ -3189,7 +3341,7 @@ impl Orbit {
                 || self.fork_next.as_deref() == Some(&id),
             allow_edits: self.allow_edits,
             model: self.request_model(),
-            images: self.attachments.iter().map(|a| a.path.clone()).collect(),
+            images: self.attachments.iter().filter(|file| file.is_image()).map(|file| file.path.clone()).collect(),
             codex_approvals: self.codex_approvals,
             codex_access: self.codex_access,
             trust_workspace: self
@@ -3222,6 +3374,7 @@ impl Orbit {
             context_scope,
             native_command,
             queued_prompt_id: self.queue_dispatch.clone(),
+            parallel: self.active.is_none() && self.parallel_draft,
         };
         if self.history_offset > 0 || self.navigation_history {
             self.navigation_previous = Some(true);
@@ -3257,6 +3410,11 @@ impl Orbit {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.chat_clis.get(&submission.session.id).is_some_and(|cli| cli.resumes_chat) {
+            self.notice = Some("Exit this chat’s CLI before sending from the GUI.".into());
+            cx.notify();
+            return;
+        }
         let handoff_ui::Submission {
             selected_model,
             session,
@@ -3269,6 +3427,7 @@ impl Orbit {
             context_scope,
             native_command,
             queued_prompt_id,
+            parallel,
         } = submission;
         let id = session.id.clone();
         if let Some(selection)=&request.ninja{self.ninja.chats.insert(id.clone(),selection.clone());}
@@ -3276,7 +3435,9 @@ impl Orbit {
         if self.active.is_none() && self.automatic_titles && !self.lifecycle.chat_names.contains_key(&id){self.queue_chat_title(&session,&original_prompt);}
         self.fork_next = None;
         self.indicator_terminal = None;
+        self.adopt_draft_terminals(&id);
         self.active = Some(id.clone());
+        self.sync_chat_terminal_owner(cx);
         self.modal = None;
         self.notice = None;
         self.sessions.retain(|s| s.id != id);
@@ -3291,7 +3452,8 @@ impl Orbit {
         if !self.open_tabs.contains(&id) {
             self.open_tabs.push(id.clone());
             if self.open_tabs.len() > keyboard::MAX_CHAT_TABS {
-                self.open_tabs.remove(0);
+                let closed = self.open_tabs.remove(0);
+                self.close_chat_cli(&closed, cx);
             }
         }
         if self.session_models.get(&id) != Some(&selected_model) {
@@ -3308,7 +3470,9 @@ impl Orbit {
         let checkpoint_cleanup_repository = checkpoint_repository.clone();
         let checkpoint_cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         self.checkpoint_cancel = checkpoint_cancel.clone();
-        let save_session = session.clone();
+        let mut save_session = session.clone();
+        let parallel_storage = self.parallel_workspace_storage();
+        let managed_workspace = self.has_parallel_workspace(&session);
         let old = self.rows.len();
         self.rows.push(Row {
             role: Some("user".into()),
@@ -3345,7 +3509,6 @@ impl Orbit {
         self.begin_turn_clock(&id,&checkpoint_key,turn_started,cx);
         self.set_turn_provenance(&checkpoint_key,&request);
         let timing_key=checkpoint_key.clone();
-        let retry = request.clone();
         let queued_state_saved = queued_prompt_id
             .as_ref()
             .and_then(|_| self.workspace_store.as_ref().map(|store| store.flush()));
@@ -3355,36 +3518,89 @@ impl Orbit {
             .filter(|_| request.resume_id.is_none())
             .cloned();
         let unprojected_workspace = self.unprojected_workspace(&session);
+        let cursor_context = (request.agent == AgentKind::Cursor && !native_command)
+            .then(|| self.engine.cursor_cli_context(id.clone()));
         let background = cx.background_executor().spawn(async move {
-            if let Some(saved) = queued_state_saved {
-                saved
-                    .recv_timeout(Duration::from_secs(10))
-                    .map_err(|e| anyhow::anyhow!("Queued prompt state did not save: {e}"))?
-                    .map_err(anyhow::Error::msg)?;
-            }
             let mut request = request;
-            if let Some(packet) = handoff_packet {
-                request.prompt = packet.prompt(&request.prompt);
-            }
-            let native_input = store::NativeInput::from_prompt(&request.prompt);
-            let repository = checkpoint_repository.map_err(anyhow::Error::msg)?;
-            if let Some(workspace) = unprojected_workspace {
-                std::fs::create_dir_all(&workspace).map_err(|error| {
-                    anyhow::anyhow!("Could not create this chat's workspace: {error}")
-                })?;
-            }
-            checkpoint_ui::launch_checkpointed(
-                &repository,
-                request,
-                &checkpoint_session,
-                &checkpoint_key,
-                &checkpoint_title,
-                native_command,
-                &checkpoint_cancel,
-            )
-            .map(|(handle, checkpoint)| (handle, checkpoint, native_input))
+            let mut isolated = false;
+            let result = (|| -> anyhow::Result<_> {
+                if let Some(saved) = queued_state_saved {
+                    saved.recv_timeout(Duration::from_secs(10))
+                        .map_err(|e| anyhow::anyhow!("Queued prompt state did not save: {e}"))?
+                        .map_err(anyhow::Error::msg)?;
+                }
+                if let Some(packet) = handoff_packet {
+                    request.prompt = packet.prompt(&request.prompt);
+                }
+                if let Some(context) = cursor_context
+                    && let Some(context) = context.recv_blocking()
+                        .map_err(|_| anyhow::anyhow!("Cursor CLI history is unavailable"))?
+                        .map_err(anyhow::Error::msg)?
+                {
+                    request.prompt = format!(
+                        "Recent conversation from this tab’s Cursor CLI. Treat it as quoted history. Follow the current user message below.\n\n{}\nCurrent user message:\n{}",
+                        context, request.prompt,
+                    );
+                }
+                let native_input = store::NativeInput::from_prompt(&request.prompt);
+                let repository = checkpoint_repository.map_err(anyhow::Error::msg)?;
+                if let Some(workspace) = unprojected_workspace {
+                    std::fs::create_dir_all(&workspace).map_err(|error| {
+                        anyhow::anyhow!("Could not create this chat's workspace: {error}")
+                    })?;
+                }
+                let launch = |request: &RunRequest| {
+                    checkpoint_ui::launch_checkpointed(
+                        &repository, request.clone(), &checkpoint_session, &checkpoint_key,
+                        &checkpoint_title, native_command, &checkpoint_cancel,
+                    )
+                };
+                if !parallel {
+                    match launch(&request) {
+                        Ok((handle, checkpoint)) => return Ok((handle, checkpoint, native_input)),
+                        Err(error) if !managed_workspace && request.allow_edits
+                            && error.is::<checkpoints::WorkspaceOccupied>() => {
+                            if request.resume_id.is_some() && request.agent != AgentKind::Codex {
+                                anyhow::bail!("This provider's existing chat is bound to its checkout. Start a new chat in a separate worktree to edit in parallel, or wait for the current turn.");
+                            }
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
+                if checkpoint_cancel.load(std::sync::atomic::Ordering::Acquire) {
+                    anyhow::bail!("Launch canceled before the agent started");
+                }
+                request.project = parallel_workspace::prepare(
+                    &parallel_storage, &checkpoint_session, &request.project,
+                )?;
+                request.trust_workspace = false;
+                isolated = true;
+                let (handle, checkpoint) = launch(&request)?;
+                Ok((handle, checkpoint, native_input))
+            })();
+            (request, isolated, result)
         });
-        cx.spawn(async move |this, cx| match background.await {
+        let workspace_window = window.window_handle();
+        cx.spawn(async move |this, cx| {
+            let (retry, isolated, result) = background.await;
+            if isolated {
+                save_session.execution_path = Some(retry.project.clone());
+                let _ = this.update(cx, |this, cx| {
+                    if let Some(session) = this.sessions.iter_mut().find(|session| session.id == id) {
+                        session.execution_path = save_session.execution_path.clone();
+                        this.engine.update_session(session.clone());
+                    }
+                    this.set_turn_provenance(&timing_key, &retry);
+                    this.queue_workspace_save(cx);
+                    cx.notify();
+                });
+                let _ = workspace_window.update(cx, |_, window, cx| {
+                    let _ = this.update(cx, |this, cx| {
+                        if this.active.as_deref() == Some(&id) { this.sync_file_root(window, cx); }
+                    });
+                });
+            }
+            match result {
             Ok((handle, checkpoint_id, native_input)) => {
                 let mut cleanup = checkpoint_cleanup_repository.ok().map(|repository| {
                     repository.cleanup_on_orphan(checkpoint_id.clone(), handle.settled.clone())
@@ -3399,7 +3615,7 @@ impl Orbit {
                             cx.notify();return false
                         }
                         if this.active.as_deref() == Some(&id) {
-                            this.notice = None;
+                            this.notice = isolated.then(|| "Running in a separate worktree. Apply its changes from the workspace permissions menu.".into());
                         }
                         if let Some(selection)=&retry.ninja{this.ninja.bound.insert(id.clone(),selection.clone());}
                         this.launches.remove(&id);this.starting = !this.launches.is_empty();
@@ -3417,6 +3633,7 @@ impl Orbit {
                             format!("{saved_prompt}\n\n<!--code-checkpoint:{checkpoint_id}-->");
                         this.engine
                             .save_prompt(save_session, saved_prompt, native_input);
+                        this.refresh_split_tail(&id, cx);
                         if this.active.as_deref() == Some(&id)
                             && let Some(at) = this.pending_response_start
                             && at <= this.rows.len()
@@ -3548,6 +3765,7 @@ impl Orbit {
                     cx.notify();
                 });
             }
+        }
         })
         .detach();
         cx.notify();
@@ -3823,7 +4041,7 @@ impl Orbit {
             // its parent's native ID. Reconcile once when that association lands.
             self.refresh_broker(cx);
         }
-        if text_dirty && self.active.as_deref() == Some(id) {
+        if text_dirty && (self.active.as_deref() == Some(id) || self.split_companions().any(|peer| peer == id)) {
             self.update_stream(id, cx);
         }
         if finished {
@@ -3954,7 +4172,7 @@ impl Orbit {
             cx.notify();
             return false;
         }
-        if (text_dirty || status_changed) && self.active.as_deref() == Some(id) {
+        if (text_dirty || status_changed) && (self.active.as_deref() == Some(id) || self.split_companions().any(|peer| peer == id)) {
             cx.notify();
         }
         true
@@ -4013,8 +4231,10 @@ impl Orbit {
                     if this.active.as_deref() == Some(&id) {
                         this.apply_live_rows(&id);
                         cx.notify();
+                    } else if this.split_companions().any(|peer| peer == id) {
+                        cx.notify();
                     }
-                } else if this.active.as_deref() == Some(&id) {
+                } else if this.active.as_deref() == Some(&id) || this.split_companions().any(|peer| peer == id) {
                     this.update_stream(&id, cx);
                 }
             });
@@ -4659,8 +4879,10 @@ impl Orbit {
             format!("{}d", seconds / 86400)
         };
         let project = self.project_path_label(&session.project_path);
+        let drag = self.chat_drag(&session);
         div()
             .id(("session-content", ix))
+            .on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.clone()))
             .group("session-row")
             .debug_selector(move || format!("session-content-{ix}"))
             .w_full()
@@ -4786,9 +5008,10 @@ impl Orbit {
             .border_b_1()
             .border_color(rgba(0xebebeb12))
             .overflow_hidden()
-            .when(tabs.is_empty() && self.ninja_surface_owner().is_none(), |s| {
+            .when(self.ninja_surface_owner().is_none() && (self.active.is_none() || self.cli_draft_project.is_some()), |s| {
                 s.child(
                     div()
+                        .id("cli-draft-tab")
                         .h(px(30.))
                         .px_2()
                         .flex()
@@ -4797,8 +5020,20 @@ impl Orbit {
                         .rounded_md()
                         .bg(rgba(GLASS_HOVER))
                         .text_size(theme::ui_px(12.))
-                        .child(provider_icon(agent_icon(self.agent), 14., agent_color(self.agent)))
-                        .child("New session"),
+                        .child(provider_icon(agent_icon(self.cli_draft_project.as_ref().map_or(self.agent, |(_, _, agent)| *agent)), 14.,
+                            agent_color(self.cli_draft_project.as_ref().map_or(self.agent, |(_, _, agent)| *agent))))
+                        .child("New session")
+                        .when(self.active.is_some(), |tab| tab.cursor_pointer()
+                            .on_click(cx.listener(|app, _, window, cx| app.open_cli_draft(window, cx))))
+                        .when(self.active.is_none(), |tab| tab.child(
+                            div().id("draft-cli-button").cursor_pointer().child("CLI")
+                                .on_click(cx.listener(|app, _, window, cx| app.terminalize_chat(window, cx)))))
+                        .child(div().id("draft-close-button").cursor_pointer().child(icon("close", 12., MUTED))
+                            .on_click(cx.listener(|app, _, window, cx| {
+                                cx.stop_propagation();
+                                if app.active.is_none() { app.close_blank_tab(window, cx); }
+                                else { app.close_cli_draft(cx); cx.notify(); }
+                            }))),
                 )
             })
             .children(tabs.into_iter().enumerate().map(|(ix, session)| {
@@ -4806,16 +5041,33 @@ impl Orbit {
                 let id = session.id.clone();
                 let selected = self.ninja_surface_owner().is_none() && self.active.as_deref() == Some(&id);
                 let closing_id = id.clone();
+                let drag = self.chat_drag(&session);
+                let drop_target = session.clone();
                 let tab = div()
                     .id(("tab", ix))
+                    .debug_selector(move || format!("workspace-chat-tab-{ix}"))
+                    .on_mouse_down(MouseButton::Left, |_, window, _| {
+                        native::panel_drag_guard(window, true);
+                    })
+                    .on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.clone()))
+                    .on_drop(cx.listener(move |this, drag: &chat_split::ChatDrag, window, cx| {
+                        native::panel_drag_guard(window, false);
+                        this.chat_split_hover = None;
+                        this.split_tab_drop(drag, drop_target.clone(), window, cx);
+                        cx.stop_propagation();
+                    }))
                     .h(px(30.))
                     .max_w(px(230.))
                     .px_2()
+                    .relative()
                     .flex()
                     .items_center()
                     .gap_2()
                     .rounded_md()
                     .cursor_pointer()
+                    .when(ix < 2 && performance::chat_split_probe_enabled(), |tab| {
+                        tab.child(performance::chat_split_probe_area(ix))
+                    })
                     .when(selected, |s| s.bg(rgba(0xffffff20)))
                     .hover(|s| s.bg(rgba(GLASS_HOVER)))
                     .child(provider_icon(
@@ -4830,6 +5082,15 @@ impl Orbit {
                             .text_ellipsis()
                             .child(self.animated_chat_title(&session)),
                     )
+                    .when(selected, |tab| {
+                        tab.child(div().id(("chat-cli", ix)).px_1().rounded_sm()
+                            .hover(|s| s.bg(rgba(0xffffff15)))
+                            .text_size(theme::ui_px(11.)).child("CLI")
+                            .on_click(cx.listener(|app, _, window, cx| {
+                                cx.stop_propagation();
+                                app.terminalize_chat(window, cx);
+                            })))
+                    })
                     .child(
                         div()
                             .id(("close-tab", ix))
@@ -4849,9 +5110,9 @@ impl Orbit {
                 if self.motion {
                     tab.with_animation(
                         SharedString::from(format!("tab-enter-{id}")),
-                        Animation::new(Duration::from_millis(400)),
+                        Animation::new(workspace_motion::PANE_DURATION),
                         |s, p| {
-                            let p = presentation::spring(p);
+                            let p = presentation::ease_out(p);
                             s.opacity(p.clamp(0., 1.)).max_w(px(210. + 20. * p))
                         },
                     )
@@ -4860,7 +5121,7 @@ impl Orbit {
                     tab.into_any_element()
                 }
             }))
-            .when_some(self.ninjas.panel.as_ref().filter(|p|p.profile.revision>0),|s,p|s.child(div().h(px(30.)).px_3().flex().items_center().gap_2().rounded_md().bg(rgba((ninja_art::color(&p.profile.style)<<8)|0x24)).child(ninja_art::art(&p.profile.style,14.,false)).child(p.profile.name.clone()).child(div().id("ninja-tab-close").child(icon("close",12.,TEXT)).cursor_pointer().on_click(cx.listener(|app,_,_,cx|{app.remember_ninja_draft(cx);app.ninjas.desktop=None;app.ninjas.panel=None;cx.notify();})))))
+            .when_some(self.ninjas.panel.as_ref().filter(|p|p.profile.revision>0),|s,p|s.child(div().h(px(30.)).px_3().flex().items_center().gap_2().rounded_md().bg(rgba((ninja_art::color(&p.profile.style)<<8)|0x24)).child(ninja_art::art(&p.profile.style,14.,false)).child(p.profile.name.clone()).child(div().id("ninja-tab-close").child(icon("close",12.,TEXT)).cursor_pointer().on_click(cx.listener(|app,_,_,cx|{if let Some(owner)=app.ninja_surface_owner(){app.close_chat_cli(&owner,cx);}app.remember_ninja_draft(cx);app.ninjas.desktop=None;app.ninjas.panel=None;cx.notify();})))))
             .child(div().debug_selector(||"workspace-window-drag-space".into()).flex_1().h_full().min_w(px(12.)).on_mouse_down(MouseButton::Left,|_,window,_|native::drag(window)))
     }
     fn build_greeting(&self)->String{
@@ -4886,9 +5147,9 @@ impl Orbit {
             greeting
                 .with_animation(
                     ("welcome", self.home_generation),
-                    spring_animation(),
+                    Animation::new(workspace_motion::CONTENT_DURATION),
                     |s, p| {
-                        let p = presentation::spring(p);
+                        let p = presentation::ease_out(p);
                         s.opacity(p.clamp(0., 1.)).mt(px(12. * (1. - p)))
                     },
                 )
@@ -4989,20 +5250,11 @@ impl Orbit {
         let timestamp=timing.as_ref().and_then(|t|if row.role.as_deref()==Some("user"){Some(t.submitted_ms)}else{t.first_output_ms.or(t.finished_ms)}).and_then(chrono::DateTime::from_timestamp_millis).map(|at|at.with_timezone(&chrono::Local).format("%-I:%M %p").to_string());
         let user = chat_flow::user(row);
         let row_agent = agent_for_role(row.role.as_deref(), self.transcript_agent());
-        let mut content = div()
-            .debug_selector(move || format!("transcript-content-{ix}"))
-            .when(!user,|s|s.w_full())
-            .min_w(px(0.))
-            .max_w(px(if user{600.}else{800.}))
-            .py(px(4.))
-            .when(user,|s|s.bg(rgba(self.appearance.tint(GLASS_SURFACE))).rounded_xl().px_4().py_3());
-        if !user&&row_has_header(row.role.as_deref()){
-            content=content.child(div().debug_selector(move||format!("transcript-provider-{ix}-{}",row_agent.command())).mb_1().child(provider_icon(agent_icon(row_agent),14.,agent_color(row_agent))));
-        }
+        let mut content = self.conversation_message_body(ix, user, row_has_header(row.role.as_deref()), row_agent);
         if !user&&row_has_header(row.role.as_deref())&&self.row_timing(ix).is_some_and(|t|t.finished_ms.is_none()){
             if let Some(elapsed)=self.elapsed_label(){content=content.child(div().mb_3().pb_2().border_b_1().border_color(rgba(0xebebeb12)).text_size(theme::ui_px(11.)).text_color(rgb(MUTED)).child(format!("Working for {elapsed}")));}
         }
-        if let Some(span)=command{let(details,status)=chat_flow::grouped_command(&self.rows,span);content=content.child(self.interaction_card(ix,&chat_interactions::ChatInteraction::Status{title:if matches!(status,chat_interactions::InteractionStatus::Working|chat_interactions::InteractionStatus::Started){"Running commands"}else{"Ran commands"}.into(),details,status},row_agent,cx));}else{content = self.render_message_block(content, ix, &row.block, decoded.as_deref(), row_agent, cx);
+        if let Some(span)=command{let(details,status)=chat_flow::grouped_command(&self.rows,span);content=content.child(self.interaction_card(ix,&chat_interactions::ChatInteraction::Status{title:if matches!(status,chat_interactions::InteractionStatus::Working|chat_interactions::InteractionStatus::Started){"Running commands"}else{"Ran commands"}.into(),details,status},row_agent,cx));}else{content = self.render_message_block(content, ix, &row.block, decoded.as_deref(), row_agent, None, cx);
         }
         if let Some(range) = self.flow_index.message_ends.get(ix).cloned().flatten() {
             if !user && !self.theme.compact_diff && self.flow_index.completion_ends.get(ix).is_some_and(Option::is_some){if let (Some(target),Some(summary))=(self.completion_target(ix),self.completion_summary(ix).filter(|s|s.total>0)){content=content.child(self.completion_changes_card(ix,target,summary,cx));}}
@@ -5047,7 +5299,7 @@ impl Orbit {
             })
             .child(div().w_full().max_w(px(800.)).flex().flex_col()
             .when(work.as_ref().is_some_and(|span|ix==span.start),|s|s.child(self.work_summary(work.as_ref().unwrap().start,cx)))
-            .child(div().w_full().flex().when(user,|s|s.justify_end()).when(!user,|s|s.justify_start()).child(content.when_some(entrance, |content, (opacity, offset)| {
+            .child(Self::conversation_message_alignment(user, content.when_some(entrance, |content, (opacity, offset)| {
                 content
                     .opacity(opacity)
                     .relative()
@@ -5058,9 +5310,17 @@ impl Orbit {
     }
     // Both ordinary agent chats and personal Ninjas use the same rich blocks.
     fn render_message_block(&self, content: Div, ix: usize, block: &MessageBlock,
-        decoded: Option<&str>, row_agent: AgentKind, cx: &Context<Self>) -> Div {
-        let link_owner = cx.weak_entity();
-        let list_link_owner = link_owner.clone();
+        decoded: Option<&str>, row_agent: AgentKind, peer: Option<&SessionSummary>, cx: &Context<Self>) -> Div {
+        let owner = cx.weak_entity();
+        let link_peer = peer.cloned();
+        let open_link = move |url: &str, window: &mut Window, cx: &mut App| {
+            let _ = owner.update(cx, |this, cx| {
+                if let Some(peer) = &link_peer && this.active.as_deref() != Some(&peer.id) {
+                    this.open_session(peer.clone(), window, cx);
+                }
+                this.open_citation(url, window, cx);
+            });
+        };
         match block {
             MessageBlock::Voice {
                 speaker:_,
@@ -5076,15 +5336,12 @@ impl Orbit {
                                 ("voice", ix),
                                 decoded.unwrap_or(text),
                                 highlights,
-                                move |url, window, cx| {
-                                    let _ = link_owner
-                                        .update(cx, |this, cx| this.open_citation(url, window, cx));
-                                },
+                                open_link,
                             )),
                     ),
             ),
             MessageBlock::Interaction(card) => {
-                content.child(self.interaction_card(ix, card, row_agent, cx))
+                content.child(self.conversation_interaction(ix, card, row_agent, peer, cx))
             }
             MessageBlock::Attachment { name, target } => {
                 content.child(if self.ninja_surface_owner().is_some(){self.ninja_artifact_card(ix,name,target,cx)}else{self.attachment_history_card(ix, name, target, cx)})
@@ -5104,10 +5361,7 @@ impl Orbit {
                         ("markdown", ix),
                         decoded.unwrap_or(text),
                         highlights,
-                        move |url, window, cx| {
-                            let _ = link_owner
-                                .update(cx, |this, cx| this.open_citation(url, window, cx));
-                        },
+                        open_link,
                     )),
             ),
             MessageBlock::ListItem {
@@ -5131,10 +5385,7 @@ impl Orbit {
                         ("list-text", ix),
                         decoded.unwrap_or(text),
                         highlights,
-                        move |url, window, cx| {
-                            let _ = list_link_owner
-                                .update(cx, |this, cx| this.open_citation(url, window, cx));
-                        },
+                        open_link,
                     ))),
             ),
             MessageBlock::TableRow { cells, header } => content.child(
@@ -5157,7 +5408,7 @@ impl Orbit {
                             .child(cell.clone())
                     })),
             ),
-            MessageBlock::Activity { label, details } => content.child(self.activity_card(ix,label,details,cx)),
+            MessageBlock::Activity { label, details } => content.child(self.conversation_activity(ix,label,details,peer,cx)),
             MessageBlock::Heading(text) => content.child(
                 div()
                     .text_size(theme::ui_px(20.))
@@ -5237,12 +5488,161 @@ impl Orbit {
             }
         }
     }
+    fn conversation_header(
+        &self, title: String, peer: Option<&SessionSummary>, live_activity: bool,
+        header_loading_logo: bool, inspector_open: bool, window: &Window, cx: &Context<Self>,
+    ) -> AnyElement {
+        let entrance = unified::workspace_frame(self.motion);
+        let agent = peer.map_or(self.agent, |session| session.agent);
+        entrance.container(workspace_motion::Part::Header)
+            .h(px(36.))
+            .flex_none()
+            .flex()
+            .items_center()
+            .px_4()
+            .gap_1()
+            .border_b_1()
+            .border_color(rgba(0xebebeb12))
+            .when(
+                peer.is_none() && !self.sidebar
+                    && (!self.sidebar_split
+                        || !self.conversations_visible
+                        || (inspector_open
+                            && window.viewport_size().width < px(1180.))),
+                |s| {
+                    s.child(
+                        context_ui::header_control("expand", false)
+                            .child(icon("sidebar", 16., TEXT).text_color(gpui::rgb(0xffffff)))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.toggle_sidebar();
+                                cx.notify();
+                            })),
+                    )
+                },
+            )
+            .child(
+                div()
+                    .debug_selector(|| "live-agent-indicator".into())
+                    .w(px(if unified::active(){48.}else{28.}))
+                    .h(px(if unified::active(){34.}else{18.}))
+                    .flex_none()
+                    .when(peer.is_some(), |s| s.flex().items_center().justify_center().child(provider_icon(agent_icon(agent),16.,agent_color(agent))))
+                    .when(peer.is_none() && unified::active(),|s|s.child(canvas(|bounds,_,_|unified::pet_slot(bounds),|_,_,_,_|{}).size_full()))
+                    .when(peer.is_none() && !unified::active() && header_loading_logo, |s| {
+                        s.flex()
+                            .items_center()
+                            .justify_center()
+                            .child(self.loading_logo.clone())
+                    })
+                    .when(peer.is_none() && !unified::active() && !live_activity && !header_loading_logo, |s| {
+                        s.child(self.live_indicator.clone())
+                    })
+                    .when(peer.is_none() && !unified::active() && live_activity, |s| {
+                        s.flex().items_center().justify_center().child(
+                            provider_icon(provider_asset(self.agent),16.,MUTED),
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .id("chat-header-title")
+                    .debug_selector(||"conversation-header-title".into())
+                    .text_size(theme::ui_px(12.))
+                    .flex_1().min_w(px(0.))
+                    .truncate()
+                    .when(peer.is_none(), |s| s.on_mouse_down(MouseButton::Left,|_,window,_|native::drag(window)))
+                    .when(peer.is_some(), |s| s.on_click(Self::chat_control(peer, cx, |_, _, _, _| {})))
+                    .child(title),
+            )
+            .when(unified::active(), |s| {
+                s.child(
+                    context_ui::header_control("return-to-notch", false)
+                        .text_size(theme::ui_px(11.))
+                        .text_color(gpui::rgb(0xffffff))
+                        .child("↗ Notch")
+                        .on_click(|_, _, _| unified::collapse()),
+                )
+            })
+            .child(self.workspace_action_buttons(peer, cx))
+            .child(
+                context_ui::header_control("toggle-files", peer.is_none() && self.files_visible)
+                    .child(if peer.is_some() { icon("file", 14., TEXT).into_any_element() } else { self.file_indicator.clone().into_any_element() })
+                    .on_click(Self::chat_control(peer, cx, |this, _, window, cx| {
+                        this.toggle_files(window, cx)
+                    })),
+            )
+            .child(
+                context_ui::header_control("chat-background", peer.is_none() && self.modal == Some(Modal::Background))
+                    .child(icon("file-image", 14., TEXT).text_color(gpui::rgb(0xffffff)))
+                    .on_click(Self::chat_control(peer, cx, |this, event, window, cx| {
+                        this.toggle_panel_from_click(
+                            Modal::Background,
+                            event.position() + point(px(-324.), px(20.)),
+                            false,
+                            window,
+                            cx,
+                        )
+                    })),
+            )
+            .when(self.split_peer().is_some(), |s| s.child(
+                context_ui::header_control("close-chat-split", false)
+                    .child(icon("close", 12., TEXT))
+                    .on_click(cx.listener({
+                        let pane = peer.map(|session| session.id.clone()).or_else(|| self.active.clone());
+                        move |this, _, window, cx| {
+                            if let Some(id) = pane.as_deref() {
+                                this.close_tab(id, window, cx);
+                            }
+                        }
+                    })),
+            ))
+            .into_any_element()
+    }
+    fn conversation_status(indicator: AnyElement, label: String) -> impl IntoElement {
+        div().debug_selector(|| "live-agent-status".into()).flex().items_center()
+            .justify_center().gap_2().h(px(30.)).flex_none()
+            .child(div().debug_selector(|| "live-status-indicator".into())
+                .w(px(28.)).h(px(18.)).flex_none().child(indicator))
+            .child(div().debug_selector(|| "live-status-caption".into())
+                .text_size(theme::ui_px(11.)).text_color(rgb(MUTED)).child(label))
+    }
+    fn conversation_pane(&self) -> Div {
+        div().flex_1().min_w(px(0.)).min_h(px(0.)).size_full()
+            .flex().flex_col().relative().overflow_hidden()
+            .debug_selector(|| "chat-pane".into())
+
+    }
+    fn conversation_message_body(&self, ix: usize, user: bool, provider_header: bool, agent: AgentKind) -> Div {
+        div().debug_selector(move || format!("transcript-content-{ix}"))
+            .when(!user, |s| s.w_full()).min_w(px(0.))
+            .max_w(px(if user { 600. } else { 800. })).py(px(4.))
+            .when(user, |s| s.bg(rgba(self.appearance.tint(GLASS_SURFACE))).rounded_xl().px_4().py_3())
+            .when(!user && provider_header, |s| s.child(div()
+                .debug_selector(move || format!("transcript-provider-{ix}-{}", agent.command()))
+                .mb_1().child(provider_icon(agent_icon(agent), 14., agent_color(agent)))))
+    }
+    fn conversation_message_alignment(user: bool, content: Div) -> Div {
+        div().w_full().flex().when(user, |s| s.justify_end())
+            .when(!user, |s| s.justify_start()).child(content)
+    }
     fn composer(&self, window: &Window, cx: &Context<Self>) -> impl IntoElement {
+        self.conversation_composer(None, self.composer.clone(), window, cx)
+    }
+    fn conversation_composer(&self, peer: Option<&SessionSummary>, input: Entity<TextInput>, window: &Window, cx: &Context<Self>) -> impl IntoElement {
         let running = self
             .active
             .as_ref()
             .is_some_and(|id| self.runs.contains_key(id)) || self.starting_current();
-        let project = self.project_path_label(&self.project);
+        let running = peer.map_or(running, |session| self.runs.contains_key(&session.id) || self.launches.contains_key(&session.id));
+        let project = self.project_path_label(peer.map_or(&self.project, |session| &session.project_path));
+        let peer_owner = peer.map(|session| session.id.clone());
+        let drop_owner = peer_owner.clone();
+        let hit_input = input.clone();
+        let has_attachments = peer.map_or(!self.attachments.is_empty(), |session| {
+            self.attachment_drafts.get(&session.id).is_some_and(|files| !files.is_empty())
+        });
+        let stopping = (running && input.read(cx).text().trim().is_empty() && !has_attachments)
+            || (peer.is_none() && self.handoff_pending.is_some());
         div()
             .flex_none()
             .w_full()
@@ -5253,12 +5653,12 @@ impl Orbit {
             .pt_3()
             .pb_3()
             .gap_2()
-            .when(self.owns_overlays(window), |s| {
+            .when(peer.is_none() && self.owns_overlays(window), |s| {
                 s.child(self.native_request_tray(cx))
             })
-            .child(self.queue_strip(cx))
-            .child(div().w_full().max_w(px(800.)).child(self.context_chips(cx)))
-            .when(self.notice.is_some(), |s| {
+            .when(peer.is_none(), |s| s.child(self.queue_strip(cx))
+                .child(div().w_full().max_w(px(800.)).child(self.context_chips(cx))))
+            .when(peer.is_none() && self.notice.is_some(), |s| {
                 s.child(
                     div()
                         .w_full()
@@ -5314,10 +5714,20 @@ impl Orbit {
                     .max_w(px(800.))
                     .id("composer-card")
                     .debug_selector(|| "composer-card".into())
+                    .drag_over::<files::FileDrag>(|s, _, _, _| s.border_color(rgb(ACCENT)))
+                    .on_drop(cx.listener({
+                        let owner = drop_owner.clone();
+                        move |this, file: &files::FileDrag, window, cx| {
+                            if owner.as_deref().is_none_or(|id| this.focus_split_chat(id, window, cx)) {
+                                this.add_attachments(vec![file.0.clone()], cx);
+                            }
+                        }
+                    }))
                     .drag_over::<ExternalPaths>(|s, _, _, _| {
                         s.border_color(rgb(ACCENT)).bg(rgba(0x459bf718))
                     })
-                    .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
+                    .on_drop(cx.listener(move |this, paths: &ExternalPaths, window, cx| {
+                        if !drop_owner.as_deref().is_none_or(|id| this.focus_split_chat(id, window, cx)) { return; }
                         this.add_attachments(
                             paths
                                 .paths()
@@ -5344,19 +5754,31 @@ impl Orbit {
                             .text_size(theme::ui_px(11.))
                             .text_color(rgb(MUTED))
                             .child(icon("branch", 14., MUTED))
-                            .child(project),
+                            .child(div().min_w(px(0.)).truncate().child(project)),
                     )
                     .child(
                         div()
+                            .id("conversation-prompt-input")
                             .px_3()
                             .py_2()
                             .min_h(px(48.))
                             .max_h(px(160.))
                             .w_full()
-                            .child(self.composer.clone()),
+                            .when_some(peer_owner, |s, owner| s.capture_any_mouse_down(cx.listener(
+                                move |app, event: &MouseDownEvent, window, cx| {
+                                    if event.button == MouseButton::Left {
+                                        let caret = hit_input.read(cx).index_for_mouse_position(event.position);
+                                        if app.focus_split_chat(&owner, window, cx) {
+                                            app.composer.update(cx, |input, cx| input.follow_command_caret((caret..caret, false, None), cx));
+                                            cx.stop_propagation();
+                                        }
+                                    }
+                                },
+                            )))
+                            .child(input.clone()),
                     )
-                    .child(self.attachment_strip(cx))
-                    .child(self.composer_toolbar(false, self.composer.clone(), (running && self.composer.read(cx).text().trim().is_empty() && self.attachments.is_empty()) || self.handoff_pending.is_some(), window, cx)),
+                    .child(self.conversation_attachments(peer, cx))
+                    .child(self.conversation_toolbar(false, input, stopping, peer, window, cx)),
             )
             .child(
                 div()
@@ -5366,13 +5788,13 @@ impl Orbit {
                     .justify_between()
                     .text_size(theme::ui_px(10.))
                     .text_color(rgb(0x707070))
-                    .child(self.elapsed_label().map(|elapsed|format!("Working for {elapsed}")).unwrap_or_else(||self.dictation_status.unwrap_or(if running{"Working locally"}else{"Local session"}).to_owned()))
-                    .child(self.usage_footer(cx))
-                    .child(if running {
+                    .child(div().min_w(px(0.)).truncate().child(peer.is_none().then(|| self.elapsed_label()).flatten().map(|elapsed|format!("Working for {elapsed}")).unwrap_or_else(||self.dictation_status.filter(|_| peer.is_none()).unwrap_or(if running{"Working locally"}else{"Local session"}).to_owned())))
+                    .child(self.conversation_usage_footer(peer, cx))
+                    .child(div().min_w(px(0.)).truncate().child(if running {
                         "↵ Queue · /steer Send now"
                     } else {
                         "↵ Send · ⇧↵ New line"
-                    }),
+                    })),
             )
     }
 }
@@ -5483,7 +5905,7 @@ impl Render for Orbit {
         self.performance_ready(window);
         self.attach_daily_entry_points(cx);
         if let Some(value)={self.remote.workflow_result.borrow_mut().take()}{self.notice=Some(value["error"].as_str().map(str::to_owned).unwrap_or_else(||format!("Workflow · {}",value["status"].as_str().unwrap_or("Ready"))));}
-        self.publish_remote();
+        self.queue_remote_snapshot(cx);
         self.sync_flow_layout();
         if let Some(at)=self.timestamp_released{if at.elapsed()<Duration::from_millis(180){request_motion_frame(window,cx);}else{self.timestamp_peek=0.;self.timestamp_released=None;}}
         use workspace_motion::Part as WorkspacePart;
@@ -5502,6 +5924,12 @@ impl Render for Orbit {
             self.refresh_broker(cx);
         }
         self.restore_workspace(window, cx);
+        if !self.files_visible { unified::hide_inline_preview("files"); }
+        if self.attachment_preview.is_none() { unified::hide_inline_preview("attachment"); }
+        self.finish_split_close_motion();
+        self.sync_chat_terminal_owner(cx);
+        self.sync_terminal_visibility(cx);
+        self.sync_split_terminal_visibility(cx);
         if self.owns_overlays(window) {
             self.advance_chat_surface(window, cx);
         }
@@ -5509,7 +5937,7 @@ impl Render for Orbit {
         self.tick_github(window,cx);
         self.tick_panes(window, cx);
         self.tick_list_reveals(window, cx);
-        let project = self.project.clone();
+        let project = self.workspace_wallpaper_project().to_owned();
         let empty = self.active.is_none();
         let active = window.is_window_active() && self.motion;
         let quitting = self.quit_pending;
@@ -5532,7 +5960,7 @@ impl Render for Orbit {
                 self.sidebar_width = target;
                 self.sidebar_transition = None;
             } else {
-                self.sidebar_width = (from + (target - from) * presentation::spring(t))
+                self.sidebar_width = (from + (target - from) * presentation::ease_out(t))
                     .clamp(0., from.max(target) + 16.);
                 request_motion_frame(window, cx);
             }
@@ -5547,8 +5975,8 @@ impl Render for Orbit {
             }
         }
         if let Some(menu) = &self.action_menu {
-            let duration = if menu.closing { 120 } else { 320 };
-            if !self.motion || menu.started.elapsed() >= Duration::from_millis(duration) {
+            let duration = workspace_motion::surface_duration(menu.closing);
+            if !self.motion || menu.started.elapsed() >= duration {
                 if menu.closing {
                     self.action_menu = None;
                 }
@@ -5692,7 +6120,7 @@ impl Render for Orbit {
                 1.
             } else {
                 request_motion_frame(window, cx);
-                presentation::spring(t).clamp(0., 1.)
+                presentation::ease_out(t).clamp(0., 1.)
             }
         });
         self.live_indicator.update(cx, |indicator, cx| {
@@ -5748,11 +6176,13 @@ impl Render for Orbit {
             )
             .on_mouse_up(MouseButton::Left, cx.listener(|app,_,window,cx| {
                 native::panel_drag_guard(window,false);
-                if app.terminal_panes.clear_hover() { cx.notify(); }
+                let chat_hover = app.chat_split_hover.take().is_some();
+                if app.terminal_panes.clear_hover() || chat_hover { cx.notify(); }
             }))
             .on_mouse_up_out(MouseButton::Left,cx.listener(|app,_,window,cx| {
                 native::panel_drag_guard(window,false);
-                if app.terminal_panes.clear_hover() { cx.notify(); }
+                let chat_hover = app.chat_split_hover.take().is_some();
+                if app.terminal_panes.clear_hover() || chat_hover { cx.notify(); }
             }))
             .capture_any_mouse_down(cx.listener(|this, _, _, _| {
                 // Outside-dismiss handlers run later in capture. Preserve the
@@ -5787,7 +6217,6 @@ impl Render for Orbit {
             .on_action(cx.listener(|this, _: &ToggleSettings, window, cx| {
                 this.show_modal(Modal::Settings, window, cx)
             }))
-            .on_action(cx.listener(|this, _: &ToggleDiffs, _, cx| this.toggle_diffs(cx)))
             .on_action(
                 cx.listener(|this, _: &ToggleFiles, window, cx| this.toggle_files(window, cx)),
             )
@@ -5858,107 +6287,12 @@ impl Render for Orbit {
                 // Window chrome stays above every dock position. A top/side
                 // terminal must never occupy AppKit's titlebar drag region.
                 .child(entrance.container(WorkspacePart::Header).flex_none().child(self.tabs(cx)))
-                .child(self.docked_conversation(adaptive_ui::panel!(self,"chat",window,
-                if self.ninja_surface_owner().is_some(){self.ninjas_conversation(window,cx)}else{div()
-                    .flex_1()
-                    .min_w(px(0.))
-                    .h_full()
-                    .flex()
-                    .flex_col()
-                    .w_full().min_h(px(0.)).debug_selector(|| "chat-pane".into())
-                    .bg(gpui::rgba(self.resolved_theme.main_rgba()))
-                    .relative()
-                    .overflow_hidden()
-                    .child(div().absolute().inset_0().child(self.background.clone()))
-                    .child(
-                        entrance.container(WorkspacePart::Header)
-                            .h(px(36.))
-                            .flex_none()
-                            .flex()
-                            .items_center()
-                            .px_4()
-                            .gap_1()
-                            .border_b_1()
-                            .border_color(rgba(0xebebeb12))
-                            .when(
-                                !self.sidebar
-                                    && (!self.sidebar_split
-                                        || !self.conversations_visible
-                                        || (inspector_open
-                                            && window.viewport_size().width < px(1180.))),
-                                |s| {
-                                    s.child(
-                                        context_ui::header_control("expand", false)
-                                            .child(icon("sidebar", 16., TEXT).text_color(gpui::rgb(0xffffff)))
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.toggle_sidebar();
-                                                cx.notify();
-                                            })),
-                                    )
-                                },
-                            )
-                            .child(
-                                div()
-                                    .debug_selector(|| "live-agent-indicator".into())
-                                    .w(px(if unified::active(){48.}else{28.}))
-                                    .h(px(if unified::active(){34.}else{18.}))
-                                    .flex_none()
-                                    .when(unified::active(),|s|s.child(canvas(|bounds,_,_|unified::pet_slot(bounds),|_,_,_,_|{}).size_full()))
-                                    .when(!unified::active() && header_loading_logo, |s| {
-                                        s.flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .child(self.loading_logo.clone())
-                                    })
-                                    .when(!unified::active() && !live_activity && !header_loading_logo, |s| {
-                                        s.child(self.live_indicator.clone())
-                                    })
-                                    .when(!unified::active() && live_activity, |s| {
-                                        s.flex().items_center().justify_center().child(
-                                            provider_icon(provider_asset(self.agent),16.,MUTED),
-                                        )
-                                    }),
-                            )
-                            .child(
-                                div()
-                                    .debug_selector(||"conversation-header-title".into())
-                                    .text_size(theme::ui_px(12.))
-                                    .flex_1().min_w(px(0.))
-                                    .truncate()
-                                    .on_mouse_down(MouseButton::Left,|_,window,_|native::drag(window))
-                                    .child(title),
-                            )
-                            .when(unified::active(), |s| {
-                                s.child(
-                                    context_ui::header_control("return-to-notch", false)
-                                        .text_size(theme::ui_px(11.))
-                                        .text_color(gpui::rgb(0xffffff))
-                                        .child("↗ Notch")
-                                        .on_click(|_, _, _| unified::collapse()),
-                                )
-                            })
-                            .child(self.workspace_action_buttons(cx))
-                            .child(
-                                context_ui::header_control("toggle-files", self.files_visible)
-                                    .child(self.file_indicator.clone())
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.toggle_files(window, cx)
-                                    })),
-                            )
-                            .child(
-                                context_ui::header_control("chat-background", self.modal == Some(Modal::Background))
-                                    .child(icon("file-image", 14., TEXT).text_color(gpui::rgb(0xffffff)))
-                                    .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
-                                        this.toggle_panel_from_click(
-                                            Modal::Background,
-                                            event.position() + point(px(-324.), px(20.)),
-                                            false,
-                                            window,
-                                            cx,
-                                        )
-                                    })),
-                            ),
-                    )
+                .child(self.workspace_chat_split(self.docked_conversation(adaptive_ui::panel!(self,"chat",window,
+                if let Some(terminal) = self.render_chat_cli(self.chat_cli_owner().as_deref().unwrap_or(keyboard::CLI_DRAFT), cx) {
+                    terminal
+                } else if self.ninja_surface_owner().is_some(){self.ninjas_conversation(window,cx)}else{self.conversation_pane()
+                    .child(self.chat_cli_canvas(self.chat_cli_owner().as_deref().unwrap_or(keyboard::CLI_DRAFT)))
+                    .child(self.conversation_header(title, None, live_activity, header_loading_logo, inspector_open, window, cx))
                     .when(
                         (self.has_older || self.has_newer) && (status.is_none()||self.live_history.is_some()||self.active.as_ref().and_then(|id|self.runs.get(id)).is_some_and(|r|r.live_earlier)),
                         |s| {
@@ -6048,7 +6382,6 @@ impl Render for Orbit {
                             entrance.container(WorkspacePart::Content)
                                 .flex_1()
                                 .min_h(px(0.))
-                                .w_full()
                                 .when(self.loading, |s| {
                                     s.flex().items_center().justify_center().child(
                                         div().text_color(rgb(MUTED)).child("Opening conversation…"),
@@ -6059,66 +6392,31 @@ impl Render for Orbit {
                                         self.list.clone(),
                                         cx.processor(|this, ix, window, cx| this.row(ix, window, cx)),
                                     )
-                                    .size_full();
-                                    s.relative()
+                                    .flex_1().min_h(px(0.));
+                                    s.relative().flex().flex_col().pl(px(32.)).debug_selector(|| "transcript-viewport".into())
                                         .on_scroll_wheel(cx.listener(|this,event:&ScrollWheelEvent,_,cx|this.peek_timestamps(event,cx)))
-                                        .pl(px(32.))
                                         .child(transcript)
                                         .child(self.history_fill_probe(&self.list,cx))
                                         .child(self.chat_navigation())
                                 }),
                         )
                     })
-                    .when(live_activity, |s| {
-                        s.child(
-                            div()
-                                .debug_selector(|| "live-agent-status".into())
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .gap_2()
-                                .h(px(30.))
-                                .flex_none()
-                                .child(
-                                    div()
-                                        .debug_selector(|| "live-status-indicator".into())
-                                        .w(px(28.))
-                                        .h(px(18.))
-                                        .flex_none()
-                                        .child(self.live_indicator.clone()),
-                                )
-                                .child(
-                                    div()
-                                        .debug_selector(|| "live-status-caption".into())
-                                        .text_size(theme::ui_px(11.))
-                                        .text_color(rgb(MUTED))
-                                        .child(
-                                            if let Some(status) = self
-                                                .dictation_status
-                                                .filter(|_| self.speech.is_some())
-                                            {
-                                                status.to_owned()
-                                            } else if let Some(call) = self
-                                                .voice_call
-                                                .as_ref()
-                                                .filter(|_| waiting_for_native.is_none())
-                                            {
-                                                call.caption().to_owned()
-                                            } else if self.handoff_pending.is_some() {
-                                                "Transferring context…".to_owned()
-                                            } else if self.starting_current() {
-                                                self.launch_caption().to_owned()
-                                            } else {
-                                                activity_caption(
-                                                    status.as_deref().unwrap_or_default(),
-                                                )
-                                            },
-                                        ),
-                                ),
-                        )
-                    })
+                    .when(live_activity, |s| s.child(Self::conversation_status(
+                        self.live_indicator.clone().into_any_element(),
+                        if let Some(status) = self.dictation_status.filter(|_| self.speech.is_some()) {
+                            status.to_owned()
+                        } else if let Some(call) = self.voice_call.as_ref().filter(|_| waiting_for_native.is_none()) {
+                            call.caption().to_owned()
+                        } else if self.handoff_pending.is_some() {
+                            "Transferring context…".to_owned()
+                        } else if self.starting_current() {
+                            self.launch_caption().to_owned()
+                        } else {
+                            activity_caption(status.as_deref().unwrap_or_default())
+                        },
+                    )))
                     .child(entrance.container(WorkspacePart::Composer).flex_none().child(self.composer(window, cx)))
-                    .into_any_element()}),window,cx))
+                    .into_any_element()}),window,cx),window,cx))
             )
             .when(self.files_visible, |s| {
                 s.when_some(self.file_browser.clone(), |s, browser| {
@@ -6197,15 +6495,38 @@ impl Render for Orbit {
             .when(self.team_panel.is_some(), |s| {
                 s.child(self.team_panel_view(window, cx))
             }) ;
-        div().size_full().flex().flex_col().child(workspace.flex_1().min_h(px(0.))).child(self.account_usage_bar(cx))
+        div().size_full().flex().flex_col().child(workspace.flex_1().min_h(px(0.))).child(self.account_usage_bar(cx)).into_any_element()
 
     }
 }
-// Render runs before GPUI pushes the view onto its element stack. Target our
-// entity explicitly instead of relying on Window::current_view during layout.
+// Multiple animations can tick in the same view. Invalidate that view once per
+// display frame, with independent scheduling for the workspace and quick windows.
+thread_local! {
+    static MOTION_FRAMES: std::cell::RefCell<HashSet<(WindowId, EntityId)>> = Default::default();
+}
+
+struct MotionFrame((WindowId, EntityId));
+
+impl Drop for MotionFrame {
+    fn drop(&mut self) {
+        let _ = MOTION_FRAMES.try_with(|pending| pending.borrow_mut().remove(&self.0));
+    }
+}
+
+#[track_caller]
 fn request_motion_frame(window: &Window, cx: &Context<Orbit>) {
-    let entity = cx.entity().downgrade();
+    let entity = cx.entity();
+    let key = (window.window_handle().window_id(), entity.entity_id());
+    if !MOTION_FRAMES.with(|pending| pending.borrow_mut().insert(key)) {
+        return;
+    }
+    if performance::trace_motion() {
+        eprintln!("KAI_MOTION {}", std::panic::Location::caller());
+    }
+    let frame = MotionFrame(key);
+    let entity = entity.downgrade();
     window.on_next_frame(move |_, cx| {
+        drop(frame);
         if let Some(entity) = entity.upgrade() {
             cx.notify(entity.entity_id());
         }
@@ -6226,7 +6547,6 @@ fn bind_app_keys(cx: &mut App) {
         KeyBinding::new("cmd-shift-k", ReturnToNotch, None),
         KeyBinding::new("cmd-a", ToggleSettings, Some("Orbit && !TextInput && !CodeTerminal")),
         KeyBinding::new("cmd-f", ToggleFiles, None),
-        KeyBinding::new("cmd-d", ToggleDiffs, None),
         KeyBinding::new("cmd-k", ToggleSearch, None),
         KeyBinding::new("cmd-b", ToggleSidebar, None),
         KeyBinding::new("cmd-shift-e", ToggleFiles, None),
@@ -6242,6 +6562,7 @@ fn main() {
     if std::env::args().any(|a|a=="--install-ninja-worker") { if let Err(e)=ninjas::install_service(&std::env::current_exe().unwrap(),std::env::args().any(|a|a=="--keep-reachable")){eprintln!("Ninja service: {e:#}");std::process::exit(1)}return }
     if std::env::args().any(|a|a=="--ninja-worker"){if let Err(e)=ninjas::serve(){eprintln!("Ninja worker: {e:#}");std::process::exit(1)}return}
     launch_metrics::start();
+    launch_metrics::mark("main-entered");
     failure_diagnostics::install();
     if std::env::args().any(|a|a=="--diagnose-native-voice"){if let Err(error)=voice::transport_diagnostic(){eprintln!("Native voice diagnostic: {error}");std::process::exit(1)}return}
     unified::prepare_environment();
@@ -6263,6 +6584,7 @@ fn main() {
         }
     });
     application.run(|cx: &mut App| {
+        launch_metrics::mark("appkit-ready");
         bind_app_keys(cx);
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
         let data = std::env::var_os("ORBIT_DATA_DIR")
@@ -6289,6 +6611,7 @@ fn main() {
         let appearance = workspace_store
             .as_ref()
             .map_or_else(Default::default, |store| store.initial().appearance);
+        launch_metrics::mark("workspace-state-ready");
         let main_window = cx
             .open_window(
                 WindowOptions {
@@ -6300,16 +6623,14 @@ fn main() {
                         traffic_light_position: None,
                     }),
                     window_background: WindowBackgroundAppearance::Blurred,
+                    show: false,
+                    focus: false,
                     app_id: Some("com.kai.unified.experimental".into()),
                     ..Default::default()
                 },
                 move |window, cx| {
                     native::configure(window);
                     native::apply_appearance(window, &appearance);
-                    // Order the actual window after creation/restoration and its
-                    // first frame, rather than relying on app activation alone.
-                    // One launch callback only; background work never raises it.
-                    window.on_next_frame(|window,cx|{launch_metrics::mark("first-workspace-frame");if !unified::active(){cx.activate(true);window.activate_window();}});
                     cx.new(|cx| Orbit::new(window, cx, workspace_store))
                 },
             )
@@ -6317,6 +6638,10 @@ fn main() {
         launch_metrics::mark("workspace-created");
         if let Err(error) = unified::attach(main_window, cx) {
             eprintln!("Kai integration unavailable: {error}");
+        }
+        if !unified::active() {
+            cx.activate(true);
+            let _ = main_window.update(cx, |_, window, _| window.activate_window());
         }
         if let Ok(orbit) = main_window
             .read(cx)
@@ -6326,7 +6651,7 @@ fn main() {
             let (entity, shortcut) = orbit;
             cx.set_global(quick_chat::Controller::new(entity.clone()));
             let result = cx.update_global::<quick_chat::Controller, _>(|controller, cx| {
-                controller.bind(shortcut, cx).and_then(|_|controller.bind_menu(cx))
+                controller.bind(shortcut, cx)
             });
             if let Err(error) = result {
                 entity.update(cx, |app, cx| {
@@ -6335,7 +6660,7 @@ fn main() {
                 });
             }
         }
-        if std::env::args().any(|a|matches!(a.as_str(),"--unified-latency-probe"|"--unified-background-idle-probe"|"--unified-ninja-render-probe")){performance::start_probe(main_window,cx);}
+        if std::env::args().any(|a|matches!(a.as_str(),"--unified-latency-probe"|"--unified-background-idle-probe"|"--unified-ninja-render-probe"|"--unified-chat-split-probe")){performance::start_probe(main_window,cx);}
         cx.activate(true);
     });
 }

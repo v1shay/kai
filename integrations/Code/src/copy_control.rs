@@ -60,8 +60,8 @@ impl RenderOnce for CopyControl {
             symbol
                 .with_animation(
                     ("copy-feedback", generation),
-                    Animation::new(Duration::from_millis(180)),
-                    |s, p| s.opacity(0.3 + 0.7 * p).relative().top(px(3. * (1. - p))),
+                    Animation::new(crate::workspace_motion::CONTROL_DURATION),
+                    |s, p| { let p = presentation::ease_out(p); s.opacity(0.3 + 0.7 * p).relative().top(px(3. * (1. - p))) },
                 )
                 .into_any_element()
         } else {
@@ -92,7 +92,9 @@ impl RenderOnce for CopyControl {
             })
             .on_click(move |_, _, cx| {
                 cx.stop_propagation();
-                cx.write_to_clipboard(ClipboardItem::new_string((self.text)(cx)));
+                let text = (self.text)(cx);
+                if text.is_empty() { return; }
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
                 let generation = state.update(cx, |state, cx| {
                     state.copied = true;
                     state.generation = state.generation.wrapping_add(1);
@@ -239,11 +241,19 @@ mod tests {
         ui_tests::draw_frame(&view, cx);
         cx.run_until_parked();
         ui_tests::draw_frame(&view, cx);
+        let control = cx.debug_bounds("message-copy-2").unwrap();
+        let viewport = view.update(cx, |app, _| app.list.viewport_bounds());
+        let pane = cx.debug_bounds("chat-pane").unwrap();
+        let parent = cx.debug_bounds("transcript-viewport").unwrap();
+        assert!(viewport.intersect(&pane).contains(&control.center()),
+            "Copy button is clipped: control={control:?}, viewport={viewport:?}, parent={parent:?}, pane={pane:?}");
         ui_tests::click_selector(cx, "message-copy-2");
+        let after = cx.debug_bounds("message-copy-2");
         cx.update(|_, cx| {
             assert_eq!(
                 cx.read_from_clipboard().and_then(|v| v.text()),
-                Some("Answer\n\n```rust\nlet x = 1;\n```".into())
+                Some("Answer\n\n```rust\nlet x = 1;\n```".into()),
+                "Copy button click was ignored: control={control:?}, after={after:?}, viewport={viewport:?}, pane={pane:?}"
             )
         });
         ui_tests::draw_frame(&view, cx);

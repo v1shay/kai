@@ -580,8 +580,16 @@ impl Orbit {
             let _=this.update(cx,|app,cx|{let Some(p)=app.ninjas.panel.as_mut().filter(|p|p.token==token) else{return};p.reference_pending=p.reference_pending.saturating_sub(1);match result{Ok(file)=>{file.mark_submitted();app.ninja_reference_paths(vec![file.path.clone()],cx)},Err(e)=>{p.reference_submit=false;app.notice=Some(e.to_string());}}cx.notify();});}).detach();
     }
     pub(super) fn ninja_reference_paths(&mut self,paths:Vec<PathBuf>,cx:&mut Context<Self>){
-        let Some(p)=self.ninjas.panel.as_mut() else{return};p.reference_pending+=1;let token=p.token;
-        let Some(host)=self.ninjas.hosts.iter().find(|h|h.id==p.host).cloned() else{return};
+        let Some(p)=self.ninjas.panel.as_mut() else{return};
+        let Some(host)=self.ninjas.hosts.iter().find(|h|h.id==p.host).cloned() else{
+            p.reference_submit=false;
+            self.notice=Some("The Ninja host is unavailable".into());
+            cx.notify();
+            return;
+        };
+        p.reference_pending+=1;
+        let token=p.token;
+        let chat=p.chat.clone();
         cx.spawn(async move|this,cx|{
             let remote=host.clone();
             let result=cx.background_executor().spawn(async move{(||->anyhow::Result<Vec<String>>{
@@ -597,10 +605,18 @@ impl Orbit {
                 }Ok(names)
             })()}).await;
             let _=this.update(cx,|app,cx|{
-                if !app.ninjas.panel.as_ref().is_some_and(|p|p.token==token){return;}if let Some(p)=app.ninjas.panel.as_mut(){p.reference_pending=p.reference_pending.saturating_sub(1);match result{Ok(names)=>{
+                let Some(p)=app.ninjas.panel.as_mut().filter(|p|p.token==token) else{return};
+                p.reference_pending=p.reference_pending.saturating_sub(1);
+                if p.chat!=chat{cx.notify();return;}
+                match result{Ok(names)=>{
                     let note=format!("\nReference files (remote files are in this host's Downloads; keep working in your configured workspace): {}",names.join(", "));
                     let draft=p.fields[3].read(cx).text();p.fields[3].update(cx,|input,cx|input.set_text(&format!("{draft}{note}"),cx));
-                },Err(e)=>{p.reference_submit=false;app.notice=Some(e.to_string());}}}let send=app.ninjas.panel.as_mut().is_some_and(|p|{let send=p.reference_submit && p.reference_pending==0;if send{p.reference_submit=false;}send});if send{app.ninja_submit_task(cx);}cx.notify();
+                },Err(e)=>{p.reference_submit=false;app.notice=Some(e.to_string());}}
+                if p.reference_submit && p.reference_pending==0{
+                    p.reference_submit=false;
+                    app.ninja_submit_task(cx);
+                }
+                cx.notify();
             });
         }).detach();
     }
@@ -1180,6 +1196,16 @@ impl Orbit {
         self.ninja_submit_task_reply(None,cx);
     }
     pub(super) fn ninja_submit_task_reply(&mut self,issued:Option<Value>,cx:&mut Context<Self>){
+        if self.active_chat_cli().is_some_and(|cli| cli.resumes_chat) {
+            let error = "Exit this Ninja’s CLI before sending from the GUI.".to_owned();
+            if let Some(issued) = issued {
+                self.complete_unified_request(&issued, Some(error), cx);
+            } else {
+                self.notice = Some(error);
+                cx.notify();
+            }
+            return;
+        }
         if let Some(p)=self.ninjas.panel.as_mut(){if p.reference_pending>0{p.reference_submit=true;cx.notify();return;}}
         if self
             .ninjas
@@ -1229,7 +1255,7 @@ impl Orbit {
     }
     fn ninja_fold_fraction(&self,key:&str)->f32{
         let target=if self.ninjas.expanded.contains(key){1.}else{0.};
-        self.ninjas.fold_motions.get(key).map_or(target,|(at,from)|{let t=(at.elapsed().as_secs_f32()/0.24).min(1.);from+(target-from)*(1.-(1.-t).powi(3))})
+        self.ninjas.fold_motions.get(key).map_or(target,|(at,from)|{let t=(at.elapsed().as_secs_f32()/0.24).min(1.);from+(target-from)*(presentation::ease_out(t))})
     }
     fn toggle_ninja_fold(&mut self,host:&str,profile:&str,cx:&mut Context<Self>){
         let key=format!("{host}:{profile}");let from=self.ninja_fold_fraction(&key);
@@ -1270,12 +1296,10 @@ impl Orbit {
                 let t = &tasks[i];
                 let chat = t["chat"].as_str().unwrap_or("").to_owned();
                 let label = app.ninja_chat_label(&p.host, &p.profile.id, t);
-                let selected = p.chat.as_deref() == Some(&chat);
                 let active = crate::ninja_chat::live(t);
                 let selector = format!("ninja-chat-{chat}");
                 div().id(SharedString::from(selector.clone())).debug_selector(move || selector.clone())
                     .h(px(32.)).w_full().px_2().flex().items_center().gap_2().rounded_md()
-                    .when(selected, |v| v.bg(rgba(0xffffff14)))
                     .hover(|v| v.bg(rgba(GLASS_HOVER))).cursor_pointer()
                     .child(div().flex_1().min_w(px(0.)).text_size(theme::ui_px(12.))
                         .child(app.animated_ninja_chat_title(&Self::ninja_chat_key(&p.host, &p.profile.id, &chat), label)))
@@ -1323,7 +1347,7 @@ impl Orbit {
                 let active=rows.iter().find(|t|crate::ninja_chat::live(t));
                 let fold_host=host.clone();let fold_id=id.clone();let select_host=host.clone();let select_id=id.clone();let new_host=host.clone();let new_id=id.clone();
                 let header=div().id(SharedString::from(format!("personal-ninja-{key}"))).debug_selector({let key=key.clone();move||format!("personal-ninja-{key}")})
-                    .h(px(36.)).w_full().px_2().flex().items_center().gap_2().rounded_md().bg(rgba(if selected{0x9380ff22}else{0xffffff05})).hover(|v|v.bg(rgba(GLASS_HOVER))).cursor_pointer()
+                    .h(px(36.)).w_full().px_2().flex().items_center().gap_2().rounded_md().bg(rgba(0xffffff05)).hover(|v|v.bg(rgba(GLASS_HOVER))).cursor_pointer()
                     .child(div().id(SharedString::from(format!("ninja-fold-{key}"))).debug_selector({let key=key.clone();move||format!("ninja-fold-{key}")}).size(px(14.)).flex_none().flex().items_center().justify_center()
                         .child(icon("chevron-right",10.,MUTED).with_transformation(Transformation::rotate(radians(fraction*std::f32::consts::FRAC_PI_2))))
                         .on_click(cx.listener(move|app,_,_,cx|{cx.stop_propagation();app.toggle_ninja_fold(&fold_host,&fold_id,cx);})))
@@ -1338,8 +1362,8 @@ impl Orbit {
                 let count=if show{rows.len()}else{0};let height=count.min(6)as f32*32.*fraction;
                 let children=div().id(SharedString::from(format!("ninja-children-{key}"))).debug_selector({let key=key.clone();move||format!("ninja-children-{key}")}).w_full().h(px(height)).flex_none().overflow_hidden().opacity(fraction)
                     .child(div().id(SharedString::from(format!("ninja-children-scroll-{key}"))).size_full().overflow_y_scroll().flex().flex_col().children(rows.into_iter().take(if show{usize::MAX}else{0}).map(|t|{
-                        let chat=t["chat"].as_str().unwrap_or("").to_owned();let label=self.ninja_chat_label(&host,&id,&t);let active=crate::ninja_chat::live(&t);let chosen=selected&&self.ninjas.panel.as_ref().is_some_and(|p|p.chat.as_deref()==Some(&chat));let host=host.clone();let id=id.clone();
-                        div().id(SharedString::from(format!("ninja-nested-{key}-{chat}"))).debug_selector({let key=key.clone();let chat=chat.clone();move||format!("ninja-nested-{key}-{chat}")}).h(px(32.)).w_full().flex_none().pl(px(36.)).pr_2().flex().items_center().gap_2().rounded_md().when(chosen,|v|v.bg(rgba(0xffffff12))).hover(|v|v.bg(rgba(GLASS_HOVER))).cursor_pointer()
+                        let chat=t["chat"].as_str().unwrap_or("").to_owned();let label=self.ninja_chat_label(&host,&id,&t);let active=crate::ninja_chat::live(&t);let host=host.clone();let id=id.clone();
+                        div().id(SharedString::from(format!("ninja-nested-{key}-{chat}"))).debug_selector({let key=key.clone();let chat=chat.clone();move||format!("ninja-nested-{key}-{chat}")}).h(px(32.)).w_full().flex_none().pl(px(36.)).pr_2().flex().items_center().gap_2().rounded_md().hover(|v|v.bg(rgba(GLASS_HOVER))).cursor_pointer()
                             .child(div().flex_1().min_w(px(0.)).text_size(theme::ui_px(12.)).truncate().child(self.animated_ninja_chat_title(&Self::ninja_chat_key(&host,&id,&chat),label)))
                             .when(active,|v|v.child(crate::ninja_art::status(&style,task_scene(&t),self.motion&&!native::reduced_motion())))
                             .on_click(cx.listener(move|app,_,w,cx|{cx.stop_propagation();if !app.ninjas.panel.as_ref().is_some_and(|p|p.host==host&&p.profile.id==id){app.open_ninjas(Some(host.clone()),Some(id.clone()),w,cx);}app.open_ninja_chat(chat.clone(),cx);}))
@@ -1349,6 +1373,7 @@ impl Orbit {
     }
     pub(super) fn ninjas_conversation(&self, window: &Window, cx: &Context<Self>) -> AnyElement {
         div().debug_selector(||"chat-pane".into()).flex_1().size_full().min_w(px(0.)).min_h(px(0.)).flex().flex_col().relative().overflow_hidden()
+            .child(self.chat_cli_canvas(self.chat_cli_owner().as_deref().unwrap_or(keyboard::CLI_DRAFT)))
             .child(div().flex_1().min_h(px(0.)).child(self.ninjas_panel(window,cx))).into_any_element()
     }
     fn ninja_task_row(&self,t:&Value,window:&Window,cx:&Context<Self>)->AnyElement{
@@ -1430,7 +1455,7 @@ impl Orbit {
                                     t["id"].as_str().unwrap_or("")
                                 )),
                                 Animation::new(Duration::from_millis(220)),
-                                |s, t| s.opacity(t).relative().top(px((1. - t) * 5.)),
+                                |s, t| { let p = presentation::ease_out(t); s.opacity(p).relative().top(px((1. - p) * 5.)) },
                             )
                             .into_any_element()
                         } else {
@@ -1922,11 +1947,11 @@ impl Orbit {
                     .min_h(px(0.))
                     .id(SharedString::from(format!("ninja-task-history-{history_owner}")))
                     .debug_selector(||"ninja-task-history".into())
-                    .min_w(px(0.))
+                    .flex().flex_col().min_w(px(0.))
                     .child(list(p.history_scroll.clone(),cx.processor(|app,index,window,cx|{
                         let task=app.ninjas.panel.as_ref().unwrap().history_tasks.borrow().get(index).cloned();
                         task.map(|t|app.ninja_task_row(&t,window,cx)).unwrap_or_else(||div().into_any_element())
-                    })).size_full()),
+                    })).flex_1().min_w(px(0.)).min_h(px(0.))),
             );
         for task in snapshot.and_then(|v|v["tasks"].as_array()).into_iter().flatten().filter(|t|t["profile"]==p.profile.id&&t["chat"].as_str()==p.chat.as_deref()&&crate::ninja_chat::live(t)){
             for request in task["requests"].as_array().into_iter().flatten(){

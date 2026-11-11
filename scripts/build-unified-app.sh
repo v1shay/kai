@@ -13,9 +13,10 @@ mkdir -p "$root/.build/unified" "$swift_cache"
 args=(build --offline --manifest-path "$root/integrations/Code/Cargo.toml" --bin orbit)
 [[ "$configuration" != release ]] || args+=(--release)
 cargo "${args[@]}"
+ghostty_metal=$(python3 "$root/scripts/prepare-ghostty-metal.py" "$root/.build/unified/ghostty-metal")
 swift_optimization=(-O -whole-module-optimization)
 [[ "$configuration" == release ]] || swift_optimization=(-Onone)
-python3 "$root/scripts/build-native-cached.py" "$root/.build/unified/libKaiNotch.dylib" -target "$(uname -m)-apple-macos13.0" -parse-as-library -emit-library "${swift_optimization[@]}" -D KAI_UNIFIED -module-name KaiNotch -module-cache-path "$swift_cache" "$root"/Sources/NotchPrototype/*.swift
+python3 "$root/scripts/build-native-cached.py" "$root/.build/unified/libKaiNotch.dylib" -target "$(uname -m)-apple-macos13.0" -parse-as-library -emit-library "${swift_optimization[@]}" -D KAI_UNIFIED -I "$ghostty_metal/Headers/libghostty" "$ghostty_metal/libghostty.a" -lc++ -framework Carbon -framework Metal -module-name KaiNotch -module-cache-path "$swift_cache" "$root"/Sources/NotchPrototype/*.swift
 python3 - "$root/.build/unified/libKaiNotch.dylib" <<'PYABI'
 import ctypes,sys
 library=ctypes.CDLL(sys.argv[1])
@@ -25,11 +26,16 @@ print('Verified all eleven native ABI exports')
 PYABI
 python3 "$root/scripts/build-native-cached.py" "$root/.build/unified/libCodeVoice.dylib" -parse-as-library -emit-library "${swift_optimization[@]}" -module-cache-path "$swift_cache" "$root/integrations/Code/native_helpers/CodeVoiceMedia.swift" -framework AppKit -framework WebKit -framework AVFoundation
 python3 "$root/scripts/build-native-cached.py" "$root/.build/unified/kai-ninja-host" -O -module-cache-path "$swift_cache" "$root/integrations/Code/native_helpers/NinjaWorkerLauncher.swift"
+python3 "$root/scripts/build-terminal-ghostty.py" "$root/.build/unified/libKaiTerminalGhostty.dylib"
 staging=$(mktemp -d "$root/.build/unified/.package.XXXXXX")
 trap 'rm -rf "$staging"' EXIT
 product="$staging/Kai Unified.app"
 resources="$product/Contents/Resources"
 mkdir -p "$product/Contents/MacOS" "$resources/Licenses"
+cp "$root/Support/workspace-ghostty.conf" "$resources/"
+mkdir -p "$resources/terminfo"
+/usr/bin/tic -o "$resources/terminfo" "$root/Support/workspace-ghostty.terminfo"
+cp "$root/Support/"{Ghostty-LICENSE,GhosttyKit-LICENSE} "$resources/Licenses/"
 cp "$CARGO_TARGET_DIR/$configuration/orbit" "$product/Contents/MacOS/kai-unified"
 cp "$root/.build/unified/"*.dylib "$resources/"
 cp -R "$root/Sources/NotchPrototype/Resources/"* "$resources/"

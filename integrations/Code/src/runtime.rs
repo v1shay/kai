@@ -2090,7 +2090,7 @@ fn content_text_view(content: &Value) -> Cow<'_, str> {
     }
     Cow::Owned(text)
 }
-fn content_text(content: &Value) -> String {
+pub(super) fn content_text(content: &Value) -> String {
     content_text_view(content).into_owned()
 }
 

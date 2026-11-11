@@ -278,7 +278,7 @@ fn computer_app_approval(p:&Value)->bool {
         && meta["tool_params"].as_object().is_some_and(|o|o.len()==1 && o.get("app").and_then(Value::as_str).is_some_and(|s|!s.is_empty()&&s.len()<=512))
         && p["requestedSchema"]["properties"].as_object().is_none_or(|o|o.is_empty())
 }
-fn turn_params(thread:&str,request:&RunRequest)->Value{json!({"threadId":thread,"input":input(request),"approvalPolicy":native_approval_policy(request),"approvalsReviewer":request.codex_approvals.reviewer(),"effort":request.reasoning_effort,"summary":"detailed","serviceTier":request.service_tier,"sandboxPolicy":request.codex_access.policy(request.allow_edits,&request.project)})}
+fn turn_params(thread:&str,request:&RunRequest)->Value{json!({"threadId":thread,"cwd":request.project,"input":input(request),"approvalPolicy":native_approval_policy(request),"approvalsReviewer":request.codex_approvals.reviewer(),"effort":request.reasoning_effort,"summary":"detailed","serviceTier":request.service_tier,"sandboxPolicy":request.codex_access.policy(request.allow_edits,&request.project)})}
 fn thread_params(request: &RunRequest) -> Value {
     let mut params = json!({"cwd":request.project,
         "approvalPolicy":native_approval_policy(request),

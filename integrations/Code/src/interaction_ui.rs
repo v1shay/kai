@@ -16,7 +16,7 @@ pub(super) fn status_appearance(status: InteractionStatus) -> (&'static str, u32
 /// hit zero, rebound and recreate a collapsed scroller on subsequent frames.
 fn disclosure_fraction(progress: f32, open: bool, from: f32) -> f32 {
     let t = progress.clamp(0., 1.);
-    let eased = t * t * (3. - 2. * t);
+    let eased = presentation::ease_out(t);
     let target = if open { 1. } else { 0. };
     from + (target - from) * eased
 }
@@ -55,6 +55,22 @@ impl Orbit {
         for(ix,row)in self.rows.iter().enumerate(){if let MessageBlock::Interaction(ChatInteraction::NativeRequest(request))=&row.block{if self.native_pending.values().any(|p|p.current(&self.runs)&&p.request_id()==request.id){if let Some(span)=flow.work[ix].clone(){for i in span{flow.work[i]=None;}}flow.hidden[ix]=false;}}}flow
     }
     pub(super) fn sync_flow_layout(&mut self)->bool{
+        let id = self.active.as_deref();
+        let running = id.and_then(|id| self.runs.get(id));
+        let busy = running.is_some() || self.starting_current()
+            || id.is_some_and(|id| self.finalizing.contains(id) || self.settling.contains_key(id));
+        let settled = id.is_some() && !busy && !self.loading && !self.loading_earlier && !self.has_newer;
+        let live_start = running.and_then(|run| run.stream_start);
+        let pending = self.rows.iter().enumerate().filter_map(|(index, row)| {
+            if let MessageBlock::Interaction(ChatInteraction::NativeRequest(request)) = &row.block {
+                self.native_pending.values().any(|entry| entry.current(&self.runs)
+                    && entry.request_id() == request.id).then_some(index)
+            } else { None }
+        }).collect::<Vec<_>>();
+        if self.flow_layout_key.as_ref().is_some_and(|key| key.matches(&self.rows, settled, live_start, &pending)) {
+            return false;
+        }
+        self.flow_layout_key = Some(chat_flow::LayoutKey::new(&self.rows, settled, live_start, pending));
         let next=self.transcript_flow();
         if next.has_subagents && let Some(id)=&self.active { self.subagent_chats.insert(id.clone()); }
         if next==self.flow_index{return false}
@@ -75,9 +91,12 @@ impl Orbit {
     }
     pub(super) fn work_summary(&self,ix:usize,cx:&Context<Self>)->AnyElement{
         let label=self.row_timing(ix).map(|t|{let mut label=t.elapsed_ms.map(|ms|format!("Worked for {}",chat_timing::duration(ms))).unwrap_or_else(||"Worked".into());if let Some(model)=&t.model{label.push_str(&format!(" · {model}"));}if let Some(effort)=&t.effort{label.push_str(&format!(" · {effort}"));}label}).unwrap_or_else(||"Worked".into());
+        Self::work_disclosure(ix, label, self.work_reveal(ix))
+            .on_click(cx.listener(move |this, _, _, cx| this.toggle_work(ix, cx))).into_any_element()
+    }
+    pub(super) fn work_disclosure(ix: usize, label: String, reveal: f32) -> Stateful<Div> {
         div().id(("work-summary",ix)).debug_selector(move||format!("work-summary-{ix}")).flex().items_center().gap_2().py_2().text_size(theme::ui_px(11.)).text_color(rgb(MUTED)).cursor_pointer()
-            .child(icon("chevron-right",12.,MUTED).with_transformation(Transformation::rotate(radians(self.work_reveal(ix)*std::f32::consts::FRAC_PI_2)))).child(label)
-            .on_click(cx.listener(move|this,_,_,cx|this.toggle_work(ix,cx))).into_any_element()
+            .child(icon("chevron-right",12.,MUTED).with_transformation(Transformation::rotate(radians(reveal*std::f32::consts::FRAC_PI_2)))).child(label)
     }
     pub(super) fn interaction_reveal(&self, ix: usize) -> f32 {
         let expanded = self.expanded_tools.contains(&ix);
@@ -102,6 +121,12 @@ impl Orbit {
         card: &ChatInteraction,
         provider: AgentKind,
         cx: &Context<Self>,
+    ) -> AnyElement {
+        self.conversation_interaction(ix, card, provider, None, cx)
+    }
+    pub(super) fn conversation_interaction(
+        &self, ix: usize, card: &ChatInteraction, provider: AgentKind,
+        peer: Option<&SessionSummary>, cx: &Context<Self>,
     ) -> AnyElement {
         let panel = div()
             .w_full()
@@ -142,12 +167,12 @@ impl Orbit {
                 details,
                 status,
                 agent,
-            } => self.status_card(ix, title, details, *status, agent.as_deref(), false, cx),
+            } => self.status_card(ix, title, details, *status, agent.as_deref(), false, peer, cx),
             ChatInteraction::Status {
                 title,
                 details,
                 status,
-            } => self.status_card(ix, title, details, *status, None, false, cx),
+            } => self.status_card(ix, title, details, *status, None, false, peer, cx),
             ChatInteraction::Answer { question, answer } => panel
                 .p_3()
                 .child(
@@ -166,7 +191,7 @@ impl Orbit {
                 .into_any_element(),
             ChatInteraction::Question(question) => {
                 let key = chat_interactions::question_choice_key(question, ix);
-                let selected = self.question_choices.get(&key);
+                let selected = peer.is_none().then(|| self.question_choices.get(&key)).flatten();
                 panel
                     .p_3()
                     .child(
@@ -221,7 +246,7 @@ impl Orbit {
                                     .filter(|(choice, _)| *choice == label)
                                     .map(|(_, t)| {
                                         if self.motion {
-                                            presentation::spring(
+                                            presentation::ease_out(
                                                 (t.elapsed().as_secs_f32() / 0.28).min(1.),
                                             )
                                         } else {
@@ -274,7 +299,7 @@ impl Orbit {
                                                 .child(option.description.clone()),
                                         )
                                     })
-                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                    .on_click(Self::chat_control(peer, cx, move |this, _, window, cx| {
                                         this.stop_dictation(cx);
                                         this.question_choices
                                             .insert(key.clone(), (label.clone(), Instant::now()));
@@ -290,9 +315,10 @@ impl Orbit {
             }
         }
     }
-    pub(super) fn activity_card(&self,ix:usize,title:&str,details:&str,cx:&Context<Self>)->AnyElement{
+    pub(super) fn conversation_activity(&self, ix: usize, title: &str, details: &str,
+        peer: Option<&SessionSummary>, cx: &Context<Self>) -> AnyElement {
         // Historical tool inputs have no authoritative completion status.
-        self.status_card(ix,title,details,InteractionStatus::Completed,None,true,cx)
+        self.status_card(ix,title,details,InteractionStatus::Completed,None,true,peer,cx)
     }
     fn status_card(
         &self,
@@ -302,6 +328,7 @@ impl Orbit {
         status: InteractionStatus,
         agent: Option<&str>,
         neutral:bool,
+        peer: Option<&SessionSummary>,
         cx: &Context<Self>,
     ) -> AnyElement {
         let (mut symbol, mut color, mut label) = status_appearance(status);
@@ -311,12 +338,13 @@ impl Orbit {
         if thinking{symbol="assets/kai/status/thinking.svg";if matches!(status,InteractionStatus::Started|InteractionStatus::Working){label="Thinking"}else if status==InteractionStatus::Completed{label="Thought"}}
 
         if neutral{symbol=activity_icon(title);color=MUTED;label="Details";}
-        let reviewable = !neutral && status == InteractionStatus::Completed && title == "Completed";
+        let reviewable = peer.is_none() && !neutral && status == InteractionStatus::Completed && title == "Completed";
         let review_target = reviewable.then(|| self.completion_target(ix)).flatten();
         if let (Some(target),Some(summary))=(review_target.clone(),self.completion_summary(ix)){return if self.theme.compact_diff{self.compact_completion_diff(ix,target,summary,cx)}else{self.completion_changes_card(ix,target,summary,cx)}}
         let undo_target = review_target.clone();
-        let expanded = self.expanded_tools.contains(&ix);
-        let reveal = self.interaction_reveal(ix);
+        let expanded = peer.map_or_else(|| self.expanded_tools.contains(&ix), |session| self.split_interaction_expanded(session, ix));
+        let reveal = if peer.is_none() { self.interaction_reveal(ix) } else if expanded { 1. } else { 0. };
+        let owner = peer.map(|session| session.id.clone());
         div()
             .w_full().min_w(px(0.))
             .overflow_hidden()
@@ -402,6 +430,10 @@ impl Orbit {
                         ))
                     })
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        if let Some(id) = owner.as_deref() {
+                            this.toggle_split_interaction(id, ix, cx);
+                            return;
+                        }
                         if reviewable {
                             if let Some(target) = review_target.clone() {
                                 this.open_completion_target(target, false, cx);
@@ -489,6 +521,7 @@ impl Orbit {
     ) -> AnyElement {
         let name = name.to_owned();
         let target = target.to_owned();
+        let glyph = files::icon_for_path(std::path::Path::new(&name));
         div()
             .id(("saved-image", ix))
             .debug_selector(move || format!("saved-image-{ix}"))
@@ -503,7 +536,7 @@ impl Orbit {
             .gap_2()
             .cursor_pointer()
             .hover(|s| s.bg(rgba(GLASS_HOVER)))
-            .child(icon("file-image", 18., MUTED))
+            .child(icon(glyph, 18., MUTED))
             .child(
                 div()
                     .flex_1()

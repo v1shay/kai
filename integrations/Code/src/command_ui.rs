@@ -548,7 +548,7 @@ impl Orbit {
     }
     pub(super) fn conversations_progress(&self)->f32{
         let target=if self.conversations_visible{1.}else{0.};
-        self.conversations_transition.map_or(target,|(at,from)|(from+(target-from)*(1.-(1.-(at.elapsed().as_secs_f32()/0.32).min(1.)).powi(3))).clamp(0.,1.))
+        self.conversations_transition.map_or(target,|(at,from)|(from+(target-from)*presentation::ease_out(at.elapsed().as_secs_f32()/workspace_motion::CONTENT_DURATION.as_secs_f32())).clamp(0.,1.))
     }
     pub(super) fn toggle_conversations(&mut self, cx: &mut Context<Self>) {
         let from=self.conversations_progress();
@@ -574,8 +574,8 @@ impl Orbit {
         let Some(picker) = &self.slash else {
             return;
         };
-        let duration = if picker.closing { 120 } else { 320 };
-        if !self.motion || picker.started.elapsed() >= Duration::from_millis(duration) {
+        let duration = workspace_motion::surface_duration(picker.closing);
+        if !self.motion || picker.started.elapsed() >= duration {
             if picker.closing {
                 self.slash = None;
             }
@@ -595,14 +595,14 @@ impl Orbit {
         let Some(picker) = &self.slash else {
             return div().into_any_element();
         };
-        let t = (picker.started.elapsed().as_secs_f32() / if picker.closing { 0.12 } else { 0.32 })
+        let t = (picker.started.elapsed().as_secs_f32() / workspace_motion::surface_duration(picker.closing).as_secs_f32())
             .min(1.);
         let reveal = if !self.motion {
             if picker.closing { 0. } else { 1. }
         } else if picker.closing {
-            1. - t * t
+            1. - presentation::ease_out(t)
         } else {
-            presentation::spring(t)
+            presentation::ease_out(t)
         };
         let caret = composer.read(cx).bounds();
         let width = px(440.).min(window.viewport_size().width - px(16.));
@@ -906,30 +906,42 @@ impl Orbit {
         }limits
     }
     pub(super) fn usage_summary(&self)->String{
-        self.reported_limit_windows().first().map(|w|format!("{} used",w.compact_used(chrono::Utc::now().timestamp()))).unwrap_or_default()
+        self.reported_limit_windows().first().map(|w|w.compact_remaining(chrono::Utc::now().timestamp(),true)).unwrap_or_default()
     }
-    pub(super) fn usage_footer(&self,cx:&Context<Self>)->AnyElement{
-        let Some(quota)=self.reported_limit_windows().first().cloned() else{return self.context_indicator()};
-        let fraction=((100.-quota.used_percent)/100.)as f32;
-        div().id("provider-usage-footer").debug_selector(||"provider-usage-footer".into()).h(px(20.)).flex().items_center().gap_2().cursor_pointer().child(provider_icon(agent_icon(self.agent),12.,agent_color(self.agent)))
-        .child(div().w(px(36.)).h(px(3.)).rounded_full().bg(rgba(0xffffff18)).child(div().w(px(36.*fraction)).h_full().rounded_full().bg(rgb(composer_design::intensity(1.-fraction)))))
-        .child(self.usage_summary()).child(self.context_indicator()).on_click(cx.listener(|this,event:&ClickEvent,window,cx|{this.toggle_panel_from_click(Modal::Status,event.position(),true,window,cx);})).into_any_element()
+    pub(super) fn usage_footer(&self, cx: &Context<Self>) -> AnyElement {
+        self.conversation_usage_footer(None, cx)
+    }
+    pub(super) fn conversation_usage_footer(&self, peer: Option<&SessionSummary>, cx: &Context<Self>) -> AnyElement {
+        let agent = peer.map_or(self.agent, |session| session.agent);
+        let limits = peer.map_or_else(|| self.reported_limit_windows(), |session| self.provider_limit_windows(session.agent));
+        let context = peer.map_or_else(|| self.context_usage(), |session| {
+            let usage = self.usage.get(&session.id)?;
+            Some((usage.context_used?, usage.context_limit.filter(|n| *n > 0)?))
+        });
+        let Some(quota) = limits.first() else { return self.context_indicator(context); };
+        let fraction = ((100. - quota.used_percent) / 100.) as f32;
+        div().id("provider-usage-footer").debug_selector(||"provider-usage-footer".into()).h(px(20.)).flex().items_center().gap_2().cursor_pointer().child(provider_icon(agent_icon(agent),12.,agent_color(agent)))
+            .child(div().w(px(36.)).h(px(3.)).rounded_full().bg(rgba(0xffffff18)).child(div().w(px(36.*fraction)).h_full().rounded_full().bg(rgb(composer_design::intensity(1.-fraction)))))
+            .child(quota.compact_remaining(chrono::Utc::now().timestamp(), true)).child(self.context_indicator(context))
+            .on_click(Self::chat_control(peer, cx, |this,event,window,cx| { this.toggle_panel_from_click(Modal::Status,event.position(),true,window,cx); }))
+            .into_any_element()
     }
     pub(super) fn context_usage(&self)->Option<(u64,u64)>{
         let id=self.active.as_ref().filter(|id|self.sessions.iter().any(|s|&s.id==*id&&s.agent==self.agent))?;
         let usage=self.usage.get(id)?;Some((usage.context_used?,usage.context_limit.filter(|n|*n>0)?))
     }
-    fn context_indicator(&self)->AnyElement{
-        let Some((used,limit))=self.context_usage()else{return div().into_any_element()};
-        let fraction=(used as f64/limit as f64).clamp(0.,1.)as f32;
+    fn context_indicator(&self, context: Option<(u64, u64)>)->AnyElement{
+        let Some((used,limit))= context else {return div().into_any_element()};
+        let filled=(used as f64/limit as f64).clamp(0.,1.)as f32;
+        let fraction=1.-filled;
         div().id("context-window-indicator").debug_selector(||"context-window-indicator".into()).ml_2().flex().items_center().gap_1().text_color(rgb(MUTED))
         .child(canvas(|bounds,_,_|bounds,move|b,_,window,_|{
             let center=b.center();let radius=f32::from(b.size.width)/2.-1.5;
-            for (portion,color)in [(1.,rgba(0xffffff20)),(fraction,rgb(composer_design::intensity(fraction)))]{
+            for (portion,color)in [(1.,rgba(0xffffff20)),(fraction,rgb(composer_design::intensity(filled)))]{
                 let mut path=PathBuilder::stroke(px(1.6));let count=48;for i in 0..=count{let a=-std::f32::consts::FRAC_PI_2+portion*std::f32::consts::TAU*i as f32/count as f32;let p=center+point(px(radius*a.cos()),px(radius*a.sin()));if i==0{path.move_to(p)}else{path.line_to(p)}}if let Ok(path)=path.build(){window.paint_path(path,color)}
             }
         }).size(px(12.)))
-        .child(format!("{:.0}% context",fraction*100.)).into_any_element()
+        .child(format!("{:.0}% context left",fraction*100.)).into_any_element()
     }
     pub(super) fn usage_panel(&self, height: Pixels, cx: &mut Context<Self>) -> AnyElement {
         let session = self.active.as_ref().and_then(|id| {

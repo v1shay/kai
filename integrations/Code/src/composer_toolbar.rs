@@ -159,6 +159,21 @@ enum Action {
 }
 
 impl Orbit {
+    pub(super) fn chat_control(
+        peer: Option<&SessionSummary>,
+        cx: &Context<Self>,
+        action: impl Fn(&mut Self, &ClickEvent, &mut Window, &mut Context<Self>) + 'static,
+    ) -> impl Fn(&ClickEvent, &mut Window, &mut App) + 'static {
+        let owner = peer.map(|session| session.id.clone());
+        cx.listener(move |app, event, window, cx| {
+            if owner
+                .as_deref()
+                .is_none_or(|id| app.focus_split_chat(id, window, cx))
+            {
+                action(app, event, window, cx);
+            }
+        })
+    }
     fn toolbar_action(
         &mut self,
         action: Action,
@@ -204,62 +219,66 @@ impl Orbit {
             }
         }
     }
-    fn workspace_folder_symbol(&self)->AnyElement{
-        let progress=self.panel_popover.as_ref().filter(|p|p.kind==Modal::Projects)
-            .map_or(0.,|p|p.reveal(self.motion&&!native::reduced_motion()).clamp(0.,1.));
-        div().size(px(16.)).relative()
-            .child(icon("workspace-folder",16.,MUTED).absolute().opacity(1.-progress))
-            .child(icon("workspace-folder-open",16.,TEXT).absolute().top(px(-progress)).opacity(progress))
+    fn workspace_folder_symbol(&self) -> AnyElement {
+        let progress = self
+            .panel_popover
+            .as_ref()
+            .filter(|p| p.kind == Modal::Projects)
+            .map_or(0., |p| {
+                p.reveal(self.motion && !native::reduced_motion())
+                    .clamp(0., 1.)
+            });
+        div()
+            .size(px(16.))
+            .relative()
+            .child(
+                icon("workspace-folder", 16., MUTED)
+                    .absolute()
+                    .opacity(1. - progress),
+            )
+            .child(
+                icon("workspace-folder-open", 16., TEXT)
+                    .absolute()
+                    .top(px(-progress))
+                    .opacity(progress),
+            )
             .into_any_element()
     }
-    fn toolbar_plan(&self, window: &Window) -> Plan {
+    fn toolbar_plan(
+        &self,
+        window: &Window,
+        model: &str,
+        thinking: Option<&str>,
+        fast: bool,
+        orchestrating: bool,
+        more: bool,
+    ) -> Plan {
         let mut plan = Plan::default();
-        let model = composer_design::display_label(
-            self.effective_model_label()
-                .split(" · ")
-                .next()
-                .unwrap_or(""),
-        );
         plan.widths[PROJECT] = 26.;
         plan.widths[MODEL] =
-            (44. + if composer_design::model_glyph(&model).is_some() {
+            (44. + if composer_design::model_glyph(model).is_some() {
                 18.
             } else {
                 0.
-            } + text_width(window, &model))
+            } + text_width(window, model))
             .min(238.);
-        {
-            plan.widths[ORCHESTRATE] =
-                16. + text_width(
-                    window,
-                    if self.orchestrator_active() {
-                        "Orchestrator"
-                    } else {
-                        "Orchestrate"
-                    },
-                ) + if self.orchestrator_active() { 18. } else { 0. };
+        plan.widths[ORCHESTRATE] =
+            16. + text_width(
+                window,
+                if orchestrating {
+                    "Orchestrator"
+                } else {
+                    "Orchestrate"
+                },
+            ) + if orchestrating { 18. } else { 0. };
+        if let Some(label) = thinking {
+            plan.widths[THINKING] = 16. + text_width(window, label);
         }
-        if self
-            .effort_model_choice()
-            .is_some_and(|m| !m.reasoning_efforts.is_empty())
-        {
-            let value = self
-                .unified_effort()
-                .map(str::to_owned)
-                .or_else(|| self.effective_model_settings().1)
-                .unwrap_or_default();
-            let label = if value.is_empty() {
-                "Thinking".into()
-            } else {
-                composer_design::title(&value)
-            };
-            plan.widths[THINKING] = 16. + text_width(window, &label);
-        }
-        if self.fast_supported() {
+        if fast {
             plan.widths[FAST] = 28.;
         }
         plan.widths[PERMISSIONS] = 28.;
-        if self.modal == Some(Modal::ComposerControls) {
+        if more {
             plan.widths[MORE] = 28.;
         }
         for i in [MODEL, ORCHESTRATE, THINKING] {
@@ -270,7 +289,8 @@ impl Orbit {
     fn toolbar_permission_label(&self) -> &'static str {
         if !self.allow_edits {
             "Read only"
-        } else if matches!(self.agent,AgentKind::Codex|AgentKind::Ninja) && self.codex_access == runtime::CodexAccess::Full
+        } else if matches!(self.agent, AgentKind::Codex | AgentKind::Ninja)
+            && self.codex_access == runtime::CodexAccess::Full
         {
             "Full access"
         } else {
@@ -284,6 +304,7 @@ impl Orbit {
         label: &'static str,
         detail: f32,
         action: Action,
+        peer: Option<&SessionSummary>,
         cx: &Context<Self>,
     ) -> AnyElement {
         div()
@@ -300,22 +321,30 @@ impl Orbit {
             .text_size(theme::ui_px(11.))
             .cursor_pointer()
             .hover(|s| s.bg(rgba(GLASS_HOVER)))
-            .bg(rgba(
-                if self.theme.borderless_composer {
-                    0
-                } else if matches!(action, Action::Voice) && self.voice_call.is_some() {
-                    0x9fbaee26
-                } else if matches!(action, Action::Permissions) {
-                    0xffffff14
-                } else {
-                    0xffffff00
-                },
-            ))
+            .bg(rgba(if self.theme.borderless_composer {
+                0
+            } else if matches!(action, Action::Voice)
+                && self
+                    .voice_call
+                    .as_ref()
+                    .is_some_and(|call| peer.is_none_or(|session| call.owner == session.id))
+            {
+                0x9fbaee26
+            } else if matches!(action, Action::Permissions) {
+                0xffffff14
+            } else {
+                0xffffff00
+            }))
             .child(
                 icon(
                     glyph,
                     14.,
-                    if matches!(action, Action::Voice) && self.voice_call.is_some() {
+                    if matches!(action, Action::Voice)
+                        && self
+                            .voice_call
+                            .as_ref()
+                            .is_some_and(|call| peer.is_none_or(|session| call.owner == session.id))
+                    {
                         ACCENT
                     } else {
                         MUTED
@@ -342,14 +371,18 @@ impl Orbit {
                         .child(icon("chevron-down", 9., MUTED)),
                 )
             })
-            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
-                this.toolbar_action(
-                    action,
-                    event.position() + point(px(-12.), px(-12.)),
-                    window,
-                    cx,
-                )
-            }))
+            .on_click(Self::chat_control(
+                peer,
+                cx,
+                move |this, event, window, cx| {
+                    this.toolbar_action(
+                        action,
+                        event.position() + point(px(-12.), px(-12.)),
+                        window,
+                        cx,
+                    )
+                },
+            ))
             .into_any_element()
     }
     pub(super) fn composer_toolbar(
@@ -360,15 +393,86 @@ impl Orbit {
         window: &Window,
         cx: &Context<Self>,
     ) -> AnyElement {
+        self.conversation_toolbar(quick, input, stopping, None, window, cx)
+    }
+    pub(super) fn conversation_toolbar(
+        &self,
+        quick: bool,
+        input: Entity<TextInput>,
+        stopping: bool,
+        peer: Option<&SessionSummary>,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let agent = peer.map_or(self.agent, |session| session.agent);
+        let model = peer.map_or_else(
+            || self.effective_model_settings().0,
+            |session| {
+                self.session_models
+                    .get(&session.id)
+                    .cloned()
+                    .flatten()
+                    .or_else(|| {
+                        self.usage
+                            .get(&session.id)
+                            .and_then(|usage| usage.model.clone())
+                    })
+            },
+        );
+        let label = composer_design::display_label(model.as_deref().unwrap_or("…"));
+        let (choice, effort) = self.toolbar_thinking(peer, model.as_deref());
+        let thinking = choice
+            .as_ref()
+            .filter(|choice| !choice.reasoning_efforts.is_empty())
+            .map(|_| {
+                if effort.is_empty() {
+                    "Thinking".to_owned()
+                } else {
+                    composer_design::title(&effort)
+                }
+            });
+        let fast = peer.map_or_else(
+            || self.fast_supported(),
+            |_| {
+                agent == AgentKind::Codex
+                    && self.controls.get("codex").is_some_and(|(_, info)| {
+                        model
+                            .as_ref()
+                            .is_some_and(|model| info.defaults.fast_models.contains_key(model))
+                    })
+            },
+        );
+        let orchestrating = peer.map_or_else(
+            || self.orchestrator_active(),
+            |session| self.orchestrator_chats.contains(&session.id),
+        );
+        let more = peer.is_none() && self.modal == Some(Modal::ComposerControls);
+        let state_key = (
+            window.window_handle().window_id(),
+            if quick {
+                0
+            } else {
+                self.split_toolbar_slot(peer.map(|session| session.id.as_str()))
+            },
+        );
         let motion = self.motion && !native::reduced_motion() && window.is_window_active();
-        let window_id = window.window_handle().window_id();
         let (plan, target, measured, animating) = {
             let mut states = self.composer_toolbars.borrow_mut();
-            if !states.contains_key(&window_id) && states.len() >= 4 {
+            if !states.contains_key(&state_key) && states.len() >= 8 {
                 states.clear();
             }
-            let state = states.entry(window_id).or_default();
-            let target = fit(self.toolbar_plan(window), state.width.get());
+            let state = states.entry(state_key).or_default();
+            let target = fit(
+                self.toolbar_plan(
+                    window,
+                    &label,
+                    thinking.as_deref(),
+                    fast,
+                    orchestrating,
+                    more,
+                ),
+                state.width.get(),
+            );
             let plan = state.update(target, motion);
             (
                 plan,
@@ -411,7 +515,15 @@ impl Orbit {
             .flex()
             .items_center()
             .child(measure);
-        for i in [PROJECT, PERMISSIONS, MODEL, THINKING, FAST, ORCHESTRATE, MORE] {
+        for i in [
+            PROJECT,
+            PERMISSIONS,
+            MODEL,
+            THINKING,
+            FAST,
+            ORCHESTRATE,
+            MORE,
+        ] {
             if plan.widths[i] < 0.1 {
                 continue;
             }
@@ -426,9 +538,13 @@ impl Orbit {
                     .items_center()
                     .justify_center()
                     .cursor_pointer()
-                    .bg(rgba(if self.theme.borderless_composer { 0 } else { 0xffffff14 }))
+                    .bg(rgba(if self.theme.borderless_composer {
+                        0
+                    } else {
+                        0xffffff14
+                    }))
                     .child(self.workspace_folder_symbol())
-                    .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
+                    .on_click(Self::chat_control(peer, cx, |this, event, window, cx| {
                         this.toolbar_action(Action::Project, event.position(), window, cx)
                     }))
                     .into_any_element(),
@@ -438,12 +554,6 @@ impl Orbit {
                     } else {
                         "choose-agent"
                     };
-                    let label = composer_design::display_label(
-                        self.effective_model_label()
-                            .split(" · ")
-                            .next()
-                            .unwrap_or(""),
-                    );
                     let glyph_reveal = ((plan.widths[MODEL] - 78.) / 24.).clamp(0., 1.);
                     let text_reveal = ((plan.widths[MODEL] - 32.) / 42.).clamp(0., 1.);
                     let chevron_reveal = ((plan.widths[MODEL] - 58.) / 12.).clamp(0., 1.);
@@ -457,13 +567,17 @@ impl Orbit {
                         .flex()
                         .items_center()
                         .rounded_md()
-                        .bg(rgba(if self.theme.borderless_composer { 0 } else { 0xffffff14 }))
+                        .bg(rgba(if self.theme.borderless_composer {
+                            0
+                        } else {
+                            0xffffff14
+                        }))
                         .overflow_hidden()
                         .text_size(theme::ui_px(11.))
                         .cursor_pointer()
                         .hover(|s| s.bg(rgba(GLASS_HOVER)))
                         .child(
-                            provider_icon(agent_icon(self.agent), 14., agent_color(self.agent)).flex_none(),
+                            provider_icon(agent_icon(agent), 14., agent_color(agent)).flex_none(),
                         )
                         .when_some(composer_design::model_glyph(&label), |s, glyph| {
                             s.child(
@@ -486,7 +600,7 @@ impl Orbit {
                                 .whitespace_nowrap()
                                 .ml(px(4. * text_reveal))
                                 .opacity(text_reveal)
-                                .child(label),
+                                .child(label.clone()),
                         )
                         .child(
                             div()
@@ -498,25 +612,66 @@ impl Orbit {
                                 .opacity(chevron_reveal)
                                 .child(icon("chevron-down", 10., MUTED)),
                         )
-                        .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
+                        .on_click(Self::chat_control(peer, cx, |this, event, window, cx| {
                             this.toolbar_action(Action::Model, event.position(), window, cx)
                         }))
                         .into_any_element()
                 }
-                ORCHESTRATE => self.orchestrator_chip_adaptive(window, cx, plan.detail[i]),
-                THINKING => self.thinking_chip_adaptive(window, cx, plan.detail[i]),
-                FAST => self.fast_button(window, cx),
+                ORCHESTRATE => {
+                    self.orchestrator_chip_adaptive(window, cx, plan.detail[i], peer, orchestrating)
+                }
+                THINKING => self.thinking_chip_adaptive(
+                    window,
+                    cx,
+                    plan.detail[i],
+                    peer,
+                    agent,
+                    choice.as_ref(),
+                    &effort,
+                ),
+                FAST => self.fast_button(window, cx, peer),
                 PERMISSIONS => {
-                    let color = if !self.allow_edits { 0xd5dce5 } else if matches!(self.agent,AgentKind::Codex|AgentKind::Ninja) && self.codex_access == runtime::CodexAccess::Full { 0xff7d75 } else { 0xffb86b };
-                    let glyph=if !self.allow_edits {"lock-keyhole"} else if matches!(self.agent,AgentKind::Codex|AgentKind::Ninja) && self.codex_access==runtime::CodexAccess::Full {"lock-keyhole-open"} else {"shield"};
-                    div().id(if quick { "quick-permissions" } else { "mode" })
-                        .debug_selector(move || if quick { "quick-permissions".into() } else { "mode".into() })
-                        .w_full().h(px(28.)).flex().items_center().justify_center().rounded_md().cursor_pointer()
-                        .hover(|s|s.bg(rgba(GLASS_HOVER)))
-                        .child(icon(glyph,16.,color))
-                        .on_click(cx.listener(|this,event:&ClickEvent,window,cx|this.toolbar_action(Action::Permissions,event.position(),window,cx)))
+                    let color = if !self.allow_edits {
+                        0xd5dce5
+                    } else if matches!(agent, AgentKind::Codex | AgentKind::Ninja)
+                        && self.codex_access == runtime::CodexAccess::Full
+                    {
+                        0xff7d75
+                    } else {
+                        0xffb86b
+                    };
+                    let glyph = if !self.allow_edits {
+                        "lock-keyhole"
+                    } else if matches!(agent, AgentKind::Codex | AgentKind::Ninja)
+                        && self.codex_access == runtime::CodexAccess::Full
+                    {
+                        "lock-keyhole-open"
+                    } else {
+                        "shield"
+                    };
+                    div()
+                        .id(if quick { "quick-permissions" } else { "mode" })
+                        .debug_selector(move || {
+                            if quick {
+                                "quick-permissions".into()
+                            } else {
+                                "mode".into()
+                            }
+                        })
+                        .w_full()
+                        .h(px(28.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_md()
+                        .cursor_pointer()
+                        .hover(|s| s.bg(rgba(GLASS_HOVER)))
+                        .child(icon(glyph, 16., color))
+                        .on_click(Self::chat_control(peer, cx, |this, event, window, cx| {
+                            this.toolbar_action(Action::Permissions, event.position(), window, cx)
+                        }))
                         .into_any_element()
-                },
+                }
                 DELEGATE => div()
                     .id("delegate-task")
                     .debug_selector(|| "delegate-task".into())
@@ -528,7 +683,7 @@ impl Orbit {
                     .cursor_pointer()
                     .hover(|s| s.bg(rgba(GLASS_HOVER)))
                     .child(icon("assets/kai/status/agents.svg", 16., MUTED))
-                    .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
+                    .on_click(Self::chat_control(peer, cx, |this, event, window, cx| {
                         this.toolbar_action(Action::Delegate, event.position(), window, cx)
                     }))
                     .into_any_element(),
@@ -538,6 +693,7 @@ impl Orbit {
                     "RealTime",
                     plan.detail[i],
                     Action::Voice,
+                    peer,
                     cx,
                 ),
                 ATTACH => self.attachment_button(cx).into_any_element(),
@@ -559,7 +715,7 @@ impl Orbit {
                     }))
                     .hover(|s| s.bg(rgba(GLASS_HOVER)))
                     .child(icon("more", 16., MUTED))
-                    .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
+                    .on_click(Self::chat_control(peer, cx, |this, event, window, cx| {
                         this.toggle_panel_from_click(
                             Modal::ComposerControls,
                             event.position() + point(px(-12.), px(-12.)),
@@ -584,6 +740,8 @@ impl Orbit {
             );
         }
         let send_id = if quick { "quick-send" } else { "send" };
+        let compact_voice =
+            (!quick && self.split_peer().is_some()) || window.viewport_size().width < px(600.);
         div()
             .id("composer-toolbar")
             .debug_selector(|| "composer-toolbar".into())
@@ -610,10 +768,26 @@ impl Orbit {
                             .flex()
                             .items_center()
                             .gap(px(4.))
-                            .child(div().debug_selector(||"composer-realtime-anchor".into())
-                                .w(px(if window.viewport_size().width < px(600.) {28.} else {47.+text_width(window,"RealTime")}))
-                                .flex_none().child(self.toolbar_detail_button("conversation-voice", "assets/kai/status/listening.svg", "RealTime", if window.viewport_size().width < px(600.) {0.} else {1.}, Action::Voice, cx)))
-                            .child(self.dictation_button(cx).flex_none())
+                            .child(
+                                div()
+                                    .debug_selector(|| "composer-realtime-anchor".into())
+                                    .w(px(if compact_voice {
+                                        28.
+                                    } else {
+                                        47. + text_width(window, "RealTime")
+                                    }))
+                                    .flex_none()
+                                    .child(self.toolbar_detail_button(
+                                        "conversation-voice",
+                                        "assets/kai/status/listening.svg",
+                                        "RealTime",
+                                        if compact_voice { 0. } else { 1. },
+                                        Action::Voice,
+                                        peer,
+                                        cx,
+                                    )),
+                            )
+                            .child(self.dictation_button(peer, cx).flex_none())
                             .child(
                                 div()
                                     .id(send_id)
@@ -623,12 +797,20 @@ impl Orbit {
                                     .cursor_pointer()
                                     .hover(|s| s.opacity(0.88))
                                     .child(self.send_symbol(stopping))
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        if !this.cancel_send_handoff(cx) {
-                                            this.send(window, cx);
-                                        }
-                                        input.read(cx).focus_handle.focus(window);
-                                    })),
+                                    .on_click(Self::chat_control(
+                                        peer,
+                                        cx,
+                                        move |this, _, window, cx| {
+                                            if !this.cancel_send_handoff(cx) {
+                                                this.send(window, cx);
+                                            }
+                                            if quick {
+                                                input.read(cx).focus_handle.focus(window);
+                                            } else {
+                                                this.composer.read(cx).focus_handle.focus(window);
+                                            }
+                                        },
+                                    )),
                             ),
                     ),
             )
@@ -961,32 +1143,40 @@ mod tests {
 
     #[gpui::test]
     fn grouped_identity_and_fixed_voice_survive_borderless_preferences(cx: &mut TestAppContext) {
-        let (view,cx) = crate::ui_tests::fixture(cx);
+        let (view, cx) = crate::ui_tests::fixture(cx);
         view.update(cx, prepare);
-        draw(&view,cx,1040.);
-        let model=cx.debug_bounds("choose-agent").unwrap();
-        let thinking=cx.debug_bounds("thinking-chip").unwrap();
-        let fast=cx.debug_bounds("fast-mode").unwrap();
-        let orchestrate=cx.debug_bounds("orchestrator-mode").unwrap();
-        assert!(model.right() <= thinking.left() && thinking.right() <= fast.left() && fast.right() <= orchestrate.left());
+        draw(&view, cx, 1040.);
+        let model = cx.debug_bounds("choose-agent").unwrap();
+        let thinking = cx.debug_bounds("thinking-chip").unwrap();
+        let fast = cx.debug_bounds("fast-mode").unwrap();
+        let orchestrate = cx.debug_bounds("orchestrator-mode").unwrap();
+        assert!(
+            model.right() <= thinking.left()
+                && thinking.right() <= fast.left()
+                && fast.right() <= orchestrate.left()
+        );
         assert!(cx.debug_bounds("delegate-task").is_none());
         assert!(cx.debug_bounds("attach-image").is_none());
-        let voice=cx.debug_bounds("conversation-voice").unwrap();
-        let primary=cx.debug_bounds("composer-primary-actions").unwrap();
+        let voice = cx.debug_bounds("conversation-voice").unwrap();
+        let primary = cx.debug_bounds("composer-primary-actions").unwrap();
         assert!(voice.left() >= primary.left() && voice.right() <= primary.right());
         assert!(voice.left() > orchestrate.right());
-        view.update(cx,|app,cx| {
-            app.theme.borderless_composer=true;
-            let restored:theme::Theme=serde_json::from_str(&serde_json::to_string(&app.theme).unwrap()).unwrap();
+        view.update(cx, |app, cx| {
+            app.theme.borderless_composer = true;
+            let restored: theme::Theme =
+                serde_json::from_str(&serde_json::to_string(&app.theme).unwrap()).unwrap();
             assert!(restored.borderless_composer);
-            assert_eq!(app.unified_snapshot(cx)["borderlessComposer"],true);
+            assert_eq!(app.unified_snapshot(cx)["borderlessComposer"], true);
             cx.notify();
         });
-        draw(&view,cx,1040.);
-        let borderless=cx.debug_bounds("choose-agent").unwrap();
-        assert_eq!(model,borderless,"Borderless preference changed the hit target");
-        crate::ui_tests::click_selector(cx,"mode");
-        view.update(cx,|app,_|assert!(app.modal==Some(Modal::Permissions)));
+        draw(&view, cx, 1040.);
+        let borderless = cx.debug_bounds("choose-agent").unwrap();
+        assert_eq!(
+            model, borderless,
+            "Borderless preference changed the hit target"
+        );
+        crate::ui_tests::click_selector(cx, "mode");
+        view.update(cx, |app, _| assert!(app.modal == Some(Modal::Permissions)));
     }
 
     #[gpui::test]

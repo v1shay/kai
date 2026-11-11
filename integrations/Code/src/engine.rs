@@ -1,4 +1,4 @@
-//! A single background actor owns SQLite, discovery, and Markdown work.
+//! One actor owns history and SQLite. Viewport disk commits run separately.
 #[path = "runtime/opencode_history.rs"]
 mod opencode_history;
 #[cfg(test)]
@@ -17,7 +17,7 @@ use std::{
     path::Path,
     path::PathBuf,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicU64, Ordering},
         mpsc,
     },
@@ -85,6 +85,7 @@ enum Command {
         uuid::Uuid,
     ),
     Load(SessionSummary, u64, usize, usize),
+    SplitTail(SessionSummary, async_channel::Sender<Result<Vec<ParsedMessage>, String>>),
     SeekHistory(SessionSummary, u64, f64),
     Older(SessionSummary, u64, usize),
     HistoryPage(SessionSummary, u64, usize),
@@ -95,6 +96,10 @@ enum Command {
     ContextSearch(String, u64),
     Metadata(Vec<String>),
     Save(SessionSummary, String, String),
+    ImportCursorCli(String, crate::cursor_cli_history::Sync),
+    BindCursorCli(String, String),
+    CursorCliId(String, async_channel::Sender<Result<Option<String>, String>>),
+    CursorCliContext(String, async_channel::Sender<Result<Option<String>, String>>),
     SavePrompt(SessionSummary, String, Option<crate::store::NativeInput>),
     Finish(SessionSummary, String),
     FinishSource(SessionSummary, crate::response_buffer::ResponseSource),
@@ -103,8 +108,15 @@ enum Command {
     Discovered(Discovery),
     LoadProject(PathBuf, u64),
     LoadSidebarProject(PathBuf, u64),
+    ProjectDiscovered(ProjectScan, Vec<SessionSummary>),
     LoadArchived(Vec<String>, u64),
 }
+struct ProjectScan {
+    path: PathBuf,
+    generation: u64,
+    sidebar: bool,
+}
+
 enum RequestScope {
     History(String, u64),
     Project(PathBuf, u64),
@@ -137,7 +149,8 @@ impl LatestReads {
             Command::ContextSearch(_, generation) => {
                 *generation != self.context_search.load(Ordering::Acquire)
             }
-            Command::LoadProject(_, generation) => {
+            Command::LoadProject(_, generation)
+            | Command::ProjectDiscovered(ProjectScan { generation, sidebar: false, .. }, _) => {
                 *generation != self.project.load(Ordering::Acquire)
             }
             Command::LoadArchived(_, generation) => {
@@ -166,6 +179,28 @@ fn start_discovery(home: PathBuf, root: PathBuf, commands: std::sync::Weak<mpsc:
         Ok(_)=>true,
         Err(error)=>{let _=errors.send_blocking(Event::Error(format!("Discovery unavailable: {error}")));false}
     }
+}
+
+/// Opening a sidebar branch may scan every installed provider's native history.
+/// Keep those filesystem and third-party database reads off the history actor.
+fn project_discovery(
+    home: PathBuf,
+    commands: std::sync::Weak<mpsc::Sender<Command>>,
+    latest: Arc<LatestReads>,
+) -> mpsc::Sender<ProjectScan> {
+    let (sender, receiver) = mpsc::channel::<ProjectScan>();
+    std::thread::Builder::new().name("kai-project-discovery".into()).spawn(move || {
+        while let Ok(request) = receiver.recv() {
+            if !request.sidebar && request.generation != latest.project.load(Ordering::Acquire) {
+                continue;
+            }
+            let _span = crate::performance::Span::new("project_discovery");
+            let sessions = discovery::discover_project(&home, &request.path);
+            let Some(commands) = commands.upgrade() else { break };
+            let _ = commands.send(Command::ProjectDiscovered(request, sessions));
+        }
+    }).expect("start project discovery");
+    sender
 }
 
 impl Engine {
@@ -210,7 +245,9 @@ impl Engine {
                     Err(error)=>{let _=events_tx.send_blocking(Event::Error(error.to_string()));}
                 }
                 let mut discovering=start_discovery(home.clone(),root.clone(),discovery_commands.clone(),events_tx.clone());
+                let project_scans = project_discovery(home.clone(), discovery_commands.clone(), worker_latest.clone());
                 let viewport_root = database.parent().unwrap_or(&root).join("viewport");
+                let viewport_writer = ViewportWriter::new(viewport_root.clone());
                 let mut histories: VecDeque<(String, HistoryState)> = VecDeque::new();
                 let mut paused_live_history:Option<(String,uuid::Uuid,HistoryState)>=None;
                 while let Ok(command) = rx.recv() {
@@ -252,10 +289,12 @@ impl Engine {
                         | Command::RestoreViewport(session, generation, _) => {
                             RequestScope::History(session.id.clone(), *generation)
                         }
-                        Command::LoadProject(path, generation) => {
+                        Command::LoadProject(path, generation)
+                        | Command::ProjectDiscovered(ProjectScan { path, generation, sidebar: false }, _) => {
                             RequestScope::Project(path.clone(), *generation)
                         }
-                        Command::LoadSidebarProject(path, generation) => {
+                        Command::LoadSidebarProject(path, generation)
+                        | Command::ProjectDiscovered(ProjectScan { path, generation, sidebar: true }, _) => {
                             RequestScope::SidebarProject(path.clone(), *generation)
                         }
                         Command::LoadArchived(_, generation) => RequestScope::Archived(*generation),
@@ -274,38 +313,35 @@ impl Engine {
                             if let Some(mut state)=state{state.generation=generation;histories.retain(|(owner,_)|owner!=&id);if histories.len()>=8{histories.pop_front();}histories.push_back((id,state));}Ok(None)
                         }
                         Command::Flush(done) => {
-                            let _ = done.send(());
+                            viewport_writer.flush(done);
                             Ok(None)
                         }
                         Command::SaveViewport(id, generation, page, at_bottom) => {
-                            let mut persisted = false;
-                            if let Some((_, state)) =
-                                histories.iter_mut().find(|(current, state)| {
-                                    current == &id && state.generation == generation
-                                })
-                            {
-                                persisted = state
-                                    .persist_viewport(&viewport_root, &id, page, &store)
-                                    .is_ok();
-                            }
-                            if !persisted
-                                && at_bottom
-                                && page == 0
-                                && let Some(session) = store.session(&id)?
-                            {
-                                // A newly completed turn invalidates the old cursor.
-                                // Persist a fresh bounded tail only for an explicitly
-                                // bottom-anchored viewport, never substitute a deep
-                                // manually scrolled page or replace live UI cursors.
-                                let mut fresh = HistoryState::new(&session, generation, &store)?;
-                                let messages = fresh.next(&store, &session, 200)?;
-                                fresh.cache(&messages, fresh.has_older())?;
-                                let _ = fresh.persist_viewport(&viewport_root, &id, 0, &store);
+                            let _span = crate::performance::Span::new("viewport_prepare");
+                            let snapshot = histories.iter_mut()
+                                .find(|(current, state)| current == &id && state.generation == generation)
+                                .and_then(|(_, state)| state.viewport_snapshot(&id, page, &store).ok());
+                            match snapshot {
+                                Some(Some(snapshot)) => viewport_writer.save(snapshot),
+                                None if at_bottom && page == 0 => {
+                                    // A completed turn can invalidate the old cursor. Only
+                                    // replace a bottom-anchored viewport with a fresh tail.
+                                    if let Some(session) = store.session(&id)? {
+                                        let mut fresh = HistoryState::new(&session, generation, &store)?;
+                                        let messages = fresh.next(&store, &session, 200)?;
+                                        fresh.cache(&messages, fresh.has_older())?;
+                                        if let Ok(Some(snapshot)) = fresh.viewport_snapshot(&id, 0, &store) {
+                                            viewport_writer.save(snapshot);
+                                        }
+                                    }
+                                }
+                                _ => {}
                             }
                             Ok(None)
                         }
                         Command::RestoreViewport(session, generation, page) => {
                             let session = resolve_history_session(&home, &store, session)?;
+                            let _viewport = viewport_writer.current.lock().unwrap();
                             let (state, messages, has_older) = HistoryState::restore_viewport(
                                 &viewport_root,
                                 &session,
@@ -329,6 +365,7 @@ impl Engine {
                             )))
                         }
                         Command::LoadModel(id, generation) => {
+                            let _span = crate::performance::Span::new("chat_model_lookup");
                             let mut usage=store.session_usage(&id)?;
                             if let Some(session)=store.session(&id)?{
                                 if let Some(native)=session.transcript_path.as_deref().and_then(|p|crate::usage::native_chat_settings(p,session.agent)){
@@ -417,24 +454,22 @@ impl Engine {
                         }
                         Command::Discovered(found)=>{discovering=false;install(&mut store,found).map(Some)}
                         Command::LoadProject(path, generation) => {
-                            store.upsert_discovered_sessions(&discovery::discover_project(
-                                &home, &path,
-                            ))?;
-                            Ok(Some(Event::ProjectSessions(
-                                path.clone(),
-                                generation,
-                                store.sessions_for_project(&path)?,
-                            )))
+                            project_scans.send(ProjectScan { path, generation, sidebar: false })?;
+                            Ok(None)
                         }
                         Command::LoadSidebarProject(path, generation) => {
-                            store.upsert_discovered_sessions(&discovery::discover_project(
-                                &home, &path,
-                            ))?;
-                            Ok(Some(Event::SidebarProject(
-                                path.clone(),
-                                generation,
-                                store.sessions_for_project(&path)?,
-                            )))
+                            project_scans.send(ProjectScan { path, generation, sidebar: true })?;
+                            Ok(None)
+                        }
+                        Command::ProjectDiscovered(ProjectScan { path, generation, sidebar }, found) => {
+                            let _span = crate::performance::Span::new("project_discovery_install");
+                            store.upsert_discovered_sessions(&found)?;
+                            let sessions = store.sessions_for_project(&path)?;
+                            Ok(Some(if sidebar {
+                                Event::SidebarProject(path, generation, sessions)
+                            } else {
+                                Event::ProjectSessions(path, generation, sessions)
+                            }))
                         }
                         Command::Search(query, generation) => {
                             Ok(Some(Event::Search(generation, store.search(&query)?)))
@@ -514,7 +549,18 @@ impl Engine {
                                 range,
                             )))
                         }
+                        Command::SplitTail(session, reply) => {
+                            let result = (|| -> anyhow::Result<_> {
+                                let session = resolve_history_session(&home, &store, session)?;
+                                let mut state = HistoryState::new_cancellable(&session, 0, &store, || reply.is_closed())?;
+                                let page = state.next_cancellable(&store, &session, 36, &|| reply.is_closed())?;
+                                Ok(parse_messages(page))
+                            })();
+                            let _ = reply.try_send(result.map_err(|error| error.to_string()));
+                            Ok(None)
+                        }
                         Command::Load(session, generation, limit, offset) => {
+                            let _span = crate::performance::Span::new("chat_history_load");
                             let session = resolve_history_session(&home, &store, session)?;
                             let mut state = HistoryState::new_cancellable(
                                 &session,
@@ -600,6 +646,22 @@ impl Engine {
                                 has_older,
                             )))
                         }
+                        Command::CursorCliId(id, reply) => {
+                            let _ = reply.try_send(store.cursor_cli_id(&id).map_err(|error| error.to_string()));
+                            Ok(None)
+                        }
+                        Command::CursorCliContext(id, reply) => {
+                            let _ = reply.try_send(store.cursor_cli_context(&id).map_err(|error| error.to_string()));
+                            Ok(None)
+                        }
+                        Command::BindCursorCli(id, native_id) => {
+                            store.bind_cursor_cli(&id, &native_id)?;
+                            Ok(None)
+                        }
+                        Command::ImportCursorCli(id, history) => {
+                            history.import(&store, &id)?;
+                            Ok(None)
+                        }
                         Command::Save(session, role, text) => {
                             store.upsert_session(&session)?;
                             if let Some(text) = presentation::sanitize_transcript_text(&role, &text)
@@ -630,6 +692,7 @@ impl Engine {
                                 .unwrap_or_default();
                             if !text.trim().is_empty() {
                                 store.save_message(&session.id, "assistant", &text)?;
+                                store.clear_cursor_cli_context(&session.id)?;
                             }
                             Ok(Some(Event::Parsed(session.id, presentation::blocks(&text))))
                         }
@@ -641,6 +704,7 @@ impl Engine {
                             refresh_codex_transcript(&home, &mut session);
                             store.upsert_session(&session)?;
                             store.save_response_source(&session.id, &source)?;
+                            store.clear_cursor_cli_context(&session.id)?;
                             // The existing lazy reader supplies the latest bounded
                             // page. Never parse an entire completed response here.
                             Ok(Some(Event::PagedFinished(session.id)))
@@ -713,6 +777,11 @@ impl Engine {
     pub fn workspace_query(&self,args:serde_json::Value)->async_channel::Receiver<serde_json::Value>{let(tx,rx)=async_channel::bounded(1);let _=self.tx.send(Command::WorkspaceQuery(args,tx));rx}
     pub fn load(&self, session: SessionSummary, generation: u64) {
         self.load_history(session, generation, 200);
+    }
+    pub fn split_tail(&self, session: SessionSummary) -> async_channel::Receiver<Result<Vec<ParsedMessage>, String>> {
+        let (reply, response) = async_channel::bounded(1);
+        let _ = self.tx.send(Command::SplitTail(session, reply));
+        response
     }
     pub fn load_history(&self, session: SessionSummary, generation: u64, limit: usize) {
         self.load_history_window(session, generation, limit, 0);
@@ -815,6 +884,22 @@ impl Engine {
     pub fn bind_handoff(&self, session: SessionSummary, packet: Arc<crate::handoff::Packet>) {
         let _ = self.tx.send(Command::BindHandoff(session, packet));
     }
+    pub(super) fn cursor_cli_id(&self, id: String) -> async_channel::Receiver<Result<Option<String>, String>> {
+        let (reply, receiver) = async_channel::bounded(1);
+        let _ = self.tx.send(Command::CursorCliId(id, reply));
+        receiver
+    }
+    pub(super) fn cursor_cli_context(&self, id: String) -> async_channel::Receiver<Result<Option<String>, String>> {
+        let (reply, receiver) = async_channel::bounded(1);
+        let _ = self.tx.send(Command::CursorCliContext(id, reply));
+        receiver
+    }
+    pub(super) fn bind_cursor_cli(&self, id: String, native_id: String) {
+        let _ = self.tx.send(Command::BindCursorCli(id, native_id));
+    }
+    pub(super) fn import_cursor_cli(&self, id: String, history: crate::cursor_cli_history::Sync) {
+        let _ = self.tx.send(Command::ImportCursorCli(id, history));
+    }
     pub fn save(&self, session: SessionSummary, role: &str, text: String) {
         let _ = self.tx.send(Command::Save(session, role.into(), text));
     }
@@ -881,7 +966,8 @@ fn resolve_history_session(
     store: &Store,
     session: SessionSummary,
 ) -> anyhow::Result<SessionSummary> {
-    let mut resolved = store.session(&session.id)?.unwrap_or(session);
+    let saved = store.session(&session.id)?;
+    let mut resolved = saved.clone().unwrap_or(session);
     if resolved.agent == discovery::AgentKind::Codex
         && let Some(id) = resolved.external_id.as_deref()
         && let Some(path) =
@@ -889,7 +975,11 @@ fn resolve_history_session(
     {
         resolved.transcript_path = Some(path);
     }
-    store.upsert_session(&resolved)?;
+    if resolved.external_id.is_some()
+        || saved.as_ref().is_none_or(|previous| previous.transcript_path != resolved.transcript_path)
+    {
+        store.upsert_session(&resolved)?;
+    }
     if let Some((mut source, _)) = store.conversation_baseline(&resolved.id)?
         && source.agent == discovery::AgentKind::Codex
         && let Some(id) = source.external_id.as_deref()
@@ -1108,6 +1198,129 @@ struct SavedViewport {
     pages: BTreeMap<usize, CursorPair>,
     assets: Vec<ViewportAsset>,
 }
+struct ViewportSnapshot {
+    saved: SavedViewport,
+    artifacts: Vec<Arc<crate::history_artifact::HistoryArtifact>>,
+}
+
+impl ViewportSnapshot {
+    fn write(mut self, root: &Path, current: &Mutex<()>) -> anyhow::Result<()> {
+        fs::create_dir_all(root)?;
+        fs::set_permissions(root, fs::Permissions::from_mode(0o700))?;
+        let name = format!("snapshot-{}", uuid::Uuid::new_v4());
+        let folder = root.join(&name);
+        fs::create_dir(&folder)?;
+        fs::set_permissions(&folder, fs::Permissions::from_mode(0o700))?;
+        struct Folder(PathBuf);
+        impl Drop for Folder {
+            fn drop(&mut self) {
+                if !self.0.as_os_str().is_empty() {
+                    let _ = fs::remove_dir_all(&self.0);
+                }
+            }
+        }
+        let mut cleanup = Folder(folder.clone());
+        let mut map = HashMap::new();
+        let assets = &mut self.saved.assets;
+        for artifact in self.artifacts {
+            let file = PathBuf::from(format!("artifact-{}", assets.len()));
+            let target = folder.join(&file);
+            crate::history_artifact::HistoryArtifact::link_to(&artifact.path, &target)?;
+            File::open(&target)?.sync_all()?;
+            map.insert(artifact.path.clone(), file.clone());
+            assets.push(ViewportAsset {
+                name: file,
+                stamp: crate::history_artifact::FileStamp::read(&target)?,
+            });
+        }
+        for pair in self.saved.pages.values_mut() {
+            pair.before.rewrite(&map);
+            pair.after.rewrite(&map);
+        }
+        let encoded = serde_json::to_vec(&self.saved)?;
+        anyhow::ensure!(
+            encoded.len() <= VIEWPORT_BYTES,
+            "Saved viewport exceeded its metadata budget"
+        );
+        write_atomic(&folder.join("manifest.json"), &encoded)?;
+        File::open(&folder)?.sync_all()?;
+        // A restore may still be opening files from the previous snapshot.
+        // Lock only the commit, leaving preparation and fsyncs off the reader.
+        let _commit = current.lock().unwrap();
+        let old = read_bounded::<String>(&root.join("current.json"), 1024)
+            .ok()
+            .filter(|s| single_component(Path::new(s)));
+        write_atomic(&root.join("current.json"), &serde_json::to_vec(&name)?)?;
+        // Once the pointer is published it must always name a complete folder,
+        // even if synchronizing the parent directory reports an error.
+        cleanup.0 = PathBuf::new();
+        File::open(root)?.sync_all()?;
+        if let Some(old) = old {
+            let _ = fs::remove_dir_all(root.join(old));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct ViewportWrites {
+    pending: Option<ViewportSnapshot>,
+    writing: bool,
+    flushers: Vec<mpsc::Sender<()>>,
+}
+
+struct ViewportWriter {
+    state: Arc<Mutex<ViewportWrites>>,
+    current: Arc<Mutex<()>>,
+    wake: mpsc::SyncSender<()>,
+}
+
+impl ViewportWriter {
+    fn new(root: PathBuf) -> Self {
+        let state = Arc::new(Mutex::new(ViewportWrites::default()));
+        let current = Arc::new(Mutex::new(()));
+        let (wake, ready) = mpsc::sync_channel(1);
+        let (writer_state, writer_current) = (state.clone(), current.clone());
+        std::thread::Builder::new().name("kai-viewport-save".into()).spawn(move || {
+            while ready.recv().is_ok() {
+                loop {
+                    let snapshot = {
+                        let mut state = writer_state.lock().unwrap();
+                        if state.pending.is_none() {
+                            state.writing = false;
+                            for done in state.flushers.drain(..) {
+                                let _ = done.send(());
+                            }
+                            break;
+                        }
+                        state.writing = true;
+                        state.pending.take().unwrap()
+                    };
+                    let _span = crate::performance::Span::new("viewport_disk_commit");
+                    let _ = snapshot.write(&root, &writer_current);
+                }
+            }
+        }).expect("start viewport writer");
+        Self { state, current, wake }
+    }
+
+    fn save(&self, snapshot: ViewportSnapshot) {
+        // Only the latest workspace viewport matters. Keep at most one waiting
+        // snapshot even if the filesystem stalls across several switches.
+        self.state.lock().unwrap().pending = Some(snapshot);
+        let _ = self.wake.try_send(());
+    }
+
+    fn flush(&self, done: mpsc::Sender<()>) {
+        let mut state = self.state.lock().unwrap();
+        if state.writing || state.pending.is_some() {
+            state.flushers.push(done);
+        } else {
+            let _ = done.send(());
+        }
+    }
+}
+
 fn read_bounded<T: serde::de::DeserializeOwned>(path: &Path, limit: usize) -> anyhow::Result<T> {
     let file = File::open(path)?;
     let mut bytes = Vec::new();
@@ -1527,13 +1740,12 @@ impl HistoryState {
         self.pages.insert(page, older);
         Ok((messages, older))
     }
-    fn persist_viewport(
+    fn viewport_snapshot(
         &mut self,
-        root: &Path,
         id: &str,
         page: usize,
         store: &Store,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<Option<ViewportSnapshot>> {
         anyhow::ensure!(
             store.viewport_head(id)? == self.local_head,
             "Conversation changed since this viewport was loaded"
@@ -1545,7 +1757,7 @@ impl HistoryState {
             "Native source changed since this viewport was loaded"
         );
         if self.last_persisted == Some((page, self.checkpoints.len())) {
-            return Ok(());
+            return Ok(None);
         }
         let (messages, has_older) = self.cached(
             page,
@@ -1565,68 +1777,31 @@ impl HistoryState {
             );
             pairs.insert(*number, read_bounded::<CursorPair>(&path, VIEWPORT_BYTES)?);
         }
-        fs::create_dir_all(root)?;
-        fs::set_permissions(root, fs::Permissions::from_mode(0o700))?;
-        let name = format!("snapshot-{}", uuid::Uuid::new_v4());
-        let folder = root.join(&name);
-        fs::create_dir(&folder)?;
-        fs::set_permissions(&folder, fs::Permissions::from_mode(0o700))?;
-        struct Folder(PathBuf);
-        impl Drop for Folder {
-            fn drop(&mut self) {
-                if !self.0.as_os_str().is_empty() {
-                    let _ = fs::remove_dir_all(&self.0);
-                }
-            }
-        }
-        let mut cleanup = Folder(folder.clone());
-        let mut map = HashMap::new();
-        let mut assets = Vec::new();
-        for artifact in self.held_artifacts.values() {
-            let file = PathBuf::from(format!("artifact-{}", assets.len()));
-            let target = folder.join(&file);
-            crate::history_artifact::HistoryArtifact::link_to(&artifact.path, &target)?;
-            File::open(&target)?.sync_all()?;
-            map.insert(artifact.path.clone(), file.clone());
-            assets.push(ViewportAsset {
-                name: file,
-                stamp: crate::history_artifact::FileStamp::read(&target)?,
-            });
-        }
-        for pair in pairs.values_mut() {
-            pair.before.rewrite(&map);
-            pair.after.rewrite(&map);
-        }
-        let saved = SavedViewport {
-            version: 2,
-            id: id.into(),
-            page,
-            local_head: self.local_head,
-            messages,
-            has_older,
-            range: self.represented_range,
-            pages: pairs,
-            assets,
-        };
-        let encoded = serde_json::to_vec(&saved)?;
-        anyhow::ensure!(
-            encoded.len() <= VIEWPORT_BYTES,
-            "Saved viewport exceeded its metadata budget"
-        );
-        write_atomic(&folder.join("manifest.json"), &encoded)?;
-        File::open(&folder)?.sync_all()?;
-        let old = read_bounded::<String>(&root.join("current.json"), 1024)
-            .ok()
-            .filter(|s| single_component(Path::new(s)));
-        write_atomic(&root.join("current.json"), &serde_json::to_vec(&name)?)?;
-        File::open(root)?.sync_all()?;
-        cleanup.0 = PathBuf::new();
-        if let Some(old) = old {
-            let _ = fs::remove_dir_all(root.join(old));
-        }
         self.last_persisted = Some((page, self.checkpoints.len()));
+        Ok(Some(ViewportSnapshot {
+            saved: SavedViewport {
+                version: 2,
+                id: id.into(),
+                page,
+                local_head: self.local_head,
+                messages,
+                has_older,
+                range: self.represented_range,
+                pages: pairs,
+                assets: Vec::new(),
+            },
+            artifacts: self.held_artifacts.values().cloned().collect(),
+        }))
+    }
+
+    #[cfg(test)]
+    fn persist_viewport(&mut self, root: &Path, id: &str, page: usize, store: &Store) -> anyhow::Result<()> {
+        if let Some(snapshot) = self.viewport_snapshot(id, page, store)? {
+            snapshot.write(root, &Mutex::new(()))?;
+        }
         Ok(())
     }
+
     fn restore_viewport(
         root: &Path,
         session: &SessionSummary,
@@ -1854,6 +2029,35 @@ mod tests {
         release.write_all(b"{}").unwrap();drop(release);
         assert!(matches!(receive_event(&engine),Event::Ready(..)));
         drop(engine);fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn sidebar_provider_scan_cannot_hold_up_a_saved_chat() {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let root = temp_root();
+        let mut session = imported(&root);
+        session.transcript_path = None;
+        let engine = Engine::new(root.clone(), root.clone(), root.join("history.sqlite"));
+        assert!(matches!(receive_event(&engine), Event::Ready(..)));
+        engine.save(session.clone(), "user", "Saved before the scan".into());
+        engine.flush().recv_timeout(std::time::Duration::from_secs(3)).unwrap();
+
+        fs::create_dir_all(root.join(".codex")).unwrap();
+        let pipe = root.join(".codex/.codex-global-state.json");
+        let path = std::ffi::CString::new(pipe.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+        let mut release = OpenOptions::new().read(true).write(true)
+            .custom_flags(libc::O_NONBLOCK).open(&pipe).unwrap();
+
+        engine.load_sidebar_project(root.clone(), 42);
+        engine.load(session, 1);
+        assert!(matches!(receive_event(&engine), Event::Loaded(_, 1, _, _, _)));
+        release.write_all(b"{}").unwrap();
+        drop(release);
+        assert!(matches!(receive_event(&engine), Event::SidebarProject(_, 42, _)));
+        drop(engine);
+        fs::remove_dir_all(root).unwrap();
     }
 
     fn temp_root() -> PathBuf {

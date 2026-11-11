@@ -499,6 +499,9 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn on_appearance_changed(&self, callback: Box<dyn FnMut()>);
     fn draw(&self, scene: &Scene);
     fn completed_frame(&self) {}
+    fn frame_waker(&self) -> Option<Box<dyn Fn()>> { None }
+    fn request_visible_frame(&self) {}
+    fn park_frame_clock(&self) {}
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas>;
 
     // macOS specific methods

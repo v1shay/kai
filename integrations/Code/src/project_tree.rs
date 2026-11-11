@@ -376,7 +376,7 @@ impl Orbit {
             .map_or(target, |(start, from)| {
                 (from
                     + (target - from)
-                        * presentation::spring((start.elapsed().as_secs_f32() / 0.65).min(1.)))
+                        * presentation::ease_out((start.elapsed().as_secs_f32() / 0.65).min(1.)))
                 .clamp(0., 1.)
             })
     }
@@ -685,6 +685,7 @@ impl Orbit {
                 }
                 let chat_project = parent.clone();
                 let menu_session = session.clone();
+                let drag = self.chat_drag(&session);
                 let selected = self.active.as_deref() == Some(&session.id);
                 let running = self.runs.contains_key(&session.id)
                     || self
@@ -707,6 +708,7 @@ impl Orbit {
                 row.child(
                     div()
                         .id(("tree-chat", session_ix))
+                        .on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.clone()))
                         .debug_selector({
                             let id = session.id.clone();
                             move || format!("tree-chat-{id}")

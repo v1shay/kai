@@ -4,6 +4,10 @@ pub(super) fn enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var_os("KAI_PERFORMANCE_LOG").is_some())
 }
+pub(super) fn trace_motion() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("KAI_TRACE_MOTION").is_some())
+}
 pub(super) struct Span {
     at: Instant,
     name: &'static str,
@@ -74,6 +78,10 @@ pub(super) fn start_probe(window: WindowHandle<Orbit>, cx: &mut App) {
     if !std::env::args().any(|a| a == "--unified-smoke-test") {
         return;
     }
+    if std::env::args().any(|arg| arg == "--unified-chat-split-probe") {
+        start_chat_split_probe(window, cx);
+        return;
+    }
     if std::env::args().any(|a|a=="--unified-ninja-render-probe"){start_ninja_probe(window,cx);return}
     cx.spawn(async move |cx| {
         if std::env::args().any(|a|a=="--unified-background-idle-probe"){
@@ -90,39 +98,47 @@ pub(super) fn start_probe(window: WindowHandle<Orbit>, cx: &mut App) {
             if startup.elapsed()>Duration::from_secs(20){eprintln!("KAI_LATENCY_PROBE_FAILED startup did not settle");let _=cx.update(|cx|cx.quit());return}
             Timer::after(Duration::from_millis(25)).await;
         }
+        let native_fixture = std::env::var_os("KAI_LATENCY_NATIVE_FIXTURE").is_some();
+        let chat_count = if native_fixture { 24 } else { 4 };
         let chats = window
             .update(cx, |app, _, _| {
-                (0..4)
+                let chats = (0..chat_count)
                     .map(|i| {
+                        let id = uuid::Uuid::new_v4().to_string();
+                        let transcript_path = native_fixture.then(|| native_history_fixture(&id));
                         let session = SessionSummary {
-                            id: uuid::Uuid::new_v4().to_string(),
+                            id,
                             title: format!("Latency fixture {i}"),
                             agent: AgentKind::Codex,
                             project_path: app.project.clone(),
                             execution_path: None,
                             updated_at: chrono::Utc::now().timestamp(),
                             external_id: None,
-                            transcript_path: None,
+                            transcript_path,
                         };
                         app.engine.update_session(session.clone());
-                        app.engine.save(
-                            session.clone(),
-                            "user".into(),
-                            "Inspect this fixture".into(),
-                        );
-                        app.engine.save(
-                            session.clone(),
-                            "assistant:codex".into(),
-                            "A small but real saved conversation.\n".repeat(100),
-                        );
+                        if !native_fixture {
+                            app.engine.save(
+                                session.clone(),
+                                "user".into(),
+                                "Inspect this fixture".into(),
+                            );
+                            app.engine.save(
+                                session.clone(),
+                                "assistant:codex".into(),
+                                "A small but real saved conversation.\n".repeat(100),
+                            );
+                        }
                         app.sessions.push(session.clone());
                         session
                     })
-                    .collect::<Vec<_>>()
+                    .collect::<Vec<_>>();
+                app.rebuild_workspace_sessions();
+                chats
             })
             .unwrap();
         Timer::after(Duration::from_millis(200)).await;
-        for index in 0..28 {
+        for index in 0..chat_count + 24 {
             let chat = chats[index % chats.len()].clone();
             let id = chat.id.clone();
             let start = Instant::now();
@@ -145,13 +161,14 @@ pub(super) fn start_probe(window: WindowHandle<Orbit>, cx: &mut App) {
             }
             Timer::after(Duration::from_millis(100)).await;
         }
-        for _ in 0..20 {
+        for _ in 0..if native_fixture { 0 } else { 20 } {
             let _ = window.update(cx, |_, _, _| unified::collapse());
             Timer::after(Duration::from_millis(720)).await;
             let _ = window.update(cx, |_, window, cx| {
                 let at = Instant::now();
+                window.on_next_frame(move |_, _| sample("warm_frame_wake", at.elapsed()));
+                window.on_frame_submitted(move |_, _| sample("warm_reveal", at.elapsed()));
                 unified::reveal();
-                window.on_next_frame(move |_, _| sample("warm_reveal", at.elapsed()));
                 cx.notify();
             });
             Timer::after(Duration::from_millis(950)).await;
@@ -160,6 +177,303 @@ pub(super) fn start_probe(window: WindowHandle<Orbit>, cx: &mut App) {
         let _ = cx.update(|cx| cx.quit());
     })
     .detach();
+}
+
+pub(super) fn chat_split_probe_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::args().any(|arg| arg == "--unified-chat-split-probe"))
+}
+
+thread_local! {
+    static SPLIT_PROBE_BOUNDS: std::cell::Cell<[Option<Bounds<Pixels>>; 3]> =
+        const { std::cell::Cell::new([None; 3]) };
+}
+
+pub(super) fn chat_split_probe_area(index: usize) -> impl IntoElement {
+    canvas(move |bounds, _, _| {
+        SPLIT_PROBE_BOUNDS.with(|areas| {
+            let mut positions = areas.get();
+            positions[index] = Some(bounds);
+            areas.set(positions);
+        });
+    }, |_, _, _, _| {}).absolute().size_full()
+}
+
+async fn probe_chat_drag(owner: WindowHandle<Orbit>, destination: usize, cx: &mut AsyncApp) {
+    let (from, to) = SPLIT_PROBE_BOUNDS.with(|areas| {
+        let positions = areas.get();
+        (positions[0].expect("First chat tab has no bounds").center(),
+         positions[destination].expect("Drop target has no bounds").center())
+    });
+    for event in [
+        PlatformInput::MouseDown(MouseDownEvent {
+            button: MouseButton::Left, position: from, click_count: 1, ..Default::default()
+        }),
+        PlatformInput::MouseMove(MouseMoveEvent {
+            pressed_button: Some(MouseButton::Left), position: to, ..Default::default()
+        }),
+        PlatformInput::MouseUp(MouseUpEvent {
+            button: MouseButton::Left, position: to, click_count: 1, ..Default::default()
+        }),
+    ] {
+        AnyWindowHandle::from(owner).update(cx, |_, window, cx| {
+            window.dispatch_event(event, cx);
+        }).unwrap();
+        Timer::after(Duration::from_millis(80)).await;
+    }
+}
+
+async fn probe_split_prompt_click(owner: WindowHandle<Orbit>, cx: &mut AsyncApp) {
+    let position = owner.update(cx, |app, _, cx| {
+        let bounds = app.split_prompt_bounds(cx).expect("Split prompt bar has no bounds");
+        point(bounds.left() + px(8.), bounds.center().y)
+    }).unwrap();
+    for event in [
+        PlatformInput::MouseDown(MouseDownEvent {
+            button: MouseButton::Left, position, click_count: 1, ..Default::default()
+        }),
+        PlatformInput::MouseUp(MouseUpEvent {
+            button: MouseButton::Left, position, click_count: 1, ..Default::default()
+        }),
+    ] {
+        AnyWindowHandle::from(owner).update(cx, |_, window, cx| {
+            window.dispatch_event(event, cx);
+        }).unwrap();
+        Timer::after(Duration::from_millis(80)).await;
+    }
+}
+
+fn start_chat_split_probe(owner: WindowHandle<Orbit>, cx: &mut App) {
+    cx.spawn(async move |cx| {
+        Timer::after(Duration::from_secs(3)).await;
+        let (first, second, first_panel, second_panel) = owner.update(cx, |app, window, cx| {
+            let session = |title: &str| {
+                let project = PathBuf::from(std::env::var_os("ORBIT_DATA_DIR").unwrap()).join(title);
+                std::fs::create_dir_all(&project).unwrap();
+                SessionSummary {
+                id: uuid::Uuid::new_v4().to_string(),
+                title: title.to_owned(),
+                agent: AgentKind::Codex,
+                project_path: project,
+                execution_path: None,
+                updated_at: chrono::Utc::now().timestamp(),
+                external_id: None,
+                transcript_path: None,
+                }
+            };
+            let first = session("Split One");
+            let second = session("Split Two");
+            for session in [&first, &second] {
+                app.sessions.push(session.clone());
+                app.engine.save(session.clone(), "user".into(), session.title.clone());
+            }
+            app.open_session(first.clone(), window, cx);
+            app.composer.update(cx, |input, cx| input.set_text("First independent draft", cx));
+            app.new_terminal(window, cx);
+            let first_panel = app.active_terminal_panel().unwrap().clone();
+            app.open_session(second.clone(), window, cx);
+            app.composer.update(cx, |input, cx| input.set_text("Second independent draft", cx));
+            assert!(app.active_terminal_panel().is_none(), "Terminal followed navigation to a different chat");
+            app.new_terminal(window, cx);
+            let second_panel = app.active_terminal_panel().unwrap().clone();
+            (first, second, first_panel, second_panel)
+        }).unwrap();
+        Timer::after(Duration::from_millis(350)).await;
+        for destination in [1, 2] {
+            probe_chat_drag(owner, destination, cx).await;
+            owner.update(cx, |app, _, cx| {
+                assert_eq!(app.split_peer(), Some(first.id.as_str()), "Chat drag to target {destination} did not create a split");
+                if destination == 1 { app.close_chat_split(cx); }
+            }).unwrap();
+            Timer::after(Duration::from_millis(150)).await;
+        }
+        eprintln!("KAI_CHAT_DRAG_PROBE_OK");
+        for (session, panel, draft) in [
+            (&first, &first_panel, "First independent draft"),
+            (&second, &second_panel, "Second independent draft"),
+        ] {
+            let peer_bounds = owner.update(cx, |app, _, cx| {
+                let peer = app.split_prompt_bounds(cx).expect("Peer prompt is visible");
+                let active = app.composer.read(cx).bounds().expect("Focused prompt is visible");
+                assert!(!active.intersects(&peer), "Both prompts must occupy separate panes");
+                peer
+            }).unwrap();
+            probe_split_prompt_click(owner, cx).await;
+            owner.update(cx, |app, _, cx| {
+                assert_eq!(app.active.as_deref(), Some(session.id.as_str()));
+                assert_eq!(app.composer.read(cx).text(), draft);
+                let active = app.composer.read(cx).bounds().expect("Focused prompt is visible");
+                assert!((active.origin.x - peer_bounds.origin.x).abs() <= px(3.)
+                    && (active.origin.y - peer_bounds.origin.y).abs() <= px(3.)
+                    && (active.size.width - peer_bounds.size.width).abs() <= px(3.),
+                    "Focusing a split chat changed its prompt layout: {peer_bounds:?} to {active:?}");
+                assert_eq!(app.active_terminal_panel().unwrap().entity_id(), panel.entity_id());
+            }).unwrap();
+        }
+        eprintln!("KAI_SPLIT_PROMPTS_PROBE_OK");
+
+        let deadline = Instant::now() + Duration::from_secs(14);
+        for panel in [&first_panel, &second_panel] {
+            loop {
+                let sent = cx.update(|cx| panel.read(cx).probe_command("codex -c check_for_update_on_startup=false\r")).unwrap();
+                if sent { break; }
+                assert!(Instant::now() < deadline, "Split shell did not start");
+                Timer::after(Duration::from_millis(50)).await;
+            }
+        }
+        loop {
+            let running = cx.update(|cx| {
+                first_panel.read(cx).probe_has_text("Codex") && second_panel.read(cx).probe_has_text("Codex")
+            }).unwrap();
+            if running { break; }
+            assert!(Instant::now() < deadline, "Codex did not draw in both split terminals");
+            Timer::after(Duration::from_millis(50)).await;
+        }
+        for index in 0..12 {
+            owner.update(cx, |app, window, cx| {
+                let at = Instant::now();
+                window.resize(size(px(if index % 2 == 0 { 1120. } else { 1440. }), px(760.)));
+                window.on_frame_submitted(move |_, _| sample("codex_split_resize_frame", at.elapsed()));
+                if index == 4 {
+                    app.open_session(first.clone(), window, cx);
+                    assert_eq!(app.active_terminal_panel().unwrap().entity_id(), first_panel.entity_id());
+                    assert_eq!(app.split_peer(), Some(second.id.as_str()));
+                }
+            }).unwrap();
+            Timer::after(Duration::from_millis(120)).await;
+        }
+        owner.update(cx, |app, window, cx| {
+            app.close_chat_split(cx);
+            app.open_session(second, window, cx);
+            assert_eq!(app.active_terminal_panel().unwrap().entity_id(), second_panel.entity_id());
+            for panel in [&first_panel, &second_panel] { panel.update(cx, |panel, _| panel.stop()); }
+        }).unwrap();
+        Timer::after(Duration::from_millis(150)).await;
+        let load_deadline = Instant::now() + Duration::from_secs(5);
+        while owner.update(cx, |app, _, _| app.loading).unwrap() {
+            assert!(Instant::now() < load_deadline, "Fixture chat did not finish loading");
+            Timer::after(Duration::from_millis(25)).await;
+        }
+        let (chat_id, native_id, expected_root) = owner.update(cx, |app, window, cx| {
+            use std::os::unix::fs::PermissionsExt;
+            let id = app.active.clone().unwrap();
+            let native_id = uuid::Uuid::new_v4().to_string();
+            let session = app.sessions.iter_mut().find(|session| session.id == id).unwrap();
+            session.external_id = Some(native_id.clone());
+            let root = session.project_path.clone();
+            let cli = root.join("codex-handoff-fixture");
+            std::fs::write(&cli, "#!/bin/sh\nread ready\nprintf 'KAI_RESUME:%s:%s\\n' \"$1\" \"$2\"\nprintf 'KAI_CWD:%s\\n' \"$PWD\"\nread answer\n").unwrap();
+            std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700)).unwrap();
+            app.agents.iter_mut().find(|agent| agent.kind == AgentKind::Codex).unwrap().executable = Some(cli);
+            app.model = None;
+            app.composer.update(cx, |input, cx| input.set_text("Keep this GUI draft", cx));
+            app.terminalize_chat(window, cx);
+            assert!(app.chat_clis.contains_key(&id));
+            (id, native_id, root)
+        }).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let sent = owner.update(cx, |app, _, cx| app.chat_clis.get(&chat_id).and_then(|cli| cli.fallback.as_ref()).is_some_and(|(panel, _)| panel.read(cx).probe_command("ready\r"))).unwrap();
+            if sent { break; }
+            assert!(Instant::now() < deadline, "Chat CLI process did not start");
+            Timer::after(Duration::from_millis(50)).await;
+        }
+        loop {
+            let ready = owner.update(cx, |app, _, cx| app.chat_clis.get(&chat_id).and_then(|cli| cli.fallback.as_ref()).is_some_and(|(panel, _)| {
+                let panel = panel.read(cx);
+                panel.probe_has_text(&format!("KAI_RESUME:resume:{native_id}"))
+                    && panel.probe_has_text("KAI_CWD:")
+                    && panel.probe_has_text(expected_root.file_name().unwrap().to_str().unwrap())
+            })).unwrap();
+            if ready { break; }
+            assert!(Instant::now() < deadline, "Chat CLI did not resume the same conversation in its project");
+            Timer::after(Duration::from_millis(50)).await;
+        }
+        owner.update(cx, |app, window, cx| {
+            app.terminalize_chat(window, cx);
+            assert!(!app.chat_clis[&chat_id].selected);
+            assert_eq!(app.composer.read(cx).text(), "Keep this GUI draft");
+            app.terminalize_chat(window, cx);
+            assert!(app.chat_clis[&chat_id].selected);
+            app.new_conversation(window, cx);
+            app.model = None;
+            app.composer.update(cx, |input, cx| input.set_text("Unsent new chat draft", cx));
+            app.terminalize_chat(window, cx);
+            assert_eq!(app.chat_clis.len(), 2);
+            assert!(!app.chat_clis[keyboard::CLI_DRAFT].resumes_chat);
+        }).unwrap();
+        loop {
+            if owner.update(cx, |app, _, cx| app.chat_clis.get(keyboard::CLI_DRAFT)
+                .and_then(|cli| cli.fallback.as_ref()).is_some_and(|(panel, _)| panel.read(cx).probe_command("ready\r"))).unwrap() { break; }
+            assert!(Instant::now() < deadline, "Blank CLI did not start");
+            Timer::after(Duration::from_millis(50)).await;
+        }
+        loop {
+            if owner.update(cx, |app, _, cx| {
+                let panel = &app.chat_clis[keyboard::CLI_DRAFT].fallback.as_ref().unwrap().0;
+                panel.read(cx).probe_has_text("KAI_RESUME::") && panel.read(cx).probe_has_text("KAI_CWD:")
+                    && panel.read(cx).probe_has_text(expected_root.file_name().unwrap().to_str().unwrap())
+            }).unwrap() { break; }
+            assert!(Instant::now() < deadline, "Blank CLI did not start in the project without resume arguments");
+            Timer::after(Duration::from_millis(50)).await;
+        }
+        let promoted_id = owner.update(cx, |app, window, cx| {
+            let session = app.sessions.iter().find(|session| session.id == chat_id).unwrap().clone();
+            app.open_session(session, window, cx);
+            assert_eq!(app.composer.read(cx).text(), "Keep this GUI draft");
+            assert!(app.chat_clis[&chat_id].selected);
+            let first = &app.chat_clis[&chat_id].fallback.as_ref().unwrap().0;
+            let promoted = app.sessions.iter().find(|session| session.title == "Unsent new chat draft").unwrap().clone();
+            assert_ne!(promoted.id, keyboard::CLI_DRAFT);
+            let draft = &app.chat_clis[&promoted.id].fallback.as_ref().unwrap().0;
+            assert!(first.read(cx).is_visible());
+            assert!(!draft.read(cx).is_visible());
+            app.open_session(promoted.clone(), window, cx);
+            assert_eq!(app.composer.read(cx).text(), "Unsent new chat draft");
+            assert!(app.chat_clis[&chat_id].fallback.as_ref().unwrap().0.read(cx).probe_command("done\r"));
+            promoted.id
+        }).unwrap();
+        loop {
+            if owner.update(cx, |app, _, _| !app.chat_clis.contains_key(&chat_id)).unwrap() { break; }
+            assert!(Instant::now() < deadline, "CLI exit did not release its chat");
+            Timer::after(Duration::from_millis(50)).await;
+        }
+        owner.update(cx, |app, window, cx| {
+            assert!(app.chat_clis.contains_key(&promoted_id));
+            app.terminalize_chat(window, cx);
+            assert_eq!(app.composer.read(cx).text(), "Unsent new chat draft");
+            app.close_tab(&promoted_id, window, cx);
+            assert!(app.chat_clis.is_empty());
+        }).unwrap();
+        eprintln!("KAI_CHAT_CLI_PROBE_OK");
+        eprintln!("KAI_CHAT_SPLIT_PROBE_OK");
+        let _ = cx.update(|cx| cx.quit());
+    }).detach();
+}
+
+// Import a provider-shaped transcript through the normal history and model paths.
+fn native_history_fixture(id: &str) -> PathBuf {
+    use std::io::{BufWriter, Write};
+    let path = PathBuf::from(std::env::var_os("ORBIT_DATA_DIR").unwrap()).join(format!("{id}.jsonl"));
+    let mut file = BufWriter::new(std::fs::File::create(&path).unwrap());
+    let event = serde_json::json!({
+        "type": "response_item", "payload": {
+            "type": "message", "role": "assistant",
+            "content": [{"type": "output_text", "text": "A realistic persisted transcript. ".repeat(120)}]
+        }
+    });
+    let line = format!("{event}\n");
+    for _ in 0..3000 {
+        file.write_all(line.as_bytes()).unwrap();
+    }
+    writeln!(file, "{}", serde_json::json!({
+        "type": "turn_context", "payload": {"model": "fixture-model", "effort": "medium"}
+    })).unwrap();
+    for _ in 0..10 {
+        file.write_all(line.as_bytes()).unwrap();
+    }
+    file.flush().unwrap();
+    path
 }
 
 // Render the same production widgets with an isolated, deliberately long chat.

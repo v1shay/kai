@@ -238,6 +238,11 @@ impl Store {
                session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
                model TEXT NOT NULL
              );
+             CREATE TABLE IF NOT EXISTS cursor_cli_sessions (
+               session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+               native_id TEXT NOT NULL,
+               pending_context TEXT NOT NULL DEFAULT ''
+             );
              CREATE TABLE IF NOT EXISTS session_usage (
                session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
                report TEXT NOT NULL
@@ -1064,6 +1069,42 @@ impl Store {
             .collect())
     }
 
+    pub(super) fn cursor_cli_id(&self, session: &str) -> Result<Option<String>> {
+        Ok(self.connection.query_row("SELECT native_id FROM cursor_cli_sessions WHERE session_id=?1",
+            [session], |row| row.get(0)).optional()?)
+    }
+
+    pub(super) fn bind_cursor_cli(&self, session: &str, native_id: &str) -> Result<()> {
+        self.connection.execute(
+            "INSERT INTO cursor_cli_sessions(session_id,native_id) VALUES(?1,?2)
+             ON CONFLICT(session_id) DO UPDATE SET native_id=excluded.native_id",
+            params![session, native_id],
+        )?;
+        Ok(())
+    }
+
+    pub(super) fn cursor_cli_context(&self, session: &str) -> Result<Option<String>> {
+        Ok(self.connection.query_row("SELECT pending_context FROM cursor_cli_sessions
+            WHERE session_id=?1 AND pending_context<>''", [session], |row| row.get(0)).optional()?)
+    }
+
+    pub(super) fn clear_cursor_cli_context(&self, session: &str) -> Result<()> {
+        self.connection.execute("UPDATE cursor_cli_sessions SET pending_context='' WHERE session_id=?1", [session])?;
+        Ok(())
+    }
+
+    pub(super) fn append_cursor_cli_message(&self, session: &str, role: &str, text: &str) -> Result<()> {
+        let mut context = self.cursor_cli_context(session)?.unwrap_or_default();
+        let speaker = if role == "user" { "User" } else { "Assistant" };
+        use std::fmt::Write;
+        writeln!(context, "{speaker}: {text}")?;
+        if context.len() > 24 * 1024 {
+            let start = context.ceil_char_boundary(context.len() - 24 * 1024);
+            context.drain(..start);
+        }
+        self.write_message(session, role, text, None, Some(context))
+    }
+
     pub fn save_message(&self, session_id: &str, role: &str, text: &str) -> Result<()> {
         self.save_message_with_input(session_id, role, text, None)
     }
@@ -1091,6 +1132,10 @@ impl Store {
             input.as_ref().is_none_or(|s| s.len() <= 4096),
             "Native prompt association exceeded its budget"
         );
+        self.write_message(session_id, role, text, input, None)
+    }
+
+    fn write_message(&self, session_id: &str, role: &str, text: &str, input: Option<String>, cursor_context: Option<String>) -> Result<()> {
         // The caller persists a completed message once; streaming deltas remain in memory.
         let transaction = self.connection.unchecked_transaction()?;
         transaction.execute(
@@ -1101,6 +1146,10 @@ impl Store {
             "UPDATE sessions SET updated_at=MAX(updated_at,?1) WHERE id=?2",
             params![chrono::Utc::now().timestamp(), session_id],
         )?;
+        if let Some(context) = cursor_context {
+            transaction.execute("UPDATE cursor_cli_sessions SET pending_context=?2 WHERE session_id=?1",
+                params![session_id, context])?;
+        }
         transaction.commit()?;
         Ok(())
     }

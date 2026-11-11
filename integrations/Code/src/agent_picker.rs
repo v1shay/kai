@@ -33,15 +33,15 @@ impl Picker {
             return if self.closing { 0. } else { 1. };
         }
         let t =
-            (self.started.elapsed().as_secs_f32() / if self.closing { 0.12 } else { 0.32 }).min(1.);
+            (self.started.elapsed().as_secs_f32() / workspace_motion::surface_duration(self.closing).as_secs_f32()).min(1.);
         if self.closing {
-            self.closing_from * (1. - t * t)
+            self.closing_from * (1. - presentation::ease_out(t))
         } else {
-            presentation::spring(t)
+            presentation::ease_out(t)
         }
     }
     pub fn animating(&self) -> bool {
-        (!self.closing && !native::reduced_motion() && self.effort_hover.as_ref().is_some_and(|(_,at)|at.elapsed()<Duration::from_secs(5))) || self.effort_motion.is_some_and(|(at,_,_)|at.elapsed()<Duration::from_millis(340)) || self.started.elapsed() < Duration::from_millis(if self.closing { 120 } else { 320 })
+        (!self.closing && !native::reduced_motion() && self.effort_hover.as_ref().is_some_and(|(_,at)|at.elapsed()<Duration::from_secs(5))) || self.effort_motion.is_some_and(|(at,_,_)|at.elapsed()<Duration::from_millis(340)) || self.started.elapsed() < workspace_motion::surface_duration(self.closing)
             || self
                 .auth_pulse
                 .is_some_and(|(_, t)| t.elapsed() < Duration::from_millis(360))
@@ -464,7 +464,7 @@ impl Orbit {
                                 .filter(|(k, _)| *k == kind.command())
                                 .map(|(_, t)| {
                                     let p = (t.elapsed().as_secs_f32() / 0.36).min(1.);
-                                    2. * (1. - presentation::spring(p))
+                                    2. * (1. - presentation::ease_out(p))
                                 })
                                 .unwrap_or(0.)
                         } else {

@@ -17,11 +17,11 @@ pub struct Shortcut {
 impl Default for Shortcut {
     fn default() -> Self {
         Self {
-            key: "space".into(),
-            control: true,
-            alt: true,
+            key: "j".into(),
+            control: false,
+            alt: false,
             shift: false,
-            command: false,
+            command: true,
             key_code: None,
         }
     }
@@ -501,16 +501,15 @@ mod tests {
     #[test]
     fn shortcut_roundtrip_and_validation() {
         let shortcut = Shortcut::default();
-        assert_eq!(shortcut.label(), "⌃⌥Space");
-        assert_eq!(shortcut.code().unwrap(), 49);
+        assert_eq!(shortcut.label(), "⌘J");
+        assert_eq!(shortcut.code().unwrap(), 38);
         assert_eq!(
             serde_json::from_str::<Shortcut>(&serde_json::to_string(&shortcut).unwrap()).unwrap(),
             shortcut
         );
         assert!(
             Shortcut {
-                control: false,
-                alt: false,
+                command: false,
                 ..shortcut.clone()
             }
             .validate()

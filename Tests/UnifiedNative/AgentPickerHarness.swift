@@ -5,11 +5,13 @@ private func field(_ object:Any,_ key:String)->Any?{Mirror(reflecting:object).ch
   _=NSApplication.shared
   let picker=NativeAgentPicker();var actions=[String]();var providerRequest=""
   picker.onAgent={id,request in providerRequest=request;actions.append("agent:"+id)};picker.onModel={actions.append("model:"+$0)};picker.onEffort={actions.append("effort:"+$0+":"+$1)}
-  func packet(agent:String="codex",horizontal:Bool=true,owner:String="owner",thread:String="code:picker",failed:Bool=false,ownFailure:Bool=false,dense:Bool=false)->KaiState{
+  func packet(agent:String="codex",horizontal:Bool=true,owner:String="owner",thread:String="code:picker",failed:Bool=false,ownFailure:Bool=false,dense:Bool=false,unavailableGemini:Bool=false,ninja:Bool=false)->KaiState{
    var models=["gpt-6-luna","gpt-6.1-sol","gpt-6-astra"].map{["model":$0,"displayName":$0,"supportedReasoningEfforts":[["reasoningEffort":"low"],["reasoningEffort":"high"]]] as [String:Any]}
    if dense{for i in models.indices{models[i]["supportedReasoningEfforts"]=["none","minimal","low","medium","high","xhigh","max","ultra"].map{["reasoningEffort":$0]}};models += (0..<64).map{["model":"model-\($0)","displayName":"Model \($0)","supportedReasoningEfforts":[]] as [String:Any]}}
    var body:[String:Any]=["project":"/private/tmp","projects":[],"chats":[],"standaloneChats":[],"standalone":true,"threadId":thread,"threadName":"Picker audit","history":[],"attachments":[],"readOnly":false,"approval":false,"activity":["scene":"off","text":"Ready"],"activeTasks":[],"notice":"Ready","selectedAgent":agent,"effectiveModel":"gpt-6-luna","selectedModel":"gpt-6-luna","effectiveReasoningEffort":"low","models":models,"ownerToken":owner,"horizontalAgentPicker":horizontal,"agents":[["id":"codex","name":"Codex","available":true],["id":"gemini","name":"Gemini","available":true]]]
    if dense{body["agents"]=["codex","claude","gemini","opencode","cursor","grok","antigravity"].map{["id":$0,"name":$0,"available":true] as [String:Any]}}
+   if unavailableGemini{body["agents"]=[["id":"codex","name":"Codex","available":true],["id":"gemini","name":"Gemini","available":false]]}
+   if ninja{body["ninja"]=["selection":["machine":"local","endpoint":"http://127.0.0.1:11434","engine":"ollama","harness":"codex","model":"gpt-6-luna"],"machines":[["id":"local","name":"Local","online":true,"local":true]],"loading":false]}
    if failed{body["completedRequestId"]="unrelated-provider";body["completedRequestError"]="Rejected"}
    if ownFailure{body["completedRequests"]=[["id":providerRequest,"error":"Provider unavailable"]]}
    return try! JSONDecoder().decode(KaiState.self,from:JSONSerialization.data(withJSONObject:body))
@@ -45,6 +47,32 @@ private func field(_ object:Any,_ key:String)->Any?{Mirror(reflecting:object).ch
   picker.show(scope:.all,state:packet(horizontal:false,dense:true),at:anchor)
   let denseColumns=field(picker,"columns") as! [NSView];precondition(denseColumns.allSatisfy{$0.frame.minY>=0},"Long provider/model/intensity lists clip the vertical picker")
   picker.dismiss()
+  picker.show(scope:.providers,state:packet(),at:anchor)
+  picker.handleKey(125)
+  precondition(picker.cursors[0]==1,"Provider cursor did not move")
+  picker.update(packet(unavailableGemini:true))
+  precondition((field(picker,"buttons") as! [[NSButton]])[0].count==1,"Provider availability changed without rebuilding the visible rows")
+  precondition(picker.cursors[0]==0,"Provider cursor escaped the refreshed catalog")
+  picker.handleKey(36)
+  precondition(!picker.visible,"Refreshed provider menu could not select its remaining provider")
+  picker.show(scope:.models,state:packet(agent:"ninja",ninja:true),at:anchor)
+  let search=field(picker,"ninjaSearch") as! NSSearchField
+  let searchWindow=search.window!
+  searchWindow.makeKeyAndOrderFront(nil)
+  searchWindow.makeFirstResponder(search)
+  let editor=search.currentEditor() as! NSTextView
+  editor.string="model query"
+  editor.setSelectedRange(NSRange(location:5,length:0))
+  precondition(!picker.handleKey(123) && !picker.handleKey(124),"Search cursor arrows were consumed as model navigation")
+  editor.setMarkedText("漢",selectedRange:NSRange(location:1,length:0),replacementRange:NSRange(location:NSNotFound,length:0))
+  precondition(editor.hasMarkedText(),"Search fixture did not create composition")
+  precondition(!picker.handleKey(36) && !picker.handleKey(53),"IME commit/cancel was consumed by the model picker")
+  let beforeComposition=(field(picker,"columns") as! [NSView]).first!
+  picker.update(packet(agent:"ninja",ninja:true))
+  precondition((field(picker,"columns") as! [NSView]).first === beforeComposition,"A backend update replaced the active IME editor")
+  editor.unmarkText()
+  picker.dismiss(restoreFocus:true)
+  print("Native picker regressions: provider availability refresh, bounded cursor, search caret arrows, and IME-safe commit/cancel passed")
   print("Native agent picker: provider-only and model/intensity scopes, horizontal/vertical layout, arrows, pending provider isolation, owner invalidation, toggle and Escape passed")
  }
 }

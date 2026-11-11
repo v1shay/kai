@@ -106,7 +106,7 @@ enum TextRevealChange {
                 animation.duration=Self.duration
                 animation.beginTime=CACurrentMediaTime()+(loading ? min(0.1,Double(tiles.count-1)*0.008):0)
                 animation.fillMode = .backwards
-                tile.add(animation,forKey:"textDecode")
+                tile.addKai(animation,forKey:"textDecode")
             }
         }
         // The real string is always complete for copy, links and accessibility.

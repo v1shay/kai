@@ -35,11 +35,11 @@ impl Orbit {
         let now=chrono::Utc::now().timestamp();
         let providers:Vec<_>=self.agents.iter().filter(|a|a.available&&a.kind!=AgentKind::Ninja).filter_map(|a|{
             let windows=self.provider_limit_windows(a.kind);
-            (!windows.is_empty()).then(||(a.kind,windows.iter().map(|w|w.compact_used(now)).collect::<Vec<_>>().join(" · ")))
+            (!windows.is_empty()).then(||(a.kind,windows.iter().map(|w|w.compact_remaining(now,false)).collect::<Vec<_>>().join("  /  ")))
         }).collect();
         if providers.is_empty(){return div().into_any_element()}
         div().id("account-usage-bar").debug_selector(||"account-usage-bar".into()).h(px(28.)).flex_none().w_full().min_w(px(0.)).px_3().flex().items_center().gap_4().border_t_1().border_color(rgba(0xffffff16)).text_size(theme::ui_px(11.)).text_color(rgb(MUTED)).overflow_x_scroll()
-        .child("Used")
+        .child("Left")
         .children(providers.into_iter().map(|(kind,text)|{
             div().id(SharedString::from(format!("account-usage-{}",kind.command()))).debug_selector(move||format!("account-usage-{}",kind.command())).flex_none().flex().items_center().gap_1().child(provider_icon(agent_icon(kind),16.,agent_color(kind))).child(text)
         }))
@@ -65,7 +65,8 @@ impl Orbit {
     #[test] fn compact_labels_never_leak_bucket_names_or_repeat_time_windows(){
         let now=1800000000;
         let quota=usage::LimitWindow{label:"codex primary weekly limit".into(),used_percent:5.,duration_minutes:Some(10080),resets_at:Some(now+2*86400+3*3600),reported_at_ms:None};
-        assert_eq!(quota.compact_used(now),"5% 2d 3h");
+        assert_eq!(quota.compact_remaining(now,false),"95% · 2d 3h");
+        assert_eq!(quota.compact_remaining(now,true),"95% left · 2d 3h");
     }
     #[gpui::test] fn account_quota_is_shared_by_bar_footer_and_provider_switches(cx:&mut TestAppContext){
         let(app,cx)=crate::ui_tests::fixture(cx);

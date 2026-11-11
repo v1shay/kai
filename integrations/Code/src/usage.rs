@@ -17,13 +17,14 @@ pub struct LimitWindow {
 impl LimitWindow {
     /// Compact surfaces identify the provider with artwork and show one reset
     /// countdown. Internal bucket names stay in the detailed quota panel.
-    pub fn compact_used(&self, now:i64)->String {
-        let percent=if self.used_percent>0. && self.used_percent<0.1 {"<0.1".into()}else{format!("{:.0}",self.used_percent)};
+    pub fn compact_remaining(&self, now:i64, label: bool)->String {
+        let remaining = self.remaining_text();
+        let percent = if label { &remaining } else { remaining.strip_suffix(" left").unwrap_or(&remaining) };
         let reset=self.resets_at.map(|at|{
             let secs=(at-now).max(0);
             if secs>=86400{format!("{}d {}h",secs/86400,secs%86400/3600)}else if secs>=3600{format!("{}h {}m",secs/3600,secs%3600/60)}else{format!("{}m",secs/60)}
         });
-        reset.map(|reset|format!("{percent}% {reset}")).unwrap_or_else(||format!("{percent}%"))
+        reset.map(|reset|format!("{percent} · {reset}")).unwrap_or_else(||percent.to_owned())
     }
     pub fn remaining_text(&self) -> String {
         let remaining = (100. - self.used_percent).clamp(0., 100.);
@@ -521,17 +522,53 @@ mod tests {
 
 /// Read the newest complete native turn-context record, without loading a large
 /// transcript or mistaking the user's prose for model metadata.
-pub fn native_chat_settings(path:&std::path::Path,agent:AgentKind)->Option<Usage>{
-    use std::io::{Read,Seek,SeekFrom};
-    if agent!=AgentKind::Codex{return None}
-    let mut file=std::fs::File::open(path).ok()?;let len=file.metadata().ok()?.len();let start=len.saturating_sub(16*1024*1024);
-    file.seek(SeekFrom::Start(start)).ok()?;let mut bytes=Vec::new();file.take(16*1024*1024).read_to_end(&mut bytes).ok()?;
-    let begin=if start==0{0}else{bytes.iter().position(|b|*b==b'\n')?+1};
-    for line in bytes[begin..].split(|b|*b==b'\n').rev(){
-        if line.len()>64*1024 || !line.windows(14).any(|w|w==b"\"turn_context\""){continue}
-        let Ok(value)=serde_json::from_slice::<Value>(line)else{continue};
-        if value["type"]=="turn_context"{if let Some(usage)=Usage::observed(agent,&value){return Some(usage)}}
-    }None
+pub fn native_chat_settings(path: &std::path::Path, agent: AgentKind) -> Option<Usage> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    if agent != AgentKind::Codex {
+        return None;
+    }
+    const CHUNK: usize = 64 * 1024;
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut cursor = file.metadata().ok()?.len();
+    let floor = cursor.saturating_sub(16 * 1024 * 1024);
+    let mut end = cursor;
+    let mut chunk = vec![0; CHUNK];
+    let mut joined = Vec::new();
+
+    while cursor > floor {
+        let start = floor.max(cursor.saturating_sub(CHUNK as u64));
+        let bytes = &mut chunk[..(cursor - start) as usize];
+        file.seek(SeekFrom::Start(start)).ok()?;
+        file.read_exact(bytes).ok()?;
+        let starts = bytes.iter().enumerate().rev()
+            .filter_map(|(i, byte)| (*byte == b'\n').then_some(start + i as u64 + 1))
+            .chain((start == 0).then_some(0));
+        for line_start in starts {
+            let length = end.saturating_sub(line_start) as usize;
+            if length != 0 && length <= CHUNK {
+                let line = if end <= cursor {
+                    &bytes[(line_start - start) as usize..(end - start) as usize]
+                } else {
+                    // Only a record crossing the chunk boundary needs a second read.
+                    joined.resize(length, 0);
+                    file.seek(SeekFrom::Start(line_start)).ok()?;
+                    file.read_exact(&mut joined).ok()?;
+                    &joined[..]
+                };
+                if line.windows(14).any(|token| token == b"\"turn_context\"")
+                    && let Ok(value) = serde_json::from_slice::<Value>(line)
+                    && value["type"] == "turn_context"
+                    && let Some(usage) = Usage::observed(agent, &value)
+                {
+                    return Some(usage);
+                }
+            }
+            end = line_start.saturating_sub(1);
+        }
+        cursor = start;
+    }
+    None
 }
 
 #[cfg(test)]mod native_model_tests{
@@ -541,4 +578,16 @@ pub fn native_chat_settings(path:&std::path::Path,agent:AgentKind)->Option<Usage
   std::fs::write(&path,concat!("{\"type\":\"turn_context\",\"payload\":{\"model\":\"first-chat-model\",\"effort\":\"low\"}}\n","{\"type\":\"response_item\",\"payload\":{\"type\":\"turn_context\",\"model\":\"user-mentioned-model\"}}\n","{\"type\":\"turn_context\",\"payload\":{\"model\":\"actual-last-model\",\"effort\":\"high\"}}\n")).unwrap();
   let actual=native_chat_settings(&path,AgentKind::Codex).unwrap();assert_eq!(actual.model.as_deref(),Some("actual-last-model"));assert_eq!(actual.reasoning_effort.as_deref(),Some("high"));assert!(native_chat_settings(&path,AgentKind::Claude).is_none());std::fs::remove_file(path).unwrap();
  }
+ #[test]
+ fn native_model_lookup_handles_crossing_chunks_and_oversized_records() {
+     let path = std::env::temp_dir().join(format!("kai-model-history-{}.jsonl", uuid::Uuid::new_v4()));
+     let latest = r#"{"type":"turn_context","payload":{"model":"newest","effort":"medium"}}"#;
+     let padding = "x".repeat(64 * 1024 + 8);
+     let contents = format!("{latest}\n{padding}\n{{}}\n{}", " ".repeat(64 * 1024 - 24));
+     std::fs::write(&path, contents).unwrap();
+     let usage = native_chat_settings(&path, AgentKind::Codex).unwrap();
+     assert_eq!(usage.model.as_deref(), Some("newest"));
+     std::fs::remove_file(path).unwrap();
+ }
+
 }

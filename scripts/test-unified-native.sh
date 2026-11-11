@@ -12,6 +12,7 @@ harness=StateHarness
 [[ "${1:-}" != history ]] || harness=SavedHistoryHarness
 [[ "${1:-}" != composer ]] || harness=ComposerHarness
 [[ "${1:-}" != matrix ]] || harness=MorphMatrixHarness
+[[ "${1:-}" != typing ]] || harness=TypingResponderHarness
 staging=$(mktemp -d /private/tmp/kai-native-tests.XXXXXX)
 trap 'rm -rf "$staging"' EXIT
 product="$staging/Kai Native Tests.app"
@@ -21,7 +22,12 @@ for provider in codex claude gemini opencode cursor grok antigravity model-moon 
 cat > "$product/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.kai.unified.native-tests</string><key>CFBundleExecutable</key><string>native-tests</string><key>CFBundleName</key><string>Kai Native Tests</string><key>LSUIElement</key><true/></dict></plist>
 PLIST
-swiftc -target "$(uname -m)-apple-macos13.0" -parse-as-library -D KAI_UNIFIED -module-cache-path /private/tmp/kai-fixes-swift-cache "$root"/Sources/NotchPrototype/*.swift "$root/Tests/UnifiedNative/$harness.swift" -o "$product/Contents/MacOS/native-tests"
+ghostty_args=()
+if [[ "$harness" == TypingResponderHarness ]]; then
+  ghostty=$(python3 "$root/scripts/prepare-ghostty-metal.py" "$root/.build/unified/ghostty-metal")
+  ghostty_args=(-I "$ghostty/Headers/libghostty" "$ghostty/libghostty.a" -lc++ -framework Metal -framework Carbon)
+fi
+swiftc "${ghostty_args[@]}" -target "$(uname -m)-apple-macos13.0" -parse-as-library -D KAI_UNIFIED -D KAI_NATIVE_TESTS -module-cache-path /private/tmp/kai-fixes-swift-cache "$root"/Sources/NotchPrototype/*.swift "$root/Tests/UnifiedNative/$harness.swift" -o "$product/Contents/MacOS/native-tests"
 if [[ "$harness" == PetLibraryHarness ]]; then
   mkdir -p "$root/.build/validation"
   cp "$product/Contents/MacOS/native-tests" "$root/.build/validation/kai-pet-tool"

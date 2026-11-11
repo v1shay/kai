@@ -7,7 +7,7 @@ separately. Cold OS-cache launch is a separate manual/device benchmark.
 import argparse,json,math,re,sys
 from pathlib import Path
 
-LIMITS={"first_workspace_frame_ms_p95":200,"warm_chat_switch_ms_p95":50,"warm_reveal_ms_p95":50,"visible_idle_cpu_percent":0.5,"background_idle_cpu_percent":0.1,"render_cpu_ms_p95":8.3}
+LIMITS={"first_workspace_frame_ms_max":20,"cold_chat_switch_ms_p95":100,"cold_chat_switch_ms_max":250,"warm_chat_switch_ms_p95":50,"warm_reveal_ms_p95":50,"visible_idle_cpu_percent":0.5,"background_idle_cpu_percent":0.1,"render_cpu_ms_p95":8.3}
 def percentile(values,p=.95):
  if not values:raise ValueError("Missing performance samples")
  values=sorted(float(v)for v in values)
@@ -20,7 +20,7 @@ def evaluate(evidence):
   minimum=20 if "switch" in name or "reveal" in name or "render_cpu" in name else 5 if "frame" in name else 1
   if not isinstance(values,list)or len(values)<minimum:results[name]={"pass":False,"reason":f"Requires {minimum} real samples","budget":budget};continue
   try:
-   checked=percentile(values);value=checked if "p95"in name else max(float(v)for v in values);results[name]={"pass":value<=budget,"measured":value,"budget":budget,"samples":len(values)}
+   checked=percentile(values);value=checked if "p95"in name else max(float(v)for v in values);results[name]={"pass":value<budget if name=="first_workspace_frame_ms_max" else value<=budget,"measured":value,"budget":budget,"samples":len(values)}
   except ValueError as e:results[name]={"pass":False,"reason":str(e),"budget":budget}
  return {"passed":all(r["pass"]for r in results.values()),"metrics":results,"scope":"App-process measurements; rendering CPU is not GPU/presentation latency"}
 def main():
