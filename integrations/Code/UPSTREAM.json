@@ -1,0 +1,6 @@
+{
+  "repository": "https://github.com/v1shay/code",
+  "branch": "v1shay/code",
+  "commit": "b497c10b0e175513e8426fb38cba891dd9ebbc7a",
+  "integration": "Native in-process Kai experiment; pinned source, no nested repository"
+}

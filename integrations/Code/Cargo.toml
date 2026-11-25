@@ -1,0 +1,62 @@
+[package]
+name = "orbit"
+version = "0.1.0"
+edition = "2024"
+description = "A quiet, native home for coding agents"
+
+[dependencies]
+base64 = "0.22.1"
+regex = "1"
+toml = "=0.8.23"
+gpui = "=0.2.2"
+anyhow = "1"
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = "1"
+memchr = "2"
+rusqlite = { version = "0.37", features = ["bundled", "blob"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+dirs = "6"
+chrono = { version = "0.4", features = ["serde"] }
+walkdir = "2"
+libc = "0.2"
+pulldown-cmark = "0.13"
+unicode-segmentation = "1"
+async-channel = "2"
+futures-lite = "=2.6.1"
+alacritty_terminal = { version = "=0.26.0", default-features = false }
+sha2 = "=0.10.9"
+globset = "=0.4.20"
+image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "tiff"] }
+resvg = { version = "=0.45.1", default-features = false, features = ["raster-images"] }
+raw-window-handle = "=0.6.2"
+zstd = { version = "=0.13.4", default-features = false }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "=0.6.5", features = ["exception"] }
+block2 = "=0.6.2"
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSView", "NSVisualEffectView", "NSColor", "NSResponder", "NSGraphics", "NSUserInterfaceItemIdentification", "objc2-core-graphics"] }
+objc2-quartz-core = { version = "=0.3.2", default-features = false, features = ["std", "CALayer", "objc2-core-graphics"] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSString", "NSArray", "NSValue", "NSGeometry"] }
+
+# MIT native RFB/ARD transport; pinned with the documented encrypted-input patch.
+rv-session = { path = "vendor/rv-session" }
+rv-core = { git = "https://github.com/madeye/rv", rev = "87055e205fa88803213337846b4d2f59a7a525ee" }
+smallvec = "1"
+
+[dev-dependencies]
+rv-session = { path = "vendor/rv-session", features = ["test-support"] }
+gpui = { version = "=0.2.2", features = ["test-support"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
+# Thin LTO still optimizes across units; avoid one enormous LLVM unit for the UI.
+[profile.release.package.orbit]
+codegen-units = 4
+
+# Keep the transparent Metal blend correction in the application source rather
+# than modifying a machine's Cargo cache. Same GPUI code and GPU buffer formats.
+[patch.crates-io]
+gpui = { path = "vendor/gpui" }

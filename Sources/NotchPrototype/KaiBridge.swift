@@ -1,65 +1,251 @@
 import Foundation
+import Darwin
 
-struct KaiProject: Decodable { let path: String; let name: String }
-struct KaiChat: Decodable { let id: String; let name: String; let status: String }
-struct KaiLine: Decodable {
+struct KaiRequestResult:Decodable {let id:String;let error:String?}
+struct KaiProject: Decodable, Equatable { let path: String; let name: String }
+struct KaiChat: Decodable, Equatable { let id: String; let name: String; let status: String; var agent:String?=nil }
+struct KaiInlineLink:Decodable,Equatable {let location:Int;let length:Int;let target:String}
+struct KaiLine: Decodable, Equatable {
     let text: String
     let style: String
     let mathEnabled: Bool?
-    init(text: String, style: String, mathEnabled: Bool? = nil) {
-        self.text = text; self.style = style; self.mathEnabled = mathEnabled
+    let previewPNG:String?
+    let linkTarget:String?
+    let links:[KaiInlineLink]?
+    init(text: String, style: String, mathEnabled: Bool? = nil, previewPNG:String? = nil, linkTarget:String? = nil, links:[KaiInlineLink]? = nil) {
+        self.text = text; self.style = style; self.mathEnabled = mathEnabled; self.previewPNG=previewPNG; self.linkTarget=linkTarget; self.links=links
     }
 }
-struct KaiMessage: Decodable { let id: String; let kind: String; let lines: [KaiLine]; let speechText: String? }
+struct KaiMessage: Decodable, Equatable { let id: String; let kind: String; let lines: [KaiLine]; let speechText: String?; let activityIcon: String?; var agent:String?=nil; var detailId:String?=nil;var childId:String?=nil }
 struct KaiFile: Decodable { let path: String; let name: String; let depth: Int; let directory: Bool; let collapsed: Bool }
 struct KaiActivity: Decodable { let scene: String; let text: String }
-struct KaiActiveTask: Decodable { let id: String; let name: String; let scene: String; let text: String }
+struct KaiActiveTask: Decodable, Equatable {
+    let id:String,name:String,scene:String,text:String
+    var runId:String?=nil
+    var agent:String?=nil
+    var parentId:String?=nil
+    var ninjaStyle:String?=nil
+}
+struct KaiFinishedTask:Decodable,Equatable {let id:String;var runId:String?=nil;var parentId:String?=nil;var shouldAutoReview:Bool{parentId == nil && !id.hasPrefix("child:")}}
+struct KaiReasoningOption: Decodable, Equatable { let reasoningEffort: String }
+struct KaiModel: Decodable, Equatable { var resolvedModel:String?=nil; let model: String; let displayName: String; let supportedReasoningEfforts: [KaiReasoningOption] }
+struct KaiAgent:Decodable, Equatable {let id:String;let name:String;let available:Bool}
+struct KaiCodeConnectionState:Decodable {let connected:Bool;let enabled:Bool;let error:String?}
+@propertyWrapper struct EmptyHistory:Decodable {
+    var wrappedValue:[KaiMessage]
+    init(from decoder:Decoder)throws{wrappedValue=try [KaiMessage](from:decoder)}
+    init(){wrappedValue=[]}
+}
+extension KeyedDecodingContainer {
+    func decode(_ type:EmptyHistory.Type,forKey key:Key)throws->EmptyHistory {try decodeIfPresent(type,forKey:key) ?? EmptyHistory()}
+}
+struct KaiQuota:Decodable {let label:String;let remaining:String;let reset:String?;let fraction:Double}
+struct KaiReset:Decodable {let id:String;let title:String?;let description:String?;let status:String;let expiresAt:Double?}
+struct KaiResets:Decodable {let availableCount:Int;let credits:[KaiReset]}
+struct KaiContextWindow:Decodable{let used:UInt64,limit:UInt64,fraction:Double}
+struct KaiNinjaSelection:Decodable,Equatable{let machine:String;let endpoint:String;let engine:String;let harness:String;let model:String;let thinking:String?}
+struct KaiNinjaMachine:Decodable,Equatable{let id:String;let name:String;let online:Bool;let local:Bool}
+struct KaiNinja:Decodable,Equatable{var canCancel:Bool?=nil;var downloadStatus:String?=nil;var downloadFraction:Double?=nil;let selection:KaiNinjaSelection;let machines:[KaiNinjaMachine];var progress:String?;var error:String?;var loading:Bool}
+struct KaiNinjaGroup:Decodable,Equatable {let id:String,name:String,style:String;let chats:[KaiChat]}
+struct KaiPersonalNinja:Decodable {let id:String,name:String,style:String,host:String}
 struct KaiState: Decodable {
+    var sidebarVisible:Bool?=nil
+    var filesVisible:Bool?=nil
+    var personalNinja:KaiPersonalNinja?=nil
+    var ninjaGroups:[KaiNinjaGroup]?=nil
+    var menuBarNinjas:[MenuBarNinja]?=nil
+    var menuBarNinja:MenuBarNinja?=nil
+    var ninja:KaiNinja?=nil
+    let contextWindow:KaiContextWindow?
+    let usageResets:KaiResets?
+    let orchestratorMode:Bool?
+    let orchestratorAvailable:Bool?
+    let fastMode:Bool?
+    let fastSupported:Bool?
+    let usageWindows:[KaiQuota]?
+    let usageSummary:String?
+    let usageAccount:String?
+    let usageUpdated:String?
+    let interfaceFont:String?
+    let codeFont:String?
+    let slashCommands:[KaiSlashCommand]?
+    let modelsLoading:Bool?
+    let historyLoading:Bool?
+    let nativeReview:KaiNativeReview?
+    let approvalCount:Int?
+    let horizontalAgentPicker:Bool?
+    let borderlessComposer:Bool?
+    let workspaceAccess:String?
+    let workspaceApprovalPolicy:String?
+    let workspaceExecutionPath:String?
+    let workspaceMotion:Bool?
+    let workspaceOpeningOnce:Bool?
+    let workspaceTextMorph:Bool?
+    let ownerToken:String?
+    let composerDraft:String?
+    let agents:[KaiAgent]?
+    let selectedAgent:String?
+    let workspaceVoiceChoice:String?
+    let workspaceVoiceScene:String?
+    let workspaceVoiceLevels:[CGFloat]?
+    let workspaceVoiceActive:Bool?
+    let workspaceVoiceError:String?
+    let voice:KaiVoiceState?
+    let sessionActivity:KaiActivity?
+    let codeAcceptedRequestId:String?
+    let codeSessionActivity:KaiActivity?
+    let codeChats:[KaiChat]?
+    let codeConnection:KaiCodeConnectionState?
+    let canGoBack: Bool?
+    let canGoForward: Bool?
+    let models: [KaiModel]?
+    let providerDefaultModel:String?
+    let effectiveModel:String?
+    let effectiveReasoningEffort:String?
+    let voiceModel:String?
+    let selectedModel: String?
+    let reasoningEffort: String?
     let project: String
     let projects: [KaiProject]
+    let projectsLoading: Bool?
     let chats: [KaiChat]
     let standaloneChats: [KaiChat]
     let standalone: Bool
     let threadId: String?
     let threadName: String
-    let history: [KaiMessage]
+    @EmptyHistory var history: [KaiMessage]
+    let historyHasMore:Bool?
+    let historyEarlier:Bool?
     let files: [KaiFile]?
     let readOnly: Bool
+    let composerBusy:Bool?
+    // A historical viewport can still submit through the shared owner's
+    // live-tail route. Legacy transports without a readiness bit stay read-only.
+    var inputBlocked:Bool{composerBusy ?? readOnly}
     let activeTurnId: String?
     let approval: Bool
     let approvalThreadId: String?
+    let approvalRequestId:String?
+    let approvalSummary:String?
     let activity: KaiActivity
     let activeTasks: [KaiActiveTask]
+    let finishedTasks:[KaiFinishedTask]?
     let focusThreadId: String?
     let notice: String
     let attachments: [String]
     let completedRequestId: String?
+    let completedRequests:[KaiRequestResult]?
+    func requestResult(_ id:String)->KaiRequestResult?{if let result=completedRequests?.last(where:{$0.id == id}){return result};return completedRequestId == id ? KaiRequestResult(id:id,error:completedRequestError):nil}
+    let completedRequestError:String?
     let rateLimitRemainingPercent: Int?
+
+    var viewedActivity:KaiActivity {
+        if let selected=sessionActivity ?? codeSessionActivity{return selected}
+        if let selected=threadId,let task=activeTasks.first(where:{$0.id == selected}){return KaiActivity(scene:task.scene,text:task.text)}
+        if let focus=focusThreadId,focus != threadId{return KaiActivity(scene:"off",text:"")}
+        return activity
+    }
+}
+
+/// Used exclusively on the bridge's serial decode queue.
+final class KaiStateStreamDecoder {
+    private var buffer=Data()
+    private var dropping=false
+    private let maximumLineBytes:Int
+    init(maximumLineBytes:Int=64*1024*1024){self.maximumLineBytes=maximumLineBytes}
+    func receive(_ bytes:Data)->[KaiState] {receiveEvents(bytes).compactMap{if case .state(let state)=$0{return state};return nil}}
+    func receiveEvents(_ bytes:Data)->[KaiBridgeEvent] {
+        var states=[KaiBridgeEvent]()
+        bytes.withUnsafeBytes { raw in
+            let chars=raw.bindMemory(to:UInt8.self)
+            var start=0
+            func append(_ end:Int){
+                guard !dropping else{return}
+                if buffer.count+end-start > maximumLineBytes{buffer.removeAll(keepingCapacity:false);dropping=true}
+                else{buffer.append(contentsOf:chars[start..<end])}
+            }
+            for index in chars.indices where chars[index] == 10 {
+                append(index)
+                if !dropping,let event=KaiBridgeEvent.decode(buffer){states.append(event)}
+                buffer.removeAll(keepingCapacity:buffer.count<=1024*1024);dropping=false;start=index+1
+            }
+            if start < chars.count {append(chars.count)}
+        }
+        return states
+    }
+}
+
+enum KaiBridgeEvent {
+    case state(KaiState),audio(String,KaiVoiceAudio),reset(String),sdp(String,String)
+    static func decode(_ data:Data)->KaiBridgeEvent? {
+        struct Envelope:Decodable {let type:String?;let sessionId:String?;let audio:KaiVoiceAudio?;let sdp:String?}
+        // Reuse a single decoder's parsed JSON for the envelope and payload.
+        struct Packet:Decodable {
+            let event:KaiBridgeEvent?
+            init(from decoder:Decoder)throws {
+                let envelope=try Envelope(from:decoder)
+                switch envelope.type {
+                case "voiceAudio":event=envelope.sessionId.flatMap{id in envelope.audio.map{.audio(id,$0)}}
+                case "voiceSDP":event=envelope.sessionId.flatMap{id in envelope.sdp.flatMap{$0.utf8.count<=128*1024 ? .sdp(id,$0):nil}}
+                case "voiceReset":event=envelope.sessionId.map{.reset($0)}
+                case nil,"state":event = .state(try KaiState(from:decoder))
+                default:event=nil
+                }
+            }
+        }
+        return (try? JSONDecoder().decode(Packet.self,from:data))?.event
+    }
 }
 
 @MainActor final class KaiBridge {
     var onState: ((KaiState) -> Void)?
+    var onVoiceSDP:((String,String)->Void)?
+    var onVoiceAudio:((String,KaiVoiceAudio)->Void)?
+    var onVoiceReset:((String)->Void)?
     var onError: ((String) -> Void)?
     private var process: Process?
     private var input: Pipe?, output: Pipe?, errors: Pipe?
-    private var buffer = Data()
+    private let writeQueue=DispatchQueue(label:"kai.bridge-write",qos:.userInitiated)
+    private let audioWrites=DispatchSemaphore(value:16)
+    private let decodeQueue=DispatchQueue(label:"kai.state-decode",qos:.userInitiated)
+    var draftBaseProvider:(()->String)?
+    var draftProvider:(()->String)?
+    private var ownerToken:String?
+    private var draftWrites=UnifiedDraftWrites()
+    private(set) var acceptedDraftBase:String?
+    private var embeddedModelIDs=Set<String>()
+    private var selectedRunID:String?
+    private var selectedThreadID:String?
     private var generation = UUID()
     private var stopping = false
     private var failures = 0
+    private var launchedAt=Date.distantPast
     private var retryWork: DispatchWorkItem?
     private var lastStderr = ""
 
     func start() {
+        if EmbeddedCodeRuntime.shared.active {
+            EmbeddedCodeRuntime.shared.onState={ [weak self] state in
+                guard let self else{return}
+                self.acceptedDraftBase=self.draftWrites.receive(owner:state.ownerToken,result:state.requestResult)
+                self.selectedThreadID=state.threadId;self.selectedRunID=state.activeTurnId;self.ownerToken=state.ownerToken
+                self.embeddedModelIDs=Set((state.models ?? []).map(\.model));self.onState?(state)
+            }
+            EmbeddedCodeRuntime.shared.onError={ [weak self] in self?.onError?($0) }
+            return
+        }
         guard !stopping,process?.isRunning != true else { return }
         retryWork?.cancel(); retryWork = nil
         launch()
     }
 
     private func launch() {
+        signal(SIGPIPE,SIG_IGN)
         generation = UUID()
         let token = generation
-        buffer.removeAll(keepingCapacity: true)
-        lastStderr = ""
+        let decoder=KaiStateStreamDecoder()
+        let decodeQueue=self.decodeQueue
+        lastStderr = "";launchedAt=Date()
         let sourceRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
         let resourceRoot = Bundle.main.resourceURL
@@ -78,6 +264,10 @@ struct KaiState: Decodable {
         process.arguments = ["python3", script.path, "--cwd", cwd.path]
         process.currentDirectoryURL = root
         var environment=ProcessInfo.processInfo.environment
+        // Imports must not add bytecode files inside the signed app bundle.
+        environment["PYTHONDONTWRITEBYTECODE"]="1"
+        if let selectedThreadID,selectedThreadID.hasPrefix("code:"){environment["KAI_CODE_SELECTED"]=selectedThreadID}
+        environment["KAI_CODE_ENABLED"]=(UserDefaults.standard.object(forKey:"connectCode") as? Bool ?? true) ? "1":"0"
         let extra=["/opt/homebrew/bin","/usr/local/bin",FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin").path]
         environment["PATH"]=(extra+[environment["PATH"] ?? "/usr/bin:/bin"]).joined(separator:":")
         process.environment=environment
@@ -86,13 +276,29 @@ struct KaiState: Decodable {
         process.standardError = errors
         output.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let bytes = handle.availableData
-            DispatchQueue.main.async { [weak self] in
-                guard let self,self.generation == token else { return }
-                self.receive(bytes)
+            if bytes.isEmpty {handle.readabilityHandler=nil;return}
+            guard let self else{return}
+            decodeQueue.async {
+                let states=decoder.receiveEvents(bytes)
+                guard !states.isEmpty else{return}
+                DispatchQueue.main.async { [weak self] in
+                    guard let self,self.generation == token,!self.stopping else{return}
+                    if Date().timeIntervalSince(self.launchedAt) >= 60{self.failures=0}
+                    for event in states {
+                        switch event {
+                        case .state(let state):self.selectedThreadID=state.threadId;self.onState?(state)
+                        case .audio(let id,let audio):self.onVoiceAudio?(id,audio)
+                        case .reset(let id):self.onVoiceReset?(id)
+                        case .sdp(let id,let sdp):self.onVoiceSDP?(id,sdp)
+                        }
+                    }
+                }
             }
         }
         errors.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            let message = String(decoding: handle.availableData, as: UTF8.self)
+            let data=handle.availableData
+            if data.isEmpty{handle.readabilityHandler=nil;return}
+            let message = String(decoding:data, as: UTF8.self)
             if !message.isEmpty { DispatchQueue.main.async { [weak self] in
                 guard let self,self.generation == token else { return }
                 self.lastStderr=String(message.trimmingCharacters(in:.whitespacesAndNewlines).suffix(300))
@@ -126,31 +332,42 @@ struct KaiState: Decodable {
         DispatchQueue.main.asyncAfter(deadline:.now()+delay,execute:work)
     }
 
-    private func receive(_ bytes: Data) {
-        guard !bytes.isEmpty else { return }
-        // Scan only the new chunk. Searching the accumulated Data for every pipe
-        // read made a large JSON state quadratic and pinned the UI thread.
-        bytes.withUnsafeBytes { raw in
-            let chars = raw.bindMemory(to: UInt8.self)
-            var start = 0
-            for index in chars.indices where chars[index] == 10 {
-                buffer.append(contentsOf: chars[start..<index])
-                if let state = try? JSONDecoder().decode(KaiState.self, from: buffer) { failures = 0; onState?(state) }
-                buffer.removeAll(keepingCapacity: true)
-                start = index + 1
-            }
-            if start < chars.count { buffer.append(contentsOf: chars[start..<chars.count]) }
-        }
-    }
-
     func send(_ action: String, _ fields: [String: Any] = [:]) {
-        guard process?.isRunning == true,let input else { onError?("Codex is reconnecting; try again shortly"); return }
+        if EmbeddedCodeRuntime.shared.active {
+            var request=fields;request["action"]=action
+            for (key,value) in DefaultModelPreferences(defaults:.standard).fields(action:action,availableModels:embeddedModelIDs){request[key]=value}
+            if (request["requestId"] as? String ?? "").isEmpty{request["requestId"]=UUID().uuidString}
+            request["ownerToken"]=ownerToken
+            request["draftBase"]=draftWrites.pendingText ?? draftBaseProvider?()
+            if request["draft"] == nil,["chat","project","new","new_project","orchestrator","workspace_expand","navigate"].contains(action){request["draft"]=draftProvider?()}
+            let draftText=action == "draft" ? request["text"] as? String:nil
+            if let draftText,draftText == (request["draftBase"] as? String){return}
+            if action == "interrupt"{request["runId"]=selectedRunID}
+            if request["targetThreadId"] == nil{request["targetThreadId"]=selectedThreadID}
+            if let data=try? JSONSerialization.data(withJSONObject:request),EmbeddedCodeRuntime.shared.send(data),
+               let draftText,let id=request["requestId"] as? String{
+                draftWrites.enqueue(id:id,text:draftText)
+            }
+            return
+        }
+        guard process?.isRunning == true,let input else { onError?("Kai is reconnecting; your prompt is preserved"); return }
         var request = fields
+        for (key,value) in DefaultModelPreferences(defaults:.standard).fields(action:action){request[key]=value}
+        if request["targetThreadId"] == nil,let selectedThreadID{request["targetThreadId"]=selectedThreadID}
         request["action"] = action
         guard let bytes = try? JSONSerialization.data(withJSONObject: request),
               let newline = "\n".data(using: .utf8) else { return }
-        do { try input.fileHandleForWriting.write(contentsOf: bytes + newline) }
-        catch { onError?("Codex is reconnecting; try again shortly") }
+        let audioWrites=self.audioWrites,isAudio=action == "voice_audio"
+        if isAudio,audioWrites.wait(timeout:.now()) != .success{onError?("Voice audio connection fell behind; start voice again");return}
+        let token=generation,handle=input.fileHandleForWriting
+        writeQueue.async { [weak self] in
+            defer{if isAudio{audioWrites.signal()}}
+            do {try handle.write(contentsOf:bytes+newline)}
+            catch {DispatchQueue.main.async { [weak self] in
+                guard let self,self.generation == token,!self.stopping else{return}
+                self.onError?("Kai is reconnecting; your prompt is preserved")
+            }}
+        }
     }
 
     func stop() {

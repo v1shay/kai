@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleName</key><string>Code</string>
+<key>CFBundleDisplayName</key><string>Code</string>
+<key>CFBundleIdentifier</key><string>dev.orbit.agents</string>
+<key>CFBundleExecutable</key><string>code</string>
+<key>CFBundleIconFile</key><string>Code-Bonsai.icns</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleShortVersionString</key><string>0.1.0</string>
+<key>CFBundleVersion</key><string>2</string>
+<key>LSMinimumSystemVersion</key><string>13.0</string>
+<key>NSHighResolutionCapable</key><true/>
+<key>NSSupportsAutomaticGraphicsSwitching</key><true/>
+<key>NSPrincipalClass</key><string>NSApplication</string>
+<key>NSMicrophoneUsageDescription</key><string>Code uses your microphone only when you start Codex conversational voice or Apple Speech dictation.</string>
+<key>NSSpeechRecognitionUsageDescription</key><string>Code turns your speech into message text using Apple Speech. Recognition stays on your Mac when supported; otherwise Apple may process audio on its servers.</string>
+</dict></plist>

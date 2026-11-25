@@ -6,7 +6,7 @@
       "id": "77",
       "displayName": "77",
       "spritesheet": "installed_custom/77/spritesheet.webp",
-      "origin": "/Users/vishayagarwal/.codex/pets/77",
+      "origin": "~/.codex/pets/77",
       "sha256": "e8b0623f6c6262741495c54a8088cbd3b9f0184455353d4cd145c933e0f29bb9"
     },
     {
@@ -15,7 +15,7 @@
       "id": "agumon",
       "displayName": "Agumon",
       "spritesheet": "installed_custom/agumon-2/spritesheet.webp",
-      "origin": "/Users/vishayagarwal/.codex/pets/agumon-2",
+      "origin": "~/.codex/pets/agumon-2",
       "sha256": "d7ef90913a1f25e617fb402805ed7822b46f2d7c3c1a5b9f148de405aa6c34c9"
     },
     {
@@ -24,7 +24,7 @@
       "id": "aqua-wisp",
       "displayName": "Aqua Wisp",
       "spritesheet": "installed_custom/aqua-wisp/spritesheet.webp",
-      "origin": "/Users/vishayagarwal/.codex/pets/aqua-wisp",
+      "origin": "~/.codex/pets/aqua-wisp",
       "sha256": "e0095143f76abcfec38425b3f833a09ef72398ce27938156409f297de001fa27"
     },
     {
@@ -33,7 +33,7 @@
       "id": "kabi",
       "displayName": "卡比兽",
       "spritesheet": "installed_custom/kabi/spritesheet.webp",
-      "origin": "/Users/vishayagarwal/.codex/pets/kabi",
+      "origin": "~/.codex/pets/kabi",
       "sha256": "49185cdaf8b776955d39ac716c8fdb9febd474171a2d76146406da2652ccd275"
     },
     {
@@ -42,7 +42,7 @@
       "id": "ultronite",
       "displayName": "Ultronite",
       "spritesheet": "installed_custom/ultronite/spritesheet.webp",
-      "origin": "/Users/vishayagarwal/.codex/pets/ultronite",
+      "origin": "~/.codex/pets/ultronite",
       "sha256": "c489a30bd7d648aa0057821a00ec0ad41b5b189aac2621f5ae6b8a69f7c834b0"
     },
     {
@@ -51,7 +51,7 @@
       "id": "winter-curry-dog",
       "displayName": "咖喱狗",
       "spritesheet": "installed_custom/winter-curry-dog/spritesheet.webp",
-      "origin": "/Users/vishayagarwal/.codex/pets/winter-curry-dog",
+      "origin": "~/.codex/pets/winter-curry-dog",
       "sha256": "03a635c891799ddb1765d3b9202aeae4572bb4bfaa91cfecd15b7e8c863bd52c"
     },
     {
@@ -60,7 +60,7 @@
       "id": "tiko",
       "displayName": "Tiko",
       "spritesheet": "zip_pets/zip/spritesheet.webp",
-      "origin": "/Users/vishayagarwal/Downloads/zip.zip",
+      "origin": "~/Downloads/zip.zip",
       "sha256": "c9f2934b62c746b5b11b451410ae3449a3e425de186343ce57db313838cb5518"
     },
     {
@@ -69,7 +69,7 @@
       "id": "nezukocoder",
       "displayName": "NezukoCoder",
       "spritesheet": "zip_pets/zip (1)/spritesheet.webp",
-      "origin": "/Users/vishayagarwal/Downloads/zip (1).zip",
+      "origin": "~/Downloads/zip (1).zip",
       "sha256": "25e5d9952591238e3238f237928aa4168c4ac124458b67a32278c191dc1707ff"
     },
     {
@@ -78,7 +78,7 @@
       "id": "savage-codex-hacker",
       "displayName": "Savage Codex Hacker",
       "spritesheet": "zip_pets/zip (2)/spritesheet.webp",
-      "origin": "/Users/vishayagarwal/Downloads/zip (2).zip",
+      "origin": "~/Downloads/zip (2).zip",
       "sha256": "51df3a96fd22751a5b2ce0e5486667492f145adea6c84800f61ceb5d7387859a"
     },
     {
@@ -87,7 +87,7 @@
       "id": "ghost",
       "displayName": "Ghost",
       "spritesheet": "zip_pets/zip (3)/spritesheet.webp",
-      "origin": "/Users/vishayagarwal/Downloads/zip (3).zip",
+      "origin": "~/Downloads/zip (3).zip",
       "sha256": "f150d794d1c33caabca0d32d213904efaac86afb215fa33f6fcee7ab444f9602"
     },
     {
@@ -96,7 +96,7 @@
       "id": "tiko",
       "displayName": "Tiko",
       "spritesheet": "zip_pets/zip (6)/spritesheet.webp",
-      "origin": "/Users/vishayagarwal/Downloads/zip (6).zip",
+      "origin": "~/Downloads/zip (6).zip",
       "sha256": "c9f2934b62c746b5b11b451410ae3449a3e425de186343ce57db313838cb5518",
       "duplicateOf": "zip_pets/zip/spritesheet.webp"
     },
@@ -106,7 +106,7 @@
       "id": "kabi",
       "displayName": "卡比兽",
       "spritesheet": "zip_pets/zip (7)/spritesheet.webp",
-      "origin": "/Users/vishayagarwal/Downloads/zip (7).zip",
+      "origin": "~/Downloads/zip (7).zip",
       "sha256": "49185cdaf8b776955d39ac716c8fdb9febd474171a2d76146406da2652ccd275",
       "duplicateOf": "installed_custom/kabi/spritesheet.webp"
     },
@@ -116,7 +116,7 @@
       "id": "macintosh",
       "displayName": "Macintosh",
       "spritesheet": "zip_pets/zip (8)/spritesheet.webp",
-      "origin": "/Users/vishayagarwal/Downloads/zip (8).zip",
+      "origin": "~/Downloads/zip (8).zip",
       "sha256": "9e6d1bda2c619a1a3147971db07f3ba7c1a286fc8bb437e06a349c08d380754b"
     },
     {
@@ -125,7 +125,7 @@
       "id": "lil-finder",
       "displayName": "Lil Finder",
       "spritesheet": "zip_pets/zip (9)/spritesheet.webp",
-      "origin": "/Users/vishayagarwal/Downloads/zip (9).zip",
+      "origin": "~/Downloads/zip (9).zip",
       "sha256": "3e9ac99f8445a9593777773cc09b773b83c529ce07ae2e8012c388c3fe299d0c"
     },
     {
@@ -134,7 +134,7 @@
       "id": "crt-pal",
       "displayName": "CRT Pal",
       "spritesheet": "zip_pets/zip (10)/spritesheet.webp",
-      "origin": "/Users/vishayagarwal/Downloads/zip (10).zip",
+      "origin": "~/Downloads/zip (10).zip",
       "sha256": "3bc52027678ecd45ac21ccb82f76ad271ad4dd8fa046b69dfb7e8986928931a9"
     },
     {
@@ -225,7 +225,7 @@
       "displayName": "Blau",
       "spritesheet": "zip_pets/blau/spritesheet.webp",
       "sha256": "a5546d4d747f5792e35a06ee8b31edafada64613ebf576330fb55dbfe2e1a4b1",
-      "origin": "/Users/vishayagarwal/Downloads/blau.zip"
+      "origin": "~/Downloads/blau.zip"
     },
     {
       "kind": "zip_pet",
@@ -234,7 +234,7 @@
       "displayName": "Haaland",
       "spritesheet": "zip_pets/haaland/spritesheet.webp",
       "sha256": "832a95eb67893b9c2d7d6fdd5ecae37de968d000854a7cdb69f4036542b352b3",
-      "origin": "/Users/vishayagarwal/Downloads/haaland.zip"
+      "origin": "~/Downloads/haaland.zip"
     },
     {
       "kind": "zip_pet",
@@ -243,7 +243,7 @@
       "displayName": "Invincible",
       "spritesheet": "zip_pets/invincible/spritesheet.webp",
       "sha256": "7608a91474027465f38b74869fad7def18d3549a704ca52d1f2036059af2658d",
-      "origin": "/Users/vishayagarwal/Downloads/invincible.zip"
+      "origin": "~/Downloads/invincible.zip"
     },
     {
       "kind": "zip_pet",
@@ -252,7 +252,7 @@
       "displayName": "Killua",
       "spritesheet": "zip_pets/killua/spritesheet.webp",
       "sha256": "06cb2b8717af63b20e8e585949712d0488fa9490413248d3e84979e7be3daa86",
-      "origin": "/Users/vishayagarwal/Downloads/killua.zip"
+      "origin": "~/Downloads/killua.zip"
     },
     {
       "kind": "zip_pet",
@@ -261,7 +261,7 @@
       "displayName": "L Lawliet",
       "spritesheet": "zip_pets/lawliet/spritesheet.webp",
       "sha256": "697663cad4f3da4cd10c01ab4aa978978e386ac2a230cea2a0b96071c2b7d6d9",
-      "origin": "/Users/vishayagarwal/Downloads/lawliet.zip"
+      "origin": "~/Downloads/lawliet.zip"
     },
     {
       "kind": "zip_pet",
@@ -270,7 +270,7 @@
       "displayName": "Noir Webling",
       "spritesheet": "zip_pets/noir-webling/spritesheet.webp",
       "sha256": "9539f8e528f683e037b5b5771248c84e0d736d83c71e205478dfe1d763d90cb6",
-      "origin": "/Users/vishayagarwal/Downloads/noir-webling.zip"
+      "origin": "~/Downloads/noir-webling.zip"
     },
     {
       "kind": "zip_pet",
@@ -279,7 +279,7 @@
       "displayName": "Patrick Star",
       "spritesheet": "zip_pets/patrick-star/spritesheet.webp",
       "sha256": "a0244020e2113bb706bbd2d535f0bf95f1d66bbb625a12090e2c2071b1300293",
-      "origin": "/Users/vishayagarwal/Downloads/patrick-star.zip"
+      "origin": "~/Downloads/patrick-star.zip"
     },
     {
       "kind": "zip_pet",
@@ -288,7 +288,7 @@
       "displayName": "Peter",
       "spritesheet": "zip_pets/peter/spritesheet.webp",
       "sha256": "cc0aa294d16d82120759ee44f658dee6a0ced731206519075d35afbeb04ac827",
-      "origin": "/Users/vishayagarwal/Downloads/peter.zip"
+      "origin": "~/Downloads/peter.zip"
     }
   ]
 }

@@ -1,0 +1,7361 @@
+#[cfg(test)]
+mod footer_geometry_tests;
+// Geometry selectors exist only in Cargo tests. In normal builds this macro
+// expands directly to its original element expression: no call or allocation.
+#[cfg(test)]
+macro_rules! footer_geometry_tag {
+    ($element:expr, $peer:expr, $slot:literal) => { footer_geometry_tests::tag($element, $peer, $slot) };
+}
+#[cfg(not(test))]
+macro_rules! footer_geometry_tag {
+    ($element:expr, $peer:expr, $slot:literal) => { $element };
+}
+mod ninjas;
+mod ninjas_ui;
+mod ninja_chat;
+mod ninja_call_ui;
+mod ninja_surfaces;
+mod ninja_art;
+mod remote_desktop;
+mod ninja;
+mod ninja_ui;
+mod agent_controls;
+mod provider_defaults;
+mod agent_picker;
+mod appearance;
+mod attachments;
+mod transcript_media;
+mod desktop_context;
+mod tool_images;
+mod background;
+mod broker_ui;
+mod task_pets;
+mod task_pet_cache;
+mod chat_interactions;
+mod chat_navigation;
+mod chat_split;
+mod adaptive_text;
+mod adaptive_ui;
+mod github;
+mod github_ui;
+mod change_summary;
+mod checkpoint_diff;
+mod checkpoint_ui;
+mod checkpoints;
+mod citations;
+mod command_ui;
+mod commands;
+mod composer_controls;
+mod composer_design;
+mod chat_switcher;
+mod continuation;
+mod cli_persistence;
+mod overlay_input;
+mod usage_dashboard;
+mod composer_toolbar;
+mod control_clicks;
+mod pane_layout;
+mod parallel_workspace;
+mod context_refs;
+mod context_ui;
+mod diff_view;
+mod discovery;
+mod editor;
+mod editor_ui;
+mod engine;
+mod file_context;
+mod file_context_ui;
+mod files;
+mod global_hotkey;
+mod handoff;
+mod handoff_ui;
+mod history_artifact;
+mod input;
+mod interaction_ui;
+mod kai_icons;
+mod kai_indicator;
+mod loading_logo;
+mod native;
+mod startup;
+mod keyboard;
+mod provider_cli;
+mod cursor_cli_history;
+mod chat_titles;
+mod launch_metrics;
+mod performance;
+mod terminal_dock;
+mod terminal_ghostty;
+mod terminal_panes;
+mod orchestrator;
+mod remote_host;
+mod remote_realtime;
+mod remote_workspace;
+mod artifacts;
+mod image_retirement;
+mod daily_driver;
+#[cfg(target_os="macos")]
+mod native_backdrop;
+mod native_request_ui;
+#[cfg(test)]
+mod personalization_tests;
+mod personalization_ui;
+mod popovers;
+mod preferences;
+mod presentation;
+mod process_env;
+mod project_lifecycle;
+mod project_tree;
+mod project_wheel;
+mod prompt_library;
+mod prompt_library_ui;
+mod prompt_queue;
+mod provider_capabilities;
+mod queue_ui;
+mod quick_chat;
+#[cfg(test)]
+mod quick_chat_tests;
+mod quick_surface;
+mod response_buffer;
+mod runtime;
+mod sidebar_activity;
+mod copy_control;
+mod speech;
+mod store;
+#[path = "../assets/generated.rs"]
+mod svg_assets;
+mod syntax;
+mod team_ui;
+mod teams;
+mod terminal;
+mod terminal_ui;
+mod tui_badges;
+mod theme;
+mod theme_controls;
+#[cfg(test)]
+mod ui_tests;
+mod unified;
+mod text_decode;
+mod chat_flow;
+mod live_history;
+mod chat_timing;
+mod workspace_motion;
+mod usage;
+mod usage_bar;
+mod voice;
+mod voice_bridge;
+mod voice_ui;
+mod workspace_state;
+mod workspace_ui;
+
+use crate::appearance::GlassPopup as _;
+use discovery::{Agent, AgentKind, Project, SessionSummary};
+use engine::{Engine, Event};
+use gpui::{prelude::*, *};
+use input::{InputEvent, TextInput};
+use presentation::{InlineStyle, MessageBlock};
+use runtime::{RunHandle, RunRequest, RuntimeEvent};
+use std::{
+    borrow::Cow,
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+    time::{Duration, Instant},
+};
+use theme::{rgb, rgba};
+
+const GLASS_HOVER: u32 = 0xebebeb14;
+const GLASS_SURFACE: u32 = 0xebebeb0a;
+const TEXT: u32 = 0xebebeb;
+const MUTED: u32 = 0x929292;
+const ACCENT: u32 = 0x459bf7;
+actions!(
+    orbit,
+    [
+        Quit,
+        CloseWindow,
+        MinimizeWindow,
+        NewConversation,
+        ToggleSearch,
+        ToggleSidebar,
+        ToggleFiles,
+        ToggleConversations,
+        ToggleSettings,
+        ReturnToNotch,
+        Escape,
+        Send
+    ]
+);
+
+struct Assets;
+impl AssetSource for Assets {
+    fn load(&self, path: &str) -> anyhow::Result<Option<Cow<'static, [u8]>>> {
+        let Some(data) = svg_assets::asset(path) else {
+            return Ok(None);
+        };
+        Ok(Some(Cow::Borrowed(data)))
+    }
+    fn list(&self, _: &str) -> anyhow::Result<Vec<SharedString>> {
+        Ok(vec![])
+    }
+}
+fn icon(name: &'static str, size: f32, color: u32) -> Svg {
+    let color = if matches!(
+        name,
+        "codex" | "claude" | "gemini" | "opencode" | "cursor" | "grok" | "antigravity"
+    ) {
+        theme::brand_rgb(color)
+    } else {
+        rgb(color)
+    };
+    svg().path(if matches!(name,"codex"|"assets/providers/codex.svg"|"assets/codex.svg"){"codex-mask"}else{name}).size(px(size)).text_color(color)
+}
+// Provider artwork keeps its own colors; ordinary UI symbols remain tintable.
+fn provider_art(name:&str)->Option<&'static str>{
+    Some(match name.strip_prefix("assets/providers/").unwrap_or(name).strip_suffix(".svg").unwrap_or(name.strip_prefix("assets/providers/").unwrap_or(name)) {"codex"=>"assets/providers/codex.svg","claude"=>"assets/providers/claude.svg","gemini"=>"assets/providers/gemini.svg","antigravity"=>"assets/providers/antigravity.svg","cursor"=>"assets/providers/cursor.svg","grok"=>"assets/providers/grok.svg","opencode"=>"assets/providers/opencode.svg",_=>return None})
+}
+fn provider_icon(name:&'static str,size:f32,color:u32)->Div{
+    if matches!(name, "ninja" | "assets/providers/ninja.svg") {
+        return div().size(px(size)).flex_none().child(ninja_art::art("fire", size, false));
+    }
+    div().size(px(size)).flex_none().child(match provider_art(name){Some(path)=>img(path).size_full().into_any_element(),None=>icon(name,size,color).into_any_element()})
+}
+
+fn rich_text(
+    id: impl Into<ElementId>,
+    text: &str,
+    highlights: &[(std::ops::Range<usize>, InlineStyle)],
+    on_link: impl Fn(&str, &mut Window, &mut App) + 'static,
+) -> InteractiveText {
+    let links: Vec<_> = highlights
+        .iter()
+        .filter_map(|(range, style)| {
+            if let InlineStyle::Link(url) = style {
+                Some((range.clone(), url.clone()))
+            } else {
+                None
+            }
+        })
+        .collect();
+    let styled = StyledText::new(text.to_owned()).with_highlights(
+        presentation::inline_runs(text.len(), highlights)
+            .into_iter()
+            .map(|(range, styles)| {
+                let mut highlight = HighlightStyle::default();
+                for style in &styles {
+                    match style {
+                        InlineStyle::Bold => highlight.font_weight = Some(FontWeight::SEMIBOLD),
+                        InlineStyle::Italic => highlight.font_style = Some(FontStyle::Italic),
+                        InlineStyle::Code => {
+                            highlight.background_color = Some(rgba(0xffffff10).into());
+                            highlight.color = Some(rgb(0xc5c9e8).into());
+                        }
+                        InlineStyle::Link(_) => {
+                            highlight.color = Some(rgb(0x7dd3fc).into());
+                            highlight.underline = Some(UnderlineStyle {
+                                thickness: px(1.),
+                                color: None,
+                                wavy: false,
+                            });
+                        }
+                        InlineStyle::Strike => {
+                            highlight.strikethrough = Some(StrikethroughStyle {
+                                thickness: px(1.),
+                                color: None,
+                            })
+                        }
+                    }
+                }
+                (range, highlight)
+            }),
+    );
+    InteractiveText::new(id, styled).on_click(
+        links.iter().map(|(r, _)| r.clone()).collect(),
+        move |index, window, cx| {
+            if let Some((_, url)) = links.get(index) {
+                on_link(url, window, cx);
+            }
+        },
+    )
+}
+fn activity_icon(label: &str) -> &'static str {
+    kai_icons::icon_for_tool(label)
+}
+fn provider_asset(agent: AgentKind) -> &'static str {
+    match agent {
+        AgentKind::Codex => "assets/providers/codex.svg",
+        AgentKind::Claude => "assets/providers/claude.svg",
+        AgentKind::Gemini => "assets/providers/gemini.svg",
+        AgentKind::OpenCode => "assets/providers/opencode.svg",
+        AgentKind::Antigravity => "assets/providers/antigravity.svg",
+        AgentKind::Cursor => "assets/providers/cursor.svg",
+        AgentKind::Grok => "assets/providers/grok.svg",
+        AgentKind::Ninja => "assets/providers/ninja.svg",
+    }
+}
+fn activity_caption(status: &str) -> String {
+    if let Some(id) = kai_icons::integration_for_label(status) {
+        let name = match id {
+            "googleslides" => "Google Slides",
+            "googlesheets" => "Google Sheets",
+            "googledocs" => "Google Docs",
+            "googledrive" => "Google Drive",
+            "googlecalendar" => "Google Calendar",
+            "gmail" => "Gmail",
+            "github" => "GitHub",
+            "notion" => "Notion",
+            "spotify" => "Spotify",
+            "supabase" => "Supabase",
+            "vercel" => "Vercel",
+            "linear" => "Linear",
+            "dropbox" => "Dropbox",
+            "figma" => "Figma",
+            "box" => "Box",
+            "jira" => "Jira",
+            "confluence" => "Confluence",
+            "youtube" => "YouTube",
+            "slack" => "Slack",
+            "linkedin" => "LinkedIn",
+            _ => "Connected tool",
+        };
+        let stage = match kai_icons::scene_for_status(status) {
+            "failure" => "Needs attention",
+            "declined" => "Stopped",
+            "read" => "Reading results",
+            _ => "Using",
+        };
+        format!("{stage} · {name}")
+    } else {
+        short(status, 64)
+    }
+}
+
+fn merge_session_metadata(fresh: &mut SessionSummary, previous: &SessionSummary) {
+    if previous.updated_at > fresh.updated_at {
+        fresh.title = previous.title.clone();
+        fresh.updated_at = previous.updated_at;
+    }
+    if previous.external_id.is_some() {
+        fresh.external_id = previous.external_id.clone();
+    }
+    if fresh.execution_path.is_none() {
+        fresh.execution_path = previous.execution_path.clone();
+    }
+}
+fn imported_codex_needs_fork(session: &SessionSummary) -> bool {
+    session.agent == AgentKind::Codex
+        && session.transcript_path.is_some()
+        && session
+            .external_id
+            .as_deref()
+            .is_some_and(|native| session.id.strip_prefix("codex:") == Some(native))
+}
+fn short(text: &str, max: usize) -> String {
+    let mut chars = text.chars();
+    let mut out: String = chars.by_ref().take(max).collect();
+    if chars.next().is_some() {
+        out.push('…');
+    }
+    out
+}
+fn agent_color(agent: AgentKind) -> u32 {
+    match agent {
+        AgentKind::Claude => 0xd7ac91,
+        AgentKind::Codex => 0xa39cfa,
+        AgentKind::Ninja => 0x67dab0,
+        _ => 0xa7b8de,
+    }
+}
+fn agent_icon(agent: AgentKind) -> &'static str {
+    match agent {
+        AgentKind::Codex => "codex",
+        AgentKind::Claude => "claude",
+        AgentKind::Gemini => "gemini",
+        AgentKind::OpenCode => "opencode",
+        AgentKind::Antigravity => "antigravity",
+        AgentKind::Cursor => "cursor",
+        AgentKind::Grok => "grok",
+        AgentKind::Ninja => "ninja",
+    }
+}
+fn agent_name(agent: AgentKind) -> &'static str {
+    agent.name()
+}
+// Provider identity travels with each assistant turn, so switching the active
+// CLI never relabels earlier replies. Old canonical roles keep their fallback.
+fn agent_for_role(role: Option<&str>, fallback: AgentKind) -> AgentKind {
+    let Some(command) = role.and_then(|role| {
+        role.strip_prefix("assistant:")
+            .or_else(|| role.strip_prefix("continuation:"))
+    }) else {
+        return fallback;
+    };
+    [
+        AgentKind::Codex,
+        AgentKind::Claude,
+        AgentKind::Gemini,
+        AgentKind::OpenCode,
+        AgentKind::Antigravity,
+        AgentKind::Cursor,
+        AgentKind::Grok,
+        AgentKind::Ninja,
+    ]
+    .into_iter()
+    .find(|kind| kind.command() == command)
+    .unwrap_or(fallback)
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Modal {
+    Search,
+    #[cfg(test)]
+    Agents,
+    Projects,
+    Settings,
+    Status,
+    Permissions,
+    ComposerControls,
+    Realtime,
+    Activity,
+    Handoff,
+    Background,
+    WorkspaceTrust,
+    SessionConflict,
+}
+#[derive(Clone)]
+struct WorkspaceTrust {
+    session: String,
+    agent: AgentKind,
+    project: PathBuf,
+}
+enum MenuTarget {
+    Project(Project),
+    Chat(SessionSummary),
+}
+struct ActionMenu {
+    target: MenuTarget,
+    anchor: Point<Pixels>,
+    started: Instant,
+    closing: bool,
+    closing_from: f32,
+}
+#[derive(Clone)]
+struct Row {
+    role: Option<String>,
+    block: MessageBlock,
+}
+fn decode_chat_row(decode: &mut text_decode::TextDecode, row: &Row, ix: usize, enabled: bool,
+    window: &Window, cx: &mut Context<Orbit>) -> Option<String> {
+    let voice = matches!(&row.block, MessageBlock::Voice { .. });
+    if !enabled || (chat_flow::user(row) && !voice) { return None; }
+    let text = match &row.block {
+        MessageBlock::Paragraph(text) | MessageBlock::Heading(text) | MessageBlock::Quote(text)
+        | MessageBlock::RichParagraph { text, .. } | MessageBlock::ListItem { text, .. }
+        | MessageBlock::Voice { text, .. } => text,
+        _ => return None,
+    };
+    let (frame, active) = if voice { decode.voice_frame(ix, text, Instant::now()) }
+        else { decode.frame(ix, text, Instant::now()) };
+    if active { request_motion_frame(window, cx); }
+    Some(frame)
+}
+fn row_has_header(role: Option<&str>) -> bool {
+    role.is_some_and(|role| !role.starts_with("continuation:"))
+}
+fn stamp_row_providers(rows: &mut [Row], fallback: AgentKind) {
+    let mut assistant = None;
+    for row in rows {
+        match row.role.as_deref() {
+            Some("assistant") => {
+                assistant = Some(fallback);
+                row.role = Some(format!("assistant:{}", fallback.command()));
+            }
+            Some(role) if role.starts_with("assistant:") => {
+                assistant = Some(agent_for_role(Some(role), fallback));
+            }
+            Some(role) if role.starts_with("continuation:") => {}
+            Some(_) => assistant = None,
+            None => {
+                if let Some(agent) = assistant {
+                    row.role = Some(format!("continuation:{}", agent.command()));
+                }
+            }
+        }
+    }
+}
+struct Running {
+    timing:Option<chat_timing::Live>,
+    agent: AgentKind,
+    submitted_prompt: String,
+    handle: RunHandle,
+    text: String,
+    live_prefix_omitted: bool,
+    status: String,
+    stream_start: Option<usize>,
+    revision: u64,
+    parsed_revision: u64,
+    parse_pending: bool,
+    live_blocks: Vec<MessageBlock>,
+    file_changes: change_summary::LiveChanges,
+    live_earlier: bool,
+    parse_epoch: uuid::Uuid,
+    retry: Option<RunRequest>,
+    submitted_attachments: Vec<attachments::Attachment>,
+}
+fn append_live_text(run: &mut Running, text: &str) {
+    const PREVIEW_BYTES: usize = 64 * 1024;
+    if text.len() > PREVIEW_BYTES {
+        let mut start = text.len() - PREVIEW_BYTES;
+        while !text.is_char_boundary(start) {
+            start += 1;
+        }
+        run.text.clear();
+        run.text.push_str(&text[start..]);
+        run.live_prefix_omitted = true;
+    } else {
+        let excess = run
+            .text
+            .len()
+            .saturating_add(text.len())
+            .saturating_sub(PREVIEW_BYTES);
+        if excess > 0 {
+            let mut start = excess.min(run.text.len());
+            while !run.text.is_char_boundary(start) {
+                start += 1;
+            }
+            run.text.drain(..start);
+            run.live_prefix_omitted = true;
+        }
+        run.text.push_str(text);
+    }
+}
+#[derive(Clone)]
+struct HistoryPage {
+    number: usize,
+    start: usize,
+    len: usize,
+    resident: bool,
+    used: u64,
+}
+#[derive(Clone)]
+struct DeferredRow {
+    page: usize,
+    height: Pixels,
+    checkpoint: Option<String>,
+    user_boundary: bool,
+}
+type RevealRange = std::rc::Rc<std::cell::Cell<Option<(usize, usize)>>>;
+struct ListReveal {
+    started: Option<Instant>,
+    only_from: usize,
+    visible: RevealRange,
+    from_paint: bool,
+    #[cfg(test)]
+    test_elapsed: Option<f32>,
+}
+impl ListReveal {
+    const STAGGER: f32 = 0.028;
+    const DURATION: f32 = 0.42;
+    // Keep a single finite timeline, including on exceptionally tall displays.
+    const LAST: usize = 31;
+    fn new(first_visible: Option<usize>) -> Self {
+        Self {
+            started: None,
+            only_from: 0,
+            visible: std::rc::Rc::new(std::cell::Cell::new(
+                first_visible.map(|first| (first, first)),
+            )),
+            from_paint: first_visible.is_none(),
+            #[cfg(test)]
+            test_elapsed: None,
+        }
+    }
+    fn appended(start: usize) -> Self {
+        Self {
+            only_from: start,
+            ..Self::new(None)
+        }
+    }
+    fn observe(&mut self, range: std::ops::Range<usize>) {
+        let range = range.start.max(self.only_from)..range.end;
+        if self.from_paint || range.is_empty() {
+            return;
+        }
+        Self::record(&self.visible, range.start, range.end - 1);
+    }
+    fn record(visible: &RevealRange, start: usize, end: usize) {
+        let (first, last) = visible.get().unwrap_or((start, end));
+        visible.set(Some((first.min(start), last.max(end))));
+    }
+    fn geometry_probe(&self, index: usize) -> Option<RevealRange> {
+        // Only the first layout pass needs probes. List's measuring overdraw
+        // must not count toward the visible text's stagger or animation budget.
+        (self.from_paint && index >= self.only_from && self.visible.get().is_none())
+            .then(|| self.visible.clone())
+    }
+    fn rank(&self, index: usize) -> usize {
+        index
+            .saturating_sub(self.visible.get().map_or(index, |(first, _)| first))
+            .min(Self::LAST)
+    }
+    fn elapsed(&self) -> f32 {
+        #[cfg(test)]
+        if let Some(elapsed) = self.test_elapsed {
+            return elapsed;
+        }
+        self.started
+            .map_or(0., |started| started.elapsed().as_secs_f32())
+    }
+    fn duration(&self) -> f32 {
+        let last = self.visible.get().map_or(0, |(_, last)| last);
+        Self::DURATION + self.rank(last) as f32 * Self::STAGGER
+    }
+    fn row(&self, index: usize, elapsed: f32) -> (f32, f32) {
+        if index < self.only_from {
+            return (1., 0.);
+        }
+        let t =
+            ((elapsed - self.rank(index) as f32 * Self::STAGGER) / Self::DURATION).clamp(0., 1.);
+        // Opacity stays monotonic while position has a subtle spring overshoot.
+        (presentation::ease_out(t), 1. - presentation::ease_out(t))
+    }
+    fn advance(state: &mut Option<Self>, motion: bool, visible: bool, active: bool) -> bool {
+        if !motion {
+            *state = None;
+        } else if visible
+            && active
+            && let Some(reveal) = state
+        {
+            reveal.started.get_or_insert_with(Instant::now);
+            if reveal.elapsed() < reveal.duration() {
+                return true;
+            }
+            *state = None;
+        }
+        false
+    }
+}
+struct Orbit {
+    remote_workspace: remote_workspace::State,
+    ninjas:ninjas_ui::State,
+    ninja:ninja_ui::State,
+    remote:remote_host::State,
+    performance:performance::Tracker,
+    workflows:Vec<daily_driver::Workflow>,
+    artifact_index:Vec<serde_json::Value>,
+    recent_results:Vec<String>,
+    workflow_dir:PathBuf,
+    final_history_load:Option<(String,u64)>,
+    unified_history_end:Option<(String,usize)>,
+    unified_history_wait:bool,
+    unified_back:Vec<SessionSummary>,
+    unified_forward:Vec<SessionSummary>,
+    unified_navigating:bool,
+    unified_text_morph:bool,
+    fast_transition:Option<Instant>,
+    orchestration_models:HashMap<(AgentKind,PathBuf),(Instant,agent_controls::ControlInfo)>,
+    orchestration_probes:HashSet<(AgentKind,PathBuf)>,
+    orchestrator_chats:HashSet<String>,
+    orchestrator_new:bool,
+    orchestrator_transition:Option<(Instant,f32)>,
+    composer_toolbars:std::cell::RefCell<HashMap<(WindowId, usize),composer_toolbar::State>>,
+    startup_surface:startup::Surface,
+    automatic_titles:bool,
+    title_queue:std::collections::VecDeque<chat_titles::Seed>,
+    title_busy:bool,
+    title_work:Option<chat_titles::Work>,
+    title_motions:HashMap<String,(String,Instant)>,
+    orchestrator_window:WindowHandle<Orbit>,
+    reasoning_efforts:std::collections::BTreeMap<String,String>,
+    unified_children:Vec<runtime::broker::ChildSnapshot>,
+    task_pet_visuals:HashMap<String,task_pets::Visual>,
+    task_pet_images: Entity<task_pet_cache::Sheets>,
+    unified_text_decode:text_decode::TextDecode,
+    unified_successes: std::collections::VecDeque<(String, String)>,
+    unified_context: Option<String>,
+    unified_voice_context: Option<String>,
+    unified_voice_images:Vec<PathBuf>,
+    voice_error:Option<String>,
+    voice_runs:HashSet<(String,uuid::Uuid)>,
+    unified_attachment_expected: Option<usize>,
+    unified_notch_sources: Vec<PathBuf>,
+    unified_attachment_sources: HashMap<PathBuf, uuid::Uuid>,
+    activity: sidebar_activity::Activity,
+    broker_panel: Option<broker_ui::Panel>,
+    broker_refreshing: bool,
+    broker_dirty: bool,
+    broker_children: HashMap<String, usize>,
+    subagent_chats: HashSet<String>,
+    broker_project: PathBuf,
+    file_context_picker: Option<file_context_ui::Picker>,
+    prompt_library_picker: Option<prompt_library_ui::Picker>,
+    prompt_queue: Vec<prompt_queue::Prompt>,
+    queue_dispatch: Option<String>,
+    queue_editing: Option<queue_ui::Editing>,
+    terminals: Vec<terminal_ui::Session>,
+    active_terminal: Option<EntityId>,
+    terminal_panes: terminal_panes::Layout,
+    saved_terminal_decks: Vec<workspace_ui::SavedTerminalDeck>,
+    terminal_owner: Option<workspace_ui::TerminalOwner>,
+    parked_terminals: HashMap<workspace_ui::TerminalOwner, workspace_ui::TerminalDeck>,
+    split_terminal_owners: Vec<workspace_ui::TerminalOwner>,
+    chat_split: Option<chat_split::Split>,
+    pane_maximize_motion: Option<(String, [f32; 4], Instant)>,
+    chat_split_hover: Option<terminal_dock::Side>,
+    next_terminal_number: u64,
+    terminal_visible: bool,
+    terminal_workspace_visible: bool,
+    terminal_dock:terminal_dock::Dock,
+    remote_terminal_docks: std::collections::BTreeMap<workspace_ui::TerminalOwner, terminal_dock::Dock>,
+    terminal_backend: terminal::Backend,
+    inspector_widths:pane_layout::Widths,
+    pane_layout:pane_layout::Layout,
+    closed_control_press:Option<control_clicks::ClosedPress>,
+    terminal_dock_hover:Option<terminal_dock::Side>,
+    teams: Vec<teams::Team>,
+    remote_deliveries: Vec<teams::RemoteDelivery>,
+    team_panel: Option<team_ui::Panel>,
+    team_starting: HashSet<String>,
+    context_picker: Option<context_ui::Picker>,
+    context_pending: HashMap<uuid::Uuid, context_ui::Pending>,
+    context_search_generation: u64,
+    chat_context: HashMap<String, Vec<context_refs::Reference>>,
+    native_pending: HashMap<String, native_request_ui::LiveRequest>,
+    native_request_focus: Option<String>,
+    native_models: HashMap<AgentKind, Vec<agent_controls::ModelChoice>>,
+    native_commands: HashMap<(AgentKind, PathBuf), Vec<std::sync::Arc<str>>>,
+    native_command_revision: u64,
+    handoff_pending: Option<handoff_ui::Pending>,
+    handoff_packets: HashMap<String, std::sync::Arc<handoff::Packet>>,
+    settling: HashMap<String, async_channel::Receiver<()>>,
+    slash: Option<command_ui::SlashPicker>,
+    slash_dismissed: Option<String>,
+    conversations_visible: bool,
+    conversations_transition:Option<(Instant,f32)>,
+    sidebar_split: bool,
+    expanded_projects: HashSet<PathBuf>,
+    project_tree: project_tree::ProjectTree,
+    usage: HashMap<String, usage::Usage>,
+    usage_bar: usage_bar::State,
+    appearance: appearance::Appearance,
+    theme: theme::Theme,
+    resolved_theme: theme::ResolvedTheme,
+    appearance_search: Option<Entity<TextInput>>,
+    appearance_search_subscription: Option<Subscription>,
+    appearance_editor: Option<personalization_ui::Editor>,
+    quick_shortcut: global_hotkey::Shortcut,
+    shortcut_recorder: Option<Entity<quick_chat::ShortcutRecorder>>,
+    shortcut_subscription: Option<Subscription>,
+    overlay_window: Option<WindowId>,
+    primary_window: WindowId,
+    voice_call: Option<voice_ui::Call>,
+    voice_choice: String,
+    workspace_store: Option<std::sync::Arc<workspace_state::StateStore>>,
+    restore_pending: Option<workspace_state::WorkspaceState>,
+    restore_scroll: Option<workspace_state::TranscriptAnchor>,
+    restore_model: Option<(String, Option<String>)>,
+    preferences_ready: bool,
+    workspace_save: Option<Task<()>>,
+    quit_pending: bool,
+    terminal_input_blocked: bool,
+    usage_dashboard: usage_dashboard::State,
+    usage_chart_bounds: std::rc::Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
+    continuations: Vec<continuation::Saved>,
+    continuation_claiming: bool,
+    continuation_restoring: bool,
+    workspace_signature: u64,
+    saved_viewport: Option<(String, u64, usize)>,
+    composer_revision: u64,
+    // Startup discovery may choose defaults only until this owner is used.
+    startup_owner_pristine: bool,
+    following_bottom: bool,
+    window_state: Option<workspace_state::WindowState>,
+    background: Entity<background::ChatBackground>,
+    background_data: PathBuf,
+    live_indicator: Entity<kai_indicator::KaiIndicator>,
+    loading_logo: Entity<loading_logo::LoadingLogo>,
+    file_indicator: Entity<kai_indicator::KaiFileGlyph>,
+    indicator_terminal: Option<(String, &'static str)>,
+    engine: Engine,
+    checkpoint_repository: Result<checkpoints::Repository, String>,
+    checkpoint_runs: HashMap<String, String>,
+    checkpoint_actions: HashMap<String, Option<checkpoints::Direction>>,
+    checkpoint_action_loading: usize,
+    checkpoint_busy: usize,
+    checkpoint_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    checkpoint_timeline: Option<checkpoint_ui::Timeline>,
+    preferences: preferences::Preferences,
+    hidden_projects: HashSet<PathBuf>,
+    restored_projects: HashSet<PathBuf>,
+    source_projects: Vec<Project>,
+    custom_projects: Vec<Project>,
+    projects_revealed: bool,
+    project_reveal: Option<ListReveal>,
+    sessions_revealed: bool,
+    sessions_scope: Option<(bool, PathBuf)>,
+    sidebar_rebuild_queued: bool,
+    sessions_reveal: Option<ListReveal>,
+    transcript_reveal: Option<ListReveal>,
+    action_menu: Option<ActionMenu>,
+    agent_picker: Option<agent_picker::Picker>,
+    controls: HashMap<&'static str, (Instant, agent_controls::ControlInfo)>,
+    controls_pending: HashSet<&'static str>,
+    controls_home: PathBuf,
+    controls_cache: PathBuf,
+    model: Option<String>,
+    speech: Option<speech::SpeechHandle>,
+    speech_input: Option<Entity<TextInput>>,
+    speech_generation: u64,
+    dictation_hotkey_down: bool,
+    dictation_status: Option<&'static str>,
+    dictation_transition: Option<Instant>,
+    render_images: image_retirement::OwnedImages,
+    attachments: Vec<attachments::Attachment>,
+    attachment_drafts: HashMap<String, Vec<attachments::Attachment>>,
+    attachment_dir: PathBuf,
+    transcript_media: Option<transcript_media::Preview>,
+    collapsed_tool_images: HashSet<u64>,
+    attachment_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    attachment_generation: u64,
+    attachment_pending: usize,
+    attachment_inserts: HashMap<uuid::Uuid, Instant>,
+    attachment_removals: HashMap<uuid::Uuid, Instant>,
+    attachment_hover: HashMap<uuid::Uuid, (Instant, bool, f32)>,
+    attachment_preview: Option<(attachments::Attachment, Instant)>,
+    attachment_preview_image: Option<std::sync::Arc<RenderImage>>,
+    attachment_preview_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    session_models: HashMap<String, Option<String>>,
+    agent_models: HashMap<&'static str, Option<String>>,
+    new_execution_path: Option<PathBuf>,
+    parallel_draft: bool,
+    recently_removed: Option<Project>,
+    hidden_sessions: HashSet<String>,
+    restored_sessions: HashSet<String>,
+    recently_deleted: Option<SessionSummary>,
+    lifecycle: preferences::Lifecycle,
+    lifecycle_editor: Option<project_lifecycle::Editor>,
+    pending_project_creations: usize,
+    archived_view: bool,
+    archive_ids: Vec<String>,
+    archive_generation: u64,
+    archive_offset: usize,
+    archive_page_end: usize,
+    archive_loading: bool,
+    file_browser: Option<Entity<files::FileBrowser>>,
+    file_observer: Option<Subscription>,
+    diff_observer: Option<Subscription>,
+    files_visible: bool,
+    diff_view: Option<Entity<diff_view::DiffView>>,
+    diff_started: Option<Instant>,
+    adaptive: adaptive_ui::State,
+    github: github_ui::State,
+    change_summaries:change_summary::State,
+    agents: Vec<Agent>,
+    projects: Vec<Project>,
+    sessions: Vec<SessionSummary>,
+    visible_sessions: Vec<SessionSummary>,
+    workspace_sessions: Vec<SessionSummary>,
+    all_projects: bool,
+    open_tabs: Vec<String>,
+    terminal_launcher: Option<workspace_ui::TerminalLauncher>,
+    draft_tab_opened: Option<Instant>,
+    draft_sessions: HashSet<String>,
+    opening_tabs: HashMap<String, Instant>,
+    shortcut_overrides: std::collections::BTreeMap<String, String>,
+    shortcut_capture: Option<(String, FocusHandle, Subscription)>,
+    split_picker: Option<chat_split::SplitPicker>,
+    closing_tabs: Vec<(usize, String, Instant)>,
+    drafts: HashMap<String, String>,
+    send_after_load: Option<handoff_ui::Submission>,
+    expanded_tools: HashSet<usize>,
+    interaction_animations: HashMap<usize, (Instant, bool, f32)>,
+    expanded_work: HashSet<usize>,
+    flow_index:chat_flow::Index,
+    flow_layout_key: Option<chat_flow::LayoutKey>,
+    flow_revision:u64,
+    work_animations: HashMap<usize, interaction_ui::WorkMotion>,
+    question_choices: HashMap<String, (String, Instant)>,
+    project_generation: u64,
+    project: PathBuf,
+    agent: AgentKind,
+    active: Option<String>,
+    composer: Entity<TextInput>,
+    search: Entity<TextInput>,
+    focus: FocusHandle,
+    modal: Option<Modal>,
+    panel_popover: Option<popovers::PanelPopover>,
+    panel_at_pointer_down: Option<Modal>,
+    picker_at_pointer_down: Option<bool>,
+    workspace_trust: Option<WorkspaceTrust>,
+    session_conflict: Option<WorkspaceTrust>,
+    session_conflict_open: bool,
+    pending_cli_handoffs: Vec<(String, uuid::Uuid)>,
+    fork_next: Option<String>,
+    workspace_trust_open: bool,
+    workspace_retry: Option<WorkspaceTrust>,
+    trusted_workspaces: std::collections::HashSet<(AgentKind, PathBuf)>,
+    sidebar: bool,
+    sidebar_transition: Option<(Instant, f32)>,
+    sidebar_layout_transition: Option<(Instant, f32)>,
+    sidebar_width: f32,
+    sidebar_sizes: [f32; 2],
+    chat_switcher: Option<chat_switcher::Picker>,
+    allow_edits: bool,
+    codex_approvals: runtime::CodexApprovals,
+    codex_access: runtime::CodexAccess,
+    unrestricted_providers: HashSet<String>,
+    starting: bool,
+    launches:HashMap<String,chat_timing::Launch>,
+    turn_timings:Vec<chat_timing::Record>,
+    timestamp_peek:f32,
+    timestamp_direction:f32,
+    timestamp_released:Option<Instant>,
+    pending_response_start: Option<usize>,
+    rows: Vec<Row>,
+    list: ListState,
+    runs: HashMap<String, Running>,
+    chat_clis: HashMap<String, keyboard::ChatCli>,
+    cli_draft_project: Option<(PathBuf, Option<PathBuf>, AgentKind)>,
+    finalizing: HashSet<String>,
+    final_previews_pending: HashSet<String>,
+    completion_frame: Option<(String, u64)>,
+    deferred_final_history: HashSet<String>,
+    generation: u64,
+    search_generation: u64,
+    palette_selection:usize,
+    palette_files: daily_driver::PaletteFiles,
+    palette_native_settings: Vec<(String,String,String)>,
+    palette_scroll: UniformListScrollHandle,
+    loading: bool,
+    loading_earlier: bool,
+    has_older: bool,
+    history_offset: usize,
+    history_fill_position: Option<(u64,usize)>,
+    has_newer: bool,
+    history_anchor: Option<ListOffset>,
+    history_pages: Vec<HistoryPage>,
+    deferred_rows: HashMap<usize, DeferredRow>,
+    history_pending: HashSet<usize>,
+    history_failed: HashSet<usize>,
+    history_visible: std::ops::Range<usize>,
+    navigation: Entity<chat_navigation::ScrollRail>,
+    navigation_history: bool,
+    live_history:Option<live_history::View>,
+    navigation_previous: Option<bool>,
+    navigation_context:Option<chat_navigation::LiveContext>,
+    history_clock: u64,
+    history_animation: Option<Instant>,
+    discovering: bool,
+    notice: Option<String>,
+    last_notice_feedback: Option<String>,
+    last_remote_feedback: Option<String>,
+    motion: bool,
+    pane_profile: workspace_motion::PaneProfile,
+    workspace_opening_once: bool,
+    home_generation: u64,
+    home_composer_space: std::rc::Rc<std::cell::Cell<f32>>,
+    composer_send_motion: Option<(String, Instant, f32)>,
+    project_wheel: project_wheel::ProjectWheel,
+    initial_workspace_home_generation: Option<u64>,
+    _subscriptions: Vec<Subscription>,
+    #[cfg(test)]
+    rendered_rows: std::cell::Cell<usize>,
+}
+impl Orbit {
+    /// Closing the workspace detaches durable owners. Cancel only work
+    /// that depends on this process and hold the local, window-owned queue.
+    fn cancel_pending_launches(&mut self) {
+        self.checkpoint_cancel
+            .store(true, std::sync::atomic::Ordering::Release);
+        for launch in self.launches.values(){launch.cancel.store(true,std::sync::atomic::Ordering::Release);}
+        for team in &mut self.teams {
+            if team.remote_prompt {
+                continue;
+            }
+            for member in &mut team.members {
+                member
+                    .cancel
+                    .store(true, std::sync::atomic::Ordering::Release);
+                if member.status == teams::Status::Queued {
+                    member.status = teams::Status::Held;
+                }
+            }
+        }
+        for run in self.runs.values().filter(|run| run.handle.durable.is_none()) {
+            run.handle.cancel();
+        }
+    }
+    fn new(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        workspace_store: Option<std::sync::Arc<workspace_state::StateStore>>,
+    ) -> Self {
+        let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let home = dirs::home_dir().unwrap_or(root.clone());
+        let data = std::env::var_os("ORBIT_DATA_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join("Library/Application Support/Orbit"));
+        Self::with_state(window, cx, home, root, data, workspace_store)
+    }
+    #[cfg(test)]
+    fn with_paths(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        home: PathBuf,
+        root: PathBuf,
+        data: PathBuf,
+    ) -> Self {
+        Self::with_state(window, cx, home, root, data, None)
+    }
+    fn with_state(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        home: PathBuf,
+        root: PathBuf,
+        data: PathBuf,
+        workspace_store: Option<std::sync::Arc<workspace_state::StateStore>>,
+    ) -> Self {
+        launch_metrics::mark("orbit-restore-begin");
+        let restored = workspace_store
+            .as_ref()
+            .map(|store| store.initial().clone());
+        let saved_theme = restored
+            .as_ref()
+            .map(|s| s.theme.normalized())
+            .unwrap_or_default();
+        let saved_appearance = restored
+            .as_ref()
+            .map_or_else(Default::default, |s| s.appearance);
+        let resolved_theme = saved_theme.resolve(is_dark(window.appearance()), saved_appearance);
+        theme::install_resolved(resolved_theme.clone());
+        native::apply_appearance(
+            window,
+            &appearance::Appearance {
+                blur_radius: if resolved_theme.native_transparency {
+                    saved_appearance.blur_radius
+                } else {
+                    0
+                },
+                ..saved_appearance
+            },
+        );
+        native::apply_theme(window, &resolved_theme);
+        launch_metrics::mark("orbit-appearance-ready");
+        let weak_appearance = cx.weak_entity();
+        let system_appearance = window.observe_window_appearance(move |window, cx| {
+            let _ = weak_appearance.update(cx, |this, cx| this.apply_personalization(window, cx));
+        });
+        let root = restored
+            .as_ref()
+            .and_then(|state| state.project.clone())
+            .unwrap_or(root);
+        let saved_sidebar = restored.as_ref().is_none_or(|state| state.sidebar);
+        let saved_motion = restored.as_ref().is_none_or(|state| state.motion);
+        let workspace_opening_once = restored.as_ref().is_none_or(|state| state.workspace_opening_once);
+        let sidebar_sizes = restored.as_ref().map_or([280., 200.], |s| s.sidebar_sizes);
+        let saved_sidebar_width = sidebar_sizes[usize::from(restored.as_ref().is_some_and(|s| s.sidebar_split))];
+        let saved_expanded_projects = restored
+            .as_ref()
+            .map(|state| state.expanded_projects.iter().cloned().collect())
+            .unwrap_or_else(|| HashSet::from([root.clone()]));
+        let engine = Engine::new(home.clone(), root.clone(), data.join("history.sqlite"));
+        let preferences = preferences::Preferences::new(data.join("projects.json"));
+        let background =
+            cx.new(|cx| background::ChatBackground::new(data.clone(), root.clone(), window, cx));
+        launch_metrics::mark("orbit-workers-ready");
+        let background_changes = cx.subscribe(&background, |this, _, _, cx| {
+            if this.modal == Some(Modal::Background) {
+                cx.notify();
+            }
+        });
+        let live_indicator = cx.new(kai_indicator::KaiIndicator::new);
+        let loading_logo = cx.new(loading_logo::LoadingLogo::new);
+        let logo_settled = cx.subscribe(&loading_logo, |_, _, _: &loading_logo::Settled, cx| {
+            cx.notify()
+        });
+        let navigation = cx.new(chat_navigation::ScrollRail::new);
+        let navigation_seek =
+            cx.subscribe(&navigation, |this, _, event: &chat_navigation::Seek, cx| {
+                this.scrub_chat(event.0, cx);
+            });
+        let file_indicator = cx.new(kai_indicator::KaiFileGlyph::new);
+        let activation = cx.observe_window_activation(window, |this, window, cx| {
+            if window.is_window_active() {
+                let id=window.window_handle().window_id();
+                if let Some(previous)=this.overlay_window.filter(|previous|*previous!=id){this.dismiss_controls_for_window(previous);}
+                this.overlay_window = Some(id);
+            }
+            if !window.is_window_active() {
+                native::panel_drag_guard(window,false);
+                this.dictation_hotkey_down = false;
+                this.dismiss_controls_for_window(window.window_handle().window_id());
+            }
+            cx.notify();
+        });
+        let bounds_changed = cx.observe_window_bounds(window, |this, window, cx| {
+            this.window_state = Some(workspace_ui::capture_window(window));
+            this.queue_workspace_save(cx);
+        });
+        let before_quit = cx.on_app_quit(|this, cx| {
+            this.stop_dictation(cx);
+            this.stop_voice(cx);
+            if !this.quit_pending { this.capture_quit_continuations(); }
+            this.quit_pending = true;
+            this.background
+                .update(cx, |background, cx| background.set_quitting(true, cx));
+            this.cancel_pending_launches();
+            drop(this.shutdown_app_brokers());
+            // Normal Quit waits for protocol cleanup in quit_after_save. The
+            // short platform hook also starts cancellation for system shutdown.
+            this.save_workspace_now(cx);
+            let flush = this.workspace_store.as_ref().map(|store| {
+                let acknowledgement = store.flush();
+                let history_acknowledgement = this.engine.flush();
+                cx.background_executor().spawn(async move {
+                    let _ = history_acknowledgement.recv_timeout(Duration::from_secs(2));
+                    if let Ok(Err(error)) = acknowledgement.recv_timeout(Duration::from_secs(2)) {
+                        eprintln!("Could not save Code workspace: {error}");
+                    }
+                })
+            });
+            async move {
+                if let Some(flush) = flush {
+                    flush.await;
+                }
+            }
+        });
+        cx.observe_self(|this, cx| this.retire_unowned_render_images(cx)).detach();
+        cx.on_release(|this, cx| {
+            this.release_owned_render_images(cx);
+            if let Some(mut call) = this.voice_call.take() {
+                call.media.stop();
+                if let Some(run) = this.runs.get(&call.owner) {
+                    run.handle.cancel();
+                }
+            }
+            this.cancel_pending_launches();
+            drop(this.shutdown_brokers());
+            if let Ok(repository) = &this.checkpoint_repository {
+                for (session, id) in this.checkpoint_runs.drain() {
+                    if let Some(run) = this.runs.get(&session).filter(|r|r.handle.durable.is_none()) {
+                        drop(repository.cleanup_on_orphan(id, run.handle.settled.clone()));
+                    }
+                }
+            }
+            this.save_workspace_now(cx);
+        })
+        .detach();
+        #[cfg(not(test))]
+        {
+            let wake = runtime::broker::wake();
+            cx.spawn(async move |this, cx| {
+                while wake.recv().await.is_ok() {
+                    Timer::after(Duration::from_millis(16)).await;
+                    if this.update(cx, |this, cx| this.refresh_broker(cx)).is_err() {
+                        break;
+                    }
+                }
+            })
+            .detach();
+            let events = engine.events.clone();
+            cx.spawn(async move |this, cx| {
+                let mut batch = Instant::now();
+                while let Ok(event) = events.recv().await {
+                    if this.update(cx, |this, cx| this.receive(event, cx)).is_err() {
+                        break;
+                    }
+                    if batch.elapsed() >= Duration::from_millis(2) {
+                        Timer::after(Duration::from_millis(1)).await;
+                        batch = Instant::now();
+                    }
+                }
+            })
+            .detach();
+            let preference_events = preferences.events.clone();
+            cx.spawn(async move |this, cx| {
+                while let Ok(event) = preference_events.recv().await {
+                    if this
+                        .update(cx, |this, cx| this.receive_preferences(event, cx))
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            })
+            .detach();
+        }
+        let composer = cx.new(|cx| {
+            let mut input = TextInput::new(window, cx);
+            input.set_placeholder("Ask, build, or explore this project…", cx);
+            input.set_image_paste(true);
+            input
+        });
+        let search = cx.new(|cx| {
+            let mut input = TextInput::new(window, cx);
+            input.set_placeholder("Search commands, projects, chats, or results…", cx);
+            input.set_palette_navigation();
+            input
+        });
+        composer.read(cx).focus_handle.focus(window);
+        launch_metrics::mark("orbit-inputs-ready");
+        let submit = cx.subscribe_in(&composer, window, |this, _, event, window, cx| {
+            if this.overlay_window.is_none_or(|id| id == window.window_handle().window_id()) {
+                this.composer_event(event, window, cx);
+            }
+        });
+        let search_change =
+            cx.subscribe_in(&search, window, |this, _, event, window, cx| match event {
+                InputEvent::Submit|InputEvent::CommandAccept|InputEvent::CommandComplete => this.palette_accept(window,cx),
+                InputEvent::CommandPrevious=>this.palette_move(-1,cx),
+                InputEvent::CommandNext=>this.palette_move(1,cx),
+                InputEvent::Changed => {
+                    this.palette_selection = 0;
+                    this.update_palette_search(cx);
+                }
+                _ => {}
+            });
+        // Short conversations start at the top; explicit tail scrolling still
+        // follows output once the transcript exceeds its viewport. This keeps
+        // the first prompt moving up while its composer moves down.
+        let list = ListState::new(0, ListAlignment::Top, px(400.));
+        list.set_scroll_handler(cx.listener(|this, event: &ListScrollEvent, _, cx| {
+            // A real scroll ends the entrance immediately; changing the visible
+            // tail must never make already readable text fade out again.
+            this.transcript_reveal = None;
+            this.following_bottom = !event.is_scrolled && !this.navigation_history;
+            let visible_count = event.visible_range.len();
+            let is_scrolled = event.is_scrolled;
+            let generation = this.generation;
+            let weak = cx.weak_entity();
+            // GPUI invokes this handler while its list is mutably borrowed.
+            // Defer reading the final offset until scrolling has completed.
+            cx.defer(move |cx| {
+                let _ = weak.update(cx, |this, cx| {
+                    if generation != this.generation {
+                        return;
+                    }
+                    let start = this.list.logical_scroll_top().item_ix;
+                    this.history_visible =
+                        start..start.saturating_add(visible_count + 2).min(this.rows.len());
+                    this.rehydrate_visible_history(cx);
+                    this.queue_workspace_save(cx);
+                    this.navigation
+                        .update(cx, |rail, cx| rail.scrolled(&this.list, this.following_bottom, cx));
+                    let stream_edge=this.active.as_ref().and_then(|id|this.runs.get(id)).and_then(|r|r.stream_start).is_some_and(|at|start>=at.saturating_sub(3)&&start<=at+3);
+                    if is_scrolled && (this.history_near_top(start)||stream_edge) {
+                        this.load_history_page(true, cx);
+                    }
+                });
+            });
+        }));
+        // Host monitoring belongs to the application lifetime, not window paint.
+        let owner=cx.weak_entity();
+        cx.defer(move|cx|{let _=owner.update(cx,|app,cx|{
+            let hosts=app.ninjas.hosts.iter().filter(|h|h.endpoint.is_some()||app.ninjas.snapshots.get(&h.id).is_some_and(|v|v["profiles"].as_array().is_some_and(|p|!p.is_empty()))).cloned().collect::<Vec<_>>();
+            for host in hosts{app.start_ninja_watch(host,cx);}
+            app.refresh_ninja_hosts(cx);
+        });});
+        let ninjas = ninjas_ui::State::restore();
+        launch_metrics::mark("orbit-ninja-host-state-ready");
+        let ninja = ninja_ui::State::restore(restored.as_ref());
+        launch_metrics::mark("orbit-local-inference-state-ready");
+        let startup_owner_pristine = restored.as_ref().is_none_or(|state| {
+            state.project.is_none() && state.active_chat.is_none()
+                && state.agent == AgentKind::Codex.command() && state.model.is_none()
+                && state.reasoning_efforts.is_empty()
+                && state.execution_path.is_none() && state.cli_draft_project.is_none()
+                && state.draft_sessions.is_empty() && state.prompt_queue.is_empty()
+                && state.cli_sessions.is_empty() && state.terminal_decks.is_empty()
+                && state.continuations.is_empty()
+                && state.drafts.values().all(String::is_empty)
+                && state.image_drafts.values().all(Vec::is_empty)
+                && state.chat_context.values().all(Vec::is_empty)
+        });
+        Self {
+            ninjas,
+            remote:Default::default(),performance:Default::default(),artifact_index:vec![],recent_results:restored.as_ref().map(|s|s.recent_results.clone()).unwrap_or_default(),workflows:restored.as_ref().map(|s|s.workflows.clone()).unwrap_or_default(),workflow_dir:data.clone(),
+            unified_text_morph:restored.as_ref().is_none_or(|s|s.text_morph),
+            final_history_load:None,
+            unified_history_end:None,unified_history_wait:false,
+            unified_back:vec![],unified_forward:vec![],unified_navigating:false,
+            fast_transition:None,orchestrator_new:false,orchestrator_transition:None,composer_toolbars:Default::default(),
+            automatic_titles:!cfg!(test)&&restored.as_ref().is_none_or(|s|s.automatic_titles),title_queue:Default::default(),title_busy:false,title_work:None,title_motions:HashMap::new(),
+            startup_surface:restored.as_ref().map_or_else(Default::default,|s|s.startup_surface),
+            orchestration_models:HashMap::new(),orchestration_probes:HashSet::new(),
+            orchestrator_chats:restored.as_ref().map(|s|s.orchestrator_chats.iter().cloned().collect()).unwrap_or_default(),
+            orchestrator_window:window.window_handle().downcast::<Orbit>().expect("Orbit window"),
+            ninja,
+            reasoning_efforts:restored.as_ref().map(|s|s.reasoning_efforts.clone()).unwrap_or_default(),
+            unified_children:vec![],
+            task_pet_visuals:HashMap::new(),
+            task_pet_images: task_pet_cache::Sheets::new(cx),
+            unified_text_decode:Default::default(),
+            unified_successes: Default::default(),
+            unified_context: None,
+            unified_voice_context: None,
+            unified_voice_images:vec![],voice_error:None,voice_runs:HashSet::new(),
+            unified_attachment_expected: None,
+            unified_notch_sources: vec![],
+            unified_attachment_sources: HashMap::new(),
+            broker_panel: None,
+            broker_refreshing: false,
+            broker_dirty: false,
+            broker_children: HashMap::new(),
+            subagent_chats: HashSet::new(),
+            broker_project: PathBuf::new(),
+            file_context_picker: None,
+            prompt_library_picker: None,
+            prompt_queue: Vec::new(),
+            queue_dispatch: None,
+            queue_editing: None,
+            terminals: Vec::new(),
+            active_terminal: None,
+            terminal_panes: Default::default(),
+            saved_terminal_decks: restored.as_ref().map_or_else(Vec::new, |state| state.terminal_decks.clone()),
+            terminal_owner: None,
+            parked_terminals: HashMap::new(),
+            split_terminal_owners: Vec::new(),
+            chat_split: None,
+            pane_maximize_motion: None,
+            chat_split_hover: None,
+            next_terminal_number: 1,
+            terminal_visible: false,
+            terminal_workspace_visible: true,
+            terminal_dock:restored.as_ref().map_or_else(Default::default,|s|s.terminal_dock.normalized()),
+            remote_terminal_docks: restored.as_ref().into_iter().flat_map(|state| &state.remote_terminal_docks)
+                .map(|(owner, dock)| (owner.clone(), dock.normalized())).collect(),
+            terminal_backend: restored.as_ref().map_or_else(Default::default, |state| state.terminal_backend),
+            inspector_widths:restored.as_ref().map_or_else(Default::default,|s|s.inspector_widths.normalized()),pane_layout:Default::default(),closed_control_press:None,
+            terminal_dock_hover:None,
+            teams: Vec::new(),
+            remote_deliveries: Vec::new(),
+            team_panel: None,
+            team_starting: HashSet::new(),
+            context_picker: None,
+            context_pending: HashMap::new(),
+            context_search_generation: 0,
+            chat_context: HashMap::new(),
+            native_pending: HashMap::new(),
+            native_request_focus: None,
+            native_models: HashMap::new(),
+            native_commands: HashMap::new(),
+            native_command_revision: 0,
+            handoff_pending: None,
+            handoff_packets: HashMap::new(),
+            settling: HashMap::new(),
+            slash: None,
+            slash_dismissed: None,
+            sidebar_split: restored.as_ref().is_some_and(|state| state.sidebar_split),
+            expanded_projects: saved_expanded_projects,
+            project_tree: {let mut tree=project_tree::ProjectTree::default();tree.projects_collapsed=restored.as_ref().is_some_and(|s|s.sidebar_projects_collapsed);tree.chats_collapsed=restored.as_ref().is_some_and(|s|s.sidebar_chats_collapsed);tree},
+            conversations_transition:None,
+            conversations_visible: restored
+                .as_ref()
+                .is_none_or(|state| state.conversations_visible),
+            usage: HashMap::new(),
+            usage_bar: Default::default(),
+            appearance: restored
+                .as_ref()
+                .map_or_else(Default::default, |state| state.appearance),
+            theme: saved_theme,
+            resolved_theme,
+            appearance_search: None,
+            appearance_search_subscription: None,
+            appearance_editor: None,
+            quick_shortcut: restored
+                .as_ref()
+                .map(|s| s.quick_shortcut.clone())
+                .unwrap_or_default(),
+            shortcut_recorder: None,
+            shortcut_subscription: None,
+            overlay_window: None,
+            primary_window: window.window_handle().window_id(),
+            voice_call: None,
+            activity: sidebar_activity::Activity::default(),
+            voice_choice: restored
+                .as_ref()
+                .map(|s| s.voice_choice.clone())
+                .unwrap_or_else(|| "cove".into()),
+            workspace_store,
+            turn_timings:restored.as_ref().map(|s|s.turn_timings.clone()).unwrap_or_default(),
+            restore_pending: restored,
+            restore_scroll: None,
+            restore_model: None,
+            preferences_ready: cfg!(test),
+            workspace_save: None,
+            quit_pending: false,
+            terminal_input_blocked: false,
+            usage_dashboard: Default::default(),
+            usage_chart_bounds: Default::default(),
+            continuations: vec![],
+            continuation_claiming: false,
+            continuation_restoring: false,
+            workspace_signature: 0,
+            saved_viewport: None,
+            composer_revision: 0,
+            startup_owner_pristine,
+            following_bottom: true,
+            window_state: Some(workspace_ui::capture_window(window)),
+            background,
+            background_data: data.clone(),
+            live_indicator,
+            loading_logo,
+            file_indicator,
+            indicator_terminal: None,
+            engine,
+            checkpoint_repository: Ok(checkpoints::Repository::at(data.join("checkpoints"))),
+            checkpoint_runs: HashMap::new(),
+            checkpoint_actions: HashMap::new(),
+            checkpoint_action_loading: 0,
+            checkpoint_busy: 0,
+            checkpoint_cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            checkpoint_timeline: None,
+            preferences,
+            hidden_projects: HashSet::new(),
+            restored_projects: HashSet::new(),
+            source_projects: vec![],
+            custom_projects: vec![],
+            projects_revealed: false,
+            project_reveal: None,
+            sessions_revealed: false,
+            sessions_scope: None,
+            sidebar_rebuild_queued: false,
+            sessions_reveal: None,
+            transcript_reveal: None,
+            action_menu: None,
+            agent_picker: None,
+            controls: HashMap::new(),
+            controls_pending: HashSet::new(),
+            controls_home: home,
+            controls_cache: data.join("login"),
+            model: None,
+            speech: None,
+            speech_input: None,
+            speech_generation: 0,
+            dictation_hotkey_down: false,
+            dictation_status: None,
+            dictation_transition: None,
+            render_images: Default::default(),
+            attachments: vec![],
+            attachment_drafts: HashMap::new(),
+            attachment_dir: data.join("attachments"),
+            transcript_media: None,
+            collapsed_tool_images: HashSet::new(),
+            attachment_cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            attachment_generation: 0,
+            attachment_pending: 0,
+            attachment_inserts: HashMap::new(),
+            attachment_removals: HashMap::new(),
+            attachment_hover: HashMap::new(),
+            attachment_preview: None,
+            attachment_preview_image: None,
+            attachment_preview_cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+                false,
+            )),
+            session_models: HashMap::new(),
+            agent_models: HashMap::new(),
+            new_execution_path: None,
+            parallel_draft: false,
+            recently_removed: None,
+            hidden_sessions: HashSet::new(),
+            restored_sessions: HashSet::new(),
+            recently_deleted: None,
+            lifecycle: Default::default(),
+            lifecycle_editor: None,
+            pending_project_creations: 0,
+            archived_view: false,
+            archive_ids: vec![],
+            archive_generation: 0,
+            archive_offset: 0,
+            archive_page_end: 0,
+            archive_loading: false,
+            file_browser: None,
+            file_observer: None,
+            diff_observer: None,
+            files_visible: false,
+            diff_view: None,
+            diff_started: None,
+            adaptive: Default::default(),
+            github: Default::default(),
+            remote_workspace: Default::default(),
+            change_summaries:Default::default(),
+            agents: vec![],
+            projects: vec![],
+            sessions: vec![],
+            visible_sessions: vec![],
+            workspace_sessions: vec![],
+            all_projects: false,
+            open_tabs: vec![],
+            terminal_launcher: None,
+            closing_tabs: Vec::new(),
+            draft_tab_opened: None,
+            opening_tabs: HashMap::new(),
+            draft_sessions: HashSet::new(),
+            split_picker: None,
+            shortcut_overrides: Default::default(),
+            shortcut_capture: None,
+            drafts: HashMap::new(),
+            send_after_load: None,
+            expanded_tools: HashSet::new(),
+            interaction_animations: HashMap::new(),
+            expanded_work:HashSet::new(),work_animations:HashMap::new(),
+            flow_index:Default::default(),flow_layout_key: None,flow_revision:0,
+            question_choices: HashMap::new(),
+            project_generation: 0,
+            project: root,
+            agent: AgentKind::Codex,
+            active: None,
+            composer,
+            search,
+            focus: cx.focus_handle(),
+            modal: None,
+            panel_popover: None,
+            panel_at_pointer_down: None,
+            picker_at_pointer_down: None,
+            workspace_trust: None,
+            session_conflict: None,
+            session_conflict_open: false,
+            pending_cli_handoffs: Vec::new(),
+            fork_next: None,
+            workspace_trust_open: false,
+            workspace_retry: None,
+            trusted_workspaces: std::collections::HashSet::new(),
+            sidebar_sizes,
+            chat_switcher: None,
+            sidebar: saved_sidebar,
+            sidebar_transition: None,
+            sidebar_layout_transition: None,
+            sidebar_width: if saved_sidebar {
+                saved_sidebar_width
+            } else {
+                0.
+            },
+            allow_edits: false,
+            codex_approvals: runtime::CodexApprovals::default(),
+            codex_access: Default::default(),
+            unrestricted_providers: HashSet::new(),
+            starting: false,
+            launches:HashMap::new(),
+            timestamp_peek:0.,timestamp_direction:0.,timestamp_released:None,
+            pending_response_start: None,
+            rows: vec![],
+            list,
+            runs: HashMap::new(),
+            chat_clis: HashMap::new(),
+            cli_draft_project: None,
+            finalizing: HashSet::new(),
+            final_previews_pending: HashSet::new(),
+            completion_frame: None,
+            deferred_final_history: HashSet::new(),
+            generation: 0,
+            search_generation: 0,
+            palette_selection:0,
+            palette_files: Default::default(),
+            palette_native_settings: Vec::new(),
+            palette_scroll: UniformListScrollHandle::new(),
+            loading: false,
+            loading_earlier: false,
+            has_older: false,
+            history_offset: 0,
+            history_fill_position: None,
+            has_newer: false,
+            history_anchor: None,
+            history_pages: vec![],
+            deferred_rows: HashMap::new(),
+            history_pending: HashSet::new(),
+            history_failed: HashSet::new(),
+            history_visible: 0..0,
+            navigation,
+            navigation_history: false,
+            live_history:None,
+            navigation_previous: None,
+            navigation_context:None,
+            history_clock: 0,
+            history_animation: None,
+            discovering: true,
+            notice: None,
+            last_notice_feedback: None,
+            last_remote_feedback: None,
+            pane_profile: Default::default(),
+            motion: saved_motion && std::env::var_os("ORBIT_REDUCE_MOTION").is_none(),
+            workspace_opening_once,
+            home_generation: 0,
+            home_composer_space: Default::default(),
+            composer_send_motion: None,
+            project_wheel: Default::default(),
+            initial_workspace_home_generation: None,
+            _subscriptions: vec![
+                logo_settled,
+                navigation_seek,
+                submit,
+                search_change,
+                background_changes,
+                activation,
+                bounds_changed,
+                system_appearance,
+                before_quit,
+            ],
+            #[cfg(test)]
+            rendered_rows: std::cell::Cell::new(0),
+        }
+    }
+    fn open_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.quit_pending {
+            return;
+        }
+        let selection = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Open workspace".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = selection.await
+                && let Some(path) = paths.first()
+            {
+                let path = path.clone();
+                let _ = this.update_in(cx, |this, window, cx| {
+                    if this.quit_pending {
+                        return;
+                    }
+                    this.hidden_projects.remove(&path);
+                    this.restored_projects.insert(path.clone());
+                    let project = Project {
+                        name: path
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .into_owned(),
+                        path: path.clone(),
+                    };
+                    this.preferences.add(project.clone());
+                    this.custom_projects.retain(|p| p.path != path);
+                    this.custom_projects.push(project);
+                    if !this.projects.iter().any(|p| p.path == path) {
+                        this.projects.push(Project {
+                            name: path
+                                .file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                                .into_owned(),
+                            path: path.clone(),
+                        });
+                    }
+                    this.select_project(path, window, cx);
+                });
+            }
+        })
+        .detach();
+    }
+    fn rebuild_workspace_sessions(&mut self) {
+        if self.sessions_scope.as_ref().is_none_or(|(all, project)| {
+            *all != self.all_projects || (!self.all_projects && *project != self.project)
+        }) {
+            self.sessions_scope = Some((self.all_projects, self.project.clone()));
+            self.sessions_revealed = false;
+            self.sessions_reveal = None;
+        }
+        self.workspace_sessions = self
+            .sessions
+            .iter()
+            .filter(|session| {
+                !self.hidden_sessions.contains(&session.id)
+                    && !self.draft_sessions.contains(&session.id)
+                    && !discovery::internal_probe_project(&session.project_path)
+                    && self.lifecycle.archived_chats.contains(&session.id) == self.archived_view
+                    && (self.all_projects || session.project_path.starts_with(&self.project))
+            })
+            .cloned()
+            .collect();
+        // Capture legacy summary recency once; completion/refresh must not reorder
+        // a conversation after its next real prompt has been recorded.
+        let mut submitted: HashMap<&str, i64> = HashMap::new();
+        for timing in &self.turn_timings {
+            submitted.entry(&timing.session).and_modify(|at| *at = (*at).max(timing.submitted_ms)).or_insert(timing.submitted_ms);
+        }
+        for session in self.sessions.iter().filter(|session| !self.draft_sessions.contains(&session.id)) {
+            let at = submitted.get(session.id.as_str()).copied().unwrap_or(session.updated_at.saturating_mul(1000));
+            self.activity.saved.seed_prompt(&session.id, at);
+        }
+        self.workspace_sessions.sort_by_cached_key(|session| (
+            std::cmp::Reverse(self.activity.prompt_at(session)),
+            !self.lifecycle.pinned_chats.contains(&session.id), session.id.clone(),
+        ));
+        self.sort_projects_by_prompt();
+        self.rebuild_project_tree();
+    }
+    fn rebuild_projects(&mut self) {
+        self.collect_projects();
+        self.sort_projects_by_prompt();
+        self.rebuild_project_tree();
+    }
+    // Discovery replaces sessions in the same update. Collect its roots first,
+    // then build ordering/tree indexes once from the final merged session set.
+    fn collect_projects(&mut self) {
+        let mut seen = HashSet::new();
+        self.projects = self
+            .source_projects
+            .iter()
+            .chain(&self.custom_projects)
+            .filter(|p| !self.hidden_projects.contains(&p.path) && !discovery::internal_probe_project(&p.path) && seen.insert(p.path.clone()))
+            .cloned()
+            .collect();
+    }
+    fn conversations_are_visible(&self, window: &Window) -> bool {
+        self.sidebar_split && self.conversations_visible
+            && (!(self.files_visible || self.diff_view.is_some()) || window.viewport_size().width >= px(1180.))
+    }
+    fn visible_reveal_work(&self, window: &Window) -> bool {
+        if self.active.is_some() {
+            !self.loading && self.transcript_reveal.is_some()
+        } else {
+            self.sidebar && self.project_reveal.is_some()
+                || self.conversations_are_visible(window) && self.sessions_reveal.is_some()
+        }
+    }
+    fn tick_list_reveals(&mut self, window: &Window, cx: &Context<Self>) {
+        let active = window.is_window_active();
+        let sessions_visible = self.conversations_are_visible(window);
+        if !self.projects_revealed
+            && !self.projects.is_empty()
+            && (!self.motion || (self.sidebar && active))
+        {
+            self.projects_revealed = true;
+            self.project_reveal = self.motion.then(|| ListReveal::new(Some(0)));
+        }
+        if !self.sessions_revealed
+            && !self.workspace_sessions.is_empty()
+            && (!self.motion || (sessions_visible && active))
+        {
+            self.sessions_revealed = true;
+            self.sessions_reveal = self.motion.then(|| ListReveal::new(Some(0)));
+        }
+        let mut animating = false;
+        for (reveal, visible) in [
+            (&mut self.project_reveal, self.sidebar),
+            (&mut self.sessions_reveal, sessions_visible),
+            (
+                &mut self.transcript_reveal,
+                self.active.is_some() && !self.loading,
+            ),
+        ] {
+            animating |= ListReveal::advance(reveal, self.motion, visible, active);
+        }
+        if animating {
+            request_motion_frame(window, cx);
+        }
+    }
+    fn receive_preferences(&mut self, event: preferences::Event, cx: &mut Context<Self>) {
+        match event {
+            preferences::Event::Loaded(hidden, custom, hidden_sessions, mut lifecycle) => {
+                // Edits made while the preferences worker starts win over its
+                // initial snapshot; discovered metadata never owns these names.
+                let edited_before_load = !self.lifecycle.project_names.is_empty()
+                    || !self.lifecycle.chat_names.is_empty()
+                    || !self.lifecycle.pinned_projects.is_empty()
+                    || !self.lifecycle.pinned_chats.is_empty()
+                    || !self.lifecycle.archived_chats.is_empty();
+                lifecycle
+                    .project_names
+                    .extend(self.lifecycle.project_names.drain());
+                lifecycle
+                    .chat_names
+                    .extend(self.lifecycle.chat_names.drain());
+                lifecycle
+                    .pinned_projects
+                    .extend(self.lifecycle.pinned_projects.drain());
+                lifecycle
+                    .pinned_chats
+                    .extend(self.lifecycle.pinned_chats.drain());
+                lifecycle
+                    .archived_chats
+                    .extend(self.lifecycle.archived_chats.drain());
+                self.lifecycle = *lifecycle;
+                self.refresh_archive_index();
+                if self.archived_view {
+                    self.load_archived_page(cx);
+                }
+                self.preferences_ready = true;
+                if edited_before_load {
+                    self.preferences.save_lifecycle(self.lifecycle.clone());
+                }
+                self.hidden_sessions.extend(
+                    hidden_sessions
+                        .into_iter()
+                        .filter(|id| !self.restored_sessions.contains(id)),
+                );
+                self.visible_sessions
+                    .retain(|session| !self.hidden_sessions.contains(&session.id));
+                self.open_tabs
+                    .retain(|id| !self.hidden_sessions.contains(id));
+                if self
+                    .active
+                    .as_ref()
+                    .is_some_and(|id| self.hidden_sessions.contains(id))
+                {
+                    self.reset_conversation(cx);
+                }
+                self.rebuild_workspace_sessions();
+                self.hidden_projects.extend(
+                    hidden
+                        .into_iter()
+                        .filter(|p| !self.restored_projects.contains(p)),
+                );
+                for project in custom {
+                    if !self.hidden_projects.contains(&project.path)
+                        && !self.custom_projects.iter().any(|p| p.path == project.path)
+                    {
+                        self.custom_projects.push(project);
+                    }
+                }
+                self.rebuild_projects();
+            }
+            preferences::Event::Error(error) => self.notice = Some(error),
+        }
+        cx.notify();
+    }
+    fn remove_project(&mut self, project: Project, cx: &mut Context<Self>) {
+        self.hidden_projects.insert(project.path.clone());
+        self.restored_projects.remove(&project.path);
+        self.custom_projects.retain(|p| p.path != project.path);
+        self.projects.retain(|p| p.path != project.path);
+        self.preferences.remove(project.path.clone());
+        self.notice = Some(format!(
+            "Removed {} from Code. Files and agent chats are kept.",
+            project.name
+        ));
+        self.recently_removed = Some(project);
+        self.recently_deleted = None;
+        self.modal = None;
+        self.dismiss_action_menu();
+        self.all_projects = true;
+        self.rebuild_workspace_sessions();
+        cx.notify();
+    }
+    fn restore_project(&mut self, cx: &mut Context<Self>) {
+        if let Some(project) = self.recently_removed.take() {
+            self.hidden_projects.remove(&project.path);
+            self.restored_projects.insert(project.path.clone());
+            self.preferences.add(project.clone());
+            self.custom_projects.retain(|p| p.path != project.path);
+            self.custom_projects.push(project.clone());
+            if !self.projects.iter().any(|p| p.path == project.path) {
+                self.projects.push(project);
+            }
+            self.notice = None;
+            cx.notify();
+        }
+    }
+    fn dismiss_action_menu(&mut self) {
+        if !self.motion {
+            self.action_menu = None;
+        } else if let Some(menu) = self.action_menu.as_mut()
+            && !menu.closing
+        {
+            menu.closing_from =
+                presentation::ease_out((menu.started.elapsed().as_secs_f32() / 0.32).min(1.))
+                    .clamp(0., 1.);
+            menu.closing = true;
+            menu.started = Instant::now();
+        }
+    }
+    fn can_delete_chat(&self, id: &str) -> bool {
+        let owner = workspace_ui::TerminalOwner::Chat(id.to_owned());
+        !((self.terminal_owner.as_ref() == Some(&owner) && !self.terminals.is_empty())
+            || self.parked_terminals.get(&owner).is_some_and(|deck| !deck.sessions.is_empty())
+            || self.saved_terminal_decks.iter().any(|deck| deck.owner == owner)
+            || self.hidden_sessions.contains(id)
+            || self.runs.contains_key(id)
+            || self.finalizing.contains(id)
+            || (self.launches.contains_key(id) || (self.starting_current() && self.active.as_deref()==Some(id))))
+    }
+    fn delete_chat(
+        &mut self,
+        session: SessionSummary,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.can_delete_chat(&session.id) {
+            return;
+        }
+        let closing_menu = self.action_menu.take();
+        self.hidden_sessions.insert(session.id.clone());
+        self.restored_sessions.remove(&session.id);
+        self.preferences.hide_session(session.id.clone());
+        self.close_tab(&session.id, window, cx);
+        self.visible_sessions.retain(|item| item.id != session.id);
+        self.rebuild_workspace_sessions();
+        self.recently_deleted = Some(session);
+        self.recently_removed = None;
+        self.action_menu = closing_menu;
+        self.dismiss_action_menu();
+        self.notice = Some("Chat deleted from Code · original agent session kept".into());
+        cx.notify();
+    }
+    fn restore_chat(&mut self, cx: &mut Context<Self>) {
+        if let Some(session) = self.recently_deleted.take() {
+            self.hidden_sessions.remove(&session.id);
+            self.restored_sessions.insert(session.id.clone());
+            self.preferences.restore_session(session.id.clone());
+            if !self.sessions.iter().any(|item| item.id == session.id) {
+                self.sessions.push(session);
+                self.sessions
+                    .sort_by_key(|s| std::cmp::Reverse(s.updated_at));
+            }
+            self.visible_sessions = self
+                .sessions
+                .iter()
+                .filter(|session| !self.hidden_sessions.contains(&session.id) && !self.draft_sessions.contains(&session.id))
+                .cloned()
+                .collect();
+            self.rebuild_workspace_sessions();
+            self.notice = None;
+            cx.notify();
+        }
+    }
+    fn action_menu(&self, menu: &ActionMenu, cx: &Context<Self>) -> impl IntoElement {
+        let progress = if !self.motion {
+            1.
+        } else {
+            let duration = workspace_motion::surface_duration(menu.closing).as_secs_f32();
+            (menu.started.elapsed().as_secs_f32() / duration).min(1.)
+        };
+        let reveal = if menu.closing {
+            menu.closing_from * (1. - presentation::ease_out(progress))
+        } else {
+            presentation::ease_out(progress)
+        };
+        let (target, selector, action_id, label, enabled) = match &menu.target {
+            MenuTarget::Project(project) => (
+                MenuTarget::Project(project.clone()),
+                "project-action-menu",
+                "remove-project",
+                "Remove project",
+                true,
+            ),
+            MenuTarget::Chat(session) => (
+                MenuTarget::Chat(session.clone()),
+                "thread-action-menu",
+                "delete-chat",
+                "Delete chat",
+                self.can_delete_chat(&session.id),
+            ),
+        };
+        anchored()
+            .position(menu.anchor + point(px(-6. * (1. - reveal)), px(0.)))
+            .snap_to_window_with_margin(px(8.))
+            .child(
+                div()
+                    .id(selector)
+                    .debug_selector(move || selector.into())
+                    .w(px(160.))
+                    .p(px(4.))
+                    .rounded_lg()
+                    .glass_popup()
+                    .border_1()
+                    .border_color(rgba(0xebebeb18))
+                    .opacity(reveal.clamp(0., 1.))
+                    .occlude()
+                    .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                        this.dismiss_action_menu();
+                        cx.notify();
+                    }))
+                    .child(self.lifecycle_menu_actions(&menu.target, menu.anchor, menu.closing, cx))
+                    .child(
+                        div()
+                            .id(action_id)
+                            .debug_selector(move || action_id.into())
+                            .h(px(30.))
+                            .px_2()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .rounded_md()
+                            .text_size(theme::ui_px(12.))
+                            .text_color(rgb(if enabled { 0xf2a6a6 } else { MUTED }))
+                            .when(!menu.closing && enabled, |s| {
+                                s.cursor_pointer()
+                                    .hover(|s| s.bg(rgba(GLASS_HOVER)))
+                                    .on_click(cx.listener(
+                                        move |this, _, window, cx| match &target {
+                                            MenuTarget::Project(project) => {
+                                                this.remove_project(project.clone(), cx)
+                                            }
+                                            MenuTarget::Chat(session) => {
+                                                this.delete_chat(session.clone(), window, cx)
+                                            }
+                                        },
+                                    ))
+                            })
+                            .child(icon("trash", 13., if enabled { 0xf2a6a6 } else { MUTED }))
+                            .child(label),
+                    ),
+            )
+    }
+    fn file_viewer_header(&self,changes:bool,cx:&Context<Self>)->Div{
+        div().h(px(40.)).flex_none().px_3().flex().items_center().gap_1().border_b_1().border_color(rgba(0xebebeb12))
+            .children([(false,"Files","folder"),(true,"Changes","branch")].into_iter().filter(|(tab, _, _)| !*tab || !self.remote_workspace.active()).map(|(tab,label,glyph)|{
+                div().id(if tab{"file-tab-changes"}else{"file-tab-files"}).debug_selector(move||if tab{"file-tab-changes".into()}else{"file-tab-files".into()})
+                    .flex().items_center().gap_1().px_2().py_1().rounded_md().text_size(theme::ui_px(12.)).cursor_pointer()
+                    .text_color(rgb(if tab==changes{TEXT}else{MUTED})).when(tab==changes,|s|s.bg(rgba(GLASS_HOVER)))
+                    .child(icon(glyph,13.,if tab==changes{TEXT}else{MUTED})).child(label)
+                    .on_click(cx.listener(move|app,_,window,cx|{if tab{app.toggle_changes(cx)}else{app.toggle_files(window,cx)}}))
+            }))
+            .child(div().flex_1())
+            .when(!self.remote_workspace.active(), |header| header.child(div().id("file-tab-github").debug_selector(||"file-tab-github".into()).p_1().rounded_md().cursor_pointer().hover(|s|s.bg(rgba(GLASS_HOVER))).child(icon("github",14.,MUTED))
+                .on_click(cx.listener(|app,_,window,cx|app.open_github(github_ui::Tab::Pulls,window,cx)))))
+            .child(div().id(if changes{"close-changes"}else{"close-files"}).debug_selector(move||if changes{"close-changes".into()}else{"close-files".into()}).p_1().cursor_pointer().child(icon("close",14.,MUTED))
+                .on_click(cx.listener(move|app,_,_,cx|app.close_pane(if changes{pane_layout::Pane::Changes}else{pane_layout::Pane::Files},cx))))
+    }
+    fn composer_event(&mut self, event: &InputEvent, window: &mut Window, cx: &mut Context<Self>) {
+            // The shared editor emits these events for Code, Quick Chat, IME,
+            // paste and native/dictated edits. Clearing/undo never unpins it.
+            self.startup_owner_pristine = false;
+            if matches!(event, InputEvent::Submit) {
+                self.send(window, cx);
+            }
+            if matches!(
+                event,
+                InputEvent::DictationCancelled | InputEvent::LimitReached
+            ) {
+                self.stop_dictation(cx);
+            }
+            if matches!(event, InputEvent::LimitReached) {
+                self.notice =
+                    Some("Keep the prompt under 64 KB. Reference large files by path.".into());
+                cx.notify();
+            }
+            if matches!(event, InputEvent::Changed) {
+                self.composer_revision = self.composer_revision.wrapping_add(1);
+                cx.notify();
+                self.queue_workspace_save(cx);
+                self.update_slash(window, cx);
+            }
+            match event {
+                InputEvent::ImagePasted(bytes) => self.add_clipboard_image(bytes.clone(), cx),
+                InputEvent::FilesPasted(paths)=>self.add_attachments(paths.clone(),cx),
+                InputEvent::ClipboardError(error) => {
+                    self.notice = Some(error.clone());
+                    cx.notify();
+                }
+                InputEvent::CursorChanged => self.update_slash(window, cx),
+                InputEvent::CommandPrevious => self.move_slash(-1, cx),
+                InputEvent::CommandNext => self.move_slash(1, cx),
+                InputEvent::CommandAccept => self.accept_slash(false, window, cx),
+                InputEvent::CommandComplete => self.accept_slash(true, window, cx),
+                _ => {}
+            }
+    }
+    fn toggle_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.reopen_closing_pane(pane_layout::Pane::Files,cx){return}
+        if self.files_visible {self.close_pane(pane_layout::Pane::Files,cx);return}
+        if self.remote_workspace.active() {
+            self.toggle_remote_files(cx);
+            return;
+        }
+        self.prepare_inspector_switch(pane_layout::Pane::Files);
+        self.broker_panel = None;
+        self.diff_view = None;
+        self.diff_observer = None;
+        self.diff_started = None;
+        self.files_visible = !self.files_visible;
+        if self.files_visible {
+            self.sync_file_root(window, cx);
+        } else if let Some(browser) = &self.file_browser {
+            browser.update(cx, |browser, cx| browser.set_visible(false, cx));
+            self.composer.read(cx).focus_handle.focus(window);
+        }
+        cx.notify();
+    }
+    fn toggle_changes(&mut self, cx: &mut Context<Self>) {
+        if self.reopen_closing_pane(pane_layout::Pane::Changes, cx) { return; }
+        if self.diff_view.is_some() {
+            self.close_pane(pane_layout::Pane::Changes, cx);
+        } else {
+            self.open_changes(cx);
+        }
+    }
+    fn open_changes(&mut self, cx: &mut Context<Self>) {
+        self.reopen_closing_pane(pane_layout::Pane::Changes,cx);
+        self.prepare_inspector_switch(pane_layout::Pane::Changes);
+        self.broker_panel = None;
+        let root = self
+            .execution_root()
+            .unwrap_or_else(|| self.project.clone());
+        self.files_visible = false;
+        if let Some(browser) = &self.file_browser {
+            browser.update(cx, |browser, cx| browser.set_visible(false, cx));
+        }
+        let review = cx.new(|cx| diff_view::DiffView::new(root, cx));
+        review.update(cx, |review, cx| {review.set_appearance(self.appearance, cx);review.set_motion(self.motion)});
+        self.diff_observer = Some(cx.observe(&review, |this, _, cx| {
+            if this.project_wheel_should_refresh() { cx.notify(); }
+            this.queue_workspace_save(cx);
+        }));
+        self.diff_view = Some(review);
+        self.diff_started = Some(Instant::now());
+        cx.notify();
+    }
+    fn sync_file_root(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.files_visible{self.reopen_closing_pane(pane_layout::Pane::Files,cx);}
+        if self.files_visible {
+            self.broker_panel = None;
+        }
+        if !self.files_visible && self.diff_view.is_none() { return; }
+        let root = self
+            .execution_root()
+            .unwrap_or_else(|| self.project.clone());
+        if let Some(review)=&self.diff_view{review.update(cx,|review,cx|review.set_workspace_root(root.clone(),cx));}
+        if !self.files_visible { return; }
+        if let Some(browser) = &self.file_browser {
+            browser.update(cx, |browser, cx| {
+                browser.set_root(root, window, cx);
+                browser.set_visible(true, cx);
+            });
+        } else {
+            let browser = cx.new(|cx| files::FileBrowser::new(root, window, cx));
+            browser.update(cx, |browser, cx| {
+                browser.set_appearance(self.appearance, cx)
+            });
+            self.file_observer =
+                Some(cx.observe(&browser, |this, _, cx| {
+                    if this.project_wheel_should_refresh() { cx.notify(); }
+                    this.queue_workspace_save(cx);
+                }));
+            self.file_browser = Some(browser);
+        }
+    }
+    fn select_project(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        self.leave_remote_workspace(cx);
+        self.startup_owner_pristine = false;
+        if self.project != path {
+            self.preserve_blank_tab(cx);
+            self.stop_voice(cx);
+        }
+        self.all_projects = false;
+        self.new_execution_path = None;
+        self.project = path;
+        self.project_generation += 1;
+        self.engine
+            .load_project(self.project.clone(), self.project_generation);
+        self.rebuild_workspace_sessions();
+        if let Some(session) = self.workspace_sessions.first().cloned() {
+            self.open_session(session, window, cx);
+        } else {
+            self.new_conversation(window, cx);
+            self.new_execution_path = None;
+        }
+        self.sync_file_root(window, cx);
+    }
+    fn toggle_sidebar(&mut self) {
+        self.dismiss_action_menu();
+        self.sidebar = !self.sidebar;
+        self.animate_sidebar_width(Instant::now());
+    }
+    fn animate_sidebar_width(&mut self, started: Instant) {
+        let target = if self.sidebar { self.sidebar_target_width() } else { 0. };
+        if self.motion && !native::reduced_motion() && self.sidebar_width != target {
+            self.sidebar_transition = Some((started, self.sidebar_width));
+        } else {
+            self.sidebar_width = target;
+            self.sidebar_transition = None;
+        }
+    }
+    fn startup_owner_is_pristine(&self, cx: &Context<Self>) -> bool {
+        self.startup_owner_pristine && self.generation == 0 && self.project_generation == 0
+            && self.active.is_none() && self.ninja_surface_owner().is_none()
+            && self.composer_revision == 0 && self.composer.read(cx).text().is_empty()
+            && self.attachments.is_empty() && self.attachment_pending == 0
+            && self.new_execution_path.is_none() && self.cli_draft_project.is_none()
+            && self.handoff_pending.is_none() && self.speech.is_none() && self.voice_call.is_none()
+            && self.terminals.is_empty()
+    }
+    fn install_discovery(&mut self,discovery:discovery::Discovery,sessions:Vec<SessionSummary>,preferred_project:Option<PathBuf>,cx:&mut Context<Self>){
+        self.invalidate_project_branches();
+        if !discovery.agents.is_empty(){self.agents = discovery.agents;}
+        self.queue_ninja_titles(cx);
+        self.advance_chat_titles(cx);
+        self.source_projects = discovery.projects;
+        self.collect_projects();
+        let previous = std::mem::take(&mut self.sessions);
+        self.sessions = sessions;
+        let positions: HashMap<_, _> = self
+            .sessions
+            .iter()
+            .enumerate()
+            .map(|(ix, s)| (s.id.clone(), ix))
+            .collect();
+        for old in previous {
+            if let Some(&ix) = positions.get(&old.id) {
+                merge_session_metadata(&mut self.sessions[ix], &old);
+            } else if self.active.as_deref() == Some(&old.id)
+                || self.runs.contains_key(&old.id)
+                || self.finalizing.contains(&old.id)
+                || self.lifecycle.archived_chats.contains(&old.id)
+                || self.lifecycle.pinned_chats.contains(&old.id)
+                || old.transcript_path.is_none()
+            {
+                self.sessions.push(old);
+            }
+        }
+        self.sessions
+            .sort_by_key(|s| std::cmp::Reverse(s.updated_at));
+        if self.discovering && self.restore_pending.is_none() {
+            self.restore_cli_sessions(Vec::new(), cx);
+        }
+        // Metadata still installs immediately, but late discovery cannot retarget
+        // an editor/CLI/voice owner that became usable before scanning finished.
+        let adopt_startup_defaults = self.startup_owner_is_pristine(cx);
+        self.startup_owner_pristine = adopt_startup_defaults;
+        if adopt_startup_defaults && self.project == std::path::Path::new("/")
+            && let Some(path) = preferred_project
+        {
+            self.project = path;
+        }
+        self.visible_sessions = self
+            .sessions
+            .iter()
+            .filter(|session| !self.hidden_sessions.contains(&session.id) && !self.draft_sessions.contains(&session.id))
+            .cloned()
+            .collect();
+        self.rebuild_workspace_sessions();
+        self.discovering = false;
+        if adopt_startup_defaults && self.active.is_none()
+            && !self
+                .agents
+                .iter()
+                .any(|a| a.kind == self.agent && a.available)
+            && let Some(agent) = self.agents.iter().find(|a| a.available)
+        {
+            self.agent = agent.kind;
+        }
+    }
+    fn receive(&mut self, event: Event, cx: &mut Context<Self>) {
+        match event {
+            Event::SidebarProject(path, token, sessions) => {
+                self.receive_project_branch(path, token, Ok(sessions), cx);
+            }
+            Event::SidebarProjectError(path, token, error) => {
+                self.receive_project_branch(path, token, Err(error), cx);
+            }
+            Event::Metadata(sessions) => {
+                for session in sessions {
+                    if !self.sessions.iter().any(|current| current.id == session.id) {
+                        self.sessions.push(session);
+                    }
+                }
+                self.rebuild_workspace_sessions();
+            }
+            Event::MetadataError(error) => {
+                self.notice = Some(format!("Could not recover saved task metadata: {error}"))
+            }
+            Event::ContextSearch(generation, results) => {
+                if let Some(picker) = &mut self.context_picker
+                    && picker.generation == generation
+                {
+                    picker.results = results;
+                }
+            }
+            Event::Handoff(token, result) => {
+                if self.voice_handoff_token(token) { self.voice_handoff_ready(result,cx);return; }
+                if self.context_pending.contains_key(&token) {
+                    self.receive_context(token, result, cx);
+                    cx.notify();
+                    return;
+                }
+                if self
+                    .handoff_pending
+                    .as_ref()
+                    .is_some_and(|p| p.token == token)
+                {
+                    match result {
+                        Ok(packet) => self.handoff_pending.as_mut().unwrap().ready = Some(packet),
+                        Err(error) => {
+                            if let Some(pending) = self.handoff_pending.take() {
+                                self.hold_queue(&pending.source.id, cx);
+                            }
+                            self.notice = Some(format!(
+                                "Could not transfer context: {error}. Your draft is preserved."
+                            ));
+                        }
+                    }
+                }
+            }
+            Event::AgentSwitched(token, result) => {
+                if self.voice_handoff_token(token) { self.voice_handoff_bound(token,result,cx); }
+                else { self.handoff_bound(token, result, cx); }
+            },
+
+            Event::Model(id, generation, model, usage, packet) => {
+                if self.active.as_deref() == Some(&id) && self.generation == generation {
+                    if let Some(usage) = usage
+                        && !(self.usage.contains_key(&id)
+                            && (self.runs.contains_key(&id)
+                                || self.finalizing.contains(&id)
+                                || self.settling.contains_key(&id)
+                                || self
+                                    .broker_children
+                                    .get(&id)
+                                    .is_some_and(|count| *count > 0)))
+                    {
+                        self.remember_usage(id.clone(), *usage);
+                    }
+                    if let Some(packet) = packet {
+                        self.remember_handoff(id.clone(), std::sync::Arc::new(packet));
+                    }
+                    if self
+                        .restore_model
+                        .as_ref()
+                        .is_some_and(|(restore, _)| restore == &id)
+                    {
+                        let (_, restored) = self.restore_model.take().unwrap();
+                        if self
+                            .sessions
+                            .iter()
+                            .any(|session| session.id == id && session.agent == self.agent)
+                        {
+                            self.model = restored.clone();
+                        }
+                        self.session_models.insert(id, restored);
+                        return;
+                    }
+                    if self
+                        .sessions
+                        .iter()
+                        .any(|session| session.id == id && session.agent == self.agent)
+                    {
+                        self.model = model.clone();
+                    }
+                    self.session_models.insert(id, model);
+                }
+            }
+            Event::Cached(sessions)=>{
+                let mut seen=HashSet::new();
+                let projects=sessions.iter().filter_map(|session|{
+                    let path=&session.project_path;
+                    (path.is_absolute() && path != std::path::Path::new("/") && !discovery::internal_probe_project(path) && seen.insert(path.clone())).then(||Project{name:path.file_name().unwrap_or_default().to_string_lossy().into_owned(),path:path.clone()})
+                }).collect();
+                self.install_discovery(discovery::Discovery{projects,..Default::default()},sessions,None,cx);
+                self.discovering=true;
+                launch_metrics::mark("cached-navigation-ready");
+                if std::env::var_os("KAI_PERFORMANCE_LOG").is_some(){eprintln!("KAI_CACHED_NAVIGATION projects={} chats={}",self.projects.len(),self.sessions.len());}
+            }
+            Event::Providers(agents)=>{
+                self.agents=agents;
+                launch_metrics::mark("providers-ready");
+                if std::env::var_os("KAI_PERFORMANCE_LOG").is_some(){eprintln!("KAI_PROVIDERS available={} total={}",self.agents.iter().filter(|a|a.available).count(),self.agents.len());}
+            }
+            Event::Ready(discovery, sessions, preferred_project) => {
+                self.install_discovery(discovery,sessions,preferred_project,cx);
+                self.startup_owner_pristine = false;
+                launch_metrics::mark("discovery-ready");
+            }
+            Event::HistoryRange(id, generation, start, end)
+                if self.active.as_deref() == Some(&id) && generation == self.generation =>
+            {
+                self.navigation.update(cx, |rail, cx| {
+                    rail.set_span(start, end);
+                    rail.scrolled(&self.list, self.following_bottom, cx);
+                });
+            }
+            Event::HistorySeeked(
+                id,
+                generation,
+                messages,
+                has_older,
+                has_newer,
+                fraction,
+                span,
+            ) if self.active.as_deref() == Some(&id) && generation == self.generation => {
+                self.navigation_previous = None;
+                self.navigation_history = fraction < 1.;
+                self.pending_response_start = None;
+                self.receive(
+                    Event::Loaded(id, generation, messages, has_older, has_newer),
+                    cx,
+                );
+                self.transcript_reveal = None;
+                self.following_bottom = fraction >= 1.;
+                let row = if fraction <= 0. { 0 } else { self.rows.len() };
+                self.list.scroll_to(ListOffset {
+                    item_ix: row,
+                    offset_in_item: px(0.),
+                });
+                self.history_visible = if fraction <= 0. {
+                    0..40.min(self.rows.len())
+                } else {
+                    self.rows.len().saturating_sub(40)..self.rows.len()
+                };
+                self.navigation.update(cx, |rail, cx| {
+                    rail.set_span(span.0, span.1);
+                    rail.set_position(if fraction <= 0. { 0. } else { 1. }, cx);
+                });
+                self.queue_workspace_save(cx);
+            }
+            Event::ViewportRestored(id, generation, number, messages, has_older, has_newer)
+                if self.active.as_deref() == Some(&id) && generation == self.generation =>
+            {
+                let anchor = self.restore_scroll.take();
+                self.navigation_previous = None;
+                self.navigation_history = has_newer;
+                self.receive(
+                    Event::Loaded(id, generation, messages, has_older, has_newer),
+                    cx,
+                );
+                self.history_offset = number;
+                if let Some(page) = self.history_pages.first_mut() {
+                    page.number = number;
+                }
+                if let Some(anchor) = anchor {
+                    self.following_bottom = anchor.at_bottom && !has_newer;
+                    if !anchor.at_bottom && !self.rows.is_empty() {
+                        self.list.scroll_to(ListOffset {
+                            item_ix: anchor.row_index.min(self.rows.len().saturating_sub(1)),
+                            offset_in_item: px(anchor.pixel_offset),
+                        });
+                    }
+                }
+            }
+            Event::Loaded(id, generation, messages, has_older, has_newer)
+                if self.active.as_deref() == Some(&id) && generation == self.generation =>
+            {
+                let _span = performance::Span::new("chat_history_apply");
+                let final_refresh=self.final_history_load.as_ref()==Some(&(id.clone(),generation));
+                if final_refresh{self.final_history_load=None;self.finalizing.remove(&id);self.pending_response_start=None;}
+                self.navigation_previous = None;
+                self.rows.clear();
+                self.rows = Self::history_rows(messages);
+                if !self.rows.is_empty() && self.draft_sessions.remove(&id) {
+                    self.rebuild_workspace_sessions();
+                }
+                if !has_newer{self.restore_launch_preview(&id);}
+                self.navigation.update(cx, |rail, cx| {
+                    rail.reset(cx);
+                    rail.set_motion(self.motion, cx);
+                });
+                self.history_pages = vec![HistoryPage {
+                    number: 0,
+                    start: 0,
+                    len: self.rows.len(),
+                    resident: true,
+                    used: 0,
+                }];
+                self.deferred_rows.clear();
+                self.history_pending.clear();
+                self.history_failed.clear();
+                self.history_offset = 0;
+                self.history_fill_position = None;
+                self.history_visible = self.rows.len().saturating_sub(40)..self.rows.len();
+                self.list.reset(self.rows.len());
+                if let Some(anchor) = self.history_anchor.take() {
+                    self.list.scroll_to(anchor);
+                } else if self.following_bottom && !has_newer {
+                    self.list.scroll_to(ListOffset { item_ix: self.rows.len(), offset_in_item: px(0.) });
+                }
+                self.has_older = has_older;
+                self.has_newer = has_newer;
+                self.loading_earlier = false;
+                self.loading = false;
+                if let Some(run) = self.runs.get_mut(&id) {
+                    run.stream_start = None;
+                }
+                self.update_stream(&id, cx);
+                self.transcript_reveal =
+                    (self.motion && !final_refresh && !self.rows.is_empty()).then(|| ListReveal::new(None));
+                if self.take_split_send(&id, cx) || self.send_after_load.is_some() {
+                    self.composer
+                        .update(cx, |_, cx| cx.emit(InputEvent::Submit));
+                }
+            }
+            Event::OlderLoaded(id, generation, messages, has_older)
+                if self.active.as_deref() == Some(&id) && generation == self.generation =>
+            {
+                // Prepending history retains the current viewport and presentation.
+                self.transcript_reveal = None;
+                let mut older = Self::history_rows(messages);
+                let count = older.len();
+                if self.unified_history_end.as_ref().is_some_and(|(owner,_)|owner==&self.unified_token()){
+                    if let Some((_,end))=&mut self.unified_history_end{*end=if self.unified_history_wait{count}else{end.saturating_add(count)}}
+                }
+                self.unified_history_wait=false;
+                let anchor = self.list.logical_scroll_top();
+                self.history_offset += 1;
+                for page in &mut self.history_pages {
+                    page.start += count;
+                }
+                self.deferred_rows = std::mem::take(&mut self.deferred_rows)
+                    .into_iter()
+                    .map(|(ix, row)| (ix + count, row))
+                    .collect();
+                self.expanded_tools = std::mem::take(&mut self.expanded_tools)
+                    .into_iter()
+                    .map(|ix| ix + count)
+                    .collect();
+                self.interaction_animations = std::mem::take(&mut self.interaction_animations)
+                    .into_iter()
+                    .map(|(ix, state)| (ix + count, state))
+                    .collect();
+                self.expanded_work=std::mem::take(&mut self.expanded_work).into_iter().map(|ix|ix+count).collect();
+                self.work_animations=std::mem::take(&mut self.work_animations).into_iter().map(|(ix,state)|(ix+count,state)).collect();
+                if let Some(start) = &mut self.pending_response_start {
+                    *start += count;
+                }
+                for run in self.runs.values_mut() {
+                    if let Some(start) = &mut run.stream_start {
+                        *start += count;
+                    }
+                }
+                self.history_visible =
+                    self.history_visible.start + count..self.history_visible.end + count;
+                older.append(&mut self.rows);
+                self.rows = older;
+                self.history_clock += 1;
+                self.history_pages.insert(
+                    0,
+                    HistoryPage {
+                        number: self.history_offset,
+                        start: 0,
+                        len: count,
+                        resident: true,
+                        used: self.history_clock,
+                    },
+                );
+                self.list.splice(0..0, count);
+                self.list.scroll_to(ListOffset {
+                    item_ix: anchor.item_ix + count,
+                    offset_in_item: anchor.offset_in_item,
+                });
+                self.has_older = has_older;
+                self.has_newer = self.history_offset > 0;
+                self.loading_earlier = false;
+                self.history_animation = Some(Instant::now());
+                self.evict_history_pages();
+            }
+            Event::HistoryPage(id, generation, number, messages, has_older)
+                if self.active.as_deref() == Some(&id) && generation == self.generation =>
+            {
+                if number == self.history_offset {
+                    self.has_older = has_older;
+                }
+                self.history_pending.remove(&number);
+                let restored = Self::history_rows(messages);
+                if let Some(page) = self.history_pages.iter_mut().find(|p| p.number == number) {
+                    if restored.len() != page.len {
+                        self.history_failed.insert(number);
+                        self.notice = Some(
+                            "History changed while loading. Reopen this conversation to refresh."
+                                .into(),
+                        );
+                    } else {
+                        let range = page.start..page.start + page.len;
+                        let anchor = self.list.logical_scroll_top();
+                        for (ix, row) in range.clone().zip(restored) {
+                            self.rows[ix] = row;
+                            self.deferred_rows.remove(&ix);
+                        }
+                        self.history_clock += 1;
+                        page.used = self.history_clock;
+                        page.resident = true;
+                        self.list.splice(range.clone(), range.len());
+                        self.list.scroll_to(anchor);
+                        self.evict_history_pages();
+                    }
+                }
+            }
+            Event::ProjectSessions(path, generation, sessions)
+                if path == self.project && generation == self.project_generation =>
+            {
+                let positions: HashMap<_, _> = self
+                    .sessions
+                    .iter()
+                    .enumerate()
+                    .map(|(ix, s)| (s.id.clone(), ix))
+                    .collect();
+                for mut session in sessions {
+                    if let Some(&ix) = positions.get(&session.id) {
+                        merge_session_metadata(&mut session, &self.sessions[ix]);
+                        self.sessions[ix] = session;
+                    } else {
+                        self.sessions.push(session);
+                    }
+                }
+                self.sessions
+                    .sort_by_key(|s| std::cmp::Reverse(s.updated_at));
+                self.rebuild_workspace_sessions();
+            }
+            Event::ArchivedLoaded(generation, sessions)
+                if generation == self.archive_generation =>
+            {
+                self.archive_loading = false;
+                self.archive_offset = self.archive_page_end;
+                let positions: HashMap<_, _> = self
+                    .sessions
+                    .iter()
+                    .enumerate()
+                    .map(|(ix, s)| (s.id.clone(), ix))
+                    .collect();
+                for mut session in sessions {
+                    if let Some(&ix) = positions.get(&session.id) {
+                        merge_session_metadata(&mut session, &self.sessions[ix]);
+                        self.sessions[ix] = session;
+                    } else {
+                        self.sessions.push(session);
+                    }
+                }
+                self.rebuild_workspace_sessions();
+            }
+            Event::ArchivedError(generation, error) if generation == self.archive_generation => {
+                self.archive_loading = false;
+                self.notice = Some(error);
+            }
+            Event::Search(generation, mut sessions) if generation == self.search_generation => {
+                let query = self.search.read(cx).text().to_lowercase();
+                let mut seen: HashSet<_> = sessions.iter().map(|s| s.id.clone()).collect();
+                for session in &self.sessions {
+                    if self
+                        .lifecycle
+                        .chat_names
+                        .get(&session.id)
+                        .is_some_and(|name| name.to_lowercase().contains(&query))
+                        && seen.insert(session.id.clone())
+                        && sessions.len() < 100
+                    {
+                        sessions.push(session.clone());
+                    }
+                }
+                self.visible_sessions = sessions
+                    .into_iter()
+                    .filter(|session| !self.hidden_sessions.contains(&session.id) && !self.draft_sessions.contains(&session.id))
+                    .collect();
+            }
+            Event::FinishError(id, error) => {
+                self.finalizing.remove(&id);
+                self.advance_teams(cx);
+                if self.active.as_deref() == Some(&id) {
+                    self.pending_response_start = None;
+                    self.notice = Some(format!("The response could not be saved: {error}"));
+                }
+            }
+            Event::PagedFinished(id) => {
+                if self.final_previews_pending.contains(&id) {
+                    self.deferred_final_history.insert(id);
+                    self.advance_teams(cx);
+                    return;
+                }
+                self.refresh_split_tail(&id, cx);
+                self.finalizing.remove(&id);
+                self.advance_teams(cx);
+                self.saved_viewport = None;
+                if self.navigation_history && self.active.as_deref() == Some(&id) {
+                    self.has_newer = true;
+                    self.pending_response_start = None;
+                    self.queue_workspace_save(cx);
+                    cx.notify();
+                    return;
+                }
+                if self.active.as_deref() == Some(&id) {
+                    self.history_offset = 0;
+                    self.history_anchor = None;
+                    if let Some(session) = self
+                        .sessions
+                        .iter()
+                        .find(|session| session.id == id)
+                        .cloned()
+                    {
+                        // Refresh persisted pages behind the already presented
+                        // final, keeping its text visible and queueing any new
+                        // send until this exact load completes.
+                        self.final_history_load=Some((id.clone(),self.generation));
+                        self.finalizing.insert(id.clone());
+                        self.engine.load(session, self.generation);
+                    }
+                }
+                self.queue_workspace_save(cx);
+            }
+            Event::Parsed(id, blocks) => {
+                self.finalizing.remove(&id);
+                self.advance_teams(cx);
+                if self
+                    .saved_viewport
+                    .as_ref()
+                    .is_some_and(|(saved, _, _)| saved == &id)
+                {
+                    self.saved_viewport = None;
+                }
+                if self.active.as_deref() != Some(&id) {
+                    cx.notify();
+                    return;
+                }
+                if self.navigation_history {
+                    self.has_newer = true;
+                    self.pending_response_start = None;
+                    self.queue_workspace_save(cx);
+                    cx.notify();
+                    return;
+                }
+                self.queue_workspace_save(cx);
+                let start = self
+                    .pending_response_start
+                    .take()
+                    .unwrap_or(self.rows.len())
+                    .min(self.rows.len());
+                let old = self.rows.len();
+                self.rows.truncate(start);
+                for (ix, block) in blocks.into_iter().enumerate() {
+                    self.rows.push(Row {
+                        role: Some(format!(
+                            "{}:{}",
+                            if ix == 0 { "assistant" } else { "continuation" },
+                            self.agent.command()
+                        )),
+                        block,
+                    });
+                }
+                self.list.splice(start..old, self.rows.len() - start);
+                if old == start && self.motion && self.rows.len() > start {
+                    self.transcript_reveal = Some(ListReveal::appended(start));
+                }
+            }
+            Event::LoadError(id, generation, error)
+                if self.active.as_deref() == Some(&id) && generation == self.generation =>
+            {
+                if self.final_history_load.as_ref()==Some(&(id.clone(),generation)){self.final_history_load=None;self.finalizing.remove(&id);self.pending_response_start=None;}
+                if self.restore_scroll.take().is_some()
+                    && let Some(session) = self
+                        .sessions
+                        .iter()
+                        .find(|session| session.id == id)
+                        .cloned()
+                {
+                    self.notice =
+                        Some("Previous reading position changed. Showing recent messages.".into());
+                    self.engine.load(session, generation);
+                    return;
+                }
+                self.notice = Some(error);
+                self.loading = false;
+                self.loading_earlier = false;
+                if let Some(previous) = self.navigation_previous.take() {
+                    self.navigation_history = previous;
+                    if previous {
+                        self.has_newer = true;
+                    }
+                    self.update_stream(&id, cx);
+                    self.navigation
+                        .update(cx, |rail, cx| rail.scrolled(&self.list, self.following_bottom, cx));
+                }
+                self.history_failed.extend(self.history_pending.drain());
+                if let Some(submission) = self.send_after_load.take() {
+                    self.hold_queue(&submission.session.id, cx);
+                }
+            }
+            Event::ProjectError(path, generation, error)
+                if path == self.project && generation == self.project_generation =>
+            {
+                self.notice = Some(error);
+            }
+            Event::Error(error) => {
+                self.notice = Some(error);
+                self.finalizing.clear();
+                self.final_history_load=None;
+                self.discovering = false;
+                self.loading = false;
+                self.loading_earlier = false;
+                self.send_after_load = None;
+            }
+            _ => return,
+        }
+        cx.notify();
+    }
+    fn remember_draft(&mut self, cx: &Context<Self>) {
+        self.finish_attachment_removals();
+        let owner = self.active.clone().or_else(|| self.cli_draft_project.as_ref().map(|_| keyboard::CLI_DRAFT.to_owned()));
+        if let Some(id) = &owner {
+            if self.attachments.is_empty() {
+                self.attachment_drafts.remove(id);
+            } else {
+                self.attachment_drafts
+                    .insert(id.clone(), self.attachments.clone());
+            }
+            let text = self.composer.read(cx).text();
+            if text.is_empty() {
+                self.drafts.remove(id);
+            } else {
+                self.drafts.insert(id.clone(), text);
+            }
+        }
+    }
+    fn record_tab_close(&mut self, id: &str) {
+        if !self.motion || native::reduced_motion() { return; }
+        let Some((index, session)) = self.open_tab_sessions().into_iter().enumerate()
+            .find(|(_, tab)| tab.id == id) else { return; };
+        let title = self.chat_label(session);
+        self.closing_tabs.retain(|(_, _, at)| at.elapsed() < workspace_motion::pane_duration());
+        self.closing_tabs.push((index, title, Instant::now()));
+        self.closing_tabs.sort_by_key(|(index, _, _)| *index);
+    }
+
+    fn close_workspace_tab(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(split) = self.split_tab_for(id) {
+            let peers: Vec<_> = split.sessions.iter().filter(|pane| pane.as_str() != id).cloned().collect();
+            self.record_tab_close(id);
+            self.chat_split = None;
+            self.open_tabs.retain(|tab| !peers.contains(tab));
+            for peer in peers { self.close_chat_cli(&peer, cx); }
+            self.close_tab_inner(id, false, window, cx);
+            self.sync_chat_terminal_owner(cx);
+        } else {
+            self.close_tab(id, window, cx);
+        }
+    }
+
+    fn close_tab(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_tab_inner(id, true, window, cx);
+    }
+
+    fn close_tab_inner(&mut self, id: &str, animate_card: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let _span = performance::Span::new("chat_tab_close");
+        if performance::enabled() {
+            let started = Instant::now();
+            window.on_frame_submitted(move |_, _| performance::sample("chat_tab_close_frame", started.elapsed()));
+        }
+        if animate_card && self.split_tab_for(id).is_none() { self.record_tab_close(id); }
+        let split_neighbor = self.remove_split_pane(id);
+        self.open_tabs.retain(|tab| tab != id);
+        self.close_chat_cli(id, cx);
+        if self.ninja_surface_owner().is_some(){if self.active.as_deref()==Some(id){self.reset_conversation(cx);}cx.notify();return;}
+        if self.active.as_deref() == Some(id) && !self.remote_workspace.active() {
+            if split_neighbor.as_deref().is_some_and(|next| self.focus_remote_pane(next, cx)) {
+                self.sync_split_composer(cx);
+                cx.notify();
+                return;
+            }
+            if let Some(next) = split_neighbor.as_ref().or_else(|| self.open_tabs.last())
+                .and_then(|id| self.sessions.iter().find(|s| &s.id == id))
+                .cloned()
+            {
+                self.open_session(next, window, cx);
+            } else if self.cli_draft_project.is_some() {
+                self.open_cli_draft(window, cx);
+            } else {
+                self.new_conversation(window, cx);
+            }
+        }
+        if self.draft_sessions.contains(id)
+            && !self.drafts.get(id).is_some_and(|draft| !draft.trim().is_empty())
+            && !self.attachment_drafts.get(id).is_some_and(|attachments| !attachments.is_empty())
+        {
+            self.draft_sessions.remove(id);
+            self.session_models.remove(id);
+            if let Some(index) = self.sessions.iter().position(|session| session.id == id) {
+                self.sessions.remove(index);
+            }
+        }
+        if split_neighbor.is_some() {
+            self.sync_chat_terminal_owner(cx);
+            self.sync_split_composer(cx);
+        }
+        cx.notify();
+    }
+    fn release_chat_rows(&mut self, cx: &Context<Self>) {
+        let rows = std::mem::take(&mut self.rows);
+        let deferred = std::mem::take(&mut self.deferred_rows);
+        let live = self.live_history.take();
+        if !rows.is_empty() || !deferred.is_empty() || live.is_some() {
+            cx.background_executor().spawn(async move {
+                drop((rows, deferred, live));
+            }).detach();
+        }
+    }
+
+    fn reset_conversation(&mut self, cx: &mut Context<Self>) {
+        self.parallel_draft = false;
+        self.composer_send_motion = None;
+        self.home_composer_space.set(0.);
+        self.transcript_reveal = None;
+        self.restore_scroll = None;
+        self.following_bottom = true;
+        self.diff_view = None;
+        self.diff_observer = None;
+        self.diff_started = None;
+        self.stop_dictation(cx);
+        self.remember_draft(cx);
+        self.reset_attachment_imports();
+        self.attachments.clear();
+        self.send_after_load = None;
+        self.active = None;
+        self.sync_chat_terminal_owner(cx);
+        self.history_offset = 0;
+        self.has_newer = false;
+        self.has_older = false;
+        self.history_anchor = None;
+        self.loading_earlier = false;
+        self.release_chat_rows(cx);
+        self.expanded_tools.clear();
+        self.interaction_animations.clear();
+        self.expanded_work.clear();self.work_animations.clear();
+        self.question_choices.clear();
+        self.history_pages.clear();
+        self.history_pending.clear();
+        self.history_failed.clear();
+        self.history_visible = 0..0;
+        self.navigation.update(cx, |rail, cx| rail.reset(cx));
+        self.navigation_history = false;
+        self.navigation_previous = None;
+        self.list.reset(0);
+        self.generation += 1;
+        self.home_generation += 1;
+        self.loading = false;
+        self.pending_response_start = None;
+        self.modal = None;
+        self.notice = None;
+        self.composer.update(cx, |input, cx| input.set_text("", cx));
+    }
+    fn preserve_blank_tab(&mut self, cx: &mut Context<Self>) {
+        self.materialize_blank_tab(false, cx);
+    }
+
+    fn materialize_blank_tab(&mut self, include_empty: bool, cx: &mut Context<Self>) {
+        if self.active.is_some() || self.ninja_surface_owner().is_some() { return; }
+        let text = self.composer.read(cx).text();
+        if !include_empty && text.trim().is_empty() && self.attachments.is_empty() && !self.chat_clis.contains_key(keyboard::CLI_DRAFT) {
+            return;
+        }
+        let id = uuid::Uuid::new_v4().to_string();
+        let session = SessionSummary {
+            id: id.clone(),
+            title: if text.trim().is_empty() { "New session".into() } else { short(text.trim(), 60) },
+            agent: self.agent,
+            project_path: self.project.clone(),
+            execution_path: self.new_execution_path.clone(),
+            updated_at: chrono::Utc::now().timestamp(),
+            external_id: None,
+            transcript_path: None,
+        };
+        if let Some(cli) = self.chat_clis.remove(keyboard::CLI_DRAFT) {
+            let launch_id = cli.launch_id;
+            self.chat_clis.insert(id.clone(), cli);
+            unified::emit(&serde_json::json!({"type":"chatTerminalAdopt","id":keyboard::CLI_DRAFT,"newId":id,"launchId":launch_id}));
+        }
+        self.cli_draft_project = None;
+        self.drafts.remove(keyboard::CLI_DRAFT);
+        self.attachment_drafts.remove(keyboard::CLI_DRAFT);
+        self.draft_sessions.insert(id.clone());
+        self.sessions.push(session);
+        self.session_models.insert(id.clone(), self.model.clone());
+        self.open_tabs.push(id.clone());
+        if self.open_tabs.len() > keyboard::MAX_CHAT_TABS {
+            let closed = self.open_tabs.remove(0);
+            self.close_chat_cli(&closed, cx);
+        }
+        self.active = Some(id);
+        self.remember_draft(cx);
+        self.queue_workspace_save(cx);
+    }
+
+    fn close_blank_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.active.is_none()
+            && self.chat_clis.get(keyboard::CLI_DRAFT).is_some_and(|cli| cli.cursor_history.is_some())
+        {
+            self.preserve_blank_tab(cx);
+            if let Some(id) = self.active.clone() {
+                self.close_tab(&id, window, cx);
+                return;
+            }
+        }
+        self.close_cli_draft(cx);
+        self.composer.update(cx, |input, cx| input.set_text("", cx));
+        self.attachments.clear();
+        let neighbor = self.open_tabs.iter().rev()
+            .find_map(|id| self.sessions.iter().find(|session| &session.id == id))
+            .cloned();
+        if let Some(session) = neighbor {
+            self.open_session(session, window, cx);
+        } else {
+            self.new_conversation(window, cx);
+        }
+        self.queue_workspace_save(cx);
+    }
+
+    fn new_conversation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.new_remote_conversation(window, cx) { return; }
+        self.leave_remote_workspace(cx);
+        self.startup_owner_pristine = false;
+        if self.ninja_surface_owner().is_some(){self.remember_ninja_draft(cx);self.ninjas.desktop=None;self.ninjas.panel=None;}
+        self.preserve_blank_tab(cx);
+        self.draft_tab_opened = Some(Instant::now());
+        self.orchestrator_new=false;
+        self.orchestrator_transition=None;
+        if !self.unified_navigating{if let Some(old)=self.active.as_ref().and_then(|id|self.sessions.iter().find(|s|&s.id==id)).cloned(){self.unified_back.push(old);if self.unified_back.len()>100{self.unified_back.remove(0);}self.unified_forward.clear();}}
+        self.stop_voice(cx);
+        self.new_execution_path = if self.project == self.unprojected_root() {
+            Some(self.project.join(uuid::Uuid::new_v4().to_string()))
+        } else if self.active.as_ref().and_then(|id| self.sessions.iter().find(|session| &session.id == id))
+            .is_some_and(|session| self.has_parallel_workspace(session)) {
+            None
+        } else {
+            self.execution_root()
+        };
+        self.close_cli_draft(cx);
+        self.reset_conversation(cx);
+        self.agent_picker = None;
+        self.model = self
+            .agent_models
+            .get(self.agent.command())
+            .cloned()
+            .flatten();
+        self.action_menu = None;
+        self.composer.read(cx).focus_handle.focus(window);
+        self.sync_file_root(window, cx);
+        cx.notify();
+    }
+    #[track_caller]
+    fn open_session(
+        &mut self,
+        session: SessionSummary,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.hidden_sessions.contains(&session.id) { return; }
+        let switching_split = self.active.as_ref().is_some_and(|old|
+            old != &session.id && self.split_tab_for(old).is_some_and(|split| split.sessions.contains(&session.id)));
+        if switching_split { self.retain_local_split_viewport(); }
+        self.leave_remote_workspace(cx);
+        self.startup_owner_pristine = false;
+        static TRACE_SELECTION: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *TRACE_SELECTION.get_or_init(|| std::env::args().any(|arg| arg == "--unified-orchestrator-probe")) {
+            eprintln!("KAI_ORCHESTRATOR_SELECTION from={:?} to={} caller={}",self.active,session.id,std::panic::Location::caller());
+        }
+        self.performance.begin(&session.id);
+        let _span = performance::Span::new("chat_open_prepare");
+        let was_pending = self.activity.pending_rank(&session.id).is_some();
+        if self.ninja_surface_owner().is_some(){self.remember_ninja_draft(cx);self.ninjas.desktop=None;self.ninjas.panel=None;}
+        self.preserve_blank_tab(cx);
+        if !self.unified_navigating && self.active.as_ref()!=Some(&session.id){
+            if let Some(old)=self.active.as_ref().and_then(|id|self.sessions.iter().find(|s|&s.id==id)).cloned(){
+                self.unified_back.push(old);if self.unified_back.len()>100{self.unified_back.remove(0);}
+            }
+            self.unified_forward.clear();
+        }
+
+        if self.active.as_ref() != Some(&session.id) {
+            self.stop_voice(cx);
+        }
+        if self
+            .restore_model
+            .as_ref()
+            .is_none_or(|(id, _)| id != &session.id)
+        {
+            self.activity.open(&session.id);
+        }
+        self.transcript_reveal = None;
+        if self
+            .restore_model
+            .as_ref()
+            .is_some_and(|(id, _)| id != &session.id)
+            || (self.restore_scroll.is_some()
+                && self.active.as_ref().is_some_and(|id| id != &session.id))
+        {
+            self.restore_model = None;
+            self.restore_scroll = None;
+        }
+        self.following_bottom = self
+            .restore_scroll
+            .as_ref()
+            .is_none_or(|anchor| anchor.at_bottom);
+        self.diff_view = None;
+        self.diff_observer = None;
+        self.diff_started = None;
+        self.action_menu = None;
+        let session = self
+            .sessions
+            .iter()
+            .find(|current| current.id == session.id)
+            .cloned()
+            .unwrap_or(session);
+        self.stop_dictation(cx);
+        self.remember_draft(cx);
+        self.reset_attachment_imports();
+        self.attachments = self
+            .attachment_drafts
+            .get(&session.id)
+            .cloned()
+            .unwrap_or_default();
+        self.send_after_load = None;
+        let draft = self.drafts.get(&session.id).cloned().unwrap_or_default();
+        self.composer
+            .update(cx, |input, cx| input.set_text(&draft, cx));
+        self.history_offset = 0;
+        self.has_newer = false;
+        self.has_older = false;
+        self.history_anchor = None;
+        self.loading_earlier = false;
+        if self.all_projects || !session.project_path.starts_with(&self.project) {
+            self.project = session.project_path.clone();
+        }
+        self.agent_picker = None;
+        self.new_execution_path = None;
+        self.parallel_draft = false;
+        self.agent = session.agent;
+        self.model = self.session_models.get(&session.id).cloned().flatten();
+        self.active = Some(session.id.clone());
+        if let Some(split) = self.chat_split.as_mut().filter(|split| split.contains(&session.id)) {
+            split.focused.clone_from(&session.id);
+        }
+        self.sync_chat_terminal_owner(cx);
+        self.sync_split_composer(cx);
+        self.sync_file_root(window, cx);
+        if !self.open_tabs.contains(&session.id) {
+            self.mark_tab_opening(&session.id);
+            self.open_tabs.push(session.id.clone());
+            if self.open_tabs.len() > keyboard::MAX_CHAT_TABS {
+                let closed = self.open_tabs.remove(0);
+                self.close_chat_cli(&closed, cx);
+            }
+        }
+        let mut expanded_project = false;
+        if !self.sidebar_split
+            && self
+                .restore_model
+                .as_ref()
+                .is_none_or(|(id, _)| id != &session.id)
+            && let Some(path) = self
+                .project
+                .ancestors()
+                .find(|path| self.projects.iter().any(|p| p.path == *path))
+        {
+            expanded_project = self.expanded_projects.insert(path.to_path_buf());
+        }
+        let scope_changed = self.sessions_scope.as_ref().is_none_or(|(all, project)| {
+            *all != self.all_projects || (!self.all_projects && *project != self.project)
+        });
+        if scope_changed || expanded_project || was_pending != self.activity.pending_rank(&session.id).is_some() {
+            if unified::active() {
+                if !self.sidebar_rebuild_queued {
+                    self.sidebar_rebuild_queued = true;
+                    let app = cx.entity().downgrade();
+                    window.on_frame_submitted(move |_, cx| {
+                        let _ = app.update(cx, |app, cx| {
+                            app.sidebar_rebuild_queued = false;
+                            if app.sessions_scope.as_ref().is_none_or(|(all, project)| {
+                                *all != app.all_projects || (!app.all_projects && *project != app.project)
+                            }) {
+                                app.rebuild_workspace_sessions();
+                            } else {
+                                app.rebuild_project_tree();
+                            }
+                            cx.notify();
+                        });
+                    });
+                }
+            } else if scope_changed {
+                self.rebuild_workspace_sessions();
+            } else {
+                self.rebuild_project_tree();
+            }
+        }
+        self.pending_response_start = None;
+        self.modal = None;
+        self.generation += 1;
+        self.release_chat_rows(cx);
+        self.expanded_tools.clear();
+        self.interaction_animations.clear();
+        self.expanded_work.clear();self.work_animations.clear();
+        self.question_choices.clear();
+        self.history_pages.clear();
+        self.history_pending.clear();
+        self.history_failed.clear();
+        self.history_visible = 0..0;
+        self.navigation.update(cx, |rail, cx| rail.reset(cx));
+        self.navigation_history = false;
+        self.navigation_previous = None;
+        if switching_split {
+            if !self.resume_local_split_viewport(&session.id) {
+                self.list = ListState::new(0, ListAlignment::Bottom, px(768.));
+            }
+        } else if self.split_peer().is_some() {
+            self.list = ListState::new(0, ListAlignment::Bottom, px(768.));
+        } else {
+            self.list.reset(0);
+        }
+        let draft = self.draft_sessions.contains(&session.id)
+            && !self.chat_clis.get(&session.id).is_some_and(|cli| cli.cursor_history.is_some());
+        self.loading = !draft;
+        self.notice = None;
+        if !draft {
+            self.engine.load_model(session.id.clone(), self.generation);
+            if let Some(anchor) = &self.restore_scroll {
+                self.engine.restore_viewport(session, self.generation, anchor.history_offset);
+            } else {
+                self.engine.load(session, self.generation);
+            }
+        }
+        if let Some((panel, _)) = self.active_chat_cli().filter(|cli| cli.selected).and_then(|cli| cli.fallback.as_ref()) {
+            panel.read(cx).focus_handle(cx).focus(window);
+        } else {
+            self.composer.read(cx).focus_handle.focus(window);
+        }
+        cx.notify();
+    }
+    fn load_history_page(&mut self, older: bool, cx: &mut Context<Self>) {
+        if older&&self.load_live_history(cx){return}
+        if !older{self.live_history=None;}
+        if self.loading_earlier
+            || self.loading
+            || self
+                .active
+                .as_ref()
+                .is_some_and(|id| self.runs.contains_key(id) || self.finalizing.contains(id))
+                && !self.navigation_history
+            || (older && !self.has_older)
+            || (!older && !self.has_newer)
+        {
+            return;
+        }
+        if !older && let Some(id) = self.active.clone().filter(|id| self.runs.contains_key(id)) {
+            self.restore_live_tail(&id, cx);
+            return;
+        }
+        if let Some(session) = self
+            .active
+            .as_ref()
+            .and_then(|id| self.sessions.iter().find(|s| &s.id == id))
+            .cloned()
+        {
+            if older {
+                self.loading_earlier = true;
+                self.engine.load_older(session, self.generation, 200);
+            } else {
+                self.generation += 1;
+                self.navigation_history = false;
+                self.loading = true;
+                self.loading_earlier = false;
+                self.engine.load(session, self.generation);
+            }
+            cx.notify();
+        }
+    }
+    fn history_rows(messages: Vec<engine::ParsedMessage>) -> Vec<Row> {
+        messages
+            .into_iter()
+            .flat_map(|message| {
+                message
+                    .blocks
+                    .into_iter()
+                    .enumerate()
+                    .map(move |(ix, block)| Row {
+                        role: if ix == 0 {
+                            Some(message.role.clone())
+                        } else if message.role.split(':').next()==Some("user"){
+                            Some("user:continuation".into())
+                        } else {
+                            message
+                                .role
+                                .strip_prefix("assistant:")
+                                .map(|provider| format!("continuation:{provider}"))
+                        },
+                        block,
+                    })
+            })
+            .collect()
+    }
+    fn request_history_page(&mut self, number: usize) {
+        if self.history_pending.contains(&number) || self.history_failed.contains(&number) {
+            return;
+        }
+        if let Some(session) = self
+            .active
+            .as_ref()
+            .and_then(|id| self.sessions.iter().find(|s| &s.id == id))
+            .cloned()
+        {
+            self.history_pending.insert(number);
+            self.engine
+                .load_history_page(session, self.generation, number);
+        }
+    }
+    fn rehydrate_visible_history(&mut self, _cx: &mut Context<Self>) {
+        let pages: HashSet<_> = self
+            .history_visible
+            .clone()
+            .filter(|ix|self.flow_index.visible(*ix,&self.expanded_work))
+            .filter_map(|ix| self.deferred_rows.get(&ix).map(|row| row.page))
+            .collect();
+        for number in pages {
+            self.request_history_page(number);
+        }
+    }
+    fn estimated_row_height(row: &Row, width: Pixels) -> Pixels {
+        let text_height = |text: &str, leading: f32| {
+            let columns = (f32::from(width).max(200.) / 7.).max(1.) as usize;
+            let lines: usize = text
+                .split('\n')
+                .map(|line| line.chars().count().max(1).div_ceil(columns))
+                .sum();
+            lines as f32 * leading
+        };
+        let body = match &row.block {
+            MessageBlock::Voice { text, .. }
+            | MessageBlock::Paragraph(text)
+            | MessageBlock::RichParagraph { text, .. } => text_height(text, 24.),
+            MessageBlock::Code { text, .. } => 56. + text.lines().count().max(1) as f32 * 20.,
+            MessageBlock::Activity { .. } => 36.,
+            MessageBlock::Attachment { .. } => 50.,
+            MessageBlock::Interaction(card) => match card {
+                chat_interactions::ChatInteraction::Question(question) => {
+                    text_height(&question.prompt, 23.) + question.options.len() as f32 * 64. + 50.
+                }
+                chat_interactions::ChatInteraction::Speaker { text, .. } => {
+                    text_height(text, 23.) + 40.
+                }
+                chat_interactions::ChatInteraction::Answer { question, answer } => {
+                    text_height(question, 21.) + text_height(answer, 21.) + 24.
+                }
+                _ => 36.,
+            },
+            MessageBlock::Heading(text) => text_height(text, 28.),
+            MessageBlock::Quote(text) => text_height(text, 24.),
+            MessageBlock::ListItem { text, .. } => text_height(text, 23.),
+            MessageBlock::TableRow { cells, .. } => {
+                cells
+                    .iter()
+                    .map(|text| text_height(text, 21.))
+                    .fold(21., f32::max)
+                    + 16.
+            }
+        };
+        px(body
+            + 8.
+            + if row_has_header(row.role.as_deref()) {
+                50.
+            } else {
+                0.
+            })
+    }
+    fn evict_history_pages(&mut self) {
+        // Keep nearby pages decoded; everything else retains only row geometry
+        // and a disk-cache page key. Returning to it requests that bounded page.
+        let visible = self.history_visible.start.saturating_sub(64)
+            ..self.history_visible.end.saturating_add(64);
+        while self.history_pages.iter().filter(|p| p.resident).count() > 8 {
+            let candidate = self
+                .history_pages
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| {
+                    p.resident
+                        && !self.history_pending.contains(&p.number)
+                        && !(p.start..p.start+p.len).any(|ix|visible.contains(&ix)&&self.flow_index.visible(ix,&self.expanded_work))
+                })
+                .min_by_key(|(_, p)| p.used)
+                .map(|(ix, _)| ix);
+            let Some(index) = candidate else {
+                break;
+            };
+            let page = &mut self.history_pages[index];
+            page.resident = false;
+            let number = page.number;
+            let range = page.start..page.start + page.len;
+            let width = self.list.viewport_bounds().size.width;
+            for ix in range {
+                let height = self
+                    .list
+                    .bounds_for_item(ix)
+                    .map(|b| b.size.height)
+                    .unwrap_or_else(|| Self::estimated_row_height(&self.rows[ix], width));
+                self.deferred_rows.insert(
+                    ix,
+                    DeferredRow {
+                        page: number,
+                        height,
+                        checkpoint: checkpoint_ui::row_checkpoint(&self.rows[ix])
+                            .map(str::to_owned),
+                        user_boundary: self.rows[ix].role.as_deref() == Some("user"),
+                    },
+                );
+                self.rows[ix] = chat_flow::placeholder(&self.rows[ix]);
+            }
+        }
+    }
+    fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.finish_project_wheel_for_send(window, cx);
+        self.startup_owner_pristine = false;
+        if self.active_chat_cli().is_some_and(|cli| cli.resumes_chat) {
+            self.finish_chat_cli_for_send(cx);
+            return;
+        }
+        if self.ninja_surface_owner().is_some() {
+            self.ninja_submit_task(cx);
+            return;
+        }
+        if self.queue_editing.is_some() {
+            self.save_queued_edit(cx);
+            return;
+        }
+        if self.quit_pending {
+            return;
+        }
+        if self
+            .voice_call
+            .as_ref()
+            .is_some_and(|call| call.connecting(self.active.as_deref()))
+        {
+            self.notice = Some(
+                "Voice is connecting. Your draft is preserved; send it once voice is ready.".into(),
+            );
+            cx.notify();
+            return;
+        }
+        if self.send_after_load.is_some() {
+            if self.loading || self.loading_earlier {
+                return;
+            }
+            let submission = self.send_after_load.take().unwrap();
+            if self.active.as_deref() == Some(&submission.session.id) {
+                self.route_submission(submission, window, cx);
+            }
+            return;
+        }
+        if self.defer_split_send(cx) {
+            return;
+        }
+        if self.checkpoint_busy > 0
+            && !self
+                .active
+                .as_ref()
+                .is_some_and(|id| self.runs.contains_key(id))
+        {
+            self.notice =
+                Some("Wait for file checkpoint work to finish. Your draft is preserved.".into());
+            cx.notify();
+            return;
+        }
+        let draft = self.composer.read(cx).text();
+        if draft.trim().is_empty()
+            && self.attachments.is_empty()
+            && self.voice_call.as_ref().is_some_and(|call| call.active)
+        {
+            self.stop_voice(cx);
+            return;
+        }
+
+        if let Some(call) = self
+            .voice_call
+            .as_ref()
+            .filter(|call| call.active && self.active.as_ref() == Some(&call.owner))
+            && !draft.trim().is_empty()
+            && !draft.trim_start().starts_with('/')
+        {
+            if !self.attachments.is_empty() {
+                self.notice = Some("End voice before sending image attachments. Your draft and images are preserved.".into());
+            } else if let Some(run) = self.runs.get(&call.owner) {
+                match run.handle.steer(&draft) {
+                    Ok(()) => {
+                        self.composer.update(cx, |input, cx| input.set_text("", cx));
+                        self.queue_workspace_save(cx);
+                    }
+                    Err(error) => self.notice = Some(error.to_string()),
+                }
+            }
+            cx.notify();
+            return;
+        }
+        let delegate_task = (commands::name(draft.trim()) == Some("delegate")
+            && runtime::supports_native_delegation(self.agent))
+        .then(|| {
+            draft
+                .trim()
+                .split_once(char::is_whitespace)
+                .map_or("", |(_, task)| task.trim())
+        })
+        .filter(|task| !task.is_empty());
+        if commands::name(draft.trim()).is_some_and(|name| self.native_command_available(name))
+            && self
+                .active
+                .as_ref()
+                .and_then(|id| self.sessions.iter().find(|session| &session.id == id))
+                .is_some_and(|session| session.agent != self.agent)
+        {
+            self.notice = Some("Send a message to continue with the selected agent before invoking its native commands.".into());
+            cx.notify();
+            return;
+        }
+        if delegate_task.is_none() && self.handle_command(window, cx) {
+            return;
+        }
+        let delegation_prompt = match delegate_task
+            .map(|task| runtime::delegation_prompt(self.agent, task))
+            .transpose()
+        {
+            Ok(prompt) => prompt,
+            Err(error) => {
+                self.notice = Some(error.to_string());
+                cx.notify();
+                return;
+            }
+        };
+        if delegation_prompt.is_some()
+            && self
+                .active
+                .as_ref()
+                .is_some_and(|id| self.runs.contains_key(id))
+        {
+            self.notice = Some("Finish or stop this turn before requesting another subagent. Your task is kept in the composer.".into());
+            cx.notify();
+            return;
+        }
+        if self.handoff_pending.is_some() {
+            self.notice = Some("The submitted message is still preparing its context. Your current draft is preserved.".into());
+            cx.notify();
+            return;
+        }
+        self.stop_dictation(cx);
+        self.finish_attachment_removals();
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|id| self.chat_execution_busy(id) || self.chat_has_queued_team_task(id)
+                || self.finalizing.contains(id) || self.settling.contains_key(id)
+                || self.completion_frame.as_ref().is_some_and(|(owner, _)| owner == id))
+            && (!self.composer.read(cx).text().trim().is_empty() || !self.attachments.is_empty())
+        {
+            self.enqueue_followup(cx);
+            return;
+        }
+        if let Some(id) = &self.active
+            && let Some(run) = self.runs.get_mut(id)
+        {
+            run.handle.cancel();
+            run.status = "Stopping…".into();
+            cx.notify();
+            return;
+        }
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|id| self.finalizing.contains(id))
+        {
+            return;
+        }
+        let prompt = self.composer.read(cx).text().trim().to_string();
+        if self
+            .context_pending
+            .values()
+            .any(|p| p.scope == self.context_scope())
+        {
+            self.notice = Some(
+                "Attached chat context is still being prepared. Your draft is preserved.".into(),
+            );
+            cx.notify();
+            return;
+        }
+        if self.attachment_pending > 0 {
+            self.notice = Some("The image previews are still loading.".into());
+            cx.notify();
+            return;
+        }
+        if self.attachments.iter().any(attachments::Attachment::is_image) && !runtime::supports_images(self.agent) {
+            self.notice = Some(format!(
+                "{} does not expose image input here. Choose Codex, Claude Code, Gemini or OpenCode to send these images.",
+                agent_name(self.agent)
+            ));
+            cx.notify();
+            return;
+        }
+        let prompt = if prompt.is_empty() && !self.attachments.is_empty() {
+            "Review the attached files.".to_owned()
+        } else {
+            prompt
+        };
+        if prompt.is_empty() || self.loading || self.loading_earlier || self.starting_current() {
+            return;
+        }
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|id| self.settling.contains_key(id))
+        {
+            self.notice = Some(
+                "The previous CLI is finishing process cleanup. Try again in a moment.".into(),
+            );
+            cx.notify();
+            return;
+        }
+        let Some(executable) = self
+            .agents
+            .iter()
+            .find(|a| a.kind == self.agent)
+            .and_then(|a| a.executable.clone())
+        else {
+            self.notice = Some(format!(
+                "Install {} and sign in from Terminal to get started.",
+                agent_name(self.agent)
+            ));
+            cx.notify();
+            return;
+        };
+        if self.runs.len() + self.team_starting.len() + self.launches.len() >= 4 {
+            self.notice = Some("Four agents are running. Wait for one to finish.".into());
+            cx.notify();
+            return;
+        }
+        let now = chrono::Utc::now().timestamp();
+        let mut session = self
+            .active
+            .as_ref()
+            .and_then(|id| self.sessions.iter().find(|s| &s.id == id))
+            .cloned()
+            .unwrap_or_else(|| SessionSummary {
+                id: uuid::Uuid::new_v4().to_string(),
+                title: short(&prompt.replace('\n', " "), 46),
+                agent: self.agent,
+                project_path: self.project.clone(),
+                updated_at: now,
+                external_id: None,
+                transcript_path: None,
+                execution_path: self.new_execution_path.clone(),
+            });
+        if self.draft_sessions.contains(&session.id) && session.title == "New session" {
+            session.title = short(prompt.trim(), 60);
+        }
+        session.updated_at = now;
+        let id = session.id.clone();
+        let execution_path = session
+            .execution_path
+            .clone()
+            .unwrap_or_else(|| session.project_path.clone());
+        let native_command =
+            commands::name(&prompt).is_some_and(|name| self.native_command_available(name));
+        if self.teams.iter().any(|team| {
+            teams::overlapping(&team.project, &execution_path)
+                && (self.allow_edits || team.allow_edits)
+                && team.members.iter().any(|member| member.status.active())
+        }) {
+            self.notice = Some("An agent team is using this workspace. Finish or stop its editing task before starting another turn.".into());
+            cx.notify();
+            return;
+        }
+        let references = self.context_references();
+        let mut native_prompt = match context_refs::with_context(
+            &delegation_prompt.unwrap_or_else(|| prompt.clone()),
+            &references,
+        ) {
+            Ok(prompt) => prompt,
+            Err(error) => {
+                self.notice = Some(error.to_string());
+                cx.notify();
+                return;
+            }
+        };
+        for file in self.attachments.iter().filter(|file| !file.is_image()) {
+            native_prompt.push_str(&format!("\n\nAttached local file: {}", serde_json::json!({
+                "name": file.name, "path": file.path,
+            })));
+        }
+        let context_scope = self.context_scope();
+        let request = RunRequest { identity:None, ninja:(self.agent==AgentKind::Ninja).then(||self.ninja_selection()), orchestrator:self.orchestrator_active(), service_tier:self.request_service_tier(), reasoning_effort:self.request_effort(),
+            agent: self.agent,
+            executable,
+            project: execution_path.clone(),
+            prompt: native_prompt,
+            resume_id: session.external_id.clone(),
+            fork_session: imported_codex_needs_fork(&session)
+                || self.fork_next.as_deref() == Some(&id),
+            allow_edits: self.allow_edits,
+            model: self.request_model(),
+            images: self.attachments.iter().filter(|file| file.is_image()).map(|file| file.path.clone()).collect(),
+            codex_approvals: self.codex_approvals,
+            codex_access: self.codex_access,
+            provider_unrestricted: self.allow_edits && self.unrestricted_providers.contains(self.agent.command()),
+            trust_workspace: self
+                .trusted_workspaces
+                .contains(&(self.agent, execution_path)),
+        };
+        let mut saved_prompt = self.prompt_with_attachments(&prompt);
+        for reference in &references {
+            saved_prompt.push_str(&format!(
+                "\n\nAttached chat: {} · {} · {}{}",
+                reference.title,
+                reference.provider,
+                reference.project,
+                if reference.older_omitted {
+                    " (bounded excerpt)"
+                } else {
+                    ""
+                }
+            ));
+        }
+        let submission = handoff_ui::Submission {
+            selected_model:if self.agent==AgentKind::Ninja{self.request_model()}else{self.model.clone()},
+            session,
+            request,
+            prompt,
+            original_prompt: self.composer.read(cx).text(),
+            saved_prompt,
+            attachments: self.attachments.clone(),
+            references,
+            context_scope,
+            native_command,
+            queued_prompt_id: self.queue_dispatch.clone(),
+            parallel: self.active.is_none() && self.parallel_draft,
+        };
+        if self.history_offset > 0 || self.navigation_history {
+            self.navigation_previous = Some(true);
+            self.navigation_history = false;
+            self.history_offset = 0;
+            self.history_anchor = None;
+            self.loading = true;
+            self.generation += 1;
+            self.engine
+                .load(submission.session.clone(), self.generation);
+            self.send_after_load = Some(submission);
+            cx.notify();
+            return;
+        }
+        self.route_submission(submission, window, cx);
+    }
+    fn route_submission(
+        &mut self,
+        submission: handoff_ui::Submission,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let ninja_handoff=submission.request.ninja.as_ref().is_some_and(|next|submission.session.external_id.is_some() && self.ninja.bound.get(&submission.session.id).is_some_and(|last|last.harness!=next.harness));
+        if submission.session.agent != submission.request.agent || ninja_handoff {
+            self.begin_send_handoff(submission, window, cx);
+        } else {
+            self.submit_captured(submission, window, cx);
+        }
+    }
+    fn submit_captured(
+        &mut self,
+        submission: handoff_ui::Submission,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.chat_clis.get(&submission.session.id).is_some_and(|cli| cli.resumes_chat) {
+            self.notice = Some("Exit this chat’s CLI before sending from the GUI.".into());
+            cx.notify();
+            return;
+        }
+        let handoff_ui::Submission {
+            selected_model,
+            session,
+            request,
+            prompt,
+            original_prompt,
+            saved_prompt,
+            attachments: submitted_attachments,
+            references,
+            context_scope,
+            native_command,
+            queued_prompt_id,
+            parallel,
+        } = submission;
+        let id = session.id.clone();
+        let first_prompt = self.draft_sessions.remove(&id);
+        // Only a submitted empty chat starts this timeline. Dock/resize events
+        // retain the same composer and never restart its entrance.
+        if (self.active.is_none() || first_prompt) && self.motion && !native::reduced_motion() {
+            self.composer_send_motion = Some((id.clone(), Instant::now(), self.home_composer_space.get()));
+        }
+        if let Some(selection)=&request.ninja{self.ninja.chats.insert(id.clone(),selection.clone());}
+        if request.orchestrator{self.orchestrator_chats.insert(id.clone());self.orchestrator_new=false;}
+        if (self.active.is_none() || first_prompt) && self.automatic_titles && !self.lifecycle.chat_names.contains_key(&id){self.queue_chat_title(&session,&original_prompt);}
+        self.fork_next = None;
+        self.indicator_terminal = None;
+        self.adopt_draft_terminals(&id);
+        self.active = Some(id.clone());
+        self.sync_chat_terminal_owner(cx);
+        self.modal = None;
+        self.notice = None;
+        self.sessions.retain(|s| s.id != id);
+        self.sessions.insert(0, session.clone());
+        self.visible_sessions = self
+            .sessions
+            .iter()
+            .filter(|session| !self.hidden_sessions.contains(&session.id) && !self.draft_sessions.contains(&session.id))
+            .cloned()
+            .collect();
+        self.rebuild_workspace_sessions();
+        if !self.open_tabs.contains(&id) {
+            self.open_tabs.push(id.clone());
+            if self.open_tabs.len() > keyboard::MAX_CHAT_TABS {
+                let closed = self.open_tabs.remove(0);
+                self.close_chat_cli(&closed, cx);
+            }
+        }
+        if first_prompt || self.session_models.get(&id) != Some(&selected_model) {
+            self.engine
+                .set_model(session.clone(), selected_model.clone());
+            self.session_models
+                .insert(id.clone(), selected_model.clone());
+        }
+        self.agent_picker = None;
+        let checkpoint_title = prompt.chars().take(256).collect::<String>();
+        let checkpoint_key = uuid::Uuid::new_v4().to_string();
+        let checkpoint_session = id.clone();
+        let checkpoint_repository = self.checkpoint_repository.clone();
+        let checkpoint_cleanup_repository = checkpoint_repository.clone();
+        let checkpoint_cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.checkpoint_cancel = checkpoint_cancel.clone();
+        let mut save_session = session.clone();
+        let parallel_storage = self.parallel_workspace_storage();
+        let managed_workspace = self.has_parallel_workspace(&session);
+        let old = self.rows.len();
+        self.rows.push(Row {
+            role: Some("user".into()),
+            block: MessageBlock::Paragraph(prompt),
+        });
+        for attachment in &submitted_attachments {
+            self.rows.push(Row {
+                role: Some("user:continuation".into()),
+                block: MessageBlock::Attachment {
+                    name: attachment.name.clone(),
+                    target: attachment.path.to_string_lossy().into_owned(),
+                },
+            });
+        }
+        self.pending_response_start = Some(self.rows.len());
+        self.list.splice(old..old, self.rows.len() - old);
+        self.transcript_reveal = self.motion.then(|| ListReveal::appended(old));
+        // A fresh prompt can exceed the viewport before its first layout.
+        // Revealing its first row pins that row's top and breaks tail following.
+        self.following_bottom = true;
+        self.list.scroll_to(ListOffset { item_ix:self.rows.len(),offset_in_item:px(0.) });
+        if self.composer.read(cx).text() == original_prompt {
+            self.composer.update(cx, |input, cx| input.set_text("", cx));
+            self.drafts.remove(&id);
+        } else {
+            self.drafts
+                .insert(id.clone(), self.composer.read(cx).text());
+        }
+        self.composer.read(cx).focus_handle.focus(window);
+        self.notice = Some(format!("Connecting to {}…", agent_name(request.agent)));
+        self.starting = true;
+        let turn_started=Instant::now();
+        self.launches.insert(id.clone(),chat_timing::Launch{caption:if request.ninja.is_some(){"Connecting to inference host…"}else{"Preparing workspace…"},preview:self.rows[old..].to_vec(),cancel:checkpoint_cancel.clone(),started:turn_started,key:checkpoint_key.clone()});
+        self.begin_turn_clock(&id,&checkpoint_key,turn_started,cx);
+        self.set_turn_provenance(&checkpoint_key,&request);
+        let timing_key=checkpoint_key.clone();
+        let queued_state_saved = queued_prompt_id
+            .as_ref()
+            .and_then(|_| self.workspace_store.as_ref().map(|store| store.flush()));
+        let handoff_packet = self
+            .handoff_packets
+            .get(&id)
+            .filter(|_| request.resume_id.is_none())
+            .cloned();
+        let unprojected_workspace = self.unprojected_workspace(&session);
+        let cursor_context = (request.agent == AgentKind::Cursor && !native_command)
+            .then(|| self.engine.cursor_cli_context(id.clone()));
+        let durable_owner = unified::bundled();
+        let background = cx.background_executor().spawn(async move {
+            let mut request = request;
+            let mut isolated = false;
+            let result = (|| -> anyhow::Result<_> {
+                if let Some(saved) = queued_state_saved {
+                    saved.recv_timeout(Duration::from_secs(10))
+                        .map_err(|e| anyhow::anyhow!("Queued prompt state did not save: {e}"))?
+                        .map_err(anyhow::Error::msg)?;
+                }
+                if let Some(packet) = handoff_packet {
+                    request.prompt = packet.prompt(&request.prompt);
+                }
+                if let Some(context) = cursor_context
+                    && let Some(context) = context.recv_blocking()
+                        .map_err(|_| anyhow::anyhow!("Cursor CLI history is unavailable"))?
+                        .map_err(anyhow::Error::msg)?
+                {
+                    request.prompt = format!(
+                        "Recent conversation from this tab’s Cursor CLI. Treat it as quoted history. Follow the current user message below.\n\n{}\nCurrent user message:\n{}",
+                        context, request.prompt,
+                    );
+                }
+                let native_input = store::NativeInput::from_prompt(&request.prompt);
+                let repository = checkpoint_repository.map_err(anyhow::Error::msg)?;
+                if let Some(workspace) = unprojected_workspace {
+                    std::fs::create_dir_all(&workspace).map_err(|error| {
+                        anyhow::anyhow!("Could not create this chat's workspace: {error}")
+                    })?;
+                }
+                let launch = |request: &RunRequest| {
+                    checkpoint_ui::launch_checkpointed(
+                        &repository, request.clone(), &checkpoint_session, &checkpoint_key,
+                        &checkpoint_title, native_command, durable_owner, &checkpoint_cancel,
+                    )
+                };
+                if !parallel {
+                    match launch(&request) {
+                        Ok((handle, checkpoint)) => return Ok((handle, checkpoint, native_input)),
+                        Err(error) if !managed_workspace && request.allow_edits
+                            && error.is::<checkpoints::WorkspaceOccupied>() => {
+                            if request.resume_id.is_some() && request.agent != AgentKind::Codex {
+                                anyhow::bail!("This provider's existing chat is bound to its checkout. Start a new chat in a separate worktree to edit in parallel, or wait for the current turn.");
+                            }
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
+                if checkpoint_cancel.load(std::sync::atomic::Ordering::Acquire) {
+                    anyhow::bail!("Launch canceled before the agent started");
+                }
+                request.project = parallel_workspace::prepare(
+                    &parallel_storage, &checkpoint_session, &request.project,
+                )?;
+                request.trust_workspace = false;
+                isolated = true;
+                let (handle, checkpoint) = launch(&request)?;
+                Ok((handle, checkpoint, native_input))
+            })();
+            (request, isolated, result)
+        });
+        let workspace_window = window.window_handle();
+        cx.spawn(async move |this, cx| {
+            let (retry, isolated, result) = background.await;
+            if isolated {
+                save_session.execution_path = Some(retry.project.clone());
+                let _ = this.update(cx, |this, cx| {
+                    if let Some(session) = this.sessions.iter_mut().find(|session| session.id == id) {
+                        session.execution_path = save_session.execution_path.clone();
+                        this.engine.update_session(session.clone());
+                    }
+                    this.set_turn_provenance(&timing_key, &retry);
+                    this.queue_workspace_save(cx);
+                    cx.notify();
+                });
+                let _ = workspace_window.update(cx, |_, window, cx| {
+                    let _ = this.update(cx, |this, cx| {
+                        if this.active.as_deref() == Some(&id) { this.sync_file_root(window, cx); }
+                    });
+                });
+            }
+            match result {
+            Ok((handle, checkpoint_id, native_input)) => {
+                let mut cleanup = checkpoint_cleanup_repository.ok().map(|repository| {
+                    repository.cleanup_on_orphan(checkpoint_id.clone(), handle.settled.clone())
+                });
+                let wake = handle.wake.clone();
+                if !this
+                    .update(cx, |this, cx| {
+                        if this.quit_pending || this.launches.get(&id).is_none_or(|l|l.cancel.load(std::sync::atomic::Ordering::Acquire)){
+                            handle.cancel();this.launches.remove(&id);this.starting=!this.launches.is_empty();this.finish_turn_clock(&timing_key,turn_started,"stopped",cx);
+                            this.drafts.entry(id.clone()).or_insert_with(||original_prompt.clone());
+                            if this.active.as_deref()==Some(&id)&&this.composer.read(cx).text().is_empty(){this.composer.update(cx,|input,cx|input.set_text(&original_prompt,cx));}
+                            cx.notify();return false
+                        }
+                        if this.active.as_deref() == Some(&id) {
+                            this.notice = isolated.then(|| "Running in a separate worktree. Apply its changes from the workspace permissions menu.".into());
+                        }
+                        if let Some(selection)=&retry.ninja{this.ninja.bound.insert(id.clone(),selection.clone());}
+                        this.launches.remove(&id);this.starting = !this.launches.is_empty();
+                        if let Some(t)=this.turn_timings.iter_mut().rev().find(|t|t.key==timing_key){t.checkpoint=Some(checkpoint_id.clone());}
+                        if let Some(current) = this.chat_context.get_mut(&context_scope) {
+                            current.retain(|reference| !references.contains(reference));
+                            if current.is_empty() {
+                                this.chat_context.remove(&context_scope);
+                            }
+                        }
+                        this.queue_submitted(queued_prompt_id.as_deref(), cx);
+                        this.checkpoint_runs
+                            .insert(id.clone(), checkpoint_id.clone());
+                        let saved_prompt =
+                            format!("{saved_prompt}\n\n<!--code-checkpoint:{checkpoint_id}-->");
+                        this.engine
+                            .save_prompt(save_session, saved_prompt, native_input);
+                        this.refresh_split_tail(&id, cx);
+                        if this.active.as_deref() == Some(&id)
+                            && let Some(at) = this.pending_response_start
+                            && at <= this.rows.len()
+                        {
+                            this.rows.insert(
+                                at,
+                                Row {
+                                    role: None,
+                                    block: MessageBlock::Activity {
+                                        label: "Prompt changes".into(),
+                                        details: checkpoint_id.clone(),
+                                    },
+                                },
+                            );
+                            this.list.splice(at..at, 1);
+                            this.pending_response_start = Some(at + 1);
+                        }
+                        for attachment in &submitted_attachments {
+                            attachment.mark_submitted();
+                        }
+                        let was_submitted = |attachment: &attachments::Attachment| {
+                            submitted_attachments
+                                .iter()
+                                .any(|old| old.id == attachment.id)
+                        };
+                        if let Some(draft) = this.attachment_drafts.get_mut(&id) {
+                            draft.retain(|attachment| !was_submitted(attachment));
+                            if draft.is_empty() {
+                                this.attachment_drafts.remove(&id);
+                            }
+                        }
+                        if this.active.as_deref() == Some(&id) {
+                            this.attachments
+                                .retain(|attachment| !was_submitted(attachment));
+                            this.attachment_inserts.retain(|id, _| {
+                                !submitted_attachments.iter().any(|old| &old.id == id)
+                            });
+                            this.attachment_removals.retain(|id, _| {
+                                !submitted_attachments.iter().any(|old| &old.id == id)
+                            });
+                            if this
+                                .attachment_preview
+                                .as_ref()
+                                .is_some_and(|(attachment, _)| was_submitted(attachment))
+                            {
+                                this.attachment_preview = None;
+                                this.attachment_preview_image = None;
+                                this.attachment_preview_cancel
+                                    .store(true, std::sync::atomic::Ordering::Release);
+                            }
+                        }
+                        this.continuations.retain(|s| s.session.id != id);
+                        this.queue_workspace_save(cx);
+                        this.runs.insert(
+                            id.clone(),
+                            Running {
+                                timing:Some(chat_timing::Live{key:timing_key.clone(),started:turn_started}),
+                                agent: retry.agent,
+                                submitted_prompt: original_prompt,
+                                handle,
+                                text: String::new(),
+                                live_prefix_omitted: false,
+                                status: "Thinking".into(),
+                                stream_start: None,
+                                revision: 0,
+                                parsed_revision: 0,
+                                parse_pending: false,
+                                live_blocks: Vec::new(), file_changes: Default::default(),
+                                live_earlier: false,
+                                parse_epoch: uuid::Uuid::new_v4(),
+                                retry: Some(retry),
+                                submitted_attachments: submitted_attachments.clone(),
+                            },
+                        );
+                        this.queue_workspace_save(cx);
+                        cx.notify();true
+                    })
+                    .unwrap_or(false)
+                {
+                    return;
+                }
+                if let Some(cleanup) = cleanup.as_mut() {
+                    cleanup.disarm();
+                }
+                let mut pending = false;
+                loop {
+                    // Coalesced wakes describe bursts, not individual batches.
+                    // Drain a backlog over bounded frames before waiting again.
+                    if !pending { let _ = wake.recv().await; }
+                    Timer::after(Duration::from_millis(16)).await;
+                    match this.update(cx, |this, cx| {
+                        let alive = this.poll(&id, cx);
+                        (alive, this.runs.get(&id).is_some_and(|run| run.handle.events.has_pending()))
+                    }) {
+                        Ok((true, queued)) => pending = queued,
+                        _ => break,
+                    }
+                }
+            }
+            Err(error) => {
+                let _ = this.update(cx, |this, cx| {
+                    this.hold_queue(&id, cx);
+                    if this.active.as_deref() == Some(&id) {
+                        this.notice = Some(error.to_string());
+                    }
+                    this.launches.remove(&id);this.starting = !this.launches.is_empty();
+                    this.finish_turn_clock(&timing_key,turn_started,"failed",cx);
+                    let restored = if this.active.as_deref() == Some(&id) {
+                        let current = this.composer.read(cx).text();
+                        if current.is_empty() {
+                            original_prompt.clone()
+                        } else {
+                            current
+                        }
+                    } else {
+                        this.drafts
+                            .get(&id)
+                            .filter(|draft| !draft.is_empty())
+                            .cloned()
+                            .unwrap_or_else(|| original_prompt.clone())
+                    };
+                    this.drafts.insert(id.clone(), restored);
+                    if this.active.as_deref() == Some(&id) {
+                        if this.pending_response_start.is_some() {
+                            let end = this.rows.len();
+                            this.rows.truncate(old);
+                            this.list.splice(old..end, 0);
+                            this.pending_response_start = None;
+                        }
+                        if this.composer.read(cx).text().is_empty() {
+                            this.composer
+                                .update(cx, |input, cx| input.set_text(&original_prompt, cx));
+                        }
+                    }
+                    cx.notify();
+                });
+            }
+        }
+        })
+        .detach();
+        cx.notify();
+    }
+    fn approve_session_fork(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(context) = self.session_conflict.take() {
+            if self.workspace_matches(&context) && context.agent == AgentKind::Codex {
+                self.fork_next = Some(context.session.clone());
+                self.workspace_retry = Some(context);
+            } else {
+                self.notice = Some("Return to the original chat to continue it here.".into());
+            }
+        }
+        self.session_conflict_open = false;
+        self.dismiss_panel(window, cx);
+    }
+    fn approve_workspace_trust(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(trust) = self.workspace_trust.take() {
+            if self.workspace_matches(&trust) {
+                if self.trusted_workspaces.len() >= 128
+                    && let Some(old) = self.trusted_workspaces.iter().next().cloned()
+                {
+                    self.trusted_workspaces.remove(&old);
+                }
+                self.trusted_workspaces
+                    .insert((trust.agent, trust.project.clone()));
+                // Final parsing is asynchronous. Retry after it finishes, so no
+                // old response can splice over the new invocation's output.
+                self.workspace_retry = Some(trust);
+            } else {
+                self.notice = Some("Return to the original chat to retry this project.".into());
+            }
+        }
+        self.workspace_trust_open = false;
+        self.dismiss_panel(window, cx);
+    }
+    fn workspace_matches(&self, trust: &WorkspaceTrust) -> bool {
+        self.active.as_deref() == Some(&trust.session)
+            && self.agent == trust.agent
+            && self
+                .sessions
+                .iter()
+                .find(|s| s.id == trust.session)
+                .is_some_and(|s| {
+                    s.execution_path.as_ref().unwrap_or(&s.project_path) == &trust.project
+                })
+    }
+    fn poll(&mut self, id: &str, cx: &mut Context<Self>) -> bool {
+        self.sync_sidebar_activity(cx);
+        let Some(run) = self.runs.get_mut(id) else {
+            return false;
+        };
+        let mut text_dirty = false;
+        let mut status_changed = false;
+        let mut finished = false;
+        let mut failed = None;
+        let mut external = None;
+        let mut voice_signals = Vec::new();
+        let mut workspace_tools=Vec::new();
+        for _ in 0..128 {
+            match run.handle.events.try_recv() {
+                Ok(RuntimeEvent::WorkspaceTool{id,tool,arguments})=>{workspace_tools.push((id,tool,arguments));status_changed=true;}
+                Ok(RuntimeEvent::Voice(signal)) => {
+                    voice_signals.push(signal);
+                    status_changed = true;
+                }
+                Ok(RuntimeEvent::Request(request)) => {
+                    self.native_pending.insert(
+                        request.id.clone(),
+                        native_request_ui::LiveRequest::new(id, run.parse_epoch, *request),
+                    );
+                    run.status = "Waiting for your decision".into();
+                    status_changed = true;
+                }
+                Ok(RuntimeEvent::RequestResolved(request)) => {
+                    self.native_pending.remove(&request);
+                    run.status = "Working".into();
+                    status_changed = true;
+                }
+                Ok(RuntimeEvent::RequestRejected { id, error }) => {
+                    if let Some(pending) = self.native_pending.get_mut(&id) {
+                        pending.retry();
+                    }
+                    self.notice = Some(error);
+                    status_changed = true;
+                }
+                Ok(RuntimeEvent::Models(models)) => {
+                    if let Some(request) = &run.retry {
+                        self.native_models.insert(
+                            request.agent,
+                            models
+                                .into_iter()
+                                .filter(|model| runtime::valid_model_id(&model.id))
+                                .take(256)
+                                .collect(),
+                        );
+                        status_changed = true;
+                    }
+                }
+                Ok(RuntimeEvent::Commands(commands)) => {
+                    if let Some(request) = &run.retry {
+                        let key = (request.agent, request.project.clone());
+                        if self.native_commands.len() >= 16
+                            && !self.native_commands.contains_key(&key)
+                            && let Some(old) = self.native_commands.keys().next().cloned()
+                        {
+                            self.native_commands.remove(&old);
+                        }
+                        self.native_commands.insert(
+                            key,
+                            commands.into_iter().map(std::sync::Arc::from).collect(),
+                        );
+                        self.native_command_revision = self.native_command_revision.wrapping_add(1);
+                        status_changed = true;
+                    }
+                }
+                Ok(RuntimeEvent::Usage(mut usage)) => {
+                    if let Some(selection)=run.retry.as_ref().and_then(|r|r.ninja.as_ref()){usage.model=Some(selection.model.clone());usage.reasoning_effort=selection.thinking.clone();}
+                    if let Some(clock)=run.timing.as_ref().and_then(|live|self.turn_timings.iter_mut().rev().find(|r|r.key==live.key)){if usage.model.is_some(){clock.model=usage.model.clone();}if usage.reasoning_effort.is_some(){clock.effort=usage.reasoning_effort.clone();}}
+                    self.usage.entry(id.to_owned()).or_default().merge(*usage);
+                    status_changed = true;
+                }
+                Ok(RuntimeEvent::Text(text)) => {
+                    if let Some(clock)=&run.timing{if let Some(t)=self.turn_timings.iter_mut().rev().find(|t|t.key==clock.key){if t.first_output_ms.is_none(){t.first_output_ms=Some(chrono::Utc::now().timestamp_millis());}}}
+                    append_live_text(run, &text);
+                    if run.status != "Writing" {
+                        run.status = "Writing".into();
+                        status_changed = true;
+                    }
+                    run.revision = run.revision.wrapping_add(1);
+                    text_dirty = true;
+                }
+                Ok(RuntimeEvent::ReplaceText(text)) => {
+                    run.text = text;
+                    run.live_prefix_omitted = false;
+                    run.revision = run.revision.wrapping_add(1);
+                    text_dirty = true;
+                }
+                Ok(RuntimeEvent::ReplacePreview(text)) => {
+                    run.text = text;
+                    run.live_prefix_omitted = true;
+                    run.revision = run.revision.wrapping_add(1);
+                    text_dirty = true;
+                }
+                Ok(RuntimeEvent::Interaction(card)) => {
+                    if matches!(card.as_ref(), chat_interactions::ChatInteraction::Status {title, ..} if title == "Context compacted")
+                        && let Some(usage) = self.usage.get_mut(id)
+                    {
+                        usage.context_used = None;
+                    }
+                    let next = match card.as_ref() {
+                        chat_interactions::ChatInteraction::Delegation {
+                            status:
+                                chat_interactions::InteractionStatus::Started
+                                | chat_interactions::InteractionStatus::Working,
+                            ..
+                        } => Some("Delegating"),
+                        chat_interactions::ChatInteraction::Question(_) => Some("Question for you"),
+                        chat_interactions::ChatInteraction::Status {
+                            status: chat_interactions::InteractionStatus::Working,
+                            title,
+                            ..
+                        } if title != "Continued in Code" => Some(title.as_str()),
+                        _ => None,
+                    };
+                    if let Some(next) = next {
+                        run.status = next.into();
+                        status_changed = true;
+                    }
+                    run.text.push_str("\n\n");
+                    run.text
+                        .push_str(&chat_interactions::serialize_interaction(&card));
+                    run.text.push_str("\n\n");
+                    run.revision = run.revision.wrapping_add(1);
+                    text_dirty = true;
+                }
+                Ok(RuntimeEvent::Status(status)) => {
+                    if status == "Stopped" {
+                        let card = chat_interactions::ChatInteraction::Status {
+                            title: "Stopped".into(),
+                            details: "You stopped this response.".into(),
+                            status: chat_interactions::InteractionStatus::Cancelled,
+                        };
+                        run.text.push_str("\n\n");
+                        run.text
+                            .push_str(&chat_interactions::serialize_interaction(&card));
+                        run.revision = run.revision.wrapping_add(1);
+                        text_dirty = true;
+                    }
+                    let status = short(&status, 64);
+                    if run.status != status {
+                        run.status = status;
+                        status_changed = true;
+                    }
+                }
+                Ok(RuntimeEvent::SessionId(session)) => {
+                    external = Some(session);
+                }
+                Ok(RuntimeEvent::Finished) => {
+                    self.continuations.retain(|s| s.session.id != id);
+                    self.recent_results.retain(|previous|previous!=id);self.recent_results.push(id.to_string());if self.recent_results.len()>32{self.recent_results.remove(0);}
+                    finished = true;
+                    break;
+                }
+                Ok(RuntimeEvent::Failed(error)) => {
+                    let card = chat_interactions::ChatInteraction::Status {
+                        title: if runtime::is_active_writer_conflict(&error) {
+                            "Chat open in another app"
+                        } else {
+                            "Agent failed"
+                        }
+                        .into(),
+                        details: runtime::diagnostic_summary(&error),
+                        status: chat_interactions::InteractionStatus::Failed,
+                    };
+                    run.text.push_str("\n\n");
+                    run.text
+                        .push_str(&chat_interactions::serialize_interaction(&card));
+                    run.revision = run.revision.wrapping_add(1);
+                    text_dirty = true;
+                    if self.active.as_deref() == Some(id) {
+                        unified::workspace_toast(&runtime::diagnostic_summary(&error), true);
+                        self.notice = None;
+                    }
+                    failed = Some(error);
+                    finished = true;
+                    break;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    // A cancelled producer must never wait for queue space to
+                    // publish its terminal status. Recover it out of band.
+                    if run.handle.is_cancelled() && run.status != "Stopped" {
+                        let card = chat_interactions::ChatInteraction::Status {
+                            title: "Stopped".into(),
+                            details: "You stopped this response.".into(),
+                            status: chat_interactions::InteractionStatus::Cancelled,
+                        };
+                        run.text.push_str("\n\n");
+                        run.text
+                            .push_str(&chat_interactions::serialize_interaction(&card));
+                        run.revision = run.revision.wrapping_add(1);
+                        text_dirty = true;
+                    }
+                    finished = true;
+                    break;
+                }
+                Err(_) => break,
+            }
+        }
+        if run.text.len() > 64 * 1024 {
+            let mut start = run.text.len() - 64 * 1024;
+            while !run.text.is_char_boundary(start) {
+                start += 1;
+            }
+            // Only the small live tail resides on the UI thread. The runtime
+            // worker independently retains the complete response on disk.
+            run.text.drain(..start);
+            run.live_prefix_omitted = true;
+        }
+        if !workspace_tools.is_empty(){let owner=id.to_owned();let window=self.orchestrator_window;cx.defer(move|cx|{let _=window.update(cx,|this,window,cx|{for(token,tool,args)in workspace_tools{this.workspace_tool(&owner,&token,&tool,args,window,cx);}});});}
+        for signal in voice_signals {
+            if !self.remote_voice_signal(id, &signal) { self.handle_voice_signal(signal, cx); }
+        }
+        self.synchronize_voice_status();
+        if let Some(external) = external
+            && let Some(session) = self.sessions.iter_mut().find(|s| s.id == id)
+        {
+            session.external_id = Some(external);
+            self.engine.update_session(session.clone());
+            if let Some(selection) = self.runs.get(id).and_then(|run| run.retry.as_ref()).and_then(|request| request.ninja.as_ref()) {
+                self.ninja.bound.insert(id.to_owned(), selection.clone());
+            }
+            // The service may announce child ownership before the UI has stored
+            // its parent's native ID. Reconcile once when that association lands.
+            self.refresh_broker(cx);
+        }
+        if text_dirty && (self.active.as_deref() == Some(id) || self.split_companions().any(|peer| peer == id)) {
+            self.update_stream(id, cx);
+        }
+        if finished {
+            self.finish_remote_voice_run(id, failed.clone());
+            self.continuations.retain(|s|s.session.id!=id);
+            self.advance_chat_titles(cx);
+            let ended_voice=self.runs.get(id).is_some_and(|r|self.voice_runs.remove(&(id.to_owned(),r.parse_epoch)));
+            if self
+                .voice_call
+                .as_ref()
+                .is_some_and(|call| call.owner == id)
+            {
+                self.voice_error=failed.clone();self.voice_call.take();
+            }
+            if failed.is_some()
+                || self
+                    .runs
+                    .get(id)
+                    .is_some_and(|run| run.handle.is_cancelled())
+            {
+                self.hold_queue(id, cx);
+            }
+            self.native_pending
+                .retain(|_, request| request.owner != id || request.broker.is_some());
+            if let Some(run) = self.runs.remove(id) {
+                if !self.quit_pending || !run.handle.is_cancelled() {
+                    self.continuations.retain(|s| s.session.id != id);
+                }
+                if let Some(t)=&run.timing{self.finish_turn_clock(&t.key,t.started,if failed.is_some(){"failed"}else if run.handle.is_cancelled(){"stopped"}else{"completed"},cx);}
+                if failed.is_none()
+                    && !ended_voice
+                    && !run.handle.is_cancelled()
+                    && !matches!(run.status.as_str(), "Stopped" | "Interrupted")
+                {
+                    if self.unified_successes.len() >= 128 {
+                        self.unified_successes.pop_front();
+                    }
+                    self.unified_successes
+                        .push_back((id.to_owned(), run.parse_epoch.to_string()));
+                }
+                self.team_finished(
+                    id,
+                    failed.is_some(),
+                    run.handle.is_cancelled()
+                        || matches!(run.status.as_str(), "Stopped" | "Interrupted"),
+                    cx,
+                );
+                self.seal_checkpoint_run(id, run.handle.settled.clone(), cx);
+                self.track_settling(id, &run.handle, cx);
+                if self.active.as_deref() == Some(id) {
+                    let scene = if failed.is_some() {
+                        "failure"
+                    } else if run.handle.is_cancelled()
+                        || matches!(run.status.as_str(), "Stopped" | "Interrupted")
+                    {
+                        "declined"
+                    } else {
+                        "success"
+                    };
+                    self.indicator_terminal = Some((id.to_owned(), scene));
+                }
+                if let (Some(error), Some(request)) = (failed, run.retry) {
+                    // Restore only the submitted draft; never overwrite new typing.
+                    self.drafts
+                        .entry(id.to_owned())
+                        .or_insert_with(|| run.submitted_prompt.clone());
+                    if !run.submitted_attachments.is_empty() {
+                        self.attachment_drafts
+                            .entry(id.to_owned())
+                            .or_insert_with(|| run.submitted_attachments.clone());
+                    }
+                    if self.active.as_deref() == Some(id) {
+                        if self.composer.read(cx).text().is_empty() && self.attachments.is_empty() {
+                            self.composer
+                                .update(cx, |input, cx| input.set_text(&run.submitted_prompt, cx));
+                            self.attachments = run.submitted_attachments;
+                        }
+                        if request.agent == AgentKind::Codex
+                            && runtime::is_active_writer_conflict(&error)
+                        {
+                            self.session_conflict = Some(WorkspaceTrust {
+                                session: id.to_owned(),
+                                agent: request.agent,
+                                project: request.project.clone(),
+                            });
+                            self.session_conflict_open = true;
+                        }
+                        let needs_trust = match request.agent {
+                            AgentKind::Gemini => {
+                                error.contains("trusted directory")
+                                    || error.contains("untrusted workspace")
+                            }
+                            AgentKind::Cursor => error.contains("Workspace Trust Required"),
+                            _ => false,
+                        };
+                        if needs_trust {
+                            self.workspace_trust = Some(WorkspaceTrust {
+                                session: id.to_owned(),
+                                agent: request.agent,
+                                project: request.project,
+                            });
+                            self.workspace_trust_open = true;
+                        }
+                    }
+                }
+                // The final source is immutable now. Present its bounded tail
+                // on the parse worker immediately; persistence may be queued
+                // behind history/indexing work on the engine's state worker.
+                let source=run.handle.take_response_source().unwrap_or_else(||response_buffer::ResponseSource::Memory(run.text));
+                if let Some(usage) = self.usage.get(id) {
+                    self.engine.save_usage(id.to_owned(), usage.clone());
+                }
+                if let Some(usage) = self.usage.get(id).cloned() {
+                    self.remember_usage(id.to_owned(), usage);
+                }
+                if let Some(session) = self.sessions.iter().find(|s| s.id == id).cloned() {
+                    self.finalizing.insert(id.to_string());
+                    if self.active.as_deref()==Some(id) && !self.navigation_history {
+                        let start=run.stream_start.or(self.pending_response_start).unwrap_or(self.rows.len());
+                        self.pending_response_start=Some(start);
+                        self.completion_frame = Some((session.id.clone(), self.generation));
+                        self.present_finished_source(&session.id,run.agent,start,source.clone(),cx);
+                    }
+                    self.engine.finish_source(session, source);
+                }
+            }
+            self.visible_sessions = self
+                .sessions
+                .iter()
+                .filter(|session| !self.hidden_sessions.contains(&session.id) && !self.draft_sessions.contains(&session.id))
+                .cloned()
+                .collect();
+            self.sync_sidebar_activity(cx);
+            self.queue_remote_snapshot(cx);
+            cx.notify();
+            return false;
+        }
+        if status_changed {
+            self.queue_remote_snapshot(cx);
+        }
+        if (text_dirty || status_changed) && (self.active.as_deref() == Some(id) || self.split_companions().any(|peer| peer == id)) {
+            cx.notify();
+        }
+        true
+    }
+    fn update_stream(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.navigation_history && self.active.as_deref() == Some(id) {
+            return;
+        }
+        let Some(run) = self.runs.get_mut(id) else {
+            return;
+        };
+        if run.text.is_empty() {
+            return;
+        }
+        if run.parsed_revision == run.revision {
+            self.apply_live_rows(id);
+            return;
+        }
+        if run.parse_pending {
+            return;
+        }
+        run.parse_pending = true;
+        let revision = run.revision;
+        let epoch = run.parse_epoch;
+        let mut offset = run.text.len().saturating_sub(64*1024);
+        while !run.text.is_char_boundary(offset) {
+            offset += 1;
+        }
+        if offset > 0 {
+            // Start at a complete line so a clipped protocol marker cannot be
+            // mistaken for ordinary text. Giant single lines wait for final parsing.
+            offset = run.text[offset..]
+                .find('\n')
+                .map_or(run.text.len(), |i| offset + i + 1);
+        }
+        let earlier = run.live_prefix_omitted || offset > 0;
+        let tail = run.text[offset..].to_owned();
+        let id = id.to_owned();
+        let job = cx
+            .background_executor()
+            .spawn(async move {
+                let blocks = presentation::live_page_blocks(&tail);
+                let changes = change_summary::LiveChanges::from_blocks(&blocks);
+                (blocks, changes)
+            });
+        cx.spawn(async move |this, cx| {
+            let (blocks, changes) = job.await;
+            let _ = this.update(cx, |this, cx| {
+                let Some(run) = this.runs.get_mut(&id) else {
+                    return;
+                };
+                if run.parse_epoch != epoch {
+                    return;
+                }
+                run.parse_pending = false;
+                if run.revision == revision {
+                    run.live_blocks = blocks;
+                    run.file_changes = changes;
+                    run.live_earlier = earlier;
+                    run.parsed_revision = revision;
+                    if this.active.as_deref() == Some(&id) {
+                        this.apply_live_rows(&id);
+                        cx.notify();
+                    } else if this.split_companions().any(|peer| peer == id) {
+                        cx.notify();
+                    }
+                } else if this.active.as_deref() == Some(&id) || this.split_companions().any(|peer| peer == id) {
+                    this.update_stream(&id, cx);
+                }
+            });
+        })
+        .detach();
+    }
+    fn present_finished_source(&mut self,id:&str,agent:AgentKind,start:usize,source:response_buffer::ResponseSource,cx:&mut Context<Self>){
+        let id=id.to_owned();let generation=self.generation;
+        self.final_previews_pending.insert(id.clone());
+        let preview=source.clone();
+        let job=cx.background_executor().spawn(async move{preview.presentation_tail(64*1024).map(|text|presentation::live_page_blocks(&text))});
+        cx.spawn(async move|this,cx|{
+            let blocks=job.await;
+            let _=this.update(cx,|app,cx|{
+                if app.generation==generation && app.active.as_deref()==Some(&id) && !app.navigation_history && !app.runs.contains_key(&id) && !app.launches.contains_key(&id) && app.pending_response_start==Some(start) {
+                    if let Ok(blocks)=blocks {
+                        let start=start.min(app.rows.len());let old=app.rows.len();app.rows.truncate(start);
+                        app.rows.extend(blocks.into_iter().enumerate().map(|(ix,block)|Row{role:Some(format!("{}:{}",if ix==0{"assistant"}else{"continuation"},agent.command())),block}));
+                        app.list.splice(start..old,app.rows.len()-start);app.sync_flow_layout();
+                        if app.following_bottom { app.list.scroll_to(ListOffset { item_ix: app.rows.len(), offset_in_item: px(0.) }); }
+                        cx.notify();
+                    }
+                }
+                // Disk persistence proceeds immediately. Only its UI history
+                // refresh waits for this canonical preview, never the save.
+                app.final_previews_pending.remove(&id);
+                if app.deferred_final_history.remove(&id) {
+                    app.receive(Event::PagedFinished(id), cx);
+                }
+            });
+        }).detach();
+    }
+    fn apply_live_rows(&mut self, id: &str) {
+        if self.navigation_history && self.active.as_deref() == Some(id) {
+            return;
+        }
+        let Some(run) = self.runs.get_mut(id) else {
+            return;
+        };
+        let start = *run.stream_start.get_or_insert(self.rows.len());
+        self.pending_response_start = Some(start);
+        let old = self.rows.len();
+        self.rows.truncate(start);
+        for (ix, block) in run.live_blocks.iter().enumerate() {
+            self.rows.push(Row {
+                role: Some(format!(
+                    "{}:{}",
+                    if ix == 0 {
+                        "assistant"
+                    } else {
+                        "continuation"
+                    },
+                    run.agent.command()
+                )),
+                block: block.clone(),
+            });
+        }
+        self.list.splice(start..old, self.rows.len() - start);
+        if self.following_bottom && self.composer_send_motion.is_none() {
+            self.list.scroll_to(ListOffset { item_ix: self.rows.len(), offset_in_item: px(0.) });
+        }
+        if old == start && self.motion && self.rows.len() > start {
+            self.transcript_reveal = Some(ListReveal::appended(start));
+        }
+    }
+    fn project_sidebar_header(&self, cx: &Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .h(px(36.))
+            .px_3()
+            .flex_none()
+
+            .text_size(theme::ui_px(11.))
+            .text_color(rgb(MUTED))
+            .debug_selector(|| "sidebar-layout-header".into())
+            .id("sidebar-layout-header")
+            .cursor_pointer().gap_2().rounded_md().hover(|s|s.bg(rgba(GLASS_HOVER)))
+            .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
+                if event.click_count() == 1 {
+                    cx.stop_propagation();
+                    this.toggle_sidebar_section(project_tree::SidebarSection::Projects, cx);
+                }
+            }))
+            .child(self.sidebar_section_chevron(project_tree::SidebarSection::Projects))
+            .child("Projects")
+            .child(div().flex_1())
+            .child(div().id("tree-archived").debug_selector(||"tree-archived".into()).p_1().cursor_pointer().child(icon("inbox",13.,if !self.project_tree.activity.is_empty() {ACCENT} else {MUTED})).on_click(cx.listener(|this,e:&ClickEvent,window,cx| {cx.stop_propagation(); this.toggle_panel_from_click(Modal::Activity, e.position() + point(px(-12.),px(14.)), false, window, cx);})))
+            .child(
+                div()
+                    .id("add-project")
+                    .p_1()
+                    .cursor_pointer()
+                    .child(icon("plus", 14., MUTED))
+                    .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
+                        cx.stop_propagation(); this.toggle_panel_from_click(Modal::Projects, event.position(), false, window, cx)
+                    })),
+            )
+    }
+    fn sidebar(&self, cx: &Context<Self>) -> impl IntoElement {
+        div()
+            .id("sidebar-layout-panel")
+            .debug_selector(|| "project-rail".into())
+            .on_click(cx.listener(|this,event:&ClickEvent,_,cx| {if event.click_count()==2 {this.toggle_sidebar_layout(cx);}}))
+            .w(px(if self.sidebar_layout_transition.is_some() || (self.sidebar && self.sidebar_transition.is_some()) { self.sidebar_width } else { self.sidebar_target_width() }))
+            .h_full()
+            .flex_none()
+            .flex()
+            .flex_col()
+            .bg(gpui::rgba(self.resolved_theme.sidebar_rgba()))
+            .border_r_1()
+            .border_color(rgba(0xebebeb12))
+            .child(
+                div()
+                    .h(px(40.))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .px_3()
+                    .child(self.new_ninja_button(cx))
+                    .child(
+                        div()
+                            .flex_1()
+                            .h_full()
+                            .on_mouse_down(MouseButton::Left, |_, window, _| native::drag(window)),
+                    ),
+            )
+            .when(self.theme.github_widget,|s|s.child(self.github_widget(cx)))
+            .child(self.ninjas_sidebar(cx))
+            .child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .id("search")
+                            .debug_selector(|| "search".into())
+                            .h(px(32.))
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .px_2()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(rgba(0xebebeb12))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(rgba(GLASS_HOVER)))
+                            .child(icon("search", 14., MUTED))
+                            .child(div().flex_1().text_color(rgb(MUTED)).child("Search"))
+                            .child(
+                                div()
+                                    .text_size(theme::ui_px(11.))
+                                    .text_color(rgb(0x666666))
+                                    .child("⌘K"),
+                            )
+                            .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
+                                cx.stop_propagation(); this.toggle_panel_from_click(Modal::Search, point(px(8.), event.position().y + px(20.)), false, window, cx)
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id("inbox")
+                            .debug_selector(|| "inbox".into())
+                            .h(px(32.))
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .px_2()
+                            .rounded_md()
+                            .cursor_pointer()
+                            .when(self.all_projects, |s| s.bg(rgba(GLASS_HOVER)))
+                            .hover(|s| s.bg(rgba(GLASS_HOVER)))
+                            .child(icon("inbox", 16., MUTED))
+                            .child("Priority")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                cx.stop_propagation(); this.all_projects = !this.all_projects; this.archived_view = false;
+                                this.rebuild_workspace_sessions();
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(self.activity_section(cx))
+            .when(self.sidebar_split && !self.all_projects && !self.archived_view,
+                |s| s.child(self.split_remote_tree(cx)))
+            .when(self.sidebar_split && !self.all_projects, |s| s.child(self.project_sidebar_header(cx)))
+            .when(self.all_projects, |s| s.child(div().h(px(8.)).flex_none()))
+            .when(self.sidebar_split, |s| s.child(
+                uniform_list(
+                    "project-list",
+                    if self.sidebar_section_fraction(project_tree::SidebarSection::Projects)>0.{self.projects.len()}else{0},
+                    cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
+                        if let Some(reveal) = &mut this.project_reveal {
+                            reveal.observe(range.clone());
+                        }
+                        let elapsed = this.project_reveal.as_ref().map(ListReveal::elapsed);
+                        range
+                            .map(|ix| {
+                                let project = &this.projects[ix];
+                                let menu_project = project.clone();
+                                let path = project.path.clone();
+                                let selected = !this.all_projects && this.project == path;
+                                let entrance = elapsed.and_then(|elapsed| this.project_reveal.as_ref().map(|r| r.row(ix, elapsed)));
+                                div()
+                                    .id(("project", ix))
+                                    .debug_selector(move || format!("project-{ix}"))
+                                    .w_full()
+                                    .min_w(px(0.))
+                                    .h(px(32.))
+                                    // UniformList positions the outer row itself. Move its
+                                    // child so the spring changes paint, not list geometry.
+                                    .child(div()
+                                    .id(("project-content", ix))
+                                    .debug_selector(move || format!("project-content-{ix}"))
+                                    .group("project-row")
+                                    .w_full()
+                                    .min_w(px(0.))
+                                    .h(px(32.))
+                                    .when_some(entrance, |row, (opacity, offset)| {
+                                        row.opacity(opacity)
+                                            .relative()
+                                            .left(px(8. * offset))
+                                            .top(px(5. * offset))
+                                    })
+                                    .px_2()
+                                    .overflow_hidden()
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .line_height(theme::ui_line_height(20.))
+                                    .rounded_md()
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(rgba(GLASS_HOVER)))
+                                    .text_color(rgb(if selected { TEXT } else { 0xb5b5b5 }))
+                                    .child(project_tree::project_badge(&this.project_label(project), &project.path, 20.))
+                                    .child(
+                                        div()
+                                            .debug_selector(move || format!("project-label-{ix}"))
+                                            .flex_1()
+                                            .min_w(px(0.))
+                                            .overflow_hidden()
+                                            .text_ellipsis()
+                                            .when(this.lifecycle.pinned_projects.contains(&project.path), |row| {
+                                        row.child(icon("pin", 10., MUTED).flex_none())
+                                    })
+                                    .child(this.project_label(project)),
+                                    )
+                                    .child(
+                                        div()
+                                            .id(("project-menu", ix))
+                                            .debug_selector(move || format!("project-menu-{ix}"))
+                                            .size(px(20.))
+                                            .flex_none()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .rounded_md()
+                                            .opacity(if selected { 1. } else { 0. })
+                                            .group_hover("project-row", |s| s.opacity(1.))
+                                            .hover(|s| s.bg(rgba(GLASS_HOVER)))
+                                            .child(icon("more", 14., MUTED))
+                                            .on_click(cx.listener(
+                                                move |this, event: &ClickEvent, window, cx| {
+                                                    cx.stop_propagation();
+                                                    this.modal = None;
+                                                    if this.action_menu.as_ref().is_some_and(|menu| matches!(&menu.target, MenuTarget::Project(project) if project.path == menu_project.path)) {
+                                                        this.dismiss_action_menu();
+                                                    } else {
+                                                        this.action_menu = Some(ActionMenu {
+                                                            target: MenuTarget::Project(menu_project.clone()),
+                                                            anchor: event.position()
+                                                                + point(px(10.), px(-20.)),
+                                                            started: Instant::now(),
+                                                            closing: false,
+                                                            closing_from: 1.,
+                                                        });
+                                                    }
+                                                    this.focus.focus(window);
+                                                    cx.notify();
+                                                },
+                                            )),
+                                    )
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        cx.stop_propagation();
+                                        this.select_project(path.clone(), window, cx)
+                                    })))
+                                    .into_any_element()
+                            })
+                            .collect::<Vec<_>>()
+                    }),
+                )
+                .flex_1()
+                .min_h(px(0.))
+                .w_full()
+                .debug_selector(||"project-section-body".into()).px_2().map(|mut v|{v.style().flex_grow=Some(self.sidebar_section_fraction(project_tree::SidebarSection::Projects));v}).flex_basis(px(0.)).opacity(self.sidebar_section_fraction(project_tree::SidebarSection::Projects)),
+            ).child(div().map(|mut v|{v.style().flex_grow=Some(1.-self.sidebar_section_fraction(project_tree::SidebarSection::Projects));v}).flex_basis(px(0.))))
+            .when(!self.sidebar_split, |s| s.child(self.project_tree_list(cx)))
+            .child(
+                div()
+                    .px_2()
+                    .py_2()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .id("agents")
+                            .h(px(32.))
+                            .px_2()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .rounded_md()
+                            .cursor_pointer()
+                            .hover(|s| s.bg(rgba(GLASS_HOVER)))
+                            .children(self.agents.iter().map(|agent| {
+                                let kind = agent.kind;
+                                div()
+                                    .debug_selector(move || {
+                                        format!("agent-strip-{}", agent_icon(kind))
+                                    })
+                                    .size(px(14.))
+                                    .flex_none()
+                                    .opacity(if agent.available { 1. } else { 0.4 })
+                                    .child(provider_icon(agent_icon(kind), 14., agent_color(kind)))
+                            }))
+                            .child(div().flex_1())
+                            .child(icon("chevron-right", 12., MUTED))
+                            .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
+                                cx.stop_propagation(); this.toggle_picker_from_click(false,event.position(), window, cx)
+                            })),
+                    ),
+            )
+    }
+    fn workspace(&self, cx: &Context<Self>) -> AnyElement {
+        if self.ninjas.panel.as_ref().is_some_and(|p|p.profile.revision>0){return div().id("workspace-layout-panel").debug_selector(||"workspace-pane".into()).w(px(260.)).h_full().flex_none().bg(gpui::rgba(self.resolved_theme.sidebar_rgba())).border_r_1().border_color(rgba(0xebebeb12)).child(self.ninja_chat_sidebar(false,cx)).into_any_element()}
+        let remote = self.sidebar_split.then(|| self.split_remote_scope()).flatten();
+        let remote_sessions = remote.as_ref().map(|(_, sessions, _)| std::sync::Arc::new(sessions.clone()));
+        let count = remote_sessions.as_ref().map_or(self.workspace_sessions.len(), |sessions| sessions.len());
+        let remote_next = remote.as_ref().and_then(|(_, _, next)| *next);
+        let name = if let Some((name, _, _)) = remote.as_ref() {
+            name.clone()
+        } else if self.all_projects {
+            "Workspace".to_owned()
+        } else {
+            self.project_path_label(&self.project)
+        };
+        div()
+            .id("workspace-layout-panel")
+            .debug_selector(|| "workspace-pane".into())
+            .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
+                if event.click_count() == 2 {
+                    this.toggle_sidebar_layout(cx);
+                }
+            }))
+            .w(px(260.))
+            .h_full()
+            .flex_none()
+            .flex()
+            .flex_col()
+            .bg(gpui::rgba(self.resolved_theme.sidebar_rgba()))
+            .border_r_1()
+            .border_color(rgba(0xebebeb12))
+            .child(
+                div()
+                    .h(px(40.))
+                    .flex_none()
+                    .px_3()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .border_b_1()
+                    .border_color(rgba(0xebebeb12))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .on_mouse_down(MouseButton::Left, |_, window, _| native::drag(window))
+                            .child(name),
+                    )
+                    .child(
+                        div()
+                            .id("workspace-search")
+                            .debug_selector(|| "workspace-search".into())
+                            .cursor_pointer()
+                            .p_1()
+                            .child(icon("search", 14., MUTED))
+                            .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
+                                cx.stop_propagation();
+                                this.toggle_panel_from_click(
+                                    Modal::Search,
+                                    point(
+                                        px(this.sidebar_width + 8.),
+                                        event.position().y + px(20.),
+                                    ),
+                                    false,
+                                    window,
+                                    cx,
+                                )
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id("new")
+                            .cursor_pointer()
+                            .p_1()
+                            .child(icon("plus", 16., MUTED))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.new_conversation(window, cx)
+                            })),
+                    ),
+            )
+            .child(
+                div()
+                    .h(px(36.))
+                    .flex_none()
+                    .px_2()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .border_b_1()
+                    .border_color(rgba(0xebebeb12))
+                    .child(
+                        div()
+                            .px_3()
+                            .py_1()
+                            .rounded_md()
+                            .bg(rgba(GLASS_HOVER))
+                            .text_size(theme::ui_px(12.))
+                            .child(if self.archived_view {
+                                "Archived"
+                            } else {
+                                "Sessions"
+                            }),
+                    )
+                    .child(
+                        div()
+                            .id("toggle-archived-chats")
+                            .debug_selector(|| "toggle-archived-chats".into())
+                            .p_1()
+                            .rounded_md()
+                            .cursor_pointer()
+                            .hover(|s| s.bg(rgba(GLASS_HOVER)))
+                            .child(icon(
+                                "inbox",
+                                14.,
+                                if self.archived_view { ACCENT } else { MUTED },
+                            ))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.toggle_archived_view(cx);
+                            })),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .text_size(theme::ui_px(11.))
+                            .text_color(rgb(MUTED))
+                            .child(count.to_string()),
+                    ),
+            )
+            .child(div().map(|mut v|{v.style().flex_grow=Some(1.-self.sidebar_section_fraction(project_tree::SidebarSection::Chats));v}).flex_basis(px(0.)))
+            .child(
+                div()
+                    .h(px(38.))
+                    .flex_none()
+                    .px_3()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .text_size(theme::ui_px(12.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .id("conversation-section-header").debug_selector(||"conversation-section-header".into()).cursor_pointer().hover(|s|s.bg(rgba(GLASS_HOVER)))
+                    .on_click(cx.listener(|this,_,_,cx|{cx.stop_propagation();this.toggle_sidebar_section(project_tree::SidebarSection::Chats,cx);}))
+                    .child(self.sidebar_section_chevron(project_tree::SidebarSection::Chats))
+                    .child(if remote.is_none() && self.all_projects {
+                        "Recent conversations"
+                    } else {
+                        "Conversations"
+                    }),
+            )
+            .child(
+                uniform_list(
+                    "sessions",
+                    if self.sidebar_section_fraction(project_tree::SidebarSection::Chats)>0.{count}else{0},
+                    cx.processor(move |this, range: std::ops::Range<usize>, _, cx| {
+                        if let Some(reveal) = &mut this.sessions_reveal {
+                            reveal.observe(range.clone());
+                        }
+                        let elapsed = this.sessions_reveal.as_ref().map(ListReveal::elapsed);
+                        range
+                            .map(|ix| {
+                                let entrance = elapsed.and_then(|elapsed| {
+                                    this.sessions_reveal.as_ref().map(|r| r.row(ix, elapsed))
+                                });
+                                let (session, remote) = if let Some(sessions) = &remote_sessions {
+                                    (sessions[ix].clone(), true)
+                                } else { (this.workspace_sessions[ix].clone(), false) };
+                                div()
+                                    .id(("session", ix))
+                                    .debug_selector(move || format!("session-{ix}"))
+                                    .w_full()
+                                    .min_w(px(0.))
+                                    .h(px(68.))
+                                    .child(
+                                        this.session_item(
+                                            session, ix, remote, cx,
+                                        )
+                                        .when_some(
+                                            entrance,
+                                            |row, (opacity, offset)| {
+                                                row.opacity(opacity)
+                                                    .relative()
+                                                    .left(px(8. * offset))
+                                                    .top(px(5. * offset))
+                                            },
+                                        ),
+                                    )
+                                    .into_any_element()
+                            })
+                            .collect::<Vec<_>>()
+                    }),
+                )
+                .flex_1()
+                .min_h(px(0.))
+                .w_full()
+                .debug_selector(||"conversation-section-body".into()).px_2().map(|mut v|{v.style().flex_grow=Some(self.sidebar_section_fraction(project_tree::SidebarSection::Chats));v}).flex_basis(px(0.)).opacity(self.sidebar_section_fraction(project_tree::SidebarSection::Chats)),
+            )
+
+            .when_some(remote_next, |s, offset| s.child(github_ui::button("remote-split-more", "Load more chats", None, true, cx,
+                move |app, _, cx| app.load_remote_split_page(offset, cx))))
+            .when(
+                remote.is_none() && self.archived_view && !self.project_tree.chats_collapsed && self.archive_offset < self.archive_ids.len(),
+                |s| {
+                    s.child(
+                        div()
+                            .id("load-archived-page")
+                            .debug_selector(|| "load-archived-page".into())
+                            .mx_2()
+                            .mb_2()
+                            .px_2()
+                            .h(px(30.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded_md()
+                            .text_size(theme::ui_px(11.))
+                            .text_color(rgb(MUTED))
+                            .bg(rgba(GLASS_SURFACE))
+                            .child(if self.archive_loading {
+                                "Loading archived chats…"
+                            } else {
+                                "Load more archived chats"
+                            })
+                            .when(!self.archive_loading, |s| {
+                                s.cursor_pointer()
+                                    .hover(|s| s.bg(rgba(GLASS_HOVER)))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        cx.stop_propagation();
+                                        this.load_archived_page(cx)
+                                    }))
+                            }),
+                    )
+                },
+            )
+            .into_any_element()
+    }
+    fn session_item(
+        &self,
+        session: SessionSummary,
+        ix: usize,
+        remote: bool,
+        cx: &Context<Self>,
+    ) -> Stateful<Div> {
+        let menu_session = session.clone();
+        let running = self.runs.contains_key(&session.id)
+            || self
+                .broker_children
+                .get(&session.id)
+                .is_some_and(|count| *count > 0);
+        let selected = self.active.as_deref() == Some(&session.id);
+        let (selected, running) = if remote { self.remote_session_status(&session.id) } else { (selected, running) };
+        let seconds = chrono::Utc::now()
+            .timestamp()
+            .saturating_sub(session.updated_at)
+            .max(0);
+        let age = if seconds < 60 {
+            "now".into()
+        } else if seconds < 3600 {
+            format!("{}m", seconds / 60)
+        } else if seconds < 86400 {
+            format!("{}h", seconds / 3600)
+        } else {
+            format!("{}d", seconds / 86400)
+        };
+        let project = self.project_path_label(&session.project_path);
+        let drag = self.chat_drag(&session);
+        div()
+            .id(("session-content", ix))
+            .when(!remote, |row| row.on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.clone())))
+            .group("session-row")
+            .debug_selector(move || format!("session-content-{ix}"))
+            .w_full()
+            .min_w(px(0.))
+            .h(px(68.))
+            .px(px(10.))
+            .py(px(6.))
+            .flex()
+            .flex_col()
+            .gap(px(2.))
+            .overflow_hidden()
+            .rounded_md()
+            .cursor_pointer()
+            .when(selected, |s| s.bg(rgba(0xffffff14)))
+            .hover(|s| s.bg(rgba(GLASS_HOVER)))
+            .child(
+                div()
+                    .debug_selector(move || format!("session-provider-{ix}"))
+                    .w_full()
+                    .min_w(px(0.))
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .text_size(theme::ui_px(11.))
+                    .line_height(theme::ui_line_height(16.))
+                    .text_color(rgb(MUTED))
+                    .child(
+                        provider_icon(agent_icon(session.agent), 12., agent_color(session.agent))
+                            .flex_none(),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .child(agent_name(session.agent)),
+                    )
+                    .when(!remote && self.lifecycle.pinned_chats.contains(&session.id), |s| s.child(icon("pin", 10., MUTED).flex_none()))
+                    .child(div().flex_none().child(age))
+                    .when(!remote, |row| row.child(
+                        div()
+                            .id(("session-menu", ix))
+                            .debug_selector(move || format!("session-menu-{ix}"))
+                            .size(px(16.))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded_sm()
+                            .opacity(if selected { 1. } else { 0. })
+                            .group_hover("session-row", |s| s.opacity(1.))
+                            .hover(|s| s.bg(rgba(GLASS_HOVER)))
+                            .child(icon("more", 12., MUTED))
+                            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                                cx.stop_propagation();
+                                this.modal = None;
+                                if this.action_menu.as_ref().is_some_and(|menu| matches!(&menu.target, MenuTarget::Chat(session) if session.id == menu_session.id)) {
+                                    this.dismiss_action_menu();
+                                } else {
+                                    this.action_menu = Some(ActionMenu {
+                                        target: MenuTarget::Chat(menu_session.clone()),
+                                        anchor: event.position() + point(px(10.), px(-20.)),
+                                        started: Instant::now(),
+                                        closing: false,
+                                        closing_from: 1.,
+                                    });
+                                }
+                                this.focus.focus(window);
+                                cx.notify();
+                            })),
+                    )),
+            )
+            .child(
+                div()
+                    .debug_selector(move || format!("session-title-{ix}"))
+                    .w_full()
+                    .min_w(px(0.))
+                    .text_size(theme::ui_px(13.))
+                    .line_height(theme::ui_line_height(20.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .child(if remote { session.title.clone().into_any_element() } else { self.animated_chat_title(&session).into_any_element() }),
+            )
+            .child(
+                div()
+                    .debug_selector(move || format!("session-project-{ix}"))
+                    .w_full()
+                    .min_w(px(0.))
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .text_size(theme::ui_px(11.))
+                    .line_height(theme::ui_line_height(16.))
+                    .text_color(rgb(0x777777))
+                    .child(icon("branch", 12., 0x777777).flex_none())
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .child(project),
+                    )
+                    .when(running, |s| s.child(icon("sparkles", 12., ACCENT))),
+            )
+            .on_click(cx.listener(move |this, _, window, cx| {
+                cx.stop_propagation();
+                if remote { this.open_remote_split_session(&session, window, cx); }
+                else { this.open_session(session.clone(), window, cx); }
+            }))
+    }
+    fn mark_tab_opening(&mut self, id: &str) {
+        self.opening_tabs.retain(|_, at| at.elapsed() < workspace_motion::pane_duration());
+        self.opening_tabs.insert(id.into(), Instant::now());
+    }
+
+    fn tab_open_progress(&self, at: Option<Instant>, window: &Window, cx: &Context<Self>) -> f32 {
+        if self.motion && !native::reduced_motion()
+            && let Some(at) = at.filter(|at| at.elapsed() < workspace_motion::pane_duration())
+        {
+            request_motion_frame(window, cx);
+            return workspace_motion::ease_out(at.elapsed().as_secs_f32() / workspace_motion::pane_duration().as_secs_f32());
+        }
+        1.
+    }
+
+    fn tabs(&self, window: &Window, cx: &Context<Self>) -> impl IntoElement {
+        const TAB_WIDTH: f32 = 168.;
+        const SLOT_WIDTH: f32 = TAB_WIDTH + 6.;
+        let tabs = self.open_tab_sessions();
+        let remote = (window.window_handle().window_id() == self.primary_window)
+            .then(|| self.remote_tab()).flatten();
+        let slot = |progress: f32, card: AnyElement| {
+            div().w(px(SLOT_WIDTH * progress)).h(px(30.)).flex_none().overflow_hidden()
+                .child(div().w(px(TAB_WIDTH)).h_full().flex_none().opacity(progress).child(card))
+        };
+        let mut closing = self.closing_tabs.iter()
+            .filter(|(_, _, at)| self.motion && !native::reduced_motion() && at.elapsed() < workspace_motion::pane_duration())
+            .peekable();
+        if closing.peek().is_some() { request_motion_frame(window, cx); }
+        let ghost = |(_, title, at): &(usize, String, Instant)| {
+            let progress = 1. - workspace_motion::ease_out(at.elapsed().as_secs_f32() / workspace_motion::pane_duration().as_secs_f32());
+            slot(progress, div().size_full().overflow_hidden()
+                .rounded_md().bg(rgba(GLASS_HOVER)).px_2()
+                .flex().items_center().text_size(theme::ui_px(12.)).whitespace_nowrap()
+                .child(title.clone()).into_any_element())
+        };
+        let tab_strip = div()
+            .flex()
+            .flex_1()
+            .min_w(px(0.))
+            .h_full()
+            .items_center()
+            .overflow_hidden()
+            .when(window.window_handle().window_id() == self.primary_window, |bar| {
+                bar.child(self.remote_tab_groups(window, cx))
+                    .when_some(self.closing_remote_tab().filter(|_| self.motion && !native::reduced_motion()),
+                        |bar, (title, started)| {
+                            if window.is_window_active() { request_motion_frame(window, cx); }
+                            let progress = 1. - workspace_motion::ease_out(
+                                started.elapsed().as_secs_f32() / workspace_motion::pane_duration().as_secs_f32());
+                            bar.child(slot(progress, div().size_full().overflow_hidden()
+                                .rounded_md().bg(rgba(GLASS_HOVER)).px_2().flex().items_center()
+                                .text_size(theme::ui_px(12.)).truncate().child(title.to_owned()).into_any_element()))
+                        })
+            })
+            .when_some(remote.clone().filter(|_| !self.remote_tab_is_grouped()), |bar, (provider, title)| bar.child(slot(1., div()
+                .id("remote-conversation-tab").debug_selector(|| "remote-conversation-tab".into())
+                .size_full().flex().items_center().gap_2().px_2().rounded_md().bg(rgba(0xffffff20))
+                .child(provider_icon(agent_icon(provider), 14., agent_color(provider)))
+                .child(div().flex_1().min_w(px(0.)).truncate().text_size(theme::ui_px(12.)).child(title))
+                .child(self.remote_tab_close(cx))
+                .into_any_element())))
+            .when(self.ninja_surface_owner().is_none() && (self.active.is_none() || self.cli_draft_project.is_some()), |s| {
+                let progress = self.tab_open_progress(self.draft_tab_opened, window, cx);
+                s.child(slot(progress,
+                    div()
+                        .id("cli-draft-tab").size_full().overflow_hidden()
+                        .h(px(30.))
+                        .px_2()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .rounded_md()
+                        .when(remote.is_none(), |tab| tab.bg(rgba(GLASS_HOVER)))
+                        .text_size(theme::ui_px(12.))
+                        .child(provider_icon(agent_icon(self.cli_draft_project.as_ref().map_or(self.agent, |(_, _, agent)| *agent)), 14.,
+                            agent_color(self.cli_draft_project.as_ref().map_or(self.agent, |(_, _, agent)| *agent))))
+                        .child("New session")
+                        .when(self.active.is_some(), |tab| tab.cursor_pointer()
+                            .on_click(cx.listener(|app, _, window, cx| app.open_cli_draft(window, cx))))
+                        .when(self.active.is_none(), |tab| tab.child(
+                            div().id("draft-cli-button").cursor_pointer().child("CLI")
+                                .on_click(cx.listener(|app, _, window, cx| app.terminalize_chat(window, cx)))))
+                        .child(div().id("draft-close-button").cursor_pointer().child(icon("close", 12., MUTED))
+                            .on_click(cx.listener(|app, _, window, cx| {
+                                cx.stop_propagation();
+                                if app.active.is_none() { app.close_blank_tab(window, cx); }
+                                else { app.close_cli_draft(cx); cx.notify(); }
+                            }))).into_any_element(),
+                ))
+            })
+            .children(tabs.into_iter().enumerate().flat_map(|(ix, session)| {
+                let mut items = Vec::new();
+                while closing.peek().is_some_and(|(index, _, _)| *index <= ix) {
+                    items.push(ghost(closing.next().unwrap()).into_any_element());
+                }
+                let session = session.clone();
+                let id = session.id.clone();
+                let split = self.split_tab_for(&id);
+                let key = split.map_or_else(|| id.clone(), |split| split.tab_id.clone());
+                let selected = remote.is_none() && self.ninja_surface_owner().is_none() && self.active.as_deref() == Some(&id);
+                let closing_id = id.clone();
+                let drag = self.chat_drag(&session);
+                let drop_target = session.clone();
+                let tab = div()
+                    .id(SharedString::from(format!("tab-{key}")))
+                    .debug_selector(move || format!("workspace-chat-tab-{ix}"))
+                    .on_mouse_down(MouseButton::Left, |_, window, _| {
+                        native::panel_drag_guard(window, true);
+                    })
+                    .on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.clone()))
+                    .on_drop(cx.listener(move |this, drag: &chat_split::ChatDrag, window, cx| {
+                        native::panel_drag_guard(window, false);
+                        this.chat_split_hover = None;
+                        this.split_tab_drop(drag, drop_target.clone(), window, cx);
+                        cx.stop_propagation();
+                    }))
+                    .h(px(30.))
+                    .w_full().overflow_hidden()
+                    .px_2()
+                    .relative()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .rounded_md()
+                    .cursor_pointer()
+                    .when(ix < 2 && performance::chat_split_probe_enabled(), |tab| {
+                        tab.child(performance::chat_split_probe_area(ix))
+                    })
+                    .when(selected, |s| s.bg(rgba(0xffffff20)))
+                    .hover(|s| s.bg(rgba(GLASS_HOVER)))
+                    .child(tui_badges::stack(if split.is_some() { self.split_group_badges(cx) } else { self.tab_badges(&session, cx) }))
+                    .child(
+                        div()
+                            .text_size(theme::ui_px(12.)).flex_1().min_w(px(0.)).whitespace_nowrap()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .child(self.animated_chat_title(&session)),
+                    )
+                    .when(selected && split.is_none(), |tab| {
+                        tab.child(div().id(("chat-cli", ix)).px_1().rounded_sm()
+                            .hover(|s| s.bg(rgba(0xffffff15)))
+                            .text_size(theme::ui_px(11.)).child("CLI")
+                            .on_click(cx.listener(|app, _, window, cx| {
+                                cx.stop_propagation();
+                                app.terminalize_chat(window, cx);
+                            })))
+                    })
+                    .child(
+                        div()
+                            .id(("close-tab", ix))
+                            .p_1()
+                            .rounded_sm()
+                            .cursor_pointer()
+                            .hover(|s| s.bg(rgba(0xffffff15)))
+                            .child(icon("close", 11., MUTED))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.close_workspace_tab(&closing_id, window, cx);
+                            })),
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_session(session.clone(), window, cx)
+                    }));
+                let progress = self.tab_open_progress(self.opening_tabs.get(&key).copied(), window, cx);
+                items.push(slot(progress, tab.into_any_element()).into_any_element());
+                items
+            }))
+            .children(closing.map(ghost))
+            .when_some(self.ninjas.panel.as_ref().filter(|p|p.profile.revision>0),|s,p|s.child(div().h(px(30.)).px_3().flex().items_center().gap_2().rounded_md().bg(rgba((ninja_art::color(&p.profile.style)<<8)|0x24)).child(ninja_art::art(&p.profile.style,14.,false)).child(p.profile.name.clone()).child(div().id("ninja-tab-close").child(icon("close",12.,TEXT)).cursor_pointer().on_click(cx.listener(|app,_,_,cx|{if let Some(owner)=app.ninja_surface_owner(){app.close_chat_cli(&owner,cx);}app.remember_ninja_draft(cx);app.ninjas.desktop=None;app.ninjas.panel=None;cx.notify();})))))
+            .child(div().debug_selector(||"workspace-window-drag-space".into()).flex_1().h_full().min_w(px(12.)).on_mouse_down(MouseButton::Left,|_,window,_|native::drag(window)));
+        div()
+            .debug_selector(|| "workspace-tab-strip".into())
+            .h(px(40.))
+            .flex_none()
+            .flex()
+            .items_center()
+            .px_2()
+            .border_b_1()
+            .border_color(rgba(0xebebeb12))
+            .child(tab_strip)
+            .child(
+                context_ui::header_control("workspace-sidebar-toggle", self.sidebar)
+                    .ml_1()
+                    .child(icon("sidebar", 16., TEXT))
+                    .on_click(cx.listener(|app, _, _, cx| {
+                        app.toggle_sidebar();
+                        cx.notify();
+                    })),
+            )
+    }
+    fn build_greeting(&self) -> String {
+        if self.project.starts_with(self.unprojected_root()) { return "What do you want to build?".into(); }
+        format!("What do you want to build in {}?", self.project_path_label(&self.project))
+    }
+    fn welcome_entrance_enabled(&self)->bool{
+        self.motion && self.initial_workspace_home_generation != Some(self.home_generation)
+    }
+    fn home(&self, cx: &Context<Self>) -> impl IntoElement {
+        let greeting = div()
+            .debug_selector(||"new-chat-greeting".into())
+            .w_full().min_w(px(0.)).px_4()
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap_3()
+            .child(self.loading_logo.clone())
+            .child(
+                div()
+                    .text_size(theme::ui_px(25.))
+                    .font_weight(FontWeight::MEDIUM)
+                    .child("What do you want to build?"),
+            )
+            .child(self.home_project_control(cx));
+        let greeting = if self.welcome_entrance_enabled() {
+            greeting
+                .with_animation(
+                    ("welcome", self.home_generation),
+                    Animation::new(workspace_motion::CONTENT_DURATION),
+                    |s, p| {
+                        let p = presentation::ease_out(p);
+                        s.opacity(p.clamp(0., 1.)).mt(px(12. * (1. - p)))
+                    },
+                )
+                .into_any_element()
+        } else {
+            greeting.into_any_element()
+        };
+        div()
+            .flex_1()
+            .min_h(px(0.))
+            .flex()
+            .flex_col()
+            .justify_end()
+            .pb_4()
+            .child(greeting)
+    }
+    /// Composer selection is only the destination for the next submission.
+    /// Legacy transcript rows belong to the bound chat (or its active run).
+    fn transcript_agent(&self) -> AgentKind {
+        self.active
+            .as_ref()
+            .and_then(|id| {
+                self.runs.get(id).map(|run| run.agent).or_else(|| {
+                    self.sessions
+                        .iter()
+                        .find(|session| &session.id == id)
+                        .map(|session| session.agent)
+                })
+            })
+            .unwrap_or(self.agent)
+    }
+    fn row(&mut self, ix: usize, list_width: Pixels, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        self.transcript_row(ix, list_width, window, cx, false)
+    }
+    fn transcript_row(&mut self, ix: usize, list_width: Pixels, window: &mut Window,
+        cx: &mut Context<Self>, remote: bool) -> AnyElement {
+        #[cfg(test)]
+        self.rendered_rows.set(self.rendered_rows.get() + 1);
+        if !remote && matches!(self.rows.get(ix).map(|row|&row.block),Some(MessageBlock::Interaction(chat_interactions::ChatInteraction::Status {title,status:chat_interactions::InteractionStatus::Completed,..})) if title=="Completed")
+        {
+            self.prefetch_completion_action(ix, cx);
+            self.prefetch_change_summary(ix,cx);
+        }
+        if !remote && self.flow_index.completion_ends.get(ix).is_some_and(Option::is_some){self.prefetch_completion_action(ix,cx);self.prefetch_change_summary(ix,cx);}
+        let (flow, base) = if remote { self.remote_workspace.projection(ix) } else { (&self.flow_index, 0) };
+        let row_index = ix - base;
+        let absolute = |span: std::ops::Range<usize>| span.start + base..span.end + base;
+        let work = flow.work.get(row_index).cloned().flatten().map(absolute);
+        let work_reveal = work.as_ref().map(|span| {
+            if remote { self.remote_work_reveal(span.start) } else { self.work_reveal(span.start) }
+        }).unwrap_or(1.);
+        let summary = |app: &Self, ix, cx: &Context<Self>| if remote { app.remote_work_summary(ix, cx) } else { app.work_summary(ix, cx) };
+        if flow.hidden.get(row_index)==Some(&true){return div().h(px(0.)).into_any_element()}
+        if let Some(span) = &work && work_reveal <= 0.001 {
+            return if ix == span.start {
+                div().w_full().px_4().flex().justify_center()
+                    .child(div().w_full().max_w(px(800.)).child(summary(self, span.start, cx)))
+                    .into_any_element()
+            } else { div().h(px(0.)).into_any_element() };
+        }
+        let command=flow.commands.get(row_index).cloned().flatten().map(absolute);
+        let message_end=flow.message_ends.get(row_index).cloned().flatten().map(absolute);
+        if command.as_ref().is_some_and(|span|span.start!=ix){return div().h(px(0.)).into_any_element()}
+        if !remote && let Some(deferred) = self.deferred_rows.get(&ix) {
+            let page = deferred.page;
+            let height = deferred.height;
+            self.request_history_page(page);
+            return div()
+                .w_full()
+                .h(height)
+                .px_4()
+                .text_size(theme::ui_px(12.))
+                .text_color(rgb(MUTED))
+                .child(if self.history_failed.contains(&page) {
+                    "Page unavailable. Reopen this conversation to refresh."
+                } else {
+                    "Loading messages…"
+                })
+                .into_any_element();
+        }
+        if !remote {
+        let page_index = self
+            .history_pages
+            .partition_point(|p| p.start <= ix)
+            .saturating_sub(1);
+        if let Some(page) = self.history_pages.get_mut(page_index)
+            && ix < page.start + page.len
+        {
+            self.history_clock += 1;
+            page.used = self.history_clock;
+        }
+        }
+        let remote_rows = remote.then(|| self.remote_workspace.row_group(ix)).flatten();
+        let row = if remote {
+            remote_rows.as_ref().and_then(|(rows, base)| rows.get(ix - base))
+        } else {
+            self.rows.get(ix)
+        };
+        // Scrolling into already settled remote history must not restart its
+        // text morph. Keep the effect on the entrance and the actual live tail.
+        let reveal_text = !remote || self.remote_workspace.reveal.is_some()
+            || ix >= self.remote_workspace.visible_history_len();
+        let decoder = if remote { &mut self.remote_workspace.decode } else { &mut self.unified_text_decode };
+        let decoded = row.and_then(|row| decode_chat_row(decoder,
+            row, ix, reveal_text && unified::decode_enabled(self.motion && self.unified_text_morph)
+                && unified::workspace_frame(self.motion).content_visible(), window, cx));
+        let Some(row) = row else {
+            return div().into_any_element();
+        };
+        // Retain the app-owned boundary for exact prompt attribution, without
+        // rendering a second Undo control above the completion card.
+        if checkpoint_ui::row_checkpoint(row).is_some() {
+            return div().h(px(0.)).into_any_element();
+        }
+        let reveal = if remote { &mut self.remote_workspace.reveal } else { &mut self.transcript_reveal };
+        let entrance = reveal.as_mut().map(|reveal| {
+            reveal.observe(ix..ix + 1);
+            reveal.row(ix, reveal.elapsed())
+        });
+        let geometry_probe = reveal
+            .as_ref()
+            .and_then(|r| r.geometry_probe(ix));
+        let timing=if remote {None} else {self.row_timing(ix).cloned()};
+        let timestamp=timing.as_ref().and_then(|t|if row.role.as_deref()==Some("user"){Some(t.submitted_ms)}else{t.first_output_ms.or(t.finished_ms)}).and_then(chrono::DateTime::from_timestamp_millis).map(|at|at.with_timezone(&chrono::Local).format("%-I:%M %p").to_string());
+        let user = chat_flow::user(row);
+        let row_agent = agent_for_role(row.role.as_deref(), if remote { self.remote_workspace.provider() } else { self.transcript_agent() });
+        let mut content = self.conversation_message_body(ix, user, row_has_header(row.role.as_deref()), row_agent);
+        if !remote && !user&&row_has_header(row.role.as_deref())&&self.row_timing(ix).is_some_and(|t|t.finished_ms.is_none()){
+            if let Some(elapsed)=self.elapsed_label(){content=content.child(div().mb_3().pb_2().border_b_1().border_color(rgba(0xebebeb12)).text_size(theme::ui_px(11.)).text_color(rgb(MUTED)).child(format!("Working for {elapsed}")));}
+        }
+        if let Some(span) = command {
+            let (rows, offset) = remote_rows.as_ref().map_or((self.rows.as_slice(), 0), |(rows, offset)| (rows.as_slice(), *offset));
+            let span = span.start - offset..span.end - offset;
+            let (details, status) = chat_flow::grouped_command(rows, span.clone());
+            let card = chat_interactions::ChatInteraction::Status { title: chat_flow::tool_summary(rows, span), details, status };
+            content = content.child(if remote { self.remote_interaction(ix, &card, row_agent, cx) } else { self.interaction_card(ix, &card, row_agent, cx) });
+        } else if remote {
+            content = match &row.block {
+                MessageBlock::Interaction(card) => content.child(self.remote_interaction(ix, card, row_agent, cx)),
+                MessageBlock::Activity {label, details} => content.child(self.remote_tool(ix, label, details, cx)),
+                MessageBlock::Attachment { name, target } => content.child(self.remote_attachment(ix, name, target, cx)),
+                _ => self.render_message_block(content, ix, &row.block, decoded.as_deref(), row_agent, None, cx),
+            };
+        } else {
+            content = self.render_message_block(content, ix, &row.block, decoded.as_deref(), row_agent, None, cx);
+        }
+        if remote {
+            if let Some(range) = message_end && let Some((rows, offset)) = remote_rows {
+                let range = range.start - offset..range.end - offset;
+                content = content.child(div().mt_1().flex().when(user, |s|s.justify_end()).child(
+                    copy_control::CopyControl::source(format!("message-copy-{ix}"), move |_| {
+                        rows.get(range.clone()).map(copy_control::message_text).unwrap_or_default()
+                    }).motion(self.motion)));
+            }
+        } else if let Some(range) = message_end {
+            if !user && !self.theme.compact_diff && self.flow_index.completion_ends.get(ix).is_some_and(Option::is_some){if let (Some(target),Some(summary))=(self.completion_target(ix),self.completion_summary(ix).filter(|s|s.total>0)){content=content.child(self.completion_changes_card(ix,target,summary,cx));}}
+            let owner = cx.entity().downgrade();
+            let chat = self.active.clone();
+            content = content.child(div().mt_1().flex().flex_wrap().items_center().gap_1().when(user, |s| s.justify_end()).when(!user, |s| s.justify_start()).when(!user && self.theme.compact_diff && self.flow_index.completion_ends.get(ix).is_some_and(Option::is_some),|s|{
+                if let (Some(target),Some(summary))=(self.completion_target(ix),self.completion_summary(ix).filter(|s|s.total>0)){s.child(self.compact_completion_diff(ix,target,summary,cx))}else{s}
+            }).child(
+                copy_control::CopyControl::source(format!("message-copy-{ix}"), move |cx| {
+                    owner.upgrade().and_then(|owner| {
+                        let app = owner.read(cx);
+                        (app.active == chat).then(|| app.rows.get(range.clone()).map(copy_control::message_text)).flatten()
+                    }).unwrap_or_default()
+                }).scope(self.active.clone().unwrap_or_default()).motion(self.motion)
+).when(!user,|s|s.child(self.response_sync_button(ix,cx))));
+        }
+        if let Some(stamp)=timestamp.filter(|_|user){content=content.child(div().mt_1().text_size(theme::ui_px(9.)).text_color(rgb(MUTED)).opacity(self.timestamp_opacity()).child(stamp));}
+        if let Some(t)=timing.filter(|t|t.elapsed_ms.is_some() && !user && (ix+1==self.rows.len() || self.rows.get(ix+1).is_some_and(|r|r.role.as_deref()==Some("user")))){
+            let label=match t.outcome.as_deref(){Some("failed")=>"Failed after",Some("stopped")=>"Stopped after",_=>"Worked for"};
+            content=content.child(div().debug_selector(move||format!("turn-duration-{ix}")).mt_2().font_family(theme::mono_font()).text_size(theme::mono_px(10.)).text_color(rgb(MUTED)).child(format!("{label} {}",chat_timing::duration(t.elapsed_ms.unwrap()))));
+        }
+        let first_send_offset = self.composer_send_motion.as_ref()
+            .filter(|(owner, _, _)| !remote && self.active.as_ref() == Some(owner) && ix == 0 && user)
+            .map_or(0., |(_, started, height)| height * (1. - workspace_motion::ease_out(
+                started.elapsed().as_secs_f32() / workspace_motion::pane_duration().as_secs_f32())));
+        let row_content = Self::conversation_message_alignment(user, content.when_some(entrance, |content, (opacity, offset)| {
+            content.opacity(opacity).relative().left(px(8. * offset)).top(px(5. * offset))
+        })).relative().top(px(first_send_offset));
+        let row_width = (list_width - window.rem_size() * 2.).clamp(px(0.), px(800.));
+        let row_content = interaction_ui::reveal_work_body(row_content, work_reveal, row_width);
+        div()
+            .debug_selector(move || format!("transcript-row-{ix}"))
+            .flex()
+            .justify_center()
+            .w_full()
+            .relative()
+            .px_4()
+            .when_some(geometry_probe, |root, visible| {
+                root.child(
+                    canvas(
+                        move |bounds, window, _| {
+                            if bounds.intersects(&window.content_mask().bounds) {
+                                ListReveal::record(&visible, ix, ix);
+                            }
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .inset_0(),
+                )
+            })
+            .child(div().w_full().max_w(px(800.)).flex().flex_col()
+            .when(work.as_ref().is_some_and(|span|ix==span.start),|s|s.child(summary(self, work.as_ref().unwrap().start, cx)))
+            .child(row_content))
+            .into_any_element()
+    }
+    // Both ordinary agent chats and personal Ninjas use the same rich blocks.
+    fn render_message_block(&self, content: Div, ix: usize, block: &MessageBlock,
+        decoded: Option<&str>, row_agent: AgentKind, peer: Option<&SessionSummary>, cx: &Context<Self>) -> Div {
+        let owner = cx.weak_entity();
+        let link_peer = peer.cloned();
+        let open_link = move |url: &str, window: &mut Window, cx: &mut App| {
+            let _ = owner.update(cx, |this, cx| {
+                if this.remote_workspace.active() && this.primary_window == window.window_handle().window_id() {
+                    this.open_remote_citation(url, window, cx);
+                    return;
+                }
+                if let Some(peer) = &link_peer && this.active.as_deref() != Some(&peer.id) {
+                    this.open_session(peer.clone(), window, cx);
+                }
+                this.open_citation(url, window, cx);
+            });
+        };
+        match block {
+            MessageBlock::Voice {
+                speaker:_,
+                text,
+                highlights,
+            } => content.child(
+                div()
+                    .child(
+                        div()
+                            .text_size(theme::ui_px(14.))
+                            .line_height(theme::ui_line_height(23.))
+                            .child(rich_text(
+                                ("voice", ix),
+                                decoded.unwrap_or(text),
+                                highlights,
+                                open_link,
+                            )),
+                    ),
+            ),
+            MessageBlock::Interaction(card) => {
+                content.child(self.conversation_interaction(ix, card, row_agent, peer, cx))
+            }
+            MessageBlock::Attachment { name, target } => {
+                content.child(if self.ninja_surface_owner().is_some() && !tool_images::is_target(target) {
+                    self.ninja_artifact_card(ix, name, target, cx)
+                } else {
+                    self.transcript_media_card(ix, name, target, peer, false, cx)
+                        .unwrap_or_else(|| self.attachment_history_card(ix, name, target, cx))
+                })
+            }
+            MessageBlock::Paragraph(text) => content.child(
+                div()
+                    .text_size(theme::ui_px(14.))
+                    .line_height(theme::ui_line_height(24.))
+                    .text_color(rgb(TEXT))
+                    .child(decoded.map(str::to_owned).unwrap_or_else(||text.clone())),
+            ),
+            MessageBlock::RichParagraph { text, highlights } => content.child(
+                div()
+                    .text_size(theme::ui_px(14.))
+                    .line_height(theme::ui_line_height(23.))
+                    .child(rich_text(
+                        ("markdown", ix),
+                        decoded.unwrap_or(text),
+                        highlights,
+                        open_link,
+                    )),
+            ),
+            MessageBlock::ListItem {
+                marker,
+                text,
+                highlights,
+            } => content.child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .text_size(theme::ui_px(14.))
+                    .line_height(theme::ui_line_height(23.))
+                    .child(
+                        div()
+                            .w(px(24.))
+                            .flex_none()
+                            .text_color(rgb(MUTED))
+                            .child(marker.clone()),
+                    )
+                    .child(div().flex_1().min_w(px(0.)).child(rich_text(
+                        ("list-text", ix),
+                        decoded.unwrap_or(text),
+                        highlights,
+                        open_link,
+                    ))),
+            ),
+            MessageBlock::TableRow { cells, header } => content.child(
+                div()
+                    .flex()
+                    .w_full()
+                    .border_b_1()
+                    .border_color(rgba(0xebebeb12))
+                    .when(*header, |s| {
+                        s.font_weight(FontWeight::SEMIBOLD).bg(rgba(0xffffff08))
+                    })
+                    .children(cells.iter().map(|cell| {
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .px_3()
+                            .py_2()
+                            .text_size(theme::ui_px(13.))
+                            .line_height(theme::ui_line_height(21.))
+                            .child(cell.clone())
+                    })),
+            ),
+            MessageBlock::Activity { label, details } => content.child(self.conversation_activity(ix,label,details,peer,cx)),
+            MessageBlock::Heading(text) => content.child(
+                div()
+                    .text_size(theme::ui_px(20.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(decoded.map(str::to_owned).unwrap_or_else(||text.clone())),
+            ),
+            MessageBlock::Quote(text) => content.child(
+                div()
+                    .border_l_2()
+                    .border_color(rgb(0x565f50))
+                    .pl_4()
+                    .text_size(theme::ui_px(14.))
+                    .text_color(rgb(MUTED))
+                    .child(decoded.map(str::to_owned).unwrap_or_else(||text.clone())),
+            ),
+            MessageBlock::Code {
+                language,
+                text,
+                highlights,
+            } => {
+                let copy = text.clone();
+                content.child(
+                    div()
+                        .debug_selector(move || format!("code-card-{ix}"))
+                        .w_full()
+                        .min_w(px(0.))
+                        .rounded_lg()
+                        .overflow_hidden()
+                        .bg(rgba(self.appearance.tint(GLASS_SURFACE)))
+                        .border_1()
+                        .border_color(rgba(0xebebeb12))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .px_4()
+                                .h(px(32.))
+                                .border_b_1()
+                                .border_color(rgba(0xebebeb12))
+                                .text_size(theme::ui_px(10.))
+                                .text_color(rgb(MUTED))
+                                .child(if language.is_empty() {
+                                    "code".to_string()
+                                } else {
+                                    language.clone()
+                                })
+                                .child(
+                                    copy_control::CopyControl::text(format!("code-copy-{ix}"), copy).label("Copy").scope(self.ninja_surface_owner().or_else(||self.active.clone()).unwrap_or_default()).motion(self.motion),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .id(("code", ix))
+                                .w_full()
+                                .min_w(px(0.))
+                                .overflow_x_scroll()
+                                .px_4()
+                                .py_3()
+                                .font_family(theme::mono_font())
+                                .text_size(theme::mono_px(12.))
+                                .line_height(theme::mono_line_height(20.))
+                                .text_color(rgb(TEXT))
+                                .child(StyledText::new(text.clone()).with_highlights(
+                                    highlights.iter().map(|(range, color)| {
+                                        (
+                                            range.clone(),
+                                            HighlightStyle {
+                                                color: Some(rgb(*color).into()),
+                                                ..Default::default()
+                                            },
+                                        )
+                                    }),
+                                )),
+                        ),
+                )
+            }
+        }
+    }
+    fn conversation_header(
+        &self, title: String, peer: Option<&SessionSummary>, live_activity: bool,
+        header_loading_logo: bool, inspector_open: bool, window: &Window, cx: &Context<Self>,
+    ) -> AnyElement {
+        self.conversation_header_for(title, peer, live_activity, header_loading_logo, inspector_open, None, window, cx)
+    }
+    fn conversation_header_for(
+        &self, title: String, peer: Option<&SessionSummary>, live_activity: bool,
+        header_loading_logo: bool, inspector_open: bool, remote: Option<AgentKind>, window: &Window, cx: &Context<Self>,
+    ) -> AnyElement {
+        let entrance = unified::workspace_frame(self.motion);
+        let agent = remote.unwrap_or_else(|| peer.map_or(self.agent, |session| session.agent));
+        let pet_slot = unified::active()
+            && !self.painting_remote_companion()
+            && peer.is_none()
+            && window.window_handle().window_id() == self.primary_window;
+        entrance.container(workspace_motion::Part::Header)
+            .h(px(36.))
+            .flex_none()
+            .flex()
+            .items_center()
+            .px_4()
+            .gap_1()
+            .border_b_1()
+            .border_color(rgba(0xebebeb12))
+            .child(
+                div()
+                    .debug_selector(|| "live-agent-indicator".into())
+                    .w(px(if unified::active(){48.}else{28.}))
+                    .h(px(if unified::active(){34.}else{18.}))
+                    .flex_none()
+                    .when(!pet_slot && (peer.is_some() || remote.is_some() || unified::active()), |s| {
+                        s.flex().items_center().justify_center()
+                            .child(provider_icon(agent_icon(agent), 16., agent_color(agent)))
+                    })
+                    .when(pet_slot, |s| s.child(canvas(|bounds, _, _| {
+                        unified::pet_slot(Some(bounds));
+                    }, |_, _, _, _| {}).size_full()))
+                    .when(remote.is_none() && peer.is_none() && !unified::active() && header_loading_logo, |s| {
+                        s.flex()
+                            .items_center()
+                            .justify_center()
+                            .child(self.loading_logo.clone())
+                    })
+                    .when(remote.is_none() && peer.is_none() && !unified::active() && !live_activity && !header_loading_logo, |s| {
+                        s.child(self.live_indicator.clone())
+                    })
+                    .when(remote.is_none() && peer.is_none() && !unified::active() && live_activity, |s| {
+                        s.flex().items_center().justify_center().child(
+                            provider_icon(provider_asset(self.agent),16.,MUTED),
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .id("chat-header-title")
+                    .debug_selector(||"conversation-header-title".into())
+                    .text_size(theme::ui_px(12.))
+                    .flex_1().min_w(px(0.))
+                    .truncate()
+                    .when(remote.is_none(), |s| s.cursor_pointer().hover(|s| s.bg(rgba(GLASS_HOVER))))
+                    .rounded_md().px_2().py_1()
+                    .flex().items_center().gap_2()
+                    .on_click(cx.listener({
+                        let owner = peer.map(|s| s.id.clone()).or_else(|| self.active.clone());
+                        move |app, event: &ClickEvent, window, cx| {
+                            if remote.is_some() { return; }
+                            cx.stop_propagation();
+                            app.toggle_chat_switcher(owner.clone(), event.position(), window, cx);
+                        }
+                    }))
+                    .child(div().flex_1().min_w(px(0.)).truncate().child(title))
+                    .when(remote.is_none(), |s| s.child(icon("chevron-down", 10., MUTED))),
+            )
+            .when(unified::active() && self.split_peer().is_none() && window.viewport_size().width >= px(1100.), |s| {
+                s.child(
+                    context_ui::header_control("return-to-notch", false)
+                        .text_size(theme::ui_px(11.))
+                        .text_color(gpui::rgb(0xffffff))
+                        .child("↗ Notch")
+                        .on_click(|_, _, _| unified::collapse()),
+                )
+            })
+            .when(remote.is_none(), |header| header.child(self.workspace_action_buttons(peer, cx)))
+            .when(remote.is_some(), |header| header.child(
+                context_ui::header_control("native-terminal", self.terminal_visible)
+                    .child(icon("terminal", 14., TEXT))
+                    .on_click(cx.listener(|app, _, window, cx| app.activate_control(control_clicks::Control::Terminal, window, cx))),
+            ))
+            .child(
+                context_ui::header_control("toggle-files", remote.is_none() && peer.is_none() && self.files_visible || remote.is_some() && inspector_open)
+                    .child(if peer.is_some() || remote.is_some() { icon("file", 14., TEXT).into_any_element() } else { self.file_indicator.clone().into_any_element() })
+                    .on_click(Self::chat_control(peer, cx, |this, _, window, cx| {
+                        this.toggle_files(window, cx)
+                    })),
+            )
+            .when(remote.is_none(), |header| header.child(
+                context_ui::header_control("chat-background", peer.is_none() && self.modal == Some(Modal::Background))
+                    .child(icon("file-image", 14., TEXT).text_color(gpui::rgb(0xffffff)))
+                    .on_click(Self::chat_control(peer, cx, |this, event, window, cx| {
+                        this.toggle_panel_from_click(
+                            Modal::Background,
+                            event.position() + point(px(-324.), px(20.)),
+                            false,
+                            window,
+                            cx,
+                        )
+                    })),
+            ))
+            .when(remote.is_none() && self.split_peer().is_some(), |s| s.child(
+                context_ui::header_control("close-chat-split", false)
+                    .child(icon("close", 12., TEXT))
+                    .on_click(cx.listener({
+                        let pane = peer.map(|session| session.id.clone()).or_else(|| self.active.clone());
+                        move |this, _, window, cx| {
+                            if let Some(id) = pane.as_deref() {
+                                this.close_tab(id, window, cx);
+                            }
+                        }
+                    })),
+            ))
+            .into_any_element()
+    }
+    fn history_loading_indicator(key: impl Into<ElementId>) -> AnyElement {
+        icon("refresh", 12., ACCENT)
+            .opacity_animation(key, gpui::OpacityAnimation {
+                period: Duration::from_millis(900),
+                baseline: 0.4,
+                amplitude: 0.6,
+                waveform: gpui::OpacityWaveform::HalfSinePi,
+            })
+            .into_any_element()
+    }
+
+    fn conversation_status(
+        indicator: AnyElement,
+        label: String,
+        changes: Option<change_summary::LiveChanges>,
+    ) -> impl IntoElement {
+        div().debug_selector(|| "live-agent-status".into()).flex().items_center()
+            .justify_center().gap_2().h(px(30.)).flex_none()
+            .child(div().debug_selector(|| "live-status-indicator".into())
+                .w(px(28.)).h(px(18.)).flex_none().child(indicator))
+            .child(div().debug_selector(|| "live-status-caption".into())
+                .text_size(theme::ui_px(11.)).text_color(rgb(MUTED)).child(label))
+            .when_some(changes.filter(|changes| changes.files > 0), |status, changes| {
+                status.child(changes.badge())
+            })
+    }
+    fn conversation_pane(&self) -> Div {
+        div().flex_1().min_w(px(0.)).min_h(px(0.)).size_full()
+            .flex().flex_col().relative().overflow_hidden()
+            .debug_selector(|| "chat-pane".into())
+
+    }
+    fn conversation_message_body(&self, ix: usize, user: bool, provider_header: bool, agent: AgentKind) -> Div {
+        div().debug_selector(move || format!("transcript-content-{ix}"))
+            .when(!user, |s| s.w_full()).min_w(px(0.))
+            .max_w(px(if user { 600. } else { 800. })).py(px(4.))
+            .when(user, |s| s.bg(rgba(self.appearance.tint(GLASS_SURFACE))).rounded_xl().px_4().py_3())
+            .when(!user && provider_header, |s| s.child(div()
+                .debug_selector(move || format!("transcript-provider-{ix}-{}", agent.command()))
+                .mb_1().child(provider_icon(agent_icon(agent), 14., agent_color(agent)))))
+    }
+    fn conversation_message_alignment(user: bool, content: Div) -> Div {
+        div().w_full().flex().when(user, |s| s.justify_end())
+            .when(!user, |s| s.justify_start()).child(content)
+    }
+    fn composer(&self, window: &Window, cx: &Context<Self>) -> impl IntoElement {
+        self.conversation_composer(None, self.composer.clone(), window, cx)
+    }
+    fn conversation_composer_card(&self) -> Stateful<Div> {
+        div().id("composer-card").debug_selector(|| "composer-card".into())
+            .w_full().max_w(px(800.)).flex_none().min_w(px(0.)).overflow_hidden()
+            .rounded_lg().bg(rgba(self.appearance.tint(0xebebeb08)))
+            .border_1().border_color(rgba(0xebebeb1a)).flex().flex_col()
+    }
+    fn conversation_composer(&self, peer: Option<&SessionSummary>, input: Entity<TextInput>, window: &Window, cx: &Context<Self>) -> impl IntoElement {
+        self.conversation_composer_for(peer, input, None, window, cx)
+    }
+    fn conversation_composer_for(&self, peer: Option<&SessionSummary>, input: Entity<TextInput>,
+        host: Option<(AgentKind, String)>, window: &Window, cx: &Context<Self>,
+    ) -> impl IntoElement {
+        let remote = host.is_some();
+        let running = self
+            .active
+            .as_ref()
+            .is_some_and(|id| self.runs.contains_key(id)) || self.starting_current();
+        let running = if remote { self.remote_running() } else {
+            peer.map_or(running, |session| self.runs.contains_key(&session.id) || self.launches.contains_key(&session.id))
+        };
+        let project = self.project_path_label(peer.map_or(&self.project, |session| &session.project_path));
+        let peer_owner = peer.map(|session| session.id.clone());
+        let drop_owner = peer_owner.clone();
+        let hit_input = input.clone();
+        let has_attachments = if remote { self.remote_has_attachments() } else {
+            peer.map_or(!self.attachments.is_empty(), |session| {
+                self.attachment_drafts.get(&session.id).is_some_and(|files| !files.is_empty())
+            })
+        };
+        let stopping = (running && input.read(cx).text().trim().is_empty() && !has_attachments)
+            || (!remote && peer.is_none() && self.handoff_pending.is_some());
+        div()
+            .flex_none()
+            .w_full()
+            .flex()
+            .flex_col()
+            .items_center()
+            .px_4()
+            .pt_3()
+            .pb_3()
+            .gap_2()
+            .when(!remote && peer.is_none() && self.owns_overlays(window), |s| {
+                s.child(self.native_request_tray(cx))
+            })
+            .when(!remote && peer.is_none(), |s| s.child(self.queue_strip(cx))
+                .child(div().w_full().max_w(px(800.)).child(self.context_chips(cx))))
+            .when(!remote && peer.is_none() && self.notice.is_some(), |s| {
+                s.child(
+                    div()
+                        .w_full()
+                        .max_w(px(800.))
+                        .px_3()
+                        .py_2()
+                        .rounded_md()
+                        .bg(rgba(0x8b742526))
+                        .text_color(rgb(0xddc9ac))
+                        .text_size(theme::ui_px(12.))
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div().flex_1().min_w(px(0.)).text_ellipsis().child(short(
+                                &self
+                                    .notice
+                                    .as_deref()
+                                    .unwrap_or_default()
+                                    .replace(['\n', '\r'], " "),
+                                180,
+                            )),
+                        )
+                        .when(self.recently_removed.is_some(), |s| {
+                            s.child(
+                                div()
+                                    .id("undo-project-removal")
+                                    .debug_selector(|| "undo-project-removal".into())
+                                    .cursor_pointer()
+                                    .text_color(rgb(ACCENT))
+                                    .child("Undo")
+                                    .on_click(
+                                        cx.listener(|this, _, _, cx| this.restore_project(cx)),
+                                    ),
+                            )
+                        })
+                        .when(self.recently_deleted.is_some(), |s| {
+                            s.child(
+                                div()
+                                    .id("undo-chat-deletion")
+                                    .debug_selector(|| "undo-chat-deletion".into())
+                                    .cursor_pointer()
+                                    .text_color(rgb(ACCENT))
+                                    .child("Undo")
+                                    .on_click(cx.listener(|this, _, _, cx| this.restore_chat(cx))),
+                            )
+                        }),
+                )
+            })
+            .child(
+                footer_geometry_tag!(self.conversation_composer_card(), peer, "card")
+                    .drag_over::<files::FileDrag>(|s, _, _, _| s.border_color(rgb(ACCENT)))
+                    .on_drop(cx.listener({
+                        let owner = drop_owner.clone();
+                        move |this, file: &files::FileDrag, window, cx| {
+                            if owner.as_deref().is_none_or(|id| this.focus_split_chat(id, window, cx)) {
+                                this.add_attachments(vec![file.0.clone()], cx);
+                            }
+                        }
+                    }))
+                    .drag_over::<ExternalPaths>(|s, _, _, _| {
+                        s.border_color(rgb(ACCENT)).bg(rgba(0x459bf718))
+                    })
+                    .on_drop(cx.listener(move |this, paths: &ExternalPaths, window, cx| {
+                        if remote {
+                            this.upload_remote_attachments(paths.paths().iter().take(attachments::MAX_ATTACHMENTS).cloned().collect(), cx);
+                            return;
+                        }
+                        if !drop_owner.as_deref().is_none_or(|id| this.focus_split_chat(id, window, cx)) { return; }
+                        this.add_attachments(
+                            paths
+                                .paths()
+                                .iter()
+                                .take(attachments::MAX_ATTACHMENTS + 1)
+                                .cloned()
+                                .collect(),
+                            cx,
+                        )
+                    }))
+                    .when(!remote, |s| s.child(self.project_wheel_branch(project, peer.is_none())))
+                    .child(
+                        div()
+                            .id("conversation-prompt-input")
+                            .debug_selector(|| "conversation-prompt-input".into())
+                            .flex_none()
+                            .min_w(px(0.))
+                            .overflow_hidden()
+                            .px_3()
+                            .py_2()
+                            .min_h(px(48.))
+                            .max_h(px(196.))
+                            .w_full()
+                            .when_some(peer_owner, |s, owner| s.capture_any_mouse_down(cx.listener(
+                                move |app, event: &MouseDownEvent, window, cx| {
+                                    if event.button == MouseButton::Left {
+                                        let caret = hit_input.read(cx).index_for_mouse_position(event.position);
+                                        if app.focus_split_chat(&owner, window, cx) {
+                                            app.composer.update(cx, |input, cx| input.follow_command_caret((caret..caret, false, None), cx));
+                                            cx.stop_propagation();
+                                        }
+                                    }
+                                },
+                            )))
+                            .child(input.clone()),
+                    )
+                    .child(if remote { self.remote_attachment_strip(cx) } else { self.conversation_attachments(peer, cx) })
+                    .child(self.conversation_toolbar_for(false, input, stopping, peer, host.as_ref().map(|(agent, _)| *agent), window, cx)),
+            )
+            .child(
+                footer_geometry_tag!(div(), peer, "row")
+                    .w_full()
+                    .max_w(px(800.))
+                    .flex()
+                    .justify_between().h(px(20.)).items_center().gap_2()
+                    .text_size(theme::ui_px(10.))
+                    .text_color(rgb(0x707070))
+                    .child(footer_geometry_tag!(div(), peer, "status").min_w(px(0.)).truncate().child(host.as_ref().map(|(_, label)| label.clone()).unwrap_or_else(|| peer.is_none().then(|| self.elapsed_label()).flatten().map(|elapsed|format!("Working for {elapsed}")).unwrap_or_else(||self.dictation_status.filter(|_| peer.is_none()).unwrap_or(if running{"Working locally"}else{"Local session"}).to_owned()))))
+                    .when(!remote, |s| s.child(self.conversation_usage_footer(peer, cx)))
+                    .child(footer_geometry_tag!(div(), peer, "hint").min_w(px(0.)).truncate().child(if running {
+                        "↵ Queue · /steer Prioritize"
+                    } else {
+                        "↵ Send · ⇧↵ New line"
+                    })),
+            )
+    }
+}
+fn is_dark(appearance: WindowAppearance) -> bool {
+    matches!(
+        appearance,
+        WindowAppearance::Dark | WindowAppearance::VibrantDark
+    )
+}
+impl Orbit {
+    fn advance_chat_surface(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+
+        self.sync_sidebar_activity(cx);
+        self.prepare_native_requests(window, cx);
+        self.advance_shared_chat(window,cx);
+        self.tick_slash(window, cx);
+        self.tick_context_picker(window, cx);
+        self.refresh_slash(window, cx);
+    }
+    fn advance_shared_chat(&mut self,window:&mut Window,cx:&mut Context<Self>){
+        self.restore_workspace(window,cx);
+        self.tick_chat_switcher(window, cx);
+        self.tick_usage_dashboard(window,cx);
+        self.sync_overlay_input(window, cx);
+        self.advance_continuations(window, cx);
+        if self.final_history_load.as_ref().is_some_and(|(id,generation)|self.active.as_ref()!=Some(id)||self.generation!=*generation){
+            if let Some((id,_))=self.final_history_load.take(){self.finalizing.remove(&id);}
+        }
+        self.advance_voice(cx);
+        self.advance_handoff(window, cx);
+        if let Some((id, generation)) = self.completion_frame.clone() {
+            if self.active.as_ref() != Some(&id) || self.generation != generation {
+                self.completion_frame = None;
+            } else if !self.loading && !self.finalizing.contains(&id) {
+                let owner = cx.weak_entity();
+                window.on_frame_submitted(move |_, cx| {
+                    let _ = owner.update(cx, |app, cx| {
+                        if app.completion_frame.as_ref() == Some(&(id, generation)) {
+                            app.completion_frame = None;
+                            cx.notify();
+                        }
+                    });
+                });
+            }
+        }
+        self.advance_queue(window, cx);
+        self.advance_teams(cx);
+        if self.session_conflict_open {
+            self.session_conflict_open = false;
+            if self
+                .session_conflict
+                .as_ref()
+                .is_some_and(|context| self.workspace_matches(context))
+            {
+                self.show_modal(Modal::SessionConflict, window, cx);
+            }
+        }
+        if self.workspace_trust_open {
+            self.workspace_trust_open = false;
+            if self
+                .workspace_trust
+                .as_ref()
+                .is_some_and(|trust| self.workspace_matches(trust))
+            {
+                self.show_modal(Modal::WorkspaceTrust, window, cx);
+            }
+        }
+        if let Some(trust) = &self.workspace_retry {
+            if !self.workspace_matches(trust) {
+                self.workspace_retry = None;
+                self.fork_next = None;
+            } else if !self.finalizing.contains(&trust.session)
+                && !self.starting_current()
+                && !self.loading
+                && !self.loading_earlier
+            {
+                self.workspace_retry = None;
+                self.send(window, cx);
+            }
+        }
+    }
+    fn effective_appearance(&self) -> appearance::Appearance {
+        appearance::Appearance {
+            blur_radius: if self.resolved_theme.native_transparency {
+                self.appearance.blur_radius
+            } else {
+                0
+            },
+            ..self.appearance
+        }
+    }
+    fn owns_overlays(&self, window: &Window) -> bool {
+        self.overlay_window
+            .is_none_or(|id| id == window.window_handle().window_id())
+    }
+    fn apply_personalization(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let resolved = self
+            .theme
+            .resolve(is_dark(window.appearance()), self.appearance);
+        if self.resolved_theme != resolved {
+            if self.resolved_theme.ui_font != resolved.ui_font
+                || self.resolved_theme.mono_font != resolved.mono_font
+                || self.resolved_theme.ui_font_size != resolved.ui_font_size
+                || self.resolved_theme.mono_font_size != resolved.mono_font_size
+            {
+                let anchor = self.list.logical_scroll_top();
+                self.list.reset(self.rows.len());
+                self.list.scroll_to(anchor);
+                if let Some(browser) = &self.file_browser {
+                    browser.update(cx, |browser, cx| browser.invalidate_theme_metrics(cx));
+                }
+            }
+            self.resolved_theme = resolved.clone();
+            theme::install_resolved(resolved);
+            // Cached text/virtualized rows need a new paint, not new parsing.
+            cx.refresh_windows();
+        }
+        native::apply_appearance(window, &self.effective_appearance());
+        native::apply_theme(window, &self.resolved_theme);
+        cx.notify();
+    }
+}
+impl Render for Orbit {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        native::begin_popup_glass_frame(window);
+        self.start_remote_workspace(cx);
+        let remote_view = self.remote_workspace.active() && window.window_handle().window_id() == self.primary_window;
+        if self.active.is_some() || self.ninjas.panel.is_some(){self.initial_workspace_home_generation=None;}
+        self.refresh_usage_bar(false,cx);
+        let _render_span=performance::Span::new("root_render");
+        self.performance_ready(window);
+        self.attach_daily_entry_points(cx);
+        if let Some(value)={self.remote.workflow_result.borrow_mut().take()}{self.notice=Some(value["error"].as_str().map(str::to_owned).unwrap_or_else(||format!("Workflow · {}",value["status"].as_str().unwrap_or("Ready"))));}
+        if window.window_handle().window_id() == self.primary_window {
+            let remote_issue = self.remote_action_issue().map(str::to_owned);
+            if self.last_notice_feedback != self.notice {
+                self.last_notice_feedback.clone_from(&self.notice);
+                if let Some(notice) = &self.notice {
+                    unified::workspace_toast(notice, false);
+                }
+            }
+            if self.last_remote_feedback != remote_issue {
+                self.last_remote_feedback = remote_issue;
+                if let Some(issue) = &self.last_remote_feedback {
+                    unified::workspace_toast(issue, true);
+                }
+            }
+        }
+        self.queue_remote_snapshot(cx);
+        self.sync_flow_layout();
+        if let Some(at)=self.timestamp_released{if at.elapsed()<Duration::from_millis(180){request_motion_frame(window,cx);}else{self.timestamp_peek=0.;self.timestamp_released=None;}}
+        use workspace_motion::Part as WorkspacePart;
+        let entrance=unified::workspace_frame(self.motion);
+        let empty_chat = self.active.is_none() || (self.rows.is_empty() && !self.loading
+            && self.active.as_ref().is_some_and(|id| self.draft_sessions.contains(id)));
+        let send_space = self.composer_send_motion.as_ref().and_then(|(owner, started, height)| {
+            let elapsed = started.elapsed().as_secs_f32() / workspace_motion::pane_duration().as_secs_f32();
+            (self.motion && !native::reduced_motion() && self.active.as_ref() == Some(owner) && elapsed < 1.)
+                .then(|| height * (1. - workspace_motion::ease_out(elapsed)))
+        });
+        if send_space.is_some() {
+            request_motion_frame(window, cx);
+        } else {
+            self.composer_send_motion = None;
+        }
+        self.tick_adaptive(window,entrance.animating(),cx);
+        if entrance.animating(){request_motion_frame(window,cx);}
+        let broker_project = self
+            .broker_panel
+            .as_ref()
+            .map(|p| p.project.clone())
+            .unwrap_or_else(|| {
+                self.execution_root()
+                    .unwrap_or_else(|| self.project.clone())
+            });
+        if self.broker_project != broker_project {
+            self.refresh_broker(cx);
+        }
+        self.restore_workspace(window, cx);
+        self.tick_project_wheel(window, cx);
+        self.tick_transcript_media(window, cx);
+        if !self.files_visible { unified::hide_inline_preview("files"); }
+        if self.attachment_preview.is_none() { unified::hide_inline_preview("attachment"); }
+        self.finish_split_close_motion();
+        for (id, launch) in std::mem::take(&mut self.pending_cli_handoffs) {
+            if self.chat_clis.get(&id).is_some_and(|cli|cli.launch_id == launch) {
+                self.chat_cli_exited(&id, None, window, cx);
+            }
+        }
+        self.sync_chat_terminal_owner(cx);
+        self.sync_terminal_visibility(cx);
+        self.sync_split_terminal_visibility(cx);
+        if self.owns_overlays(window) {
+            self.advance_chat_surface(window, cx);
+        }
+        self.track_workspace(cx);
+        self.tick_github(window,cx);
+        self.tick_panes(window, cx);
+        self.tick_list_reveals(window, cx);
+        let project = self.workspace_wallpaper_project().to_owned();
+        let empty = self.active.is_none();
+        let active = window.is_window_active() && self.motion;
+        let quitting = self.quit_pending;
+        self.background.update(cx, |background, cx| {
+            background.set_surfaces(self.theme.wallpaper_side_surfaces, self.theme.wallpaper_top_bottom, cx);
+            background.set_quitting(quitting, cx);
+            background.set_project(project, cx);
+            background.set_context(empty, active, cx);
+        });
+        #[cfg(test)]
+        self.rendered_rows.set(0);
+        self.tick_project_tree(window, cx);
+        self.tick_remote_tree(window, cx);
+        if let Some((started, from)) = self.sidebar_transition {
+            let t = started.elapsed().as_secs_f32() / workspace_motion::pane_duration().as_secs_f32();
+            let target = if self.sidebar {
+                self.sidebar_target_width()
+            } else {
+                0.
+            };
+            if t >= 1. || !self.motion || native::reduced_motion() {
+                self.sidebar_width = target;
+                self.sidebar_transition = None;
+            } else {
+                self.sidebar_width = from + (target - from) * workspace_motion::ease_out(t);
+                if window.is_window_active() { request_motion_frame(window, cx); }
+            }
+        }
+        let sidebar_visibility = if self.sidebar_layout_transition.is_some() && self.sidebar {
+            1.
+        } else {
+            (self.sidebar_width / self.sidebar_target_width()).clamp(0., 1.)
+        };
+        let secondary_sidebar = self.sidebar_layout_progress() * self.conversations_progress() * sidebar_visibility;
+        self.sync_overlay_input(window, cx);
+        self.tick_composer_controls(window, cx);
+        self.tick_panel_popover(window, cx);
+        if let Some(picker) = &self.agent_picker {
+            if picker.animating() && self.motion {
+                request_motion_frame(window, cx);
+            } else if picker.closing {
+                self.agent_picker = None;
+            }
+        }
+        if let Some(menu) = &self.action_menu {
+            let duration = workspace_motion::surface_duration(menu.closing);
+            if !self.motion || menu.started.elapsed() >= duration {
+                if menu.closing {
+                    self.action_menu = None;
+                }
+            } else {
+                request_motion_frame(window, cx);
+            }
+        }
+        if self
+            .checkpoint_timeline
+            .as_ref()
+            .is_some_and(|timeline| timeline.animating())
+            && self.motion
+        {
+            request_motion_frame(window, cx);
+        }
+        if self
+            .broker_panel
+            .as_ref()
+            .is_some_and(|panel| panel.animating())
+            && self.motion
+        {
+            request_motion_frame(window, cx);
+        }
+        if let Some(editor) = &self.lifecycle_editor
+            && self.motion
+            && editor.started.elapsed() < Duration::from_millis(320)
+        {
+            request_motion_frame(window, cx);
+        }
+        if let Some(started) = self.history_animation {
+            if !self.motion || started.elapsed() >= Duration::from_millis(400) {
+                self.history_animation = None;
+            } else {
+                request_motion_frame(window, cx);
+            }
+        }
+        let title = self
+            .active
+            .as_ref()
+            .and_then(|id| self.sessions.iter().find(|s| &s.id == id))
+            .map(|s| self.chat_label(s))
+            .unwrap_or("New conversation".into());
+        let status = self
+            .active
+            .as_ref()
+            .and_then(|id| self.runs.get(id))
+            .map(|r| r.status.clone());
+        let listening = self.speech.is_some()
+            && self
+                .dictation_status
+                .is_some_and(|status| status.starts_with("Listening"));
+        let waiting_for_native = self.active.as_ref().and_then(|owner| {
+            self.native_pending
+                .values()
+                .find(|request| &request.owner == owner)
+        });
+        let remote_status = remote_view.then(|| self.remote_status_caption()).flatten().map(str::to_owned);
+        let live_scene = if remote_view && self.speech.is_some() {
+            if listening { "listening" } else { "permission" }
+        } else if remote_view {
+            remote_status.as_deref().map_or("waiting", kai_icons::scene_for_status)
+        } else if let Some(request) = waiting_for_native {
+            request.indicator_scene()
+        } else if let Some(call) = &self.voice_call {
+            call.scene()
+        } else if self.handoff_pending.is_some() {
+            kai_icons::scene_for_status("Delegating")
+        } else if self.speech.is_some() {
+            if listening { "listening" } else { "permission" }
+        } else if self.starting_current() {
+            "thinking"
+        } else if let Some(status) = &status {
+            kai_icons::scene_for_status(status)
+        } else {
+            self.indicator_terminal
+                .as_ref()
+                .filter(|(id, _)| self.active.as_ref() == Some(id))
+                .map_or("waiting", |(_, scene)| *scene)
+        };
+        let looping = if remote_view { remote_status.is_some() } else { self.voice_call.is_some()
+            || listening
+            || self.starting_current()
+            || status.is_some()
+            || self.handoff_pending.is_some() };
+        // Mount the single live player beside its status caption, where the
+        // activity is shown. Mounting it only in the titlebar left that caption
+        // without an indicator. Idle/terminal states return to the titlebar.
+        let live_activity = self.voice_call.is_some()
+            || self.speech.is_some()
+            || self.starting_current()
+            || status.is_some()
+            || self.handoff_pending.is_some();
+        let mark = if remote_view && self.speech.is_some() {
+            None
+        } else if remote_view {
+            remote_status.as_deref().and_then(kai_icons::integration_for_label).map(kai_icons::integration_asset)
+        } else if self.voice_call.is_some() || self.speech.is_some() || self.starting_current() {
+            // Dictation and launch feedback take priority over a running tool's
+            // brand: its opaque mark would otherwise hide the live waveform.
+            None
+        } else if let Some(status) = &status {
+            if [
+                "failure",
+                "declined",
+                "permission",
+                "question",
+                "warning",
+                "success",
+            ]
+            .contains(&live_scene)
+            {
+                None
+            } else {
+                kai_icons::integration_for_label(status).map(kai_icons::integration_asset)
+            }
+        } else if !looping && live_scene == "waiting" {
+            Some(provider_asset(self.agent))
+        } else {
+            None
+        };
+        let indicator_motion = self.motion && !native::reduced_motion();
+        self.navigation.update(cx, |rail, cx| {
+            if !remote_view {
+                rail.sync_points(self.flow_revision, &self.flow_index, &self.expanded_work);
+            }
+            rail.set_motion(!remote_view && indicator_motion && window.is_window_active(), cx)
+        });
+        let logo_allowed = !remote_view && (self.active.is_none() || !live_activity);
+        let logo_busy = logo_allowed
+            && (self.discovering || self.loading || self.visible_reveal_work(window));
+        self.loading_logo.update(cx, |logo, cx| {
+            logo.configure(
+                loading_logo::Config {
+                    path: provider_asset(self.agent),
+                    color: agent_color(self.agent),
+                    size: if self.active.is_none() { 34 } else { 18 },
+                    busy: logo_busy,
+                    motion: indicator_motion && logo_allowed,
+                    awake: window.is_window_active() && logo_allowed,
+                },
+                cx,
+            )
+        });
+        let header_loading_logo = self.active.is_some()
+            && logo_allowed
+            && (logo_busy || self.loading_logo.read(cx).moving());
+        let inspector_open =
+            self.files_visible || self.diff_view.is_some() || self.broker_panel.is_some();
+        let diff_progress = self.diff_started.map_or(1., |started| {
+            let t = started.elapsed().as_secs_f32() / 0.32;
+            if !indicator_motion || t >= 1. {
+                self.diff_started = None;
+                1.
+            } else {
+                request_motion_frame(window, cx);
+                presentation::ease_out(t).clamp(0., 1.)
+            }
+        });
+        self.live_indicator.update(cx, |indicator, cx| {
+            indicator.set_awake(window.is_window_active() && indicator_motion, cx);
+            indicator.set_scene(
+                live_scene,
+                indicator_motion,
+                looping && indicator_motion,
+                cx,
+            );
+            indicator.set_mark(mark, indicator_motion, cx);
+            indicator.set_levels(
+                self.speech
+                    .as_ref()
+                    .filter(|_| listening)
+                    .map(|handle| handle.levels.clone())
+                    .or_else(|| {
+                        self.voice_call
+                            .as_ref()
+                            .filter(|call| call.active && !call.muted)
+                            .map(|call| call.media.levels.clone())
+                    }),
+                cx,
+            );
+        });
+        self.file_indicator.update(cx, |indicator, cx| {
+            indicator.set_awake(window.is_window_active() && indicator_motion, cx);
+            indicator.set_open(inspector_open, indicator_motion, cx);
+        });
+        let workspace=div()
+            .key_context("Orbit")
+            .track_focus(&self.focus)
+            .size_full()
+            .flex()
+            .relative()
+            .font_family(theme::ui_font())
+            .text_color(rgb(TEXT))
+            .text_size(theme::ui_px(13.))
+            .on_modifiers_changed(
+                cx.listener(|this, event: &ModifiersChangedEvent, window, cx| {
+                    if !window.is_window_active() {
+                        this.dictation_hotkey_down = false;
+                        return;
+                    }
+                    if composer_controls::dictation_hotkey(
+                        &mut this.dictation_hotkey_down,
+                        event.modifiers,
+                    ) {
+                        this.toggle_dictation(window, cx);
+                        cx.stop_propagation();
+                    }
+                }),
+            )
+            .on_mouse_up(MouseButton::Left, cx.listener(|app,_,window,cx| {
+                native::panel_drag_guard(window,false);
+                let chat_hover = app.chat_split_hover.take().is_some();
+                if app.terminal_panes.clear_hover() || chat_hover { cx.notify(); }
+            }))
+            .on_mouse_up_out(MouseButton::Left,cx.listener(|app,_,window,cx| {
+                native::panel_drag_guard(window,false);
+                let chat_hover = app.chat_split_hover.take().is_some();
+                if app.terminal_panes.clear_hover() || chat_hover { cx.notify(); }
+            }))
+            .capture_any_mouse_down(cx.listener(|this, _, _, _| {
+                // Outside-dismiss handlers run later in capture. Preserve the
+                // panel for this click so its own trigger can still toggle it.
+                this.panel_at_pointer_down = this.modal;
+                this.remember_picker_press();
+            }))
+            .on_action(cx.listener(|this, action: &keyboard::Execute, window, cx| this.execute_shortcut(&action.id,window,cx)))
+            .on_action(cx.listener(|this, _: &NewConversation, window, cx| {
+                this.new_conversation(window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &Quit, window, cx| {
+                cx.stop_propagation();
+                this.quit_after_save(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ToggleSearch, window, cx| {
+                this.show_modal(Modal::Search, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &input::SaveFile, window, cx| {
+                this.show_modal(Modal::Search, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| {
+                this.toggle_sidebar();
+                cx.notify();
+            }))
+            .on_action(
+                cx.listener(|this, _: &ToggleConversations, _, cx| this.toggle_conversations(cx)),
+            )
+            .on_action(cx.listener(|_, _: &ReturnToNotch, _, _| {
+                unified::collapse();
+            }))
+            .on_action(cx.listener(|this, _: &ToggleSettings, window, cx| {
+                this.show_modal(Modal::Settings, window, cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &ToggleFiles, window, cx| this.toggle_files(window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &Escape, window, cx| {
+                if this.dismiss_split_picker(window, cx) { return; }
+                if this.github.panel.is_some(){this.close_github(window,cx);return}
+                if this.context_picker.take().is_some() || this.team_panel.take().is_some() {
+                    this.composer.read(cx).focus_handle.focus(window);
+                    cx.notify();
+                    return;
+                }
+                if this.slash.as_ref().is_some_and(|p| !p.closing) {
+                    this.dismiss_slash(true, cx);
+                    return;
+                }
+                if this.usage_dashboard.open { this.close_usage_dashboard(cx); return; }
+                if this.chat_switcher.is_some() { this.dismiss_chat_switcher(cx); return; }
+                this.diff_view = None;
+                this.diff_observer = None;
+                this.diff_started = None;
+                this.close_attachment_preview(cx);
+                this.dismiss_agent_picker();
+                this.dismiss_panel(window, cx);
+                this.dismiss_action_menu();
+                this.lifecycle_editor = None;
+                this.checkpoint_timeline = None;
+                this.composer.read(cx).focus_handle.focus(window);
+                cx.notify();
+            }))
+            .on_drag_move(cx.listener(|app, event: &DragMoveEvent<project_tree::ResizeSidebar>, _, cx| {
+                // GPUI keeps the original drag payload, not the preview entity.
+                // Measure the edge in root coordinates so both directions work.
+                let width = f32::from(event.event.position.x - event.bounds.left());
+                app.resize_sidebar(width, cx);
+            }))
+            .on_drop(cx.listener(|app, _: &project_tree::ResizeSidebar, window, cx| {
+                native::panel_drag_guard(window, false);
+                app.queue_workspace_save(cx);
+            }))
+            .on_action(cx.listener(|this, _: &Send, window, cx| {
+                if this.remote_workspace.active() && window.window_handle().window_id() == this.primary_window {
+                    cx.stop_propagation();
+                    this.submit_remote_composer(window, cx);
+                } else { this.send(window, cx); }
+            }))
+            .on_action(cx.listener(|this, _: &CloseWindow, window, cx| {
+                if unified::active(){this.execute_shortcut("close_tab",window,cx);return}
+                this.stop_dictation(cx);
+                this.stop_voice(cx);
+                this.window_state = Some(workspace_ui::capture_window(window));
+                this.save_workspace_now(cx);
+                if cx.has_global::<quick_chat::Controller>() {
+                    native::hide_window(window);
+                } else {
+                    window.remove_window();
+                }
+            }))
+            .on_action(cx.listener(|_, _: &MinimizeWindow, window, _| window.minimize_window()))
+            .when(self.sidebar_width > 0., |s| {
+                s.child(
+                    entrance.container(WorkspacePart::Sidebar)
+                        .id("resizable-sidebar")
+                        .debug_selector(|| "resizable-sidebar".into())
+                        .relative()
+                        .w(px(self.sidebar_width))
+                        .h_full()
+                        .overflow_hidden()
+                        .flex_none()
+                        .child(adaptive_ui::panel!(self,"sidebar",window,self.sidebar(cx)))
+                        .child(self.sidebar_resize_handle(cx)),
+                )
+            })
+            .when(
+                secondary_sidebar > 0.
+                    && (!inspector_open || window.viewport_size().width >= px(1180.)),
+                |s| {
+                    s.child(
+                        entrance.container(WorkspacePart::Sidebar)
+                            .w(px(260. * secondary_sidebar))
+                            .h_full()
+                            .flex_none()
+                            .overflow_hidden()
+                            .child(div().w(px(260.)).h_full().child(adaptive_ui::panel!(self,"projects",window,self.workspace(cx)))),
+                    )
+                },
+            )
+            .child(div().flex_1().min_w(px(0.)).h_full().flex().flex_col()
+                // Window chrome stays above every dock position. A top/side
+                // terminal must never occupy AppKit's titlebar drag region.
+                .child(entrance.container(WorkspacePart::Header).flex_none().child(self.tabs(window, cx)))
+                .child(if remote_view {
+                    let content = adaptive_ui::panel!(self,"chat",window,self.remote_workspace_content(window,cx)).into_any_element();
+                    let docked = self.docked_conversation(content, window, cx);
+                    self.workspace_chat_split(docked, window, cx)
+                } else { self.workspace_chat_split(self.docked_conversation(adaptive_ui::panel!(self,"chat",window,
+                if let Some(terminal) = self.render_chat_cli(self.chat_cli_owner().as_deref().unwrap_or(keyboard::CLI_DRAFT), window, cx) {
+                    terminal
+                } else if self.ninja_surface_owner().is_some(){
+                    if window.window_handle().window_id() == self.primary_window { unified::pet_slot(None); }
+                    self.ninjas_conversation(window,cx)
+                } else {self.conversation_pane()
+                    .child(self.conversation_header(title, None, live_activity, header_loading_logo, inspector_open, window, cx))
+                    .when(
+                        (self.has_older || self.has_newer) && (status.is_none()||self.live_history.is_some()||self.active.as_ref().and_then(|id|self.runs.get(id)).is_some_and(|r|r.live_earlier)),
+                        |s| {
+                            s.child(
+                                div()
+                                    .h(px(28.))
+                                    .flex_none()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .gap_4()
+                                    .text_size(theme::ui_px(11.))
+                                    .text_color(rgb(MUTED))
+                                    .when(self.has_older, |s| {
+                                        s.child(
+                                            div()
+                                                .id("load-earlier")
+                                                .debug_selector(|| "load-earlier".into())
+                                                .flex()
+                                                .items_center()
+                                                .gap_1()
+                                                .cursor_pointer()
+                                                .hover(|s| s.text_color(rgb(TEXT)))
+                                                .child(if self.loading_earlier && self.motion && !native::reduced_motion() {
+                                                    Self::history_loading_indicator(("history-loading", self.generation))
+                                                } else {
+                                                    icon(
+                                                        if self.history_animation.is_some() {
+                                                            "check"
+                                                        } else {
+                                                            "clock"
+                                                        },
+                                                        12.,
+                                                        if self.history_animation.is_some() {
+                                                            ACCENT
+                                                        } else {
+                                                            MUTED
+                                                        },
+                                                    )
+                                                    .into_any_element()
+                                                })
+                                                .child(if self.loading_earlier {
+                                                    "Loading history…"
+                                                } else {
+                                                    if status.is_some(){"Load earlier work"}else{"Load earlier messages"}
+                                                })
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.load_history_page(true, cx)
+                                                })),
+                                        )
+                                    })
+                                    .when(self.has_newer, |s| {
+                                        s.child(
+                                            div()
+                                                .id("load-newer")
+                                                .debug_selector(|| "load-newer".into())
+                                                .cursor_pointer()
+                                                .hover(|s| s.text_color(rgb(TEXT)))
+                                                .child("Jump to latest")
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.load_history_page(false, cx)
+                                                })),
+                                        )
+                                    }),
+                            )
+                        },
+                    )
+                    .when(empty_chat, |s| s.child(entrance.container(WorkspacePart::Content).debug_selector(||"new-chat-content".into()).flex_1().min_h(px(0.)).w_full().flex().flex_col().child(self.home(cx))))
+                    .when(!empty_chat, |s| {
+                        s.child(
+                            entrance.container(WorkspacePart::Content)
+                                .flex_1()
+                                .min_h(px(0.))
+                                .when(self.loading, |s| {
+                                    if let Some(transcript) = self.active.as_ref()
+                                        .and_then(|owner| self.cached_split_transcript(owner, cx))
+                                    {
+                                        s.child(transcript)
+                                    } else {
+                                        s.flex().items_center().justify_center().child(
+                                            div().text_color(rgb(MUTED)).child("Opening conversation…"),
+                                        )
+                                    }
+                                })
+                                .when(!self.loading, |s| {
+                                    let width = self.list.viewport_bounds().size.width;
+                                    let transcript = list(
+                                        self.list.clone(),
+                                        cx.processor(move |this, ix, window, cx| this.row(ix, width, window, cx)),
+                                    )
+                                    .flex_1().min_h(px(0.));
+                                    s.relative().flex().flex_col().pl(px(32.)).debug_selector(|| "transcript-viewport".into())
+                                        .on_scroll_wheel(cx.listener(|this,event:&ScrollWheelEvent,_,cx|this.peek_timestamps(event,cx)))
+                                        .child(transcript)
+                                        .child(self.history_fill_probe(&self.list,cx))
+                                        .child(self.chat_navigation())
+                                }),
+                        )
+                    })
+                    .when(live_activity, |s| s.child(Self::conversation_status(
+                        self.live_indicator.clone().into_any_element(),
+                        if let Some(status) = self.dictation_status.filter(|_| self.speech.is_some()) {
+                            status.to_owned()
+                        } else if let Some(call) = self.voice_call.as_ref().filter(|_| waiting_for_native.is_none()) {
+                            call.caption().to_owned()
+                        } else if self.handoff_pending.is_some() {
+                            "Transferring context…".to_owned()
+                        } else if self.starting_current() {
+                            self.launch_caption().to_owned()
+                        } else {
+                            activity_caption(status.as_deref().unwrap_or_default())
+                        },
+                        self.active.as_ref().and_then(|id| self.runs.get(id)).map(|run| run.file_changes),
+                    )))
+                    .child({
+                        let composer = entrance.container(WorkspacePart::Composer).w_full().flex_none()
+                            .child(self.composer(window, cx));
+                        if empty_chat && self.welcome_entrance_enabled() && !native::reduced_motion() {
+                            composer.with_animation(("home-composer", self.home_generation),
+                                Animation::new(workspace_motion::pane_duration()), |s, p| {
+                                    let p = workspace_motion::ease_out(p);
+                                    s.opacity(p).relative().top(px(14. * (1. - p)))
+                                }).into_any_element()
+                        } else { composer.into_any_element() }
+                    })
+                    .when(empty_chat, |s| {
+                        let space = self.home_composer_space.clone();
+                        s.child(div().flex_1().min_h(px(0.)).relative().child(
+                            canvas(move |bounds, _, _| space.set(bounds.size.height.into()), |_, _, _, _| {})
+                                .absolute().inset_0()))
+                    })
+                    .when_some(send_space.filter(|_| !empty_chat), |s, height| {
+                        s.child(div().h(px(height)).flex_none())
+                    })
+                    .into_any_element()}),window,cx),window,cx).into_any_element() })
+            )
+            .when(self.files_visible, |s| {
+                let browser = if remote_view { self.remote_workspace.files.clone() } else { self.file_browser.clone() };
+                s.when_some(browser, |s, browser| {
+                    let scramble = if remote_view { None } else { self.project_wheel_file_names() };
+                    // This child is rendered by the workspace on each wheel frame.
+                    // Updating paint state avoids firing the observer that saves file selections.
+                    if browser.read(cx).name_scramble != scramble {
+                        browser.update(cx, |files, _| files.name_scramble = scramble);
+                    }
+                    s.child(adaptive_ui::panel!(self,"files",window,self.inspector_shell(pane_layout::Pane::Files, entrance.container(WorkspacePart::Inspector)
+                            .debug_selector(|| "files-inspector".into())
+                            .w_full()
+                            .h_full()
+                            .flex_none()
+                            .min_w(px(0.))
+                            .flex()
+                            .flex_col()
+                            .border_l_1()
+                            .border_color(rgba(0xebebeb12))
+                            .child(self.file_viewer_header(false,cx))
+                            .child(div().flex_1().min_h(px(0.)).overflow_hidden().child(browser)).into_any_element(),window,cx)))
+                })
+            })
+            .when(self.broker_panel.is_some(), |s| {
+                s.child(adaptive_ui::panel!(self,"agents",window,self.inspector_shell(pane_layout::Pane::Children,self.children_panel(cx),window,cx)))
+            })
+            .when_some(self.diff_view.clone(), |s, review| {
+                s.child(adaptive_ui::panel!(self,"changes",window,self.inspector_shell(pane_layout::Pane::Changes, entrance.container(WorkspacePart::Inspector)
+                        .debug_selector(|| "changes-inspector".into())
+                        .w_full()
+                        .h_full()
+                        .flex_none()
+                        .overflow_hidden()
+                        .border_l_1()
+                        .border_color(rgba(0xebebeb12))
+                        .bg(rgba(self.appearance.tint(GLASS_SURFACE)))
+                        .child(
+                            div()
+                                .w_full()
+                                .h_full()
+                                .flex()
+                                .flex_col()
+                                .opacity(diff_progress)
+                                .child(self.file_viewer_header(true,cx))
+                                .child(div().flex_1().min_h(px(0.)).overflow_hidden().child(self.project_wheel_pane(div().size_full().child(review)))),
+                        ).into_any_element(),window,cx)))
+            })
+            .when(self.ninjas.panel.as_ref().is_some_and(|p|p.profile.revision==0) && self.owns_overlays(window),|s|s.child(self.ninjas_panel(window,cx)))
+            .when(self.github.panel.is_some() && self.owns_overlays(window),|s|s.child(self.github_panel_view(window,cx)))
+            .when(self.attachment_preview.is_some(), |s| {
+                s.child(self.attachment_preview_view(window, cx))
+            })
+            .when_some(self.action_menu.as_ref(), |s, menu| {
+                s.child(self.action_menu(menu, cx))
+            })
+            .when(self.lifecycle_editor.is_some(), |s| {
+                s.child(self.lifecycle_editor_view(cx))
+            })
+            .when(self.checkpoint_timeline.is_some(), |s| {
+                s.child(self.checkpoint_timeline_view(cx))
+            })
+            .when(self.prompt_library_picker.is_some(), |s| {
+                s.child(self.prompt_library_view(window, cx))
+            })
+            .when(self.file_context_picker.is_some(), |s| {
+                s.child(self.file_context_view(window, cx))
+            })
+            .when(
+                self.agent_picker.is_some() && self.owns_overlays(window),
+                |s| s.child(self.agent_picker_view(cx)),
+            )
+            .when(
+                self.panel_popover.is_some() && self.owns_overlays(window),
+                |s| s.child(self.panel_popover_view(window, cx)),
+            )
+            .when_some(self.font_picker_overlay(window,cx),|s,picker|s.child(picker))
+            .when(self.slash.is_some() && self.owns_overlays(window), |s| {
+                s.child(self.slash_view(window, cx))
+            })
+            .when(self.context_picker.is_some(), |s| {
+                s.child(self.context_picker_view(cx))
+            })
+            .when(self.team_panel.is_some(), |s| {
+                s.child(self.team_panel_view(window, cx))
+            })
+            .when(self.usage_dashboard.open, |s| s.child(self.usage_dashboard_view(window, cx)))
+            .when_some(self.render_chat_switcher(window, cx), |s, picker| s.child(picker))
+            .when_some(self.render_split_picker(cx), |s, picker| s.child(picker));
+        div().size_full().relative().flex().flex_col()
+            .when((self.theme.wallpaper_side_surfaces || self.theme.wallpaper_top_bottom) && self.ninja_surface_owner().is_none(), |s| s.child(
+                div().absolute().inset_0().child(background::cached(self.background.clone(), self.theme.wallpaper_side_surfaces == self.theme.wallpaper_top_bottom))
+            ))
+            .child(workspace.flex_1().min_h(px(0.)))
+            .child(self.account_usage_bar(cx))
+            .into_any_element()
+
+    }
+}
+// Multiple animations can tick in the same view. Invalidate that view once per
+// display frame, with independent scheduling for the workspace and quick windows.
+thread_local! {
+    static MOTION_FRAMES: std::cell::RefCell<HashSet<(WindowId, EntityId)>> = Default::default();
+}
+
+struct MotionFrame((WindowId, EntityId));
+
+impl Drop for MotionFrame {
+    fn drop(&mut self) {
+        let _ = MOTION_FRAMES.try_with(|pending| pending.borrow_mut().remove(&self.0));
+    }
+}
+
+#[track_caller]
+fn request_motion_frame(window: &Window, cx: &Context<Orbit>) {
+    let entity = cx.entity();
+    let key = (window.window_handle().window_id(), entity.entity_id());
+    if !MOTION_FRAMES.with(|pending| pending.borrow_mut().insert(key)) {
+        return;
+    }
+    if performance::trace_motion() {
+        eprintln!("KAI_MOTION {}", std::panic::Location::caller());
+    }
+    let frame = MotionFrame(key);
+    let entity = entity.downgrade();
+    window.on_next_frame(move |window, _| {
+        drop(frame);
+        if entity.upgrade().is_some() {
+            // Quick Chat shares Orbit state but has a different window root.
+            window.invalidate_root_for_paint();
+        }
+    });
+}
+
+fn bind_app_keys(cx: &mut App) {
+    bind_workspace_keys(cx, &Default::default());
+    cx.on_action(|_: &Quit, cx| cx.quit());
+}
+
+fn bind_workspace_keys(cx: &mut App, overrides: &std::collections::BTreeMap<String, String>) {
+    input::bind_keys(cx);
+    keyboard::bind(cx, overrides);
+    let aliases = [
+        ("cmd-q", KeyBinding::new("cmd-q", Quit, None)),
+        ("cmd-w", KeyBinding::new("cmd-w", keyboard::Execute{id:"close_tab".into()}, None)),
+        ("cmd-m", KeyBinding::new("cmd-m", MinimizeWindow, None)),
+        ("cmd-n", KeyBinding::new("cmd-n", NewConversation, None)),
+        ("cmd-e", KeyBinding::new("cmd-e", ToggleConversations, None)),
+        ("cmd-s", KeyBinding::new("cmd-s", input::SaveFile, None)),
+        ("cmd-shift-k", KeyBinding::new("cmd-shift-k", ReturnToNotch, None)),
+        ("cmd-f", KeyBinding::new("cmd-f", ToggleFiles, None)),
+        ("cmd-k", KeyBinding::new("cmd-k", ToggleSearch, None)),
+        ("cmd-b", KeyBinding::new("cmd-b", ToggleSidebar, None)),
+        ("escape", KeyBinding::new("escape", Escape, None)),
+        ("cmd-enter", KeyBinding::new("cmd-enter", Send, None)),
+    ];
+    cx.bind_keys(aliases.into_iter().filter(|(key, _)| !overrides.contains_key(*key)).map(|(_, binding)| binding));
+    terminal_ui::bind_keys(cx, overrides.get("cmd-w").map_or("cmd-w", String::as_str));
+}
+
+mod failure_diagnostics;
+fn main() {
+    if std::env::args().nth(1).as_deref() == Some("--kai-remote-history") {
+        let args: Vec<_> = std::env::args().skip(2).collect();
+        let result = match args.as_slice() {
+            [data, id, page] | [data, id, page, _] => page.parse::<usize>().map_err(anyhow::Error::from)
+                .and_then(|page| engine::remote_history_snapshot(
+                    std::path::Path::new(data), id, page,
+                    args.get(3).is_some_and(|mode| mode == "streaming"),
+                )),
+            _ => Err(anyhow::anyhow!("Expected history directory, chat and page")),
+        };
+        match result {
+            Ok(value) => println!("{value}"),
+            Err(error) => { eprintln!("{error}"); std::process::exit(1); }
+        }
+        return;
+    }
+    if let Some(dir)=std::env::args().skip_while(|a|a!="--kai-session-owner").nth(1){if let Err(e)=runtime::durable::serve(PathBuf::from(dir)){eprintln!("Session owner: {e:#}");std::process::exit(1)}return}
+    if std::env::args().any(|a|a=="--install-ninja-worker") { if let Err(e)=ninjas::install_service(&std::env::current_exe().unwrap(),std::env::args().any(|a|a=="--keep-reachable")){eprintln!("Ninja service: {e:#}");std::process::exit(1)}return }
+    if std::env::args().any(|a|a=="--ninja-worker"){if let Err(e)=ninjas::serve(){eprintln!("Ninja worker: {e:#}");std::process::exit(1)}return}
+    launch_metrics::start();
+    launch_metrics::mark("main-entered");
+    failure_diagnostics::install();
+    if std::env::args().any(|a|a=="--diagnose-native-voice"){if let Err(error)=voice::transport_diagnostic(){eprintln!("Native voice diagnostic: {error}");std::process::exit(1)}return}
+    launch_metrics::mark("environment-begin");
+    unified::prepare_environment();
+    launch_metrics::mark("environment-ready");
+    let data = std::env::var_os("ORBIT_DATA_DIR").map(PathBuf::from)
+        .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join("Library/Application Support/Orbit"));
+    let start_hidden = unified::bundled() && std::env::args().any(|a| a == "--kai-remote-background");
+    let _workspace_owner = if unified::bundled() {
+        match remote_host::claim_workspace(&data) {
+            Ok(lock) => Some(lock),
+            Err(error) => {
+                eprintln!("Kai couldn't acquire its local workspace: {error}");
+                return;
+            }
+        }
+    } else { None };
+    let hidden = std::rc::Rc::new(std::cell::Cell::new(start_hidden));
+    launch_metrics::mark("application-new-begin");
+    let application = Application::new();
+    launch_metrics::mark("application-new-ready");
+    let application = application.with_assets(Assets);
+    launch_metrics::mark("application-assets-ready");
+    application.on_open_urls(daily_driver::open_urls);
+    let reveal_hidden = hidden.clone();
+    application.on_reopen(move |cx| {
+        if reveal_hidden.replace(false) {
+            native::set_background_activation(false);
+            let window = cx.windows().into_iter().find_map(|window| window.downcast::<Orbit>());
+            if let Some(window) = window {
+                if let Err(error) = unified::attach(window, cx) {
+                    eprintln!("Kai integration unavailable: {error}");
+                }
+            }
+        }
+        if unified::active(){unified::reveal();return}
+        cx.activate(true);
+        if let Some(window) = cx
+            .windows()
+            .into_iter()
+            .find(|window| window.downcast::<Orbit>().is_some())
+            && let Err(error) = window.update(cx, |_, window, _| {
+                native::show_window(window);
+                window.activate_window();
+            })
+        {
+            eprintln!("Could not bring Code's window forward: {error}");
+        }
+    });
+    launch_metrics::mark("application-configured");
+    application.run(move |cx: &mut App| {
+        launch_metrics::mark("appkit-ready");
+        bind_app_keys(cx);
+        if start_hidden {
+            native::set_background_activation(true);
+        }
+        let workspace_store = match workspace_state::StateStore::new(data.join("workspace.json")) {
+            Ok(store) => {
+                if let Some(error) = &store.load_error {
+                    eprintln!("Previous Code workspace could not be restored: {error}");
+                }
+                Some(std::sync::Arc::new(store))
+            }
+            Err(error) => {
+                eprintln!("Could not load Code workspace: {error}");
+                None
+            }
+        };
+        let bounds = workspace_ui::restored_bounds(
+            workspace_store
+                .as_ref()
+                .and_then(|store| store.initial().window.as_ref()),
+            cx,
+        );
+        let appearance = workspace_store
+            .as_ref()
+            .map_or_else(Default::default, |store| store.initial().appearance);
+        let theme = workspace_store
+            .as_ref()
+            .map(|store| store.initial().theme.clone())
+            .unwrap_or_default();
+        let window_background = if theme.resolve(false, appearance).native_transparency {
+            WindowBackgroundAppearance::Transparent
+        } else {
+            WindowBackgroundAppearance::Opaque
+        };
+        let starts_in_workspace = workspace_store
+            .as_ref()
+            .map_or_else(startup::Surface::default, |store| store.initial().startup_surface)
+            == startup::Surface::Workspace
+            && !matches!(bounds, WindowBounds::Fullscreen(_))
+            && unified::bundled();
+        let bounds = if starts_in_workspace {
+            native::startup_workspace_bounds().unwrap_or(bounds)
+        } else {
+            bounds
+        };
+        launch_metrics::mark("workspace-state-ready");
+        let main_window = cx
+            .open_window(
+                WindowOptions {
+                    window_bounds: Some(bounds),
+                    window_min_size: Some(size(px(940.), px(620.))),
+                    titlebar: Some(TitlebarOptions {
+                        title: Some("Kai · Code".into()),
+                        appears_transparent: true,
+                        traffic_light_position: None,
+                    }),
+                    window_background,
+                    show: false,
+                    focus: false,
+                    app_id: Some("com.kai.unified.experimental".into()),
+                    ..Default::default()
+                },
+                move |window, cx| {
+                    native::configure(window);
+                    launch_metrics::mark("platform-window-ready");
+                    cx.new(|cx| Orbit::new(window, cx, workspace_store))
+                },
+            )
+            .expect("open Code window");
+        launch_metrics::mark("workspace-created");
+        if start_hidden {
+            if let Ok(entity) = main_window.update(cx, |app, _, cx| {
+                app.start_remote(cx, true);
+                cx.entity()
+            }) {
+                cx.observe(&entity, move |_, cx| {
+                    if hidden.get() {
+                        let _ = main_window.update(cx, |app, window, cx| {
+                            app.advance_shared_chat(window, cx);
+                            app.queue_remote_snapshot(cx);
+                        });
+                    }
+                }).detach();
+            }
+        } else {
+            if let Err(error) = unified::attach(main_window, cx) {
+                eprintln!("Kai integration unavailable: {error}");
+            }
+            if remote_host::accepts_device_control(&data) {
+                let _ = main_window.update(cx, |app, _, cx| app.start_remote(cx, true));
+            }
+        }
+        if !start_hidden && !unified::active() {
+            cx.activate(true);
+            let _ = main_window.update(cx, |_, window, _| window.activate_window());
+        }
+        if !start_hidden && let Ok(orbit) = main_window
+            .read(cx)
+            .map(|view| view.quick_shortcut.clone())
+            .and_then(|shortcut| main_window.update(cx, |_, _, cx| (cx.entity(), shortcut)))
+        {
+            let (entity, shortcut) = orbit;
+            cx.set_global(quick_chat::Controller::new(entity.clone()));
+            let result = cx.update_global::<quick_chat::Controller, _>(|controller, cx| {
+                controller.bind(shortcut, cx)
+            });
+            if let Err(error) = result {
+                entity.update(cx, |app, cx| {
+                    app.notice = Some(format!("Quick Chat shortcut: {error}"));
+                    cx.notify();
+                });
+            }
+        }
+        if std::env::args().any(|a|matches!(a.as_str(),"--unified-latency-probe"|"--unified-background-idle-probe"|"--unified-ninja-render-probe"|"--unified-chat-split-probe")){performance::start_probe(main_window,cx);}
+        if std::env::args().any(|a| a == "--unified-daily-driver-probe") { performance::start_daily_driver_probe(main_window, cx); }
+        if !start_hidden { cx.activate(true); }
+        cx.spawn(async move |cx| {
+            if start_hidden || starts_in_workspace && unified::active() { return; }
+            let _ = cx.update(|_| native::set_application_icon());
+        }).detach();
+    });
+}

@@ -1,0 +1,106 @@
+Kai reliability and efficiency pass — October 10, 2026
+
+Evidence
+- Three retired NotchPrototype crash reports (October 4, 5, and 9) terminate
+  inside DictationController.startEngine/installTap with the uncaught Core Audio
+  exception: format.sampleRate == hwFormat.sampleRate.
+- October 9, 22:09 crash: CODESIGNING / Invalid Page. Overwriting a running app's
+  signed executable is a plausible cause; the report alone does not prove it.
+- October 10 CPU diagnostic: 81% average CPU for 111 seconds. The heaviest stack
+  is scheduleMathRefresh -> renderConversation -> replaceCharacters -> memmove.
+- A fresh two-second sample of the existing process (PID 47716) confirms the
+  same stack. Process snapshot: UI 93.9% CPU; Python bridge 0.6% CPU.
+  These are measurements of the OLD app, not a before/after performance claim.
+
+Changes made in this pass
+- Extracted conversation rendering from the app controller. Each changed message
+  replaces its own text range. Equation completion invalidates only dependent
+  messages; unchanged history is retained. Text changes are batched for layout.
+- Hidden chats defer rendering and equation refresh until opened. Cached math
+  images have a memory/count limit. Evicted completed requests are not blindly
+  requeued (avoids a cache-pressure refresh loop). Pending/failed/requested math
+  metadata resets on conversation change. Web-content termination releases the
+  renderer; reopening the chat recreates it.
+- Dictation creates a fresh AVAudioEngine per session, checks native input
+  availability and lets the tap use the native format. The audio callback
+  captures its own recognition request, so old buffers cannot enter a new
+  session. Configuration changes end capture and surface an actionable message.
+- The indicator's separate microphone meter also uses a fresh engine/native
+  format; delayed microphone permission responses check the scene generation.
+- Dictation permission and engine errors now end the listening UI. Actual audio
+  route changes and microphone capture still need hardware validation.
+- Bridge writes leave the main thread, maintain serial ordering, and report
+  errors. SIGPIPE is ignored so disconnected pipes are ordinary failures.
+  EOF disables read callbacks. JSON-lines decoding bounds malformed oversized
+  records and recovers at the next newline. Reconnect backoff only resets after
+  a stable connection. App-server death now exits the adapter so Swift reconnects.
+- A bridge failure dismisses the expanded overlay. Escape closes/compacts it.
+  Closing stops indicator timers and invalidates stale delayed panel cleanup.
+  Sprite frame/duration indexing validates array lengths and bounds.
+- Short Option taps no longer synchronously take screenshots. Context capture
+  waits for the hold and runs off the UI thread, with cancellation checks and
+  an accessibility messaging timeout.
+- Media metadata polling skips unchanged callbacks, uses a two-second interval
+  and bounds accessibility messaging latency.
+- Sidebar updates skip unchanged directory state. Existing layer maps tolerate
+  duplicate identities instead of trapping. UserDefaults project writes skip
+  unchanged projects.
+- Project clicks use the already discovered directory instead of synchronously
+  paging every chat again. Selection commits after resume/read completes and
+  retains full history when resume supplies partial turns. Unsubscribe cleanup
+  has a shorter timeout. Existing revision-checked history caching is preserved.
+- Activity-log tailing retains partial JSON lines and recognizes file replacement,
+  preventing lost completion records and stale running indicators.
+- File previews read only a bounded text prefix and decode image thumbnails.
+  Voice output rejects invalid sample rates and oversized PCM buffers.
+- Missing startup assets produce an error instead of an unconditional Swift trap.
+- Packaging stages and signs a fresh app, verifies its signature, then replaces
+  the old bundle by rename. It no longer truncates an executable mapped by a
+  running process. A failed final rename restores the previous bundle.
+
+Verification
+- Swift: 34 tests executed, 33 passed, one optional local voice test skipped.
+- Python: 47 tests passed.
+- The renderer test builds 2,000 messages and applies 20 streaming revisions,
+  asserting exactly one message replacement per revision and unchanged selection.
+  This test took about 0.20 seconds in the final local run; it is not a whole-app
+  latency benchmark or a test of 2,000 simultaneously rendered math images.
+- Regression coverage includes targeted math invalidation, Unicode text ranges,
+  history truncation/append/thread switches, oversized stream recovery, partial
+  activity records, log replacement, and project navigation without full paging.
+- Existing tests cover sizing, input regions, large sidebar virtualization,
+  theme selection/attachments, dictation preferences, media, and interrupted
+  artwork transitions.
+- Python compilation, shell syntax, and git diff whitespace checks passed.
+- Packaged app signature verification passes during build.
+
+Remaining limits
+- Native UI automation failed to start (Sky service startup failure, twice).
+  Live clicks, dictation/device switching, media permission prompts, experimental
+  web mode and long-session energy measurements could not be completed here.
+- The existing running process still uses the old executable until it is quit
+  and relaunched. The rebuilt bundle is .build/debug/Kai.app.
+- Cold chat loading still performs history read plus resume because resume can
+  return partial turns. Tests caught a loss of earlier prompts when attempting
+  to eliminate the read, so that optimization was not retained.
+- State transport still serializes full selected history. Very large histories
+  can still need substantial initial layout; viewport-aware history rendering
+  and a versioned incremental state protocol warrant a separate measured change.
+- Input tap installation on this macOS API can raise Objective-C exceptions;
+  using a fresh graph/native format addresses the observed cause, but this is
+  not a mathematical guarantee against every device/driver/framework failure.
+- No claim of zero crashes, complete hardware verification, or measured
+  post-restart CPU reduction is made.
+
+Rust assessment
+- Keep AppKit/Core Animation UI in Swift. The measured dominant bottleneck is
+  redundant native text replacement, which moving the Python adapter to Rust
+  would not fix.
+- If later profiling identifies backend overhead, the best isolated candidates
+  are session-file tailing, directory indexing, and incremental state encoding.
+  A shared protocol and regression fixtures should precede any such migration.
+  The observed Python bridge CPU (0.6%) does not justify a Rust rewrite now.
+
+Workspace
+Existing uncommitted performance/UI changes were present at the start of this
+pass. They were preserved; passing suite totals validate the combined checkout.

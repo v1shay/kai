@@ -1,0 +1,1739 @@
+//! Cached summary-only project tree. Flattening happens on metadata changes,
+//! never while painting or streaming a response.
+use super::*;
+use std::path::Path;
+
+#[derive(Clone,Copy,PartialEq,Eq,Hash)]
+pub(super) enum SidebarSection {Projects,Chats}
+
+#[derive(Clone)]
+enum Node {
+    Project(usize),
+    Chat(usize, Option<PathBuf>),
+    Placeholder(usize),
+    RecentHeader,
+}
+pub(super) struct ProjectTree {
+    pub activity: Vec<usize>,
+    pub projects_collapsed:bool,
+    pub chats_collapsed:bool,
+    section_motions:HashMap<SidebarSection,(Instant,f32)>,
+    rows: Vec<Node>,
+    groups:Vec<std::ops::Range<usize>>,
+    scroll:ListState,
+    remote_count: usize,
+    loaded_at:HashMap<PathBuf,Instant>,
+    recent_roots: Vec<PathBuf>,
+    pending: HashMap<PathBuf, u64>,
+    ready: HashSet<PathBuf>,
+    failed: HashSet<PathBuf>,
+    motions: HashMap<PathBuf, (Instant, bool, f32)>,
+    sequence: u64,
+    restored: bool,
+    #[cfg(test)]
+    rendered: usize,
+    #[cfg(test)]
+    frame_elapsed: Option<Duration>,
+}
+
+impl Default for ProjectTree {
+    fn default()->Self{Self{activity:vec![],projects_collapsed:false,chats_collapsed:false,section_motions:HashMap::new(),rows:vec![],groups:vec![],scroll:ListState::new(0,ListAlignment::Top,px(160.)),remote_count:0,loaded_at:HashMap::new(),recent_roots:vec![],pending:HashMap::new(),ready:HashSet::new(),failed:HashSet::new(),motions:HashMap::new(),sequence:0,restored:false,#[cfg(test)]rendered:0,#[cfg(test)]frame_elapsed:None}}
+}
+
+pub(super) fn navigation_row(id: impl Into<ElementId>, indent: f32) -> Stateful<Div> {
+    div().id(id).w_full().min_w(px(0.)).h(px(32.)).flex().items_center()
+        .gap(px(6.)).pl(px(indent)).pr_2().rounded_md()
+        .cursor_pointer().hover(|row| row.bg(rgba(GLASS_HOVER)))
+}
+
+/// The remote sidebar compresses and fades every row together while preserving
+/// the row's full-size content inside its clip. Local groups use the same reveal.
+pub(super) fn reveal_tree_row(row: impl IntoElement, height: f32, fraction: f32) -> AnyElement {
+    if fraction >= 1. {
+        return row.into_any_element();
+    }
+    div().relative().h(px(height * fraction)).w_full().overflow_hidden().opacity(fraction)
+        .child(div().absolute().top_0().left_0().right_0().h(px(height)).child(row))
+        .into_any_element()
+}
+
+pub(super) fn tree_chevron(fraction: f32) -> impl IntoElement {
+    icon("chevron-right", 10., MUTED).with_transformation(
+        Transformation::rotate(radians(fraction * std::f32::consts::FRAC_PI_2)),
+    )
+}
+
+pub(super) fn project_badge(name: &str, path: &Path, size: f32) -> Div {
+    let seed = path.as_os_str().as_encoded_bytes().iter().fold(
+        0xcbf29ce484222325u64,
+        |hash, byte| (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3),
+    );
+    let mut words = name.split(|character: char| !character.is_alphanumeric()).filter(|word| !word.is_empty());
+    let first = words.next().unwrap_or("");
+    let initials: String = match words.next() {
+        Some(second) => first.chars().take(1).chain(second.chars().take(1)).flat_map(char::to_uppercase).take(2).collect(),
+        None => first.chars().take(2).flat_map(char::to_uppercase).take(2).collect(),
+    };
+    div().size(px(size)).flex_none().relative().flex().items_center().justify_center()
+        .child(canvas(
+            move |_, _, cx| project_badge_image(seed, cx),
+            |bounds, texture, window, _| {
+                let _ = window.paint_image(bounds, Corners::all(px(5.)), texture, 0, false);
+            },
+        ).absolute().inset_0())
+        .child(div().relative().text_color(rgb(0xffffff)).text_size(px((size * 0.44).max(8.)))
+            .font_weight(FontWeight::SEMIBOLD).child(initials))
+}
+
+type BadgeColor = [f32; 3];
+
+#[derive(serde::Deserialize)]
+struct PetBadgeCatalog {
+    #[serde(rename = "profileByPetID")]
+    profiles: std::collections::BTreeMap<String, PetBadgeProfile>,
+}
+
+#[derive(serde::Deserialize)]
+struct PetBadgeProfile {
+    palette: PetBadgePalette,
+}
+
+#[derive(serde::Deserialize)]
+struct PetBadgePalette {
+    shadow: String,
+    primary: String,
+    secondary: String,
+    accent: String,
+}
+
+fn pet_badge_palettes() -> &'static [[BadgeColor; 4]] {
+    static PALETTES: std::sync::OnceLock<Vec<[BadgeColor; 4]>> = std::sync::OnceLock::new();
+    PALETTES.get_or_init(|| {
+        let catalog: PetBadgeCatalog = serde_json::from_str(include_str!("../../../kai_pets/gradient_profiles.json"))
+            .expect("the bundled Kai pet palette catalog is valid");
+        let color = |value: &str| -> Option<BadgeColor> {
+            let rgb = u32::from_str_radix(value.strip_prefix('#')?, 16).ok()?;
+            Some([((rgb >> 16) & 255) as f32, ((rgb >> 8) & 255) as f32, (rgb & 255) as f32])
+        };
+        catalog.profiles.into_values().filter_map(|profile| {
+            let palette = profile.palette;
+            Some([color(&palette.shadow)?, color(&palette.primary)?,
+                color(&palette.secondary)?, color(&palette.accent)?])
+        }).collect()
+    })
+}
+
+fn render_project_badge(seed: u64) -> std::sync::Arc<RenderImage> {
+    let palettes = pet_badge_palettes();
+    assert!(!palettes.is_empty(), "Kai pet palettes are required for project badges");
+    let palette = &palettes[(seed % palettes.len() as u64) as usize];
+    let accent = &palettes[(seed.rotate_left(23) % palettes.len() as u64) as usize];
+    let fraction = |shift| ((seed >> shift) & 0xfffu64) as f32 / 4095.;
+    let mix = |a: BadgeColor, b: BadgeColor, t: f32| {
+        std::array::from_fn(|i| a[i] + (b[i] - a[i]) * t)
+    };
+    let start = mix(palette[0], palette[3], 0.30 + 0.38 * fraction(12));
+    let middle = mix(palette[1], accent[3], 0.20 + 0.52 * fraction(24));
+    let end = mix(accent[1], palette[2], 0.22 + 0.46 * fraction(36));
+    let middle_at = 0.36 + 0.28 * fraction(48);
+    let (sin, cos) = (fraction(0) * std::f32::consts::TAU).sin_cos();
+    let limit = sin.abs() + cos.abs();
+    const SIDE: u32 = 24;
+    const STEPS: f32 = 10.;
+    let pixels = image::RgbaImage::from_fn(SIDE, SIDE, |x, y| {
+        let x_position = (x / 2) as f32 / (SIDE / 2 - 1) as f32 - 0.5;
+        let y_position = (y / 2) as f32 / (SIDE / 2 - 1) as f32 - 0.5;
+        let position = 0.5 + (x_position * cos + y_position * sin) / limit;
+        let threshold = background::quantization_threshold((x / 2) as usize, (y / 2) as usize, seed as u32);
+        let band = ((position.clamp(0., 1.) * STEPS + threshold).floor() / STEPS).min(1.);
+        let rgb = if band < middle_at {
+            mix(start, middle, band / middle_at)
+        } else {
+            mix(middle, end, (band - middle_at) / (1. - middle_at))
+        };
+        // The renderer consumes BGRA. Limit the strongest channel to keep
+        // white initials legible over the lighter pet palettes.
+        let max_channel = rgb.into_iter().fold(0f32, f32::max);
+        let gain = (132. / max_channel.max(132.)) * (0.90 + 0.10 * threshold);
+        image::Rgba([(rgb[2] * gain) as u8, (rgb[1] * gain) as u8, (rgb[0] * gain) as u8, 255])
+    });
+    std::sync::Arc::new(RenderImage::new(vec![image::Frame::new(pixels)]))
+}
+
+fn project_badge_image(seed: u64, cx: &mut App) -> std::sync::Arc<RenderImage> {
+    type BadgeCache = std::collections::VecDeque<(u64, std::sync::Arc<RenderImage>)>;
+    thread_local! { static CACHE: std::cell::RefCell<BadgeCache> = Default::default(); }
+    CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(index) = cache.iter().position(|(key, _)| *key == seed) {
+            let entry = cache.remove(index).unwrap();
+            let texture = entry.1.clone();
+            cache.push_back(entry);
+            return texture;
+        }
+        if cache.len() == 192 && let Some((_, retired)) = cache.pop_front() {
+            cx.defer(move |cx| cx.drop_image(retired, None));
+        }
+        let texture = render_project_badge(seed);
+        cache.push_back((seed, texture.clone()));
+        texture
+    })
+}
+
+impl Orbit {
+    pub(super) fn sidebar_section_fraction(&self,section:SidebarSection)->f32{
+        let collapsed=match section{SidebarSection::Projects=>self.project_tree.projects_collapsed,SidebarSection::Chats=>self.project_tree.chats_collapsed};
+        let target=if collapsed{0.}else{1.};
+        self.project_tree.section_motions.get(&section).map_or(target,|(at,from)|{
+            #[cfg(test)] let elapsed=self.project_tree.frame_elapsed.unwrap_or_else(||at.elapsed());
+            #[cfg(not(test))] let elapsed=at.elapsed();
+            from + (target - from) * workspace_motion::ease_out((elapsed.as_secs_f32() / workspace_motion::pane_duration().as_secs_f32()).clamp(0., 1.))
+        }).clamp(0.,1.)
+    }
+    pub(super) fn sidebar_section_chevron(&self,section:SidebarSection)->Svg{
+        icon("chevron-right",10.,MUTED).with_transformation(Transformation::rotate(radians(self.sidebar_section_fraction(section)*std::f32::consts::FRAC_PI_2)))
+    }
+    pub(super) fn toggle_sidebar_section(&mut self,section:SidebarSection,cx:&mut Context<Self>){
+        let from=self.sidebar_section_fraction(section);
+        match section{SidebarSection::Projects=>self.project_tree.projects_collapsed=!self.project_tree.projects_collapsed,SidebarSection::Chats=>self.project_tree.chats_collapsed=!self.project_tree.chats_collapsed}
+        if self.motion && !native::reduced_motion(){
+            self.project_tree.section_motions.insert(section,(Instant::now(),from));
+        }else{self.project_tree.section_motions.remove(&section);}
+        if let Some(saved)=&mut self.restore_pending{saved.sidebar_projects_collapsed=self.project_tree.projects_collapsed;saved.sidebar_chats_collapsed=self.project_tree.chats_collapsed;}
+        self.rebuild_project_tree();
+        if let Some((started, _)) = self.project_tree.section_motions.get_mut(&section) {
+            *started = Instant::now();
+        }
+        self.queue_workspace_save(cx);cx.notify();
+    }
+    pub(super) fn restore_sidebar_sections(&mut self,projects:bool,chats:bool){
+        self.project_tree.projects_collapsed=projects;self.project_tree.chats_collapsed=chats;self.project_tree.section_motions.clear();
+    }
+
+    pub(super) fn unprojected_root(&self) -> PathBuf {
+        discovery::unprojected_root(&self.controls_home)
+    }
+
+    /// Keep navigation separate from the CLI cwd. Each standalone chat owns a
+    /// fresh workspace; no filesystem work or agent launch happens on a click.
+    pub(super) fn new_unprojected_conversation(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.new_conversation(window, cx);
+        self.project = self.unprojected_root();
+        self.new_execution_path = Some(self.project.join(uuid::Uuid::new_v4().to_string()));
+        self.all_projects = false;
+        self.archived_view = false;
+        self.rebuild_workspace_sessions();
+        self.sync_file_root(window, cx);
+        self.queue_workspace_save(cx);
+        cx.notify();
+    }
+
+    /// Only Code-owned, UUID-named standalone workspaces may be created by the
+    /// launch worker. Never recreate a missing user-selected project directory.
+    pub(super) fn unprojected_workspace(&self, session: &SessionSummary) -> Option<PathBuf> {
+        let root = self.unprojected_root();
+        let workspace = session.execution_path.as_ref()?;
+        (session.project_path == root
+            && workspace.parent() == Some(root.as_path())
+            && workspace
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| uuid::Uuid::parse_str(name).is_ok()))
+        .then(|| workspace.clone())
+    }
+
+    pub(super) fn invalidate_project_branches(&mut self) {
+        self.project_tree.ready.clear();
+        self.project_tree.loaded_at.clear();
+        self.project_tree.failed.clear();
+        // Replies from discovery before this refresh must not mark a branch
+        // current again. Visible expanded rows request fresh summaries lazily.
+        self.project_tree.pending.clear();
+    }
+
+    pub(super) fn sidebar_target_width(&self) -> f32 {
+        bounded_sidebar_width(self.sidebar_sizes[usize::from(self.sidebar_split)])
+    }
+
+    pub(super) fn sort_projects_by_prompt(&mut self) {
+        let mut latest: HashMap<PathBuf, i64> = HashMap::new();
+        let roots: HashSet<_> = self.projects.iter().map(|p| p.path.as_path()).collect();
+        for session in &self.sessions {
+            if self.hidden_sessions.contains(&session.id) || self.draft_sessions.contains(&session.id)
+                || self.lifecycle.archived_chats.contains(&session.id) { continue; }
+            let at = self.activity.prompt_at(session);
+            if let Some(root) = session.project_path.ancestors().find(|root| roots.contains(root)) {
+                latest.entry(root.to_path_buf()).and_modify(|old| *old = (*old).max(at)).or_insert(at);
+            }
+        }
+        self.projects.sort_by_cached_key(|project| (
+            std::cmp::Reverse(latest.get(&project.path).copied().unwrap_or(0)),
+            !self.lifecycle.pinned_projects.contains(&project.path), project.path.clone(),
+        ));
+    }
+
+    pub(super) fn rebuild_project_tree(&mut self) {
+        self.project_tree.activity = self
+            .sessions
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| {
+                !self.hidden_sessions.contains(&s.id) && self.activity.pending_rank(&s.id).is_some()
+            })
+            .map(|(ix, _)| ix)
+            .collect();
+        self.project_tree.activity.sort_by_key(|ix| {
+            std::cmp::Reverse(self.activity.pending_rank(&self.sessions[*ix].id))
+        });
+        let paths: HashMap<_, _> = self
+            .projects
+            .iter()
+            .enumerate()
+            .map(|(ix, p)| (p.path.as_path(), ix))
+            .collect();
+        let compare = |a: &usize, b: &usize| {
+            let key = |ix: usize| {
+                let s = &self.sessions[ix];
+                (
+                    std::cmp::Reverse(self.activity.prompt_at(s)),
+                    !self.lifecycle.pinned_chats.contains(&s.id),
+                    s.id.as_str(),
+                )
+            };
+            key(*a).cmp(&key(*b))
+        };
+        let storage_roots: HashSet<_> = ["Kai", "Orbit", "Code"]
+            .into_iter()
+            .map(|app| {
+                self.controls_home
+                    .join("Library/Application Support")
+                    .join(app)
+                    .join("Chats")
+            })
+            .collect();
+        self.project_tree.recent_roots = self
+            .projects
+            .iter()
+            .filter(|p| storage_roots.contains(&p.path))
+            .map(|p| p.path.clone())
+            .collect();
+        let mut all: Vec<_> = self
+            .sessions
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| {
+                !self.hidden_sessions.contains(&s.id)
+                    && !self.draft_sessions.contains(&s.id)
+                    && self.lifecycle.archived_chats.contains(&s.id) == self.archived_view
+            })
+            .map(|(ix, _)| ix)
+            .collect();
+        all.sort_by(compare);
+        let mut groups = vec![Vec::new(); self.projects.len()];
+        let mut ungrouped = Vec::new();
+        // Populate branches in the same pin/recency order as the flat list:
+        // one sort per metadata change, no transcript loading or per-frame work.
+        for ix in &all {
+            let owner = self.sessions[*ix]
+                .project_path
+                .ancestors()
+                .find_map(|path| paths.get(path));
+            if let Some(project) = owner {
+                groups[*project].push(*ix);
+            }
+            if owner.is_none_or(|project| storage_roots.contains(&self.projects[*project].path)) {
+                ungrouped.push(*ix);
+            }
+        }
+        let mut rows = Vec::new();
+        if self.all_projects {
+            rows.extend(
+                all.into_iter()
+                    .map(|ix| Node::Chat(ix, None)),
+            );
+        } else {
+            for (ix, project) in self.projects.iter().enumerate() {
+                if self.project_tree.projects_collapsed && !self.project_tree.section_motions.contains_key(&SidebarSection::Projects){break}
+                if storage_roots.contains(&project.path) {
+                    continue;
+                }
+                rows.push(Node::Project(ix));
+                if !self.expanded_projects.contains(&project.path)
+                    && self
+                        .project_tree
+                        .motions
+                        .get(&project.path)
+                        .is_none_or(|(_, open, _)| *open)
+                {
+                    continue;
+                }
+                if groups[ix].is_empty() {
+                    rows.push(Node::Placeholder(ix));
+                } else {
+                    rows.extend(
+                        groups[ix].iter().map(|session| {
+                            Node::Chat(*session, Some(project.path.clone()))
+                        }),
+                    );
+                }
+            }
+            rows.push(Node::RecentHeader);
+            if !self.project_tree.chats_collapsed || self.project_tree.section_motions.contains_key(&SidebarSection::Chats){rows.extend(
+                ungrouped
+                    .into_iter()
+                    .map(|ix| Node::Chat(ix, None)),
+            );}
+        }
+        let mut groups = Vec::new();
+        if self.all_projects {
+            groups.extend((0..rows.len()).map(|index| index..index + 1));
+        } else {
+            let mut start = 0;
+            for (ix, row) in rows.iter().enumerate() {
+                if ix > 0 && matches!(row, Node::Project(_) | Node::RecentHeader) {
+                    groups.push(start..ix);
+                    start = ix;
+                }
+            }
+            if start < rows.len() { groups.push(start..rows.len()); }
+        }
+        let anchor=self.project_tree.scroll.logical_scroll_top();
+        let remote = self.visible_remote_tree_count();
+        let count = groups.len() + remote + usize::from(!self.all_projects);
+        self.project_tree.remote_count = remote;
+        self.project_tree.scroll.reset(count);
+        self.project_tree.scroll.scroll_to(ListOffset{item_ix:anchor.item_ix.min(count.saturating_sub(1)),offset_in_item:anchor.offset_in_item});
+        self.project_tree.groups=groups;self.project_tree.rows = rows;
+    }
+
+    fn visible_remote_tree_count(&self) -> usize {
+        if self.all_projects || self.archived_view { 0 } else { self.remote_tree_count() }
+    }
+
+    pub(super) fn sync_remote_project_tree(&mut self, old_range: std::ops::Range<usize>, new_count: usize) {
+        let count = self.visible_remote_tree_count();
+        let old_count = self.project_tree.remote_count;
+        if count == 0 && old_count == 0 { return; }
+        let (range, inserted) = if old_range.end <= old_count
+            && old_count - old_range.len() + new_count == count {
+            (old_range, new_count)
+        } else {
+            (0..old_count, count)
+        };
+        if !range.is_empty() || inserted > 0 {
+            let anchor = self.project_tree.scroll.logical_scroll_top();
+            self.project_tree.scroll.splice(range, inserted);
+            if anchor.item_ix == 0 && anchor.offset_in_item == px(0.) {
+                self.project_tree.scroll.scroll_to(anchor);
+            }
+            self.project_tree.remote_count = count;
+        }
+    }
+
+    pub(super) fn remeasure_remote_project_tree(&self, range: std::ops::Range<usize>) {
+        let end = range.end.min(self.project_tree.remote_count);
+        if range.start >= end { return; }
+        let anchor = self.project_tree.scroll.logical_scroll_top();
+        self.project_tree.scroll.splice(range.start..end, end - range.start);
+        self.project_tree.scroll.scroll_to(anchor);
+    }
+
+    pub(super) fn request_project_branch(&mut self, path: PathBuf) {
+        if self.project_tree.ready.contains(&path) || self.project_tree.pending.contains_key(&path)
+        {
+            return;
+        }
+        self.project_tree.sequence = self.project_tree.sequence.wrapping_add(1);
+        let token = self.project_tree.sequence;
+        self.project_tree.pending.insert(path.clone(), token);
+        self.project_tree.failed.remove(&path);
+        self.engine.load_sidebar_project(path, token);
+    }
+
+    pub(super) fn receive_project_branch(
+        &mut self,
+        path: PathBuf,
+        token: u64,
+        sessions: Result<Vec<SessionSummary>, String>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.project_tree.pending.get(&path) != Some(&token) {
+            return;
+        }
+        self.project_tree.pending.remove(&path);
+        match sessions {
+            Ok(sessions) => {
+                self.project_tree.loaded_at.insert(path.clone(),Instant::now());
+                self.project_tree.ready.insert(path);
+                let mut positions: HashMap<_, _> = self
+                    .sessions
+                    .iter()
+                    .enumerate()
+                    .map(|(ix, s)| (s.id.clone(), ix))
+                    .collect();
+                for mut session in sessions {
+                    if let Some(ix) = positions.get(&session.id) {
+                        merge_session_metadata(&mut session, &self.sessions[*ix]);
+                        self.sessions[*ix] = session;
+                    } else {
+                        positions.insert(session.id.clone(), self.sessions.len());
+                        self.sessions.push(session);
+                    }
+                }
+            }
+            Err(_) => {
+                self.project_tree.failed.insert(path);
+            }
+        }
+        self.rebuild_workspace_sessions();
+        cx.notify();
+    }
+
+    pub(super) fn toggle_project_branch(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        let open = !self.expanded_projects.contains(&path);
+        let from = self.project_fold_fraction(&path).clamp(0., 1.);
+        if open {
+            self.expanded_projects.insert(path.clone());
+            if self.project_tree.loaded_at.get(&path).is_none_or(|at|at.elapsed()>Duration::from_secs(15)){self.project_tree.ready.remove(&path);}
+            self.request_project_branch(path.clone());
+        } else {
+            self.expanded_projects.remove(&path);
+        }
+        if self.motion && !native::reduced_motion() {
+            self.project_tree
+                .motions
+                .insert(path, (Instant::now(), open, from));
+        } else {
+            self.project_tree.motions.remove(&path);
+        }
+        self.all_projects = false;
+        if let Some(saved) = &mut self.restore_pending {
+            saved.expanded_projects = self.expanded_projects.iter().cloned().collect();
+        }
+        self.rebuild_project_tree();
+        self.queue_workspace_save(cx);
+        cx.notify();
+    }
+
+    pub(super) fn toggle_sidebar_layout(&mut self, cx: &mut Context<Self>) {
+        let progress = self.sidebar_layout_progress();
+        let started = Instant::now();
+        self.sidebar_split = !self.sidebar_split;
+        self.sidebar_layout_transition = (self.motion && !native::reduced_motion()).then_some((started, progress));
+        if self.sidebar_split && !self.conversations_visible {
+            let conversations = self.conversations_progress();
+            self.conversations_visible = true;
+            self.conversations_transition = (self.motion && !native::reduced_motion())
+                .then_some((started, conversations));
+        }
+        self.sidebar = true;
+        if let Some(saved) = &mut self.restore_pending {
+            saved.sidebar_split = self.sidebar_split;
+            saved.sidebar = true;
+            saved.conversations_visible = true;
+        }
+        self.animate_sidebar_width(started);
+        self.rebuild_remote_tree();
+        self.rebuild_project_tree();
+        self.queue_workspace_save(cx);
+        cx.notify();
+    }
+
+    fn project_fold_fraction(&self, path: &std::path::Path) -> f32 {
+        let target = if self.expanded_projects.contains(path) {
+            1.
+        } else {
+            0.
+        };
+        self.project_tree
+            .motions
+            .get(path)
+            .map_or(target, |(start, open, from)| {
+                #[cfg(test)] let elapsed=self.project_tree.frame_elapsed.unwrap_or_else(||start.elapsed());
+                #[cfg(not(test))] let elapsed=start.elapsed();
+                let p = workspace_motion::ease_out(
+                    (elapsed.as_secs_f32() / workspace_motion::pane_duration().as_secs_f32()).clamp(0., 1.),
+                );
+                let target = if *open { 1. } else { 0. };
+                from + (target - from) * p
+            })
+    }
+
+    pub(super) fn sidebar_layout_progress(&self) -> f32 {
+        let target = if self.sidebar_split { 1. } else { 0. };
+        self.sidebar_layout_transition
+            .map_or(target, |(start, from)| {
+                (from
+                    + (target - from)
+                        * workspace_motion::ease_out(start.elapsed().as_secs_f32() / workspace_motion::pane_duration().as_secs_f32()))
+                .clamp(0., 1.)
+            })
+    }
+
+    pub(super) fn tick_project_tree(&mut self, window: &Window, cx: &mut Context<Self>) {
+        self.ninjas.fold_motions.retain(|_,(at,_)|self.motion&&!native::reduced_motion()&&at.elapsed()<Duration::from_millis(240));
+        if !self.ninjas.fold_motions.is_empty()&&window.is_window_active(){request_motion_frame(window,cx);}
+        if let Some((at,_))=self.conversations_transition{if !self.motion||native::reduced_motion()||at.elapsed()>=workspace_motion::pane_duration(){self.conversations_transition=None;}else if window.is_window_active(){request_motion_frame(window,cx);}}
+        if let Some((start, _)) = self.sidebar_layout_transition {
+            if !self.motion || native::reduced_motion() || start.elapsed() >= workspace_motion::pane_duration() {
+                self.sidebar_layout_transition = None;
+            } else if window.is_window_active() {
+                request_motion_frame(window, cx);
+            }
+        }
+        if !self.sidebar_split && !self.project_tree.restored && !self.projects.is_empty() {
+            self.project_tree.restored = true;
+            self.rebuild_project_tree();
+        }
+        let sections_before=self.project_tree.section_motions.len();
+        #[cfg(test)] let section_elapsed=self.project_tree.frame_elapsed;
+        self.project_tree.section_motions.retain(|_,(at,_)|{
+            #[cfg(test)] let elapsed=section_elapsed.unwrap_or_else(||at.elapsed());
+            #[cfg(not(test))] let elapsed=at.elapsed();
+            self.motion && !native::reduced_motion() && elapsed < workspace_motion::pane_duration()
+        });
+        let before = self.project_tree.motions.len();
+        #[cfg(test)] let frame_elapsed=self.project_tree.frame_elapsed;
+        self.project_tree.motions.retain(|_,(start,_,_)|{
+            #[cfg(test)] let elapsed=frame_elapsed.unwrap_or_else(||start.elapsed());
+            #[cfg(not(test))] let elapsed=start.elapsed();
+            self.motion && !native::reduced_motion() && elapsed < workspace_motion::pane_duration()
+        });
+        if before != self.project_tree.motions.len() || sections_before != self.project_tree.section_motions.len() {
+            self.rebuild_project_tree();
+        }
+        if (!self.project_tree.motions.is_empty() || !self.project_tree.section_motions.is_empty()) && window.is_window_active(){
+            for (ix,range) in self.project_tree.groups.iter().enumerate(){
+                let ix = ix + self.project_tree.remote_count + usize::from(!self.all_projects);
+                if let Some(Node::Project(project))=self.project_tree.rows.get(range.start){if self.project_tree.motions.contains_key(&self.projects[*project].path) || self.project_tree.section_motions.contains_key(&SidebarSection::Projects){self.project_tree.scroll.splice(ix..ix+1,1);}}else if self.project_tree.section_motions.contains_key(&SidebarSection::Chats){self.project_tree.scroll.splice(ix..ix+1,1);}
+            }
+        }
+        // Geometry tests paint an exact frame instead of racing the machine's
+        // wall clock. Real transitions retain their normal frame scheduling.
+        #[cfg(test)] if self.project_tree.frame_elapsed.is_some(){return}
+        if (!self.project_tree.section_motions.is_empty() || (!self.project_tree.motions.is_empty() && !self.sidebar_split))
+            && (self.sidebar || (self.sidebar_split && self.conversations_visible))
+            && window.is_window_active()
+        {
+            request_motion_frame(window, cx);
+        }
+    }
+
+    fn tree_menu(
+        &mut self,
+        target: MenuTarget,
+        event: &ClickEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.modal = None;
+        self.action_menu = Some(ActionMenu {
+            target,
+            anchor: event.position() + point(px(10.), px(-20.)),
+            started: Instant::now(),
+            closing: false,
+            closing_from: 1.,
+        });
+        self.focus.focus(window);
+        cx.notify();
+    }
+
+    pub(super) fn project_tree_list(&self, cx: &Context<Self>) -> impl IntoElement {
+        let anchor=self.project_tree.scroll.logical_scroll_top();
+        div().debug_selector(||"project-chat-tree".into())
+            .flex_1()
+            .min_h(px(0.))
+            .w_full()
+            .flex()
+            .flex_col()
+            .child(
+                list(self.project_tree.scroll.clone(),cx.processor(move |this,ix,window,cx|this.project_tree_group(ix,anchor,window,cx)))
+                .flex_1()
+                .min_h(px(0.))
+                .w_full()
+                .px_2(),
+            )
+            .when(
+                self.archived_view && !self.project_tree.chats_collapsed && self.archive_offset < self.archive_ids.len(),
+                |s| {
+                    s.child(
+                        div()
+                            .id("tree-archive-more")
+                            .h(px(28.))
+                            .px_3()
+                            .text_size(crate::theme::ui_px(11.))
+                            .cursor_pointer()
+                            .text_color(rgb(MUTED))
+                            .child("Load more archived chats")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.load_archived_page(cx);
+                            })),
+                    )
+                },
+            )
+
+    }
+
+    fn project_tree_group(&mut self,ix:usize,anchor:ListOffset,window:&Window,cx:&mut Context<Self>)->AnyElement {
+        let Some(mut local_ix) = ix.checked_sub(self.project_tree.remote_count) else {
+            return self.remote_tree_row(ix, cx);
+        };
+        if !self.all_projects {
+            if local_ix == 0 { return self.project_sidebar_header(cx).into_any_element(); }
+            local_ix -= 1;
+        }
+        let Some(range)=self.project_tree.groups.get(local_ix).cloned()else{return div().into_any_element()};
+        let first = &self.project_tree.rows[range.start];
+        let (header_fraction, row_fraction) = if self.all_projects {
+            (0., 1.)
+        } else if let Node::Project(project) = first {
+            let section = self.sidebar_section_fraction(SidebarSection::Projects);
+            (section, section * self.project_fold_fraction(&self.projects[*project].path))
+        } else {
+            (1., self.sidebar_section_fraction(SidebarSection::Chats))
+        };
+        let has_header = matches!(first, Node::Project(_) | Node::RecentHeader);
+        let row_height = if self.all_projects {
+            match first {
+                Node::Chat(index, ..) if self.sessions.get(*index)
+                    .and_then(|session| self.priority_branch(session)).is_some() => 65.,
+                _ => 48.,
+            }
+        } else { 32. };
+        let header_height = 32. * header_fraction;
+        let visible_row_height = row_height * row_fraction;
+        let children = range.len() - usize::from(has_header);
+        let height = header_height + children as f32 * visible_row_height;
+        let mut group = div().id(("project-branch-group", local_ix))
+            .debug_selector(move || format!("project-branch-group-{local_ix}"))
+            .relative().h(px(height.max(0.01))).w_full().overflow_hidden();
+        if has_header && header_height >= 0.1 {
+            group = group.child(reveal_tree_row(self.project_tree_row(range.start, cx), 32., header_fraction));
+        }
+        if visible_row_height >= 0.1 {
+            let offset = if anchor.item_ix == ix { f32::from(anchor.offset_in_item).max(0.) } else { 0. };
+            let start = (((offset - header_height).max(0.) / visible_row_height) as usize).min(children);
+            let end = (start + (f32::from(window.viewport_size().height) / visible_row_height.max(4.)).ceil() as usize + 8)
+                .min(children);
+            for child in start..end {
+                let row = self.project_tree_row(range.start + usize::from(has_header) + child, cx);
+                group = group.child(div().absolute().left_0().right_0()
+                    .top(px(header_height + child as f32 * visible_row_height))
+                    .child(reveal_tree_row(row, row_height, row_fraction)));
+            }
+        }
+        group.into_any_element()
+    }
+
+    fn project_tree_row(&mut self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
+        #[cfg(test)]
+        {
+            self.project_tree.rendered += 1;
+        }
+        let Some(node) = self.project_tree.rows.get(ix).cloned() else {
+            return div().into_any_element();
+        };
+        let row = div().h(px(32.)).w_full().min_w(px(0.));
+        match node {
+            Node::RecentHeader => {
+                for path in if self.project_tree.chats_collapsed{vec![]}else{self.project_tree.recent_roots.clone()} {
+                    if !self.project_tree.failed.contains(&path) {
+                        self.request_project_branch(path);
+                    }
+                }
+                row.flex()
+                    .items_center()
+                    .px_2()
+                    .text_size(crate::theme::ui_px(11.))
+                    .text_color(rgb(MUTED))
+                    .id("sidebar-recents")
+                    .debug_selector(|| "sidebar-recents".into())
+                    .gap_2().cursor_pointer().rounded_md().hover(|s|s.bg(rgba(GLASS_HOVER)))
+                    .on_click(cx.listener(|this,_,_,cx|{cx.stop_propagation();this.toggle_sidebar_section(SidebarSection::Chats,cx);}))
+                    .child(self.sidebar_section_chevron(SidebarSection::Chats))
+                    .child("Chats")
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .id("new-unprojected-chat")
+                            .debug_selector(|| "new-unprojected-chat".into())
+                            .size(px(24.))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded_md()
+                            .cursor_pointer()
+                            .hover(|s| s.bg(rgba(GLASS_HOVER)))
+                            .child(icon("plus", 14., MUTED))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.new_unprojected_conversation(window, cx);
+                            })),
+                    )
+                    .into_any_element()
+            }
+            Node::Project(project_ix) => {
+                let project = self.projects[project_ix].clone();
+                let path = project.path.clone();
+                let menu_project = project.clone();
+                let new_project = project.clone();
+                let open = self.expanded_projects.contains(&path);
+                if open && !self.project_tree.failed.contains(&path) {
+                    self.request_project_branch(path.clone());
+                }
+                let fraction = self.project_fold_fraction(&path);
+                row.child(
+                    navigation_row(("tree-project", project_ix), 8.)
+                        .debug_selector(move || format!("project-{project_ix}"))
+                        .group("tree-project")
+                        .child(tree_chevron(fraction))
+                        .child(project_badge(&self.project_label(&project), &path, 22.))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .child(self.project_label(&project)),
+                        )
+                        .child(
+                            div()
+                                .id(("tree-project-new", project_ix))
+                                .size(px(20.))
+                                .flex_none()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded_sm()
+                                .opacity(0.)
+                                .group_hover("tree-project", |s| s.opacity(1.))
+                                .hover(|s| s.bg(rgba(GLASS_HOVER)))
+                                .child(icon("plus", 12., MUTED))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.project = new_project.path.clone();
+                                    this.all_projects = false;
+                                    this.new_conversation(window, cx);
+                                    this.new_execution_path = None;
+                                    this.rebuild_workspace_sessions();
+                                    this.sync_file_root(window, cx);
+                                })),
+                        )
+                        .child(
+                            div()
+                                .id(("tree-project-menu", project_ix))
+                                .debug_selector(move || format!("project-menu-{project_ix}"))
+                                .size(px(20.))
+                                .flex_none()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded_sm()
+                                .opacity(0.)
+                                .group_hover("tree-project", |s| s.opacity(1.))
+                                .hover(|s| s.bg(rgba(GLASS_HOVER)))
+                                .child(icon("more", 12., MUTED))
+                                .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
+                                    cx.stop_propagation();
+                                    this.tree_menu(
+                                        MenuTarget::Project(menu_project.clone()),
+                                        e,
+                                        window,
+                                        cx,
+                                    );
+                                })),
+                        )
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            cx.stop_propagation();
+                            if this.sidebar_split {this.select_project(path.clone(),window,cx);}else{this.toggle_project_branch(path.clone(), cx);}
+                        })),
+                )
+                .into_any_element()
+            }
+            Node::Chat(session_ix, parent) => {
+                let Some(session) = self.sessions.get(session_ix).cloned() else {
+                    return row.into_any_element();
+                };
+                if let Some(path) = &parent
+                    && self.expanded_projects.contains(path)
+                    && !self.project_tree.failed.contains(path)
+                {
+                    self.request_project_branch(path.clone());
+                }
+                let chat_project = parent.clone();
+                let menu_session = session.clone();
+                let drag = self.chat_drag(&session);
+                let selected = !self.remote_workspace.active() && self.active.as_deref() == Some(&session.id);
+                let running = self.runs.contains_key(&session.id)
+                    || self
+                        .broker_children
+                        .get(&session.id)
+                        .is_some_and(|n| *n > 0);
+                let closing = parent
+                    .as_ref()
+                    .is_some_and(|p| !self.expanded_projects.contains(p));
+                let priority = self.all_projects;
+                let branch = priority.then(|| self.priority_branch(&session)).flatten().map(str::to_owned);
+                let priority_height = if branch.is_some() { 65. } else { 48. };
+                let metadata = priority.then(|| {
+                    let age = chrono::Utc::now().timestamp().saturating_sub(session.updated_at).max(0);
+                    let time = match age {
+                        0..=59 => "Now".into(),
+                        60..=3599 => format!("{}m", age / 60),
+                        3600..=86399 => format!("{}h", age / 3600),
+                        _ => format!("{}d", age / 86400),
+                    };
+                    (time, self.project_path_label(&session.project_path))
+                });
+                let row = if priority { row.h(px(priority_height)).px_2().pb_2() } else { row };
+                row.child(
+                    div()
+                        .id(("tree-chat", session_ix))
+                        .on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.clone()))
+                        .debug_selector({
+                            let id = session.id.clone();
+                            move || format!("tree-chat-{id}")
+                        })
+                        .group("tree-chat").relative()
+                        .h(px(if priority { priority_height - 8. } else { 32. }))
+                        .w_full()
+                        .min_w(px(0.))
+                        .pl(px(if priority { 6. } else if parent.is_some() { 28. } else { 8. }))
+                        .pr_2()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .rounded_md()
+                        .cursor_pointer()
+                        .overflow_hidden()
+                        .when(priority, |s| s.px_2())
+                        .when(selected, |s| s.bg(rgba(0xffffff14)))
+                        .hover(|s| s.bg(rgba(GLASS_HOVER)))
+                        .when(!priority, |s| s.child(
+                            provider_icon(agent_icon(session.agent), 12., agent_color(session.agent)).flex_none()
+                        ))
+                        .child(
+                            div().flex_1().min_w(px(0.)).overflow_hidden().flex().flex_col()
+                                .when(priority, |s| s.gap(px(3.)))
+                                .when_some(metadata, |s, (time, project)| {
+                                    s.child(div().flex().items_center().gap_1().line_height(px(14.))
+                                        .text_size(theme::ui_px(10.)).text_color(rgb(MUTED))
+                                        .child(project_badge(&project, &session.project_path, 14.))
+                                        .child(div().flex_1().min_w(px(0.)).truncate().child(project))
+                                        .child(div().flex_none().child(time)))
+                                })
+                                .child(div().flex().items_center().gap_1()
+                                    .line_height(theme::ui_line_height(if priority { 17. } else { 20. }))
+                                    .child(div().flex_1().min_w(px(0.)).truncate().text_size(theme::ui_px(12.))
+                                        .child(self.animated_chat_title(&session)))
+                                    .when(priority && branch.is_none(), |s| s.child(
+                                        provider_icon(agent_icon(session.agent), 11., agent_color(session.agent)).flex_none()
+                                    )))
+                                .when_some(branch, |s, branch| {
+                                    s.child(div().flex().items_center().gap_1().line_height(px(14.))
+                                        .text_size(theme::ui_px(10.)).text_color(rgb(MUTED))
+                                        .child(icon("branch", 10., MUTED).flex_none())
+                                        .child(div().flex_1().min_w(px(0.)).truncate().child(branch))
+                                        .child(provider_icon(agent_icon(session.agent), 11., agent_color(session.agent)).flex_none()))
+                                }),
+                        )
+                        .when(running && !priority, |s| {
+                            s.child(
+                                self.chat_sidebar_status(&session.id, cx.active_window().is_some()),
+                            )
+                        })
+                        .when(self.lifecycle.pinned_chats.contains(&session.id), |s| {
+                            s.child(icon("pin", 10., MUTED).flex_none())
+                        })
+                        .child(
+                            div()
+                                .when(priority, |s| s.absolute().right(px(27.)).top(px(3.)))
+                                .id(("tree-chat-menu", session_ix))
+                                .debug_selector(move || format!("tree-chat-menu-{session_ix}"))
+                                .size(px(18.))
+                                .flex_none()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded_sm()
+                                .opacity(if selected { 1. } else { 0. })
+                                .group_hover("tree-chat", |s| s.opacity(1.))
+                                .hover(|s| s.bg(rgba(GLASS_HOVER)))
+                                .child(icon("more", 12., MUTED))
+                                .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
+                                    cx.stop_propagation();
+                                    this.tree_menu(
+                                        MenuTarget::Chat(menu_session.clone()),
+                                        e,
+                                        window,
+                                        cx,
+                                    );
+                                })),
+                        )
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            cx.stop_propagation();
+                            if closing {
+                                return;
+                            }
+                            if let Some(project) = &chat_project {
+                                this.project = project.clone();
+                                this.all_projects = false;
+                            }
+                            this.open_session(session.clone(), window, cx);
+                        })),
+                )
+                .into_any_element()
+            }
+            Node::Placeholder(project_ix) => {
+                let path = self.projects[project_ix].path.clone();
+                let failed = self.project_tree.failed.contains(&path);
+                row.child(
+                    div()
+                        .id(("tree-empty", project_ix))
+                        .h(px(32.))
+                        .pl(px(30.))
+                        .text_size(crate::theme::ui_px(11.))
+                        .text_color(rgb(MUTED))
+                        .flex()
+                        .items_center()
+                        .child(if failed {
+                            "Retry loading chats"
+                        } else if self.project_tree.pending.contains_key(&path) {
+                            "Loading chats…"
+                        } else {
+                            "No conversations yet"
+                        })
+                        .when(failed, |s| {
+                            s.cursor_pointer()
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.request_project_branch(path.clone());
+                                    cx.notify();
+                                }))
+                        }),
+                )
+                .into_any_element()
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui_tests::{click_selector, draw_frame, fixture};
+    use gpui::{TestAppContext, VisualTestContext};
+    use std::prelude::v1::test;
+
+    #[test]
+    fn pet_badges_are_stable_and_use_dithered_cells_for_each_seed() {
+        assert!(pet_badge_palettes().len() > 8);
+        let first = render_project_badge(0x7ab6_e1de_48a2_d361);
+        let repeat = render_project_badge(0x7ab6_e1de_48a2_d361);
+        assert_eq!(first.as_bytes(0), repeat.as_bytes(0));
+        let colors: HashSet<_> = first.as_bytes(0).unwrap().chunks_exact(4).collect();
+        assert!(colors.len() >= 20);
+        for row in first.as_bytes(0).unwrap().chunks_exact(24 * 4) {
+            assert!(row.chunks_exact(8).all(|cell| cell[..4] == cell[4..]));
+        }
+        let textures: HashSet<_> = (0..64u64).map(|seed| {
+            render_project_badge(seed.wrapping_mul(0x9e3779b97f4a7c15)).as_bytes(0).unwrap().to_vec()
+        }).collect();
+        assert_eq!(textures.len(), 64);
+    }
+
+    #[gpui::test]
+    fn discovery_indexes_final_merged_sessions_and_project_sources(cx:&mut TestAppContext) {
+        let(view,cx)=fixture(cx);
+        view.update(cx,|app,cx|{
+            let root=app.project.clone();
+            let first=root.join("first");let second=root.join("second");let hidden=root.join("hidden");
+            let project=|path:PathBuf|Project{name:path.file_name().unwrap().to_string_lossy().into_owned(),path};
+            let template=app.sessions[0].clone();
+            let session=|id:&str,path:PathBuf,at:i64|{let mut s=template.clone();s.id=id.into();s.title=id.into();s.project_path=path;s.updated_at=at;s};
+            let mut old=session("merged",first.clone(),100);
+            old.external_id=Some("native-kept".into());old.execution_path=Some(first.join("execution"));
+            let retained=session("archived",first.clone(),200);
+            app.sessions=vec![old.clone(),retained];
+            app.activity=Default::default();
+            app.lifecycle.archived_chats.insert("archived".into());
+            app.custom_projects=vec![project(second.clone()),project(first.clone())];
+            app.hidden_projects.insert(hidden.clone());
+            app.hidden_sessions.insert("hidden-chat".into());
+            app.expanded_projects=HashSet::from([first.clone(),second.clone()]);
+            app.all_projects=false;app.archived_view=false;app.discovering=false;
+            app.install_discovery(discovery::Discovery{projects:vec![project(first.clone()),project(hidden.clone())],..Default::default()},
+                vec![session("merged",first.clone(),1),session("newest",second.clone(),300),session("hidden-chat",second.clone(),400)],None,cx);
+            assert_eq!(app.projects.iter().map(|p|p.path.clone()).collect::<Vec<_>>(),vec![second.clone(),first.clone()]);
+            let merged=app.sessions.iter().find(|s|s.id=="merged").unwrap();
+            assert_eq!((&merged.title,merged.updated_at,&merged.external_id,&merged.execution_path),(&old.title,100,&old.external_id,&old.execution_path));
+            assert!(app.sessions.iter().any(|s|s.id=="archived"));
+            assert_eq!(app.workspace_sessions.iter().map(|s|s.id.as_str()).collect::<Vec<_>>(),vec!["newest","merged"]);
+            let chat_rows=|app:&Orbit|app.project_tree.rows.iter().filter_map(|node|if let Node::Chat(ix,_)=node{Some(app.sessions[*ix].id.clone())}else{None}).collect::<Vec<_>>();
+            assert_eq!(chat_rows(app),vec!["newest","merged"]);
+            // Rebuilding after the atomic installation must reproduce the same
+            // rows, including archive and flat-list scopes, without stale IDs.
+            app.rebuild_projects();assert_eq!(chat_rows(app),vec!["newest","merged"]);
+            app.archived_view=true;app.all_projects=true;app.rebuild_workspace_sessions();
+            assert_eq!(chat_rows(app),vec!["archived"]);
+        });
+    }
+
+    fn unified(cx: &mut TestAppContext) -> (Entity<Orbit>, &mut VisualTestContext) {
+        let (view, cx) = fixture(cx);
+        view.update(cx, |app, cx| {
+            app.sidebar_split = false;
+            app.sidebar_width = 280.;
+            app.custom_projects = vec![
+                Project {
+                    name: "One".into(),
+                    path: app.project.join("one"),
+                },
+                Project {
+                    name: "Two".into(),
+                    path: app.project.join("two"),
+                },
+            ];
+            app.source_projects.clear();
+            for p in &app.custom_projects {
+                std::fs::create_dir_all(&p.path).unwrap();
+            }
+            app.expanded_projects.clear();
+            app.all_projects = false;
+            app.rebuild_projects();
+            let base = app.sessions[0].clone();
+            app.sessions = (0..2)
+                .map(|n| {
+                    let mut s = base.clone();
+                    s.id = format!("chat-{n}");
+                    s.title = format!("Conversation {n}");
+                    s.project_path = app.custom_projects[n].path.clone();
+                    s
+                })
+                .collect();
+            app.active = Some("chat-0".into());
+            app.composer
+                .update(cx, |input, cx| input.set_text("Draft stays here", cx));
+            app.rebuild_workspace_sessions();
+        });
+        draw_frame(&view, cx);
+        (view, cx)
+    }
+
+    #[gpui::test]
+    fn sidebar_headers_fold_projects_and_chats_independently_without_closing_conversations(cx:&mut TestAppContext){
+        let(view,cx)=unified(cx);
+        view.update(cx,|app,cx|{
+            let mut standalone=app.sessions[0].clone();standalone.id="standalone".into();standalone.project_path=app.unprojected_root();app.sessions.push(standalone);
+            app.motion=false;let path=app.custom_projects[0].path.clone();app.toggle_project_branch(path,cx);app.rebuild_project_tree();
+        });
+        draw_frame(&view,cx);let old_top=cx.debug_bounds("sidebar-recents").unwrap().top();
+        view.update(cx,|app,_|{app.motion=true;app.project_tree.frame_elapsed=Some(Duration::from_millis(100));});
+        click_selector(cx,"sidebar-layout-header");draw_frame(&view,cx);
+        let group=cx.debug_bounds("project-branch-group-0").unwrap();assert!(group.size.height>px(0.) && group.size.height<px(64.),"Projects must animate their actual row geometry");
+        assert!(cx.debug_bounds("sidebar-recents").unwrap().top()<old_top,"Chats header must slide up with collapsing projects");
+        view.update(cx,|app,_|app.project_tree.frame_elapsed=Some(Duration::from_millis(300)));draw_frame(&view,cx);
+        view.update(cx,|app,cx|{
+            assert!(app.project_tree.projects_collapsed);assert!(!app.project_tree.chats_collapsed);assert!(app.project_tree.section_motions.is_empty());assert!(!app.project_tree.rows.iter().any(|n|matches!(n,Node::Project(_))));assert!(app.project_tree.rows.iter().any(|n|matches!(n,Node::Chat(..))));
+            assert_eq!(app.active.as_deref(),Some("chat-0"));assert_eq!(app.composer.read(cx).text(),"Draft stays here");assert_eq!(app.expanded_projects.len(),1);
+            app.motion=false;app.project_tree.frame_elapsed=None;
+        });
+        click_selector(cx,"sidebar-recents");draw_frame(&view,cx);
+        view.update(cx,|app,cx|{assert!(app.project_tree.chats_collapsed);assert_eq!(app.project_tree.rows.len(),1);assert!(matches!(app.project_tree.rows[0],Node::RecentHeader));let saved=app.workspace_snapshot(cx);let restored:workspace_state::WorkspaceState=serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap();assert!(restored.sidebar_projects_collapsed && restored.sidebar_chats_collapsed);});
+        click_selector(cx,"sidebar-recents");click_selector(cx,"sidebar-layout-header");draw_frame(&view,cx);
+        view.update(cx,|app,_|{assert!(!app.project_tree.projects_collapsed && !app.project_tree.chats_collapsed);assert_eq!(app.expanded_projects.len(),1);assert!(app.project_tree.rows.iter().any(|n|matches!(n,Node::Project(_))));});
+    }
+    #[gpui::test]
+    fn split_sidebar_sections_shrink_reopen_and_respect_reduced_motion(cx:&mut TestAppContext){
+        let(view,cx)=fixture(cx);
+        view.update(cx,|app,_|{app.sidebar_split=true;app.conversations_visible=true;app.motion=true;app.project_tree.frame_elapsed=Some(Duration::from_millis(80));});draw_frame(&view,cx);
+        let projects=cx.debug_bounds("project-section-body").unwrap().size.height;let chats=cx.debug_bounds("conversation-section-body").unwrap().size.height;
+        click_selector(cx,"sidebar-layout-header");click_selector(cx,"conversation-section-header");draw_frame(&view,cx);
+        let p=cx.debug_bounds("project-section-body").unwrap().size.height;let c=cx.debug_bounds("conversation-section-body").unwrap().size.height;
+        assert!(p>px(0.) && p<projects,"Split Projects viewport must physically shrink: {p:?} vs {projects:?}");assert!(c>px(0.) && c<chats,"Split Chats viewport must physically shrink: {c:?} vs {chats:?}");
+        view.update(cx,|app,_|app.project_tree.frame_elapsed=Some(Duration::from_millis(300)));draw_frame(&view,cx);
+        assert!(cx.debug_bounds("project-section-body").unwrap().size.height<px(1.));assert!(cx.debug_bounds("conversation-section-body").unwrap().size.height<px(1.));
+        view.update(cx,|app,_|{app.motion=false;app.project_tree.frame_elapsed=None;});click_selector(cx,"sidebar-layout-header");click_selector(cx,"conversation-section-header");draw_frame(&view,cx);
+        assert!(cx.debug_bounds("project-section-body").unwrap().size.height>px(50.));assert!(cx.debug_bounds("conversation-section-body").unwrap().size.height>px(50.));
+        view.update(cx,|app,_|{assert!(app.project_tree.section_motions.is_empty());assert!(!app.project_tree.projects_collapsed && !app.project_tree.chats_collapsed);});
+    }
+    #[gpui::test]
+    fn reversing_section_folds_preserves_progress_and_idle_has_no_animation_work(cx:&mut TestAppContext){
+        let(view,cx)=unified(cx);
+        cx.update(|window,cx|view.update(cx,|app,cx|{
+            app.motion=true;
+            for section in [SidebarSection::Projects,SidebarSection::Chats]{
+                app.toggle_sidebar_section(section,cx);app.project_tree.section_motions.insert(section,(Instant::now()-Duration::from_millis(90),1.));let before=app.sidebar_section_fraction(section);assert!(before>0. && before<1.);app.toggle_sidebar_section(section,cx);assert!((app.sidebar_section_fraction(section)-before).abs()<0.01);
+                app.project_tree.section_motions.insert(section,(Instant::now()-Duration::from_secs(1),before));
+            }
+            app.tick_project_tree(window,cx);assert!(app.project_tree.section_motions.is_empty());app.tick_project_tree(window,cx);assert!(app.project_tree.section_motions.is_empty());
+        }));
+    }
+
+    fn double_click(cx: &mut VisualTestContext, position: Point<Pixels>) {
+        cx.simulate_event(MouseDownEvent {
+            position,
+            button: MouseButton::Left,
+            click_count: 2,
+            ..Default::default()
+        });
+        cx.simulate_event(MouseUpEvent {
+            position,
+            button: MouseButton::Left,
+            click_count: 2,
+            ..Default::default()
+        });
+    }
+
+    #[gpui::test]
+    fn multiple_project_branches_keep_active_chat_and_draft_until_chat_clicked(
+        cx: &mut TestAppContext,
+    ) {
+        let (view, cx) = unified(cx);
+        click_selector(cx, "project-0");
+        draw_frame(&view, cx);
+        click_selector(cx, "project-1");
+        draw_frame(&view, cx);
+        cx.update(|_, cx| {
+            let app = view.read(cx);
+            assert_eq!(app.expanded_projects.len(), 2);
+            assert_eq!(app.active.as_deref(), Some("chat-0"));
+            assert_eq!(app.composer.read(cx).text(), "Draft stays here");
+            assert_eq!(app.rows.len(), 0);
+        });
+        click_selector(cx, "tree-chat-chat-1");
+        cx.update(|_, cx| {
+            let app = view.read(cx);
+            assert_eq!(app.active.as_deref(), Some("chat-1"));
+            assert_eq!(app.drafts["chat-0"], "Draft stays here");
+            assert_eq!(app.project, app.custom_projects[1].path);
+        });
+        draw_frame(&view, cx);
+        click_selector(cx, "project-0");
+        draw_frame(&view, cx);
+        // A selected chat remains open when its parent folder is collapsed.
+        click_selector(cx, "project-1");
+        cx.update(|_, cx| {
+            let app = view.read(cx);
+            assert!(app.expanded_projects.is_empty());
+            assert_eq!(app.active.as_deref(), Some("chat-1"));
+        });
+    }
+
+    #[gpui::test]
+    fn discovery_refresh_invalidates_branch_summaries_and_stale_replies(cx: &mut TestAppContext) {
+        let (view, cx) = unified(cx);
+        view.update(cx, |app, cx| {
+            let path = app.custom_projects[0].path.clone();
+            app.project_tree.ready.insert(path.clone());
+            app.project_tree.pending.insert(path.clone(), 7);
+            app.receive(
+                Event::Ready(discovery::Discovery::default(), Vec::new(), None),
+                cx,
+            );
+            assert!(app.project_tree.ready.is_empty());
+            assert!(app.project_tree.pending.is_empty());
+            app.receive_project_branch(path, 7, Ok(Vec::new()), cx);
+            assert!(app.project_tree.ready.is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn restoring_active_chat_preserves_collapsed_project(cx: &mut TestAppContext) {
+        let (view, cx) = unified(cx);
+        view.update_in(cx, |app, window, cx| {
+            let session = app.sessions[0].clone();
+            app.restore_model = Some((session.id.clone(), None));
+            app.open_session(session, window, cx);
+            assert!(app.expanded_projects.is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn double_clicking_split_controls_keeps_the_layout(cx: &mut TestAppContext) {
+        let (view, cx) = unified(cx);
+        view.update(cx, |app, cx| app.toggle_sidebar_layout(cx));
+        draw_frame(&view, cx);
+        for selector in ["toggle-archived-chats", "new-session", "workspace-search"] {
+            let bounds = cx.debug_bounds(selector).unwrap();
+            double_click(cx, bounds.center());
+            draw_frame(&view, cx);
+            cx.update(|_, cx| assert!(view.read(cx).sidebar_split));
+        }
+    }
+
+    #[gpui::test]
+    fn double_click_changes_layout_without_losing_expansion_or_draft(cx: &mut TestAppContext) {
+        let (view, cx) = unified(cx);
+        click_selector(cx, "project-0");
+        draw_frame(&view, cx);
+        let before = cx.update(|_, cx| view.read(cx).expanded_projects.clone());
+        let header = cx.debug_bounds("sidebar-layout-header").unwrap();
+        double_click(cx, header.center());
+        draw_frame(&view, cx);
+        cx.update(|_, cx| {
+            let app = view.read(cx);
+            assert!(app.sidebar_split);
+            assert_eq!(app.sidebar_width, 200.);
+            assert_eq!(app.expanded_projects, before);
+            assert_eq!(app.composer.read(cx).text(), "Draft stays here");
+        });
+        let split = cx.debug_bounds("workspace-pane").unwrap();
+        double_click(cx, point(split.center().x, split.top() + px(20.)));
+        draw_frame(&view, cx);
+        cx.update(|_, cx| {
+            let app = view.read(cx);
+            assert!(!app.sidebar_split);
+            assert_eq!(app.sidebar_width, 280.);
+            assert_eq!(app.expanded_projects, before);
+        });
+        let chat = cx.debug_bounds("chat-pane").unwrap();
+        assert_eq!(chat.left(), px(280.));
+    }
+
+    #[gpui::test]
+    fn unified_sidebar_can_be_reopened_and_archive_and_recent_views_remain_available(
+        cx: &mut TestAppContext,
+    ) {
+        let (view, cx) = unified(cx);
+        click_selector(cx, "inbox");
+        draw_frame(&view, cx);
+        cx.update(|_, cx| assert!(view.read(cx).all_projects));
+        // GPUI retains debug selectors from unmounted elements. Verify the
+        // fresh Priority branch and painted row size instead of absence.
+        view.update(cx, |app, _| assert!(app.project_tree.rows.iter().all(|row| matches!(row, Node::Chat(..)))));
+        assert_eq!(cx.debug_bounds("tree-chat-chat-0").unwrap().size.height, px(40.));
+        click_selector(cx, "inbox");
+        draw_frame(&view, cx);
+        cx.update(|_, cx| assert!(!view.read(cx).all_projects));
+        click_selector(cx, "tree-archived");
+        draw_frame(&view, cx);
+        cx.update(|_, cx| assert!(view.read(cx).modal == Some(Modal::Activity)));
+        click_selector(cx, "activity-archive");
+        draw_frame(&view, cx);
+        cx.update(|_, cx| assert!(view.read(cx).archived_view));
+        view.update(cx, |app, cx| {
+            app.toggle_sidebar();
+            cx.notify();
+        });
+        draw_frame(&view, cx);
+        click_selector(cx, "workspace-sidebar-toggle");
+        draw_frame(&view, cx);
+        cx.update(|_, cx| {
+            let app = view.read(cx);
+            assert!(app.sidebar);
+            assert_eq!(app.sidebar_width, 280.);
+        });
+    }
+
+    #[gpui::test]
+    fn unprojected_chat_button_leaves_the_project_and_preserves_its_draft(cx: &mut TestAppContext) {
+        let (view, cx) = unified(cx);
+        click_selector(cx, "new-unprojected-chat");
+        let first = cx.update(|_, cx| {
+            let app = view.read(cx);
+            assert!(app.active.is_none());
+            assert_eq!(app.drafts["chat-0"], "Draft stays here");
+            assert!(app.composer.read(cx).text().is_empty());
+            assert_eq!(app.project, app.unprojected_root());
+            assert!(!app.all_projects && !app.archived_view);
+            let workspace = app.execution_root().unwrap();
+            assert_eq!(workspace.parent(), Some(app.project.as_path()));
+            assert!(!workspace.exists(), "Clicking must not do filesystem work");
+            assert!(app.runs.is_empty() && !app.starting);
+            assert!(!app.projects.iter().any(|p| p.path == app.project));
+            workspace
+        });
+        click_selector(cx, "new-unprojected-chat");
+        cx.update(|_, cx| {
+            let app = view.read(cx);
+            assert_ne!(app.execution_root().as_ref(), Some(&first));
+            let mut session = app.sessions[0].clone();
+            session.project_path = app.project.clone();
+            session.execution_path = app.execution_root();
+            assert!(app.unprojected_workspace(&session).is_some());
+            session.execution_path = Some(app.project.join("not-a-managed-chat"));
+            assert!(app.unprojected_workspace(&session).is_none());
+            session.execution_path = Some(first);
+            session.project_path = app.custom_projects[0].path.clone();
+            assert!(app.unprojected_workspace(&session).is_none());
+        });
+        view.update_in(cx, |app, window, cx| {
+            app.composer.update(cx, |input, cx| {
+                input.set_text("Unsent standalone draft", cx)
+            });
+            let saved = app.workspace_snapshot(cx);
+            let workspace = app.execution_root();
+            app.project = app.custom_projects[0].path.clone();
+            app.new_execution_path = None;
+            app.composer.update(cx, |input, cx| input.set_text("", cx));
+            app.preferences_ready = true;
+            app.restore_pending = Some(saved);
+            app.restore_workspace(window, cx);
+            assert_eq!(app.project, app.unprojected_root());
+            assert_eq!(app.execution_root(), workspace);
+            assert_eq!(app.composer.read(cx).text(), "Unsent standalone draft");
+            app.new_conversation(window, cx);
+            assert_eq!(app.project, app.unprojected_root());
+            assert_ne!(
+                app.execution_root(),
+                workspace,
+                "New chat must not reuse the last standalone cwd"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn unprojected_chat_sends_in_its_own_workspace_and_persists(cx: &mut TestAppContext) {
+        use std::os::unix::fs::PermissionsExt;
+        let (view, cx) = unified(cx);
+        let (executable, database) = cx.update(|_, cx| {
+            let app = view.read(cx);
+            let scratch = app.controls_home.parent().unwrap();
+            (
+                scratch.join("claude-fixture.py"),
+                scratch.join("data/history.sqlite"),
+            )
+        });
+        std::fs::write(&executable, r#"#!/usr/bin/python3
+import json, os, sys
+def emit(v): print(json.dumps(v), flush=True)
+v = json.loads(sys.stdin.readline())
+emit({'type':'control_response','response':{'subtype':'success','request_id':v['request_id'],'response':{'commands':[]}}})
+v = json.loads(sys.stdin.readline())
+open('received.json', 'w').write(json.dumps({'cwd':os.getcwd(), 'input':v}))
+emit({'type':'system','subtype':'init','session_id':'standalone-native','slash_commands':[]})
+emit({'type':'assistant','message':{'id':'reply','content':[{'type':'text','text':'Standalone reply'}]}})
+emit({'type':'result','subtype':'success','is_error':False,'result':'Standalone reply'})
+"#).unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        click_selector(cx, "new-unprojected-chat");
+        let (workspace, root, id) = view.update_in(cx, |app, window, cx| {
+            app.agent = AgentKind::Claude;
+            app.agents = vec![Agent {
+                kind: AgentKind::Claude,
+                name: "Fixture Claude".into(),
+                executable: Some(executable),
+                available: true,
+            }];
+            app.composer
+                .update(cx, |input, cx| input.set_text("Standalone prompt", cx));
+            let workspace = app.execution_root().unwrap();
+            app.send(window, cx);
+            let id = app.active.clone().expect("Send created a chat");
+            (workspace, app.project.clone(), id)
+        });
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            cx.run_until_parked();
+            view.update(cx, |app, cx| {
+                while let Ok(event) = app.engine.events.try_recv() {
+                    if matches!(
+                        event,
+                        Event::Parsed(_, _) | Event::PagedFinished(_) | Event::FinishError(_, _)
+                    ) {
+                        app.receive(event, cx);
+                    }
+                }
+            });
+            if cx.update(|_, cx| {
+                let app = view.read(cx);
+                !app.starting && app.runs.is_empty() && app.finalizing.is_empty()
+            }) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "Standalone prompt did not finish"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let captured: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(workspace.join("received.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            PathBuf::from(captured["cwd"].as_str().unwrap()),
+            workspace.canonicalize().unwrap()
+        );
+        assert!(captured["input"].to_string().contains("Standalone prompt"));
+        let flush = cx.update(|_, cx| view.read(cx).engine.flush());
+        flush.recv_timeout(Duration::from_secs(5)).unwrap();
+        let stored = store::Store::open(&database)
+            .unwrap()
+            .session(&id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.project_path, root);
+        assert_eq!(stored.execution_path, Some(workspace));
+        assert_eq!(stored.external_id.as_deref(), Some("standalone-native"));
+        cx.update(|_, cx| {
+            let app = view.read(cx);
+            assert!(app.project_tree.rows.iter().any(|node| matches!(node,
+                Node::Chat(ix, None) if app.sessions[*ix].id == id)));
+            assert!(!app.projects.iter().any(|p| p.path == root));
+            assert!(app.rows.iter().any(|row| matches!(&row.block,
+                MessageBlock::Paragraph(text) if text.contains("Standalone reply"))));
+        });
+    }
+
+    #[gpui::test]
+    fn ungrouped_chats_follow_projects_without_a_storage_folder_or_duplicates(
+        cx: &mut TestAppContext,
+    ) {
+        let (view, cx) = unified(cx);
+        view.update(cx, |app, _| {
+            let storage = app
+                .controls_home
+                .join("Library/Application Support/Kai/Chats");
+            let real = app.project.join("actual-repository/Chats");
+            app.custom_projects.extend([
+                Project {
+                    name: "Chats".into(),
+                    path: storage.clone(),
+                },
+                Project {
+                    name: "Chats".into(),
+                    path: real.clone(),
+                },
+            ]);
+            let mut loose = app.sessions[0].clone();
+            loose.id = "ungrouped".into();
+            loose.project_path = storage.clone();
+            loose.execution_path = Some(storage.join("original-working-directory"));
+            let mut grouped = loose.clone();
+            grouped.id = "grouped".into();
+            grouped.project_path = real;
+            app.sessions.extend([loose, grouped]);
+            app.rebuild_projects();
+            let header = app
+                .project_tree
+                .rows
+                .iter()
+                .position(|n| matches!(n, Node::RecentHeader))
+                .unwrap();
+            assert_eq!(
+                app.project_tree.rows[..header]
+                    .iter()
+                    .filter(|n| matches!(n, Node::Project(_)))
+                    .count(),
+                3
+            );
+            assert!(
+                app.project_tree.rows[header + 1..]
+                    .iter()
+                    .all(|n| matches!(n, Node::Chat(_, None)))
+            );
+            let flat: Vec<_> = app.project_tree.rows[header + 1..]
+                .iter()
+                .filter_map(|n| match n {
+                    Node::Chat(ix, None) => Some(app.sessions[*ix].id.as_str()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(flat, ["ungrouped"]);
+            assert!(app.rows.is_empty());
+        });
+        draw_frame(&view, cx);
+        click_selector(cx, "tree-chat-ungrouped");
+        view.update(cx, |app, _| {
+            assert_eq!(app.active.as_deref(), Some("ungrouped"));
+            let session = app.sessions.iter().find(|s| s.id == "ungrouped").unwrap();
+            assert!(
+                session
+                    .execution_path
+                    .as_ref()
+                    .unwrap()
+                    .ends_with("original-working-directory")
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn huge_expanded_tree_renders_only_visible_summaries_and_no_transcripts(
+        cx: &mut TestAppContext,
+    ) {
+        let (view, cx) = unified(cx);
+        view.update(cx, |app, _| {
+            let base = app.sessions[0].clone();
+            app.sessions = (0..10_000)
+                .map(|n| {
+                    let mut s = base.clone();
+                    s.id = format!("many-{n}");
+                    s.title = format!("Chat {n}");
+                    s
+                })
+                .collect();
+            app.expanded_projects.insert(base.project_path.clone());
+            app.project_tree.ready.insert(base.project_path);
+            app.rebuild_workspace_sessions();
+            app.project_tree.rendered = 0;
+        });
+        draw_frame(&view, cx);
+        cx.update(|_, cx| {
+            let app = view.read(cx);
+            assert_eq!(
+                app.project_tree
+                    .rows
+                    .iter()
+                    .filter(|row| matches!(row, Node::Chat(..)))
+                    .count(),
+                10_000
+            );
+            assert_eq!(
+                app.project_tree
+                    .rows
+                    .iter()
+                    .filter(|row| matches!(row, Node::Project(_)))
+                    .count(),
+                2
+            );
+            assert!(app.project_tree.rendered < 100);
+            assert!(app.rows.is_empty());
+        });
+    }
+
+    #[gpui::test]fn accordion_geometry_is_intermediate_and_conversation_fold_reverses(cx:&mut TestAppContext){
+        let(view,cx)=unified(cx);crate::ui_tests::settle_composer(&view,cx);view.update(cx,|app,cx|{app.motion=true;app.project_tree.frame_elapsed=Some(Duration::from_millis(25));let path=app.custom_projects[0].path.clone();app.toggle_project_branch(path.clone(),cx);app.project_tree.motions.insert(path,(Instant::now()-Duration::from_millis(25),true,0.));cx.notify();});draw_frame(&view,cx);
+        let height=f32::from(cx.debug_bounds("project-branch-group-0").unwrap().size.height);assert!(height>32.&&height<64.,"actual group must ease between header and one chat, got {height}");
+        view.update(cx,|app,cx|{app.project_tree.frame_elapsed=None;app.sidebar_split=true;app.conversations_visible=true;app.conversations_transition=None;app.toggle_conversations(cx);app.conversations_transition=Some((Instant::now()-Duration::from_millis(80),1.));let before=app.conversations_progress();assert!(before>0.&&before<1.);app.toggle_conversations(cx);assert!((app.conversations_progress()-before).abs()<0.01);});
+    }
+    #[gpui::test]
+    fn rapid_fold_reversal_is_continuous_and_all_animation_work_stops(cx: &mut TestAppContext) {
+        let (view, cx) = unified(cx);
+        cx.update(|window, cx| {
+            view.update(cx, |app, cx| {
+                app.motion = true;
+                let path = app.custom_projects[0].path.clone();
+                app.toggle_project_branch(path.clone(), cx);
+                app.project_tree.motions.insert(
+                    path.clone(),
+                    (Instant::now() - Duration::from_millis(100), true, 0.),
+                );
+                app.project_tree.frame_elapsed = Some(Duration::from_millis(100));
+                let before = app.project_fold_fraction(&path).clamp(0., 1.);
+                app.toggle_project_branch(path.clone(), cx);
+                app.project_tree.frame_elapsed = Some(Duration::ZERO);
+                assert!((app.project_fold_fraction(&path) - before).abs() < 0.01);
+                app.project_tree.motions.insert(
+                    path.clone(),
+                    (Instant::now() - Duration::from_millis(80), false, before),
+                );
+                app.project_tree.frame_elapsed = Some(Duration::from_millis(80));
+                let before = app.project_fold_fraction(&path).clamp(0., 1.);
+                app.toggle_project_branch(path.clone(), cx);
+                app.project_tree.frame_elapsed = Some(Duration::ZERO);
+                assert!((app.project_fold_fraction(&path) - before).abs() < 0.01);
+                app.project_tree
+                    .motions
+                    .insert(path, (Instant::now() - Duration::from_secs(1), false, 1.));
+                app.project_tree.frame_elapsed = None;
+                app.expanded_projects.clear();
+                app.tick_project_tree(window, cx);
+                assert!(app.project_tree.motions.is_empty());
+                assert_eq!(
+                    app.project_tree
+                        .rows
+                        .iter()
+                        .filter(|row| matches!(row, Node::Project(_)))
+                        .count(),
+                    2
+                );
+                assert!(
+                    !app.project_tree
+                        .rows
+                        .iter()
+                        .any(|row| matches!(row, Node::Chat(..)))
+                );
+            })
+        });
+    }
+
+    #[gpui::test]
+    fn collapsed_projects_do_not_fetch_and_branch_menus_keep_their_targets(
+        cx: &mut TestAppContext,
+    ) {
+        let (view, cx) = unified(cx);
+        cx.update(|_, cx| assert!(view.read(cx).project_tree.pending.is_empty()));
+        click_selector(cx, "project-menu-0");
+        cx.update(|_,cx|{let app=view.read(cx);assert!(matches!(&app.action_menu.as_ref().unwrap().target,MenuTarget::Project(p) if p.path==app.custom_projects[0].path));assert_eq!(app.active.as_deref(),Some("chat-0"));});
+        view.update(cx, |app, _| {
+            app.action_menu = None;
+        });
+        click_selector(cx, "project-0");
+        draw_frame(&view, cx);
+        click_selector(cx, "tree-chat-menu-0");
+        cx.update(|_,cx|{let app=view.read(cx);assert!(matches!(&app.action_menu.as_ref().unwrap().target,MenuTarget::Chat(s) if s.id=="chat-0"));assert_eq!(app.expanded_projects.len(),1);});
+    }
+
+    #[gpui::test]
+    fn closest_project_owns_chats_and_stale_branch_results_cannot_replace_state(
+        cx: &mut TestAppContext,
+    ) {
+        let (view, cx) = unified(cx);
+        view.update(cx, |app, cx| {
+            let parent = app.custom_projects[0].path.clone();
+            let nested = parent.join("nested");
+            app.custom_projects.push(Project {
+                name: "Nested".into(),
+                path: nested.clone(),
+            });
+            app.sessions[0].project_path = nested.clone();
+            app.expanded_projects = HashSet::from([parent.clone(), nested.clone()]);
+            app.rebuild_projects();
+            app.rebuild_workspace_sessions();
+            assert_eq!(
+                app.project_tree
+                    .rows
+                    .iter()
+                    .filter(|n| matches!(n, Node::Chat(0, Some(_))))
+                    .count(),
+                1
+            );
+            app.project_tree.pending.insert(parent.clone(), 42);
+            let count = app.sessions.len();
+            app.receive_project_branch(parent.clone(), 41, Ok(vec![]), cx);
+            assert_eq!(app.project_tree.pending.get(&parent), Some(&42));
+            assert_eq!(app.sessions.len(), count);
+            app.receive_project_branch(parent, 42, Err("fixture".into()), cx);
+            assert!(app.project_tree.pending.is_empty());
+            assert_eq!(app.active.as_deref(), Some("chat-0"));
+        });
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct ResizeSidebar;
+pub(super) fn bounded_sidebar_width(width: f32) -> f32 {
+    if width.is_finite() { width.clamp(144., 560.) } else { 280. }
+}
+impl Orbit {
+    pub(super) fn resize_sidebar(&mut self, width: f32, cx: &mut Context<Self>) {
+        let target = bounded_sidebar_width(width);
+        let index = usize::from(self.sidebar_split);
+        if (self.sidebar_sizes[index] - target).abs() < 0.1 { return; }
+        self.sidebar_sizes[index] = target;
+        self.sidebar = true;
+        self.animate_sidebar_width(Instant::now());
+        cx.notify();
+    }
+    pub(super) fn sidebar_resize_handle(&self, _cx: &Context<Self>) -> AnyElement {
+        div().id("sidebar-resize").debug_selector(|| "sidebar-resize".into())
+            .absolute().right_0().top_0().h_full().w(px(7.)).cursor_col_resize()
+            .hover(|s| s.bg(rgba(0x88bfff55)))
+            .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                native::panel_drag_guard(window, true); cx.stop_propagation();
+            })
+            .on_drag(ResizeSidebar, |drag, _, _, cx| cx.new(|_| *drag))
+            .into_any_element()
+    }
+}
+
+impl Render for ResizeSidebar {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement { div().size(px(1.)) }
+}

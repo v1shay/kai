@@ -12,6 +12,28 @@ final class VisualTransitionTests:XCTestCase {
         XCTAssertEqual(small.midX,large.midX);XCTAssertEqual(small.midY,large.midY)
         XCTAssertEqual(NotchVisualTransition.artworkFrame(size:.nan,notchHeight:39,center:center,scale:2).width,32)
     }
+    func testMediaArtworkCrossfadesToPetWithListeningMeterStillVisible()async throws {
+        let (transition,artwork,pet,meter)=await MainActor.run{(NotchVisualTransition(),CALayer(),CALayer(),NotchIndicatorEngine())}
+        let context=CGContext(data:nil,width:2,height:2,bitsPerComponent:8,bytesPerRow:8,space:CGColorSpaceCreateDeviceRGB(),bitmapInfo:CGImageAlphaInfo.premultipliedLast.rawValue)!
+        let image=context.makeImage()!
+        let frame=CGRect(x:10,y:5,width:32,height:32)
+        await MainActor.run {
+            artwork.frame=frame;pet.frame=frame;pet.opacity=0
+            transition.artwork(image,on:artwork)
+            meter.startListening(useMicrophone:false) // media level meter
+            transition.hideArtwork(artwork);transition.reveal(pet,visible:true)
+            meter.setExternalLevels([0,0,0,0]);meter.startListening(useMicrophone:false)
+            XCTAssertNotNil(artwork.animation(forKey:"statusFade"))
+            XCTAssertNotNil(pet.animation(forKey:"statusFade"))
+            XCTAssertEqual(meter.layer.opacity,1)
+        }
+        try await Task.sleep(nanoseconds:800_000_000)
+        await MainActor.run {
+            XCTAssertTrue(artwork.isHidden);XCTAssertEqual(pet.opacity,1)
+            XCTAssertEqual(pet.frame,frame);XCTAssertEqual(meter.mode,.listening)
+            XCTAssertEqual(meter.layer.opacity,1);meter.hide()
+        }
+    }
     func testMediaReentryCancelsAnOlderDelayedHide() async throws {
         let context=CGContext(data:nil,width:2,height:2,bitsPerComponent:8,bytesPerRow:8,space:CGColorSpaceCreateDeviceRGB(),bitmapInfo:CGImageAlphaInfo.premultipliedLast.rawValue)!
         let image=context.makeImage()!

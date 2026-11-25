@@ -1,0 +1,23 @@
+[package]
+name = "rv-session"
+version = "0.2.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.90"
+description = "Pinned RV session transport with native ARD encrypted input"
+autoexamples = false
+[features]
+test-support = []
+[dependencies]
+rv-core = { git = "https://github.com/madeye/rv", rev = "87055e205fa88803213337846b4d2f59a7a525ee" }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
+thiserror = "2"
+tokio = { version = "1", features = ["net", "rt-multi-thread", "macros", "time", "sync", "io-util"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+tracing = "0.1"
+vnc = { package = "vnc-rs", version = "0.5.3" }
+webpki-roots = "0.26"
+openssl = { version = "0.10", features = ["vendored"] }
+tokio-openssl = "0.6"
+zeroize = "1"

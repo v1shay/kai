@@ -1,0 +1,376 @@
+import AppKit
+
+/// An index of the committed file-action attachments, updated after text edits.
+/// Attachment and storage ownership remain with the live text view.
+@MainActor private final class FileActionAttachmentIndex {
+    struct Target {
+        weak var attachment: NSTextAttachment?
+        var range: NSRange
+    }
+    private weak var storage: NSTextStorage?
+    private var observer: NSObjectProtocol?
+    private var links = [URL: [Target]]()
+    #if DEBUG
+    private(set) var scannedCharacters = 0
+    var targetCount: Int { links.values.reduce(0) { $0 + $1.count } }
+    #endif
+
+    deinit {
+        if let observer { NotificationCenter.default.removeObserver(observer) }
+    }
+
+    func bind(_ next: NSTextStorage) {
+        guard storage !== next else { return }
+        if let observer { NotificationCenter.default.removeObserver(observer) }
+        links.removeAll()
+        storage = next
+        collect(NSRange(location: 0, length: next.length), in: next)
+        observer = NotificationCenter.default.addObserver(
+            forName: NSTextStorage.didProcessEditingNotification, object: next, queue: nil
+        ) { [weak self] note in
+            MainActor.assumeIsolated {
+                guard let storage = note.object as? NSTextStorage else { return }
+                self?.committedEdit(in: storage)
+            }
+        }
+    }
+
+    func targets(for link: URL, in storage: NSTextStorage) -> [Target] {
+        bind(storage)
+        return (links[link] ?? []).filter { $0.attachment != nil }
+    }
+
+    private func collect(_ range: NSRange, in storage: NSTextStorage) {
+        guard range.length > 0 else { return }
+        #if DEBUG
+        scannedCharacters += range.length
+        #endif
+        storage.enumerateAttribute(.link, in: range) { value, linkRange, _ in
+            guard let link = value as? URL, link.scheme == "kai-file-action" else { return }
+            storage.enumerateAttribute(.attachment, in: linkRange) { value, attachmentRange, _ in
+                guard let attachment = value as? NSTextAttachment else { return }
+                links[link, default: []].append(Target(attachment: attachment, range: attachmentRange))
+            }
+        }
+    }
+
+    private func rebuild(in storage: NSTextStorage) {
+        links.removeAll()
+        collect(NSRange(location: 0, length: storage.length), in: storage)
+    }
+
+    private func committedEdit(in storage: NSTextStorage) {
+        let edited = storage.editedRange
+        let delta = storage.changeInLength
+        let (oldLength, overflow) = edited.length.subtractingReportingOverflow(delta)
+        guard !overflow, edited.location != NSNotFound, oldLength >= 0,
+              edited.location <= storage.length, edited.length <= storage.length - edited.location,
+              oldLength <= Int.max - edited.location else {
+            rebuild(in: storage)
+            return
+        }
+        let previous = NSRange(location: edited.location, length: oldLength)
+        // An attachment spanning a partial attribute edit needs both resulting
+        // link runs. Rebuild this unusual case instead of losing its other half.
+        if links.values.joined().contains(where: { target in
+            let overlap = NSIntersectionRange(target.range, previous).length
+            let interiorInsertion = previous.length == 0
+                && target.range.location < previous.location
+                && previous.location < NSMaxRange(target.range)
+            return interiorInsertion || overlap > 0 && overlap < target.range.length
+        }) {
+            rebuild(in: storage)
+            return
+        }
+        for link in Array(links.keys) {
+            let retained = links[link]!.compactMap { target -> Target? in
+                guard target.attachment != nil,
+                      NSIntersectionRange(target.range, previous).length == 0 else { return nil }
+                var target = target
+                if target.range.location >= NSMaxRange(previous) {
+                    target.range.location += delta
+                }
+                return target
+            }
+            if retained.isEmpty { links.removeValue(forKey: link) }
+            else { links[link] = retained }
+        }
+        collect(edited, in: storage)
+    }
+}
+
+/// Owns message ranges so a streaming update or finished equation replaces only
+/// its message. AppKit layout is deferred until the complete batch is applied.
+@MainActor final class ConversationRenderer {
+    private static let pathRegex=try? NSRegularExpression(pattern:#"(?:file://)?(?:/Users/|Users/|~/)[^\s\]\[\)\(>,]+"#)
+    private static let previews=NSCache<NSString,NSImage>()
+    private let fileActionIndex = FileActionAttachmentIndex()
+    #if DEBUG
+    var debugFileActionVisitedCharacters: Int { fileActionIndex.scannedCharacters }
+    var debugFileActionIndexedTargetCount: Int { fileActionIndex.targetCount }
+    #endif
+    private let mathRenderer:MathRenderer
+    private var renderedThreadID:String?,renderedBlocks=[KaiMessage](),renderedRanges=[NSRange]()
+    private var renderedMessageIDs=[String]()
+    private var mathBlocks=[String:Set<Int>](),dirtyMathBlocks=Set<Int>()
+    private var taskPets=[String:InlineTaskPet]()
+    func setTaskPets(_ pets:[String:InlineTaskPet])->Bool{guard taskPets.mapValues(\.key) != pets.mapValues(\.key) else{return false};taskPets=pets;invalidateAll();return true}
+    private(set) var lastReplacedBlockCount=0
+    private(set) var prependedCharacterCount=0
+    private(set) var mappedAnchorCharacter:Int?
+    private(set) var didChange=false
+    var willChange:(()->Void)?
+    private(set) var revealRanges=[NSRange](),didChangeThread=false
+    var hasDirtyMath:Bool {!dirtyMathBlocks.isEmpty}
+    init(mathRenderer:MathRenderer){self.mathRenderer=mathRenderer}
+    func invalidateMath(_ latex:String){dirtyMathBlocks.formUnion(mathBlocks[latex] ?? [])}
+    func invalidateAll(){renderedBlocks.removeAll()}
+    func refreshFileAction(_ action:String,url:URL,in view:NSTextView){
+        guard let storage=view.textStorage,let link=FileActionSymbols.link(action,url:url) else{return}
+        let targets = fileActionIndex.targets(for: link, in: storage)
+        guard !targets.isEmpty else { return }
+        let image = FileActionSymbols.image(action, url: url, padded: true)
+        for target in targets {
+            target.attachment?.image = image
+            view.layoutManager?.invalidateDisplay(forCharacterRange: target.range)
+        }
+    }
+    func needsRender(_ history: [KaiMessage], threadID: String?) -> Bool {
+        renderedThreadID != threadID || hasDirtyMath || renderedBlocks != history
+    }
+
+    func render(_ history:[KaiMessage],threadID:String?,in view:NSTextView,scroll:NSScrollView,renderMath:Bool,palette assistantPalette:[NSColor],anchorCharacter:Int?=nil,collectRevealRanges:Bool=false)->Bool {
+        lastReplacedBlockCount=0;prependedCharacterCount=0;mappedAnchorCharacter=anchorCharacter;didChange=false
+        let changedThread=threadID != renderedThreadID
+        revealRanges=[];didChangeThread=changedThread || (renderedBlocks.isEmpty && !history.isEmpty)
+        if changedThread{willChange?()}
+        if changedThread {mathRenderer.beginDocument();renderedThreadID=threadID;renderedBlocks.removeAll();renderedRanges.removeAll();mathBlocks.removeAll();dirtyMathBlocks.removeAll();view.textStorage?.setAttributedString(NSAttributedString(string:""))}
+        // Swift arrays and strings share storage. Compare the decoded models
+        // directly instead of copying the entire transcript into signatures.
+        let signatures=history
+        guard signatures != renderedBlocks || !dirtyMathBlocks.isEmpty else{return false}
+        if !changedThread{willChange?()}
+        didChange=true
+        (view as? FileActionHoverTextView)?.clearFileActionHover()
+        // Keep the already displayed blocks intact when older exchanges arrive.
+        let added=signatures.count-renderedBlocks.count
+        let prependCount = !changedThread && !renderedBlocks.isEmpty && added>0 && Array(history.dropFirst(added).map{$0.id}) == renderedMessageIDs ? added:0
+        let selection=view.selectedRanges
+        if prependCount>0 {
+            renderedBlocks.insert(contentsOf:Array(history.prefix(prependCount)),at:0)
+            renderedRanges.insert(contentsOf:Array(repeating:NSRange(location:0,length:0),count:prependCount),at:0)
+            mathBlocks=mathBlocks.mapValues{Set($0.map{$0+prependCount})}
+            dirtyMathBlocks=Set(dirtyMathBlocks.map{$0+prependCount})
+        }
+        let nearBottom=changedThread || (scroll.verticalScroller?.floatValue ?? 1) > 0.93
+        let pathRegex=Self.pathRegex
+        let palette=assistantPalette.isEmpty ? [NSColor.white] : assistantPalette
+        guard let storage=view.textStorage else{return false}
+        fileActionIndex.bind(storage)
+        var ranges=renderedRanges
+        storage.beginEditing()
+        defer{
+            storage.endEditing()
+            if prependCount>0 {
+                prependedCharacterCount=ranges[prependCount-1].location+ranges[prependCount-1].length
+                view.selectedRanges=selection.map{value in var range=value.rangeValue;range.location += prependedCharacterCount;return NSValue(range:range)}
+            }
+        }
+        for (index,block) in history.enumerated() {
+            if index >= prependCount,index < renderedBlocks.count,index < ranges.count,signatures[index] == renderedBlocks[index],!dirtyMathBlocks.contains(index){continue}
+            let content=NSMutableAttributedString(string:"")
+            let blockStart=index < ranges.count ? ranges[index].location : storage.length
+            for key in Array(mathBlocks.keys) {mathBlocks[key]?.remove(index);if mathBlocks[key]?.isEmpty == true{mathBlocks.removeValue(forKey:key)}}
+            if block.kind=="assistant",let provider=block.agent,index==0 || history[index-1].kind != "assistant" || history[index-1].agent != provider,let image=ProviderIcons.image(provider,color:palette.first ?? .white){
+                let attachment=NSTextAttachment();attachment.image=image;attachment.bounds=CGRect(x:0,y:-2,width:11,height:11)
+                content.append(NSAttributedString(attachment:attachment));content.append(NSAttributedString(string:"\n",attributes:[.font:AppTypography.ui(ofSize:4)]))
+            }
+            let processedLines=ConversationInteraction.lines(block.lines)
+            var visualLines=renderMath ? MathExpression.collapsedLines(processedLines) : processedLines
+            // Message formatters add empty separators; use one measured gap instead.
+            while visualLines.last?.text.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty == true {visualLines.removeLast()}
+            while visualLines.first?.text.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty == true {visualLines.removeFirst()}
+            let displayed=visualLines.map{ line -> (String,[(NSRange,URL)]) in
+                if let links=line.links,!links.isEmpty {
+                    let count=(line.text as NSString).length
+                    return (line.text,links.compactMap{link in guard link.location>=0,link.length>0,link.location<=count,link.length<=count-link.location,let url=URL(string:link.target) else{return nil};return (NSRange(location:link.location,length:link.length),url)})
+                }
+                return line.style != "code" ? displayCitations(in:line.text) : (line.text,[])
+            }
+            let totalCharacters=max(1,displayed.reduce(0){$0+$1.0.count+1})
+            var characterOffset=0
+            for (lineIndex,pair) in zip(visualLines,displayed).enumerated() {
+            let (line,rendered)=pair
+            let displayText=rendered.0
+            let lineCharacterStart=characterOffset
+            let card=line.style.hasPrefix("interaction:")
+            let cardParts=line.style.split(separator:":")
+            let cardRole=cardParts.last.map(String.init) ?? ""
+            let style=line.style,base=AppTypography.ui(ofSize:9),font:NSFont
+            switch style {case "activity","thinking":font=NSFontManager.shared.convert(AppTypography.ui(ofSize:8),toHaveTrait:.italicFontMask);case "heading":font=AppTypography.ui(ofSize:9,weight:.semibold);case "code":font=AppTypography.code(ofSize:8,weight:.regular);default:font=base}
+            let paragraph=NSMutableParagraphStyle();paragraph.lineSpacing=2
+            if block.kind == "user"{paragraph.alignment = .right;paragraph.headIndent=40;paragraph.firstLineHeadIndent=40}
+            paragraph.paragraphSpacing=lineIndex == visualLines.count-1 ? 5:0
+            if block.kind == "activity" {paragraph.headIndent=17}
+            // The host bridge supplies an off-thread, 280 px normalized PNG.
+            // Cache only the small preview, never decode the original on AppKit.
+            if let png=line.previewPNG,png.utf8.count<512*1024 {
+                let key=png as NSString
+                let image=Self.previews.object(forKey:key) ?? Data(base64Encoded:png).flatMap{NSImage(data:$0)}
+                if let image,image.size.width>0,image.size.height>0 {
+                    Self.previews.countLimit=12;Self.previews.setObject(image,forKey:key)
+                    let width=min(280,max(80,scroll.contentSize.width-48)),scale=min(1,width/image.size.width)
+                    let attachment=NSTextAttachment();attachment.image=image;attachment.bounds=CGRect(x:0,y:0,width:image.size.width*scale,height:image.size.height*scale)
+                    let preview=NSMutableAttributedString(attachment:attachment)
+                    if let link=line.linkTarget.flatMap(URL.init(string:)){preview.addAttribute(.link,value:link,range:NSRange(location:0,length:preview.length))}
+                    content.append(preview);content.append(NSAttributedString(string:"\n"))
+                }
+            }
+            let start=content.length
+            var attributes:[NSAttributedString.Key:Any]=[.font:font,.paragraphStyle:paragraph]
+            if let link=line.linkTarget.flatMap(URL.init(string:)){attributes[.link]=link;attributes[.toolTip]=link.absoluteString}
+            if style == "thinking" {attributes[.kaiThinkingBand]=palette}
+            if card {
+                paragraph.headIndent=12;paragraph.firstLineHeadIndent=12;paragraph.tailIndent = -12
+                paragraph.paragraphSpacing=["answer","document"].contains(cardRole) ? 12:4
+                paragraph.paragraphSpacingBefore=(["title","document"].contains(cardRole) || cardRole.hasPrefix("voice")) ? 9:0
+                attributes[.kaiInteractionCard]=cardParts.dropLast().joined(separator:":")
+                attributes[.kaiInteractionTint]=palette.first!
+                attributes[.font]=AppTypography.ui(ofSize:(cardRole == "title" || cardRole.hasPrefix("voice")) ? 8:9,weight:cardRole == "answer" ? .medium:.regular)
+                if cardRole == "answer" {
+                    var url=URLComponents();url.scheme="kai-reply";url.host="copy";url.queryItems=[URLQueryItem(name:"answer",value:displayText)]
+                    attributes[.link]=url.url
+                    attributes[.toolTip]="Click to copy this answer"
+                }
+            }
+            if block.kind == "assistant" && !card {
+                content.append(NSAttributedString(string:displayText+"\n",attributes:attributes))
+                var utf16Offset=0,runStart=0,runColorIndex:Int?
+                for character in displayText {
+                    let index=min(palette.count-1,characterOffset*(palette.count-1)/max(1,totalCharacters-1))
+                    if let runColorIndex,runColorIndex != index {
+                        content.addAttributes([.foregroundColor:palette[runColorIndex],.kaiGradientPosition:CGFloat(runColorIndex)/CGFloat(max(1,palette.count-1))],range:NSRange(location:start+runStart,length:utf16Offset-runStart))
+                        runStart=utf16Offset
+                    }
+                    runColorIndex=index
+                    utf16Offset += character.utf16.count
+                    characterOffset += 1
+                }
+                if let runColorIndex {content.addAttributes([.foregroundColor:palette[runColorIndex],.kaiGradientPosition:CGFloat(runColorIndex)/CGFloat(max(1,palette.count-1))],range:NSRange(location:start+runStart,length:utf16Offset-runStart))}
+                let newlineColorIndex=min(palette.count-1,characterOffset*(palette.count-1)/max(1,totalCharacters-1))
+                content.addAttributes([.foregroundColor:palette[newlineColorIndex],.kaiGradientPosition:CGFloat(newlineColorIndex)/CGFloat(max(1,palette.count-1))],range:NSRange(location:start+utf16Offset,length:1))
+            } else {
+                content.append(NSAttributedString(string:displayText+"\n",attributes:attributes.merging([.foregroundColor:cardRole == "document" ? palette.first! : NSColor.white.withAlphaComponent(block.kind == "activity" ? 0.42:0.86)]){$1}))
+            }
+            if cardRole == "document",let url=rendered.1.first?.1,let image=IntegrationIcons.id(for:url.absoluteString).flatMap{IntegrationIcons.image($0,color:palette.first!)} ?? NSImage(systemSymbolName:"doc",accessibilityDescription:"Document")?.withSymbolConfiguration(.init(paletteColors:[palette.first!])),displayText.hasPrefix("▧") {
+                let attachment=NSTextAttachment();attachment.image=image;attachment.bounds=CGRect(x:0,y:-2,width:9,height:9)
+                content.replaceCharacters(in:NSRange(location:start,length:1),with:NSAttributedString(attachment:attachment))
+                content.addAttributes(attributes,range:NSRange(location:start,length:1))
+            }
+            if line.style.hasPrefix("voice:"),cardRole != "continuation" {
+                let symbol=["voiceprompt":"mic.fill","voicetranscript":"waveform","voicestatus":"ellipsis.circle","voicecomplete":"checkmark.circle.fill"][cardRole] ?? "waveform"
+                let attachment=NSTextAttachment();attachment.image=NSImage(systemSymbolName:symbol,accessibilityDescription:displayText)?.withSymbolConfiguration(.init(paletteColors:[palette.first!]))
+                attachment.bounds=CGRect(x:0,y:-1,width:9,height:9)
+                let prefix=NSMutableAttributedString(attachment:attachment);prefix.append(NSAttributedString(string:"  "))
+                prefix.addAttributes(attributes,range:NSRange(location:0,length:prefix.length));content.insert(prefix,at:start)
+            }
+            characterOffset += 1
+            for (range,url) in rendered.1 {
+                let linkRange=NSRange(location:start+range.location,length:range.length)
+                content.addAttributes([.link:url,.toolTip:url.isFileURL ? url.path:url.absoluteString],range:linkRange)
+                let gutter=(displayText as NSString).substring(with:range).hasPrefix("▧  ") ? 3:0
+                if range.length>gutter{content.addAttribute(.underlineStyle,value:NSUnderlineStyle.single.rawValue,range:NSRange(location:linkRange.location+gutter,length:linkRange.length-gutter))}
+            }
+            for match in (block.kind == "activity" ? [] : pathRegex?.matches(in:displayText,range:NSRange(displayText.startIndex...,in:displayText)) ?? []) {
+                let raw=(displayText as NSString).substring(with:match.range).trimmingCharacters(in:CharacterSet(charactersIn:".,;:"))
+                let path=raw.hasPrefix("Users/") ? "/"+raw:raw
+                let url=raw.hasPrefix("file://") ? URL(string:raw) : URL(fileURLWithPath:(path as NSString).expandingTildeInPath)
+                if let url, url.isFileURL {
+                    var link:[NSAttributedString.Key:Any]=[.link:url,.underlineStyle:NSUnderlineStyle.single.rawValue]
+                    if block.kind != "assistant" {link[.foregroundColor]=NSColor.white}
+                    content.addAttributes(link,range:NSRange(location:start+match.range.location,length:(raw as NSString).length))
+                }
+            }
+            if style != "code" && style != "activity" {
+                for match in webLinkDetector.matches(in:displayText,range:NSRange(displayText.startIndex...,in:displayText)) {
+                    guard let url=match.url,["http","https"].contains(url.scheme?.lowercased() ?? "") else{continue}
+                    content.addAttributes([.link:url,.underlineStyle:NSUnderlineStyle.single.rawValue],range:NSRange(location:start+match.range.location,length:match.range.length))
+                }
+            }
+            if cardRole == "document",let url=rendered.1.first?.1,url.isFileURL {
+                let actions=NSMutableAttributedString(string:"")
+                for action in ["reveal","copy"] {
+                    let actionStart=actions.length
+                    actions.append(NSAttributedString(string:"   ",attributes:attributes))
+                    let attachment=NSTextAttachment();attachment.image=FileActionSymbols.image(action,url:url,padded:true)
+                    attachment.bounds=CGRect(x:0,y:-6,width:24,height:22)
+                    let button=NSMutableAttributedString(attachment:attachment)
+                    button.addAttributes(attributes,range:NSRange(location:0,length:button.length))
+                    if let link=FileActionSymbols.link(action,url:url){button.addAttributes([.link:link,.toolTip:action == "copy" ? "Copy file":"Show in Finder"],range:NSRange(location:0,length:button.length))}
+                    actions.append(button)
+                    if let link=FileActionSymbols.link(action,url:url){actions.addAttributes([.link:link,.toolTip:action == "copy" ? "Copy file":"Show in Finder"],range:NSRange(location:actionStart,length:actions.length-actionStart))}
+                }
+                content.insert(actions,at:start+(displayText as NSString).length)
+            }
+            if renderMath && style != "code" && line.mathEnabled != false {
+                for math in MathExpression.find(in:displayText).reversed() {
+                    mathBlocks[math.latex,default:[]].insert(index)
+                    let source=displayText as NSString
+                    let before=source.substring(to:math.range.location).count
+                    let extent=source.substring(with:math.range).count
+                    func color(_ offset:Int)->NSColor {
+                        block.kind == "assistant" ? palette[min(palette.count-1,offset*(palette.count-1)/max(1,totalCharacters-1))] : NSColor.white.withAlphaComponent(0.86)
+                    }
+                    guard let image=mathRenderer.image(for:math,startColor:color(lineCharacterStart+before),endColor:color(lineCharacterStart+before+extent)) else{continue}
+                    let attachment=NSTextAttachment()
+                    attachment.image=image
+                    let scale=min(1,330/max(1,image.size.width))
+                    attachment.bounds=CGRect(x:0,y:math.display ? -3:-2,width:image.size.width*scale,height:image.size.height*scale)
+                    content.replaceCharacters(in:NSRange(location:start+math.range.location,length:math.range.length),with:NSAttributedString(attachment:attachment))
+                }
+            }
+            }
+            if block.kind=="activity",let child=block.childId,let pet=taskPets[child]{
+                let attachment=NSTextAttachment();attachment.image=NSImage(size:CGSize(width:16,height:15));attachment.bounds=CGRect(x:0,y:-3,width:16,height:15)
+                let prefix=NSMutableAttributedString(attachment:attachment);prefix.addAttribute(.kaiInlinePet,value:pet,range:NSRange(location:0,length:1));prefix.append(NSAttributedString(string:" ",attributes:content.attributes(at:0,effectiveRange:nil)));content.insert(prefix,at:0)
+            }else if let iconID=IntegrationIcons.id(for:block.lines.map(\.text).joined(separator:" ")),block.kind == "activity",let image=IntegrationIcons.image(iconID,color:palette.first!) {
+                let attachment=NSTextAttachment();attachment.image=image;attachment.bounds=CGRect(x:0,y:-2,width:9,height:9)
+                let prefix=NSMutableAttributedString(attachment:attachment);prefix.append(NSAttributedString(string:"  "));if content.length>0{prefix.addAttributes(content.attributes(at:0,effectiveRange:nil),range:NSRange(location:0,length:prefix.length))};content.insert(prefix,at:0)
+            } else if block.kind == "activity",content.length>0 {
+                let attachment=NSTextAttachment();attachment.image=ConversationActivityIcon.image(block.activityIcon ?? "tool")
+                attachment.bounds=CGRect(x:0,y:-1,width:14,height:9)
+                let prefix=NSMutableAttributedString(attachment:attachment)
+                prefix.append(NSAttributedString(string:" ",attributes:content.attributes(at:0,effectiveRange:nil)))
+                prefix.addAttributes(content.attributes(at:0,effectiveRange:nil),range:NSRange(location:0,length:prefix.length))
+                content.insert(prefix,at:0)
+            }
+            if let detailId=block.detailId,block.kind=="activity",content.length>0 {
+                var url=URLComponents();url.scheme="kai-interaction";url.host="details";url.queryItems=[URLQueryItem(name:"id",value:detailId)]
+                if let link=url.url{content.addAttributes([.link:link,.toolTip:"Show full details in Code"],range:NSRange(location:0,length:content.length-1))}
+            }
+            let oldRange=index < ranges.count ? ranges[index] : NSRange(location:blockStart,length:0)
+            if collectRevealRanges,prependCount == 0,!dirtyMathBlocks.contains(index),didChangeThread || block.kind == "assistant" || block.lines.contains(where:{$0.style == "voice"}),
+               let suffix=TextRevealChange.suffix(old:storage.attributedSubstring(from:oldRange).string,new:content.string){
+                revealRanges.append(NSRange(location:blockStart+suffix.location,length:suffix.length))
+            }
+            lastReplacedBlockCount += 1
+            let delta=content.length-oldRange.length
+            if let anchor=mappedAnchorCharacter,anchor>=NSMaxRange(oldRange) {
+                mappedAnchorCharacter=anchor+delta
+            }
+            storage.replaceCharacters(in:oldRange,with:content)
+            let newRange=NSRange(location:blockStart,length:content.length)
+            if index < ranges.count {
+                ranges[index]=newRange
+                for next in (index+1)..<ranges.count {ranges[next].location += delta}
+            } else {ranges.append(newRange)}
+        }
+        if ranges.count > history.count {
+            let start=ranges[history.count].location
+            storage.deleteCharacters(in:NSRange(location:start,length:storage.length-start))
+            ranges.removeSubrange(history.count...)
+        }
+        renderedBlocks=signatures;renderedMessageIDs=history.map{$0.id};renderedRanges=ranges;dirtyMathBlocks.removeAll()
+        return nearBottom
+    }
+}

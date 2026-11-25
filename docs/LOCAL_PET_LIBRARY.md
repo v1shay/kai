@@ -1,0 +1,17 @@
+# Local pets in Kai Unified
+
+Kai 0.12.13 discovers pet folders in `~/.codex/pets`, `~/Library/Application Support/Kai Unified/Pets`, `~/Library/Application Support/Code/Pets`, `~/Library/Application Support/Kai/Pets`, Downloads, and the folder chosen through **Add pet folder…**. Valid downloaded ZIP packs and loose files named `spritesheet*.png` or `spritesheet*.webp` are imported into Kai’s persistent library. **Import pet pack…** accepts a ZIP, pet folder or sheet explicitly.
+
+Discovery runs on a serial utility queue. One recursive macOS file-event stream watches the existing roots, coalesces changes, and rescans only after changes. There is no periodic polling timer. A source-file metadata index avoids reprocessing unchanged downloads; library fingerprints avoid rebuilding the picker for unchanged scans. Image-derived palettes are cached beside each local sheet. Remembered imported pets restore from their metadata and cached palette before the full background scan.
+
+Native WebP and PNG sheets retain their original pixels. Supported sheets have eight columns and nine or eleven rows at a 192:208 cell aspect ratio. Manifest filename mistakes are repaired only when exactly one unambiguous `spritesheet.png`/`spritesheet.webp` alternative exists. Named GIF packs containing all nine Kai motions are assembled into a lossless PNG atlas using ImageIO/CoreGraphics; all original frame durations are retained, with Kai’s normal one-shot/loop semantics. The current native timeline supports up to eight frames per motion; larger GIF sequences are rejected instead of truncated. Manifest paths cannot leave a pack, archive members are read directly rather than extracted as executable content, and file/pixel budgets are bounded.
+
+Pets use the existing native sprite timelines, status animations, task assignments, inline/sub-agent pets, floating pets, and workspace pet controls. Each receives distinct image-derived ambient/thinking/working/success/warning/error gradients. No provider calls or network services are used.
+
+The pet menus are grouped into Characters, Sports, Creatures, Desktop and Originals. The notch gallery has matching category tabs and twelve pets per page, with names, selection rings, finite reveal/hover animations and previous/next navigation. Only the current page is decoded and animated; hidden page contents and the closed gallery’s image cache are released. Existing choices are retained when the library changes; removed pets are reconciled rather than leaving missing task images.
+
+## October 30 import
+
+Nineteen downloaded files yielded fourteen distinct pets: Bubbles, Chef, Clippy, CR7, Finder Guy, Homelander, LAODA, King, Messi, Mr Bean, Neymarito Updated, Omni-Man, Po (Teletubby), and Totoro. Repeated Finder Guy and Neymarito downloads were deduplicated. The loose Clippy and Mr Bean sheets are preserved as alternate originals in their character folders; the GIF packs supply the canonical atlases and exact timings. Original downloads remain untouched.
+
+Validation includes native tests for manifest repair, duplicate suppression, path containment, palette channel preservation and cache invalidation, remembered-pet restoration, category/page navigation, bounded visible images, retained hit targets and recursive filesystem events. All 114 converted GIF frames were compared against the downloaded GIFs and were pixel-identical. All fourteen imported profiles are distinct. Existing native composer/voice/approval/chat regressions passed with the installed library.

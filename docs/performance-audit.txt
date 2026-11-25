@@ -1,0 +1,70 @@
+Kai performance pass — October 17, 2026
+
+Changes
+
+* Pet and gallery sprite frames use discrete Core Animation keyframes with
+  their original per-frame durations. Looping pets need no main-thread frame
+  callbacks; hiding the notch/gallery removes their frame animations.
+* Notch open/expand/close transitions take 240/280/220 ms. Reduced Motion uses
+  100 ms transitions. Artwork changes take 260 ms, or 100 ms with Reduced Motion.
+* The live audio indicator updates at 60 Hz while active, or 30 Hz in Low Power
+  Mode/Reduced Motion. Settled levels avoid redundant layer updates. Its timer
+  stops when hidden or when the indicator changes to a non-listening scene.
+* Streaming state updates preserve existing toolbar layers and do not relayout
+  the composer or transcript unless geometry changes. Sidebar virtualization
+  remains in place for large project/chat lists.
+* Transcript comparisons use shared Swift value storage rather than allocating
+  a concatenated signature for every message on each state update. Existing
+  selection, history-prepend anchors, links and math invalidation are preserved.
+* Bridge packets parse JSON once for both routing and state decoding. Buffers
+  larger than 1 MB release their retained allocation after each complete line.
+* Drag negotiation checks image types without repeatedly decoding image files.
+  Attachment PNG encoding and writes run on a cancellable serial background
+  queue. Send waits for preparation and enqueues attachment paths before the
+  prompt. Stale work cannot replace the current attachments. Original attachment
+  pixels are preserved.
+* Artwork decodes off the UI thread to at most 256 pixels per side. The decoder
+  rejects invalid images and payloads over 8 MB; requests time out after 12 s.
+  Palette extraction reads the decoded bitmap without a TIFF round trip.
+* Optional media polling allows timer coalescing. Browser accessibility scans
+  bound their queued nodes and check a 350 ms time budget between nodes (an
+  individual accessibility call can still take its configured timeout).
+* Sound cues synthesize off the UI thread and cache their seven small waveforms.
+* Plain-text chats no longer create a math WebKit process or Core Image context
+  at startup. Equations install the renderer on demand, including multiline
+  display equations. Collapsing the chat releases its web view and pending work.
+  Math jobs time out after 5 s; queues hold at most 128 jobs and a document can
+  request up to 512 distinct images. Additional/unavailable equations retain
+  their text. Cached-image eviction cannot trigger an endless refresh loop.
+* Last-opened-chat preferences write only when the selected chat actually changes.
+* The app packaging script defaults to a compiler-optimized release executable.
+  KAI_BUILD_CONFIGURATION=debug opts into an unoptimized build. The app remains
+  at .build/debug/Kai.app to preserve existing installation commands.
+
+Verification
+
+* Release Swift suite: 137 tests, zero failures, one optional Piper test skipped
+  because KAI_TEST_VOICE was not configured. Includes large sidebar virtualization,
+  transcript selection/scroll preservation, history prepends, voice cancellation,
+  clipboard integration and eight new performance/regression tests.
+* Python unittest discovery: 110 tests, zero failures.
+* node --test test_voice_media.mjs: 10 tests, zero failures.
+* zsh -n scripts/build-app.sh and git diff --check passed.
+
+Release microbenchmark on this Mac (100 updates, 2,000 independently decoded
+messages, identical content): unchanged renderer update averaged 0.074 ms;
+the previous signature-building operation alone averaged 1.490 ms. No text
+storage edits occurred and selection remained intact. This compares one hot
+path, not overall application speed. Reproduce with:
+
+  swift test -c release --filter PerformancePassTests
+
+Scope of the evidence
+
+These checks verify behavior and remove identifiable work from critical paths.
+They do not establish an end-to-end frame-rate, launch-latency, memory, CPU or
+energy guarantee. No Instruments/Metal frame capture or hardware energy profile
+was collected. Network latency, Codex response time, macOS permissions and
+third-party applications can still delay operations. Live media, microphone and
+Piper behavior need the corresponding permissions, services and local models.
+Existing workspace changes were preserved; no live conversations were restarted.

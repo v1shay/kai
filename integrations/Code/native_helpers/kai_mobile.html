@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#141821">
+<title>Kai Remote</title>
+<style>
+* { box-sizing: border-box; }
+:root { color-scheme: dark; font: 16px/1.5 system-ui, sans-serif; color: #f1f4f9; background: #141821; }
+body { margin: 0 auto; max-width: 70rem; padding: max(1rem, env(safe-area-inset-top)) 1rem max(1rem, env(safe-area-inset-bottom)); }
+header, .row { display: flex; align-items: center; flex-wrap: wrap; gap: .6rem; }
+header { justify-content: space-between; padding: .4rem 0 1.2rem; border-bottom: 1px solid #353d50; }
+h1, h2, p { margin: 0; }
+h1 { font-size: 1.6rem; letter-spacing: -.04em; }
+h2 { font-size: 1.15rem; margin: .2rem 0 .75rem; }
+small, .muted { color: #b1bdd1; }
+#status { min-height: 1.7rem; margin: .5rem 0; }
+button, select, textarea, input { font: inherit; color: inherit; border: 1px solid #596987; border-radius: .7rem; padding: .55rem .8rem; background: #222a3a; min-height: 44px; }
+button { cursor: pointer; }
+button:disabled { cursor: default; opacity: .55; }
+button:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid #b7b3ff; outline-offset: 2px; }
+.primary { background: #c9c4ff; color: #161336; border-color: transparent; font-weight: 650; }
+.layout { display: grid; gap: 1rem; grid-template-columns: minmax(13rem, 18rem) minmax(0, 1fr); }
+.card { background: #1b2230; border: 1px solid #394359; border-radius: 1rem; padding: .9rem; min-width: 0; }
+select, textarea { width: 100%; }
+#chats { max-height: 66dvh; overflow: auto; display: grid; gap: .42rem; margin-top: .75rem; }
+#chats button { text-align: left; overflow-wrap: anywhere; }
+#chats button[aria-current="true"] { border-color: #c9c4ff; background: #342f52; }
+#history { display: grid; gap: .65rem; max-height: 58dvh; overflow: auto; margin: .75rem 0; }
+.message { padding: .75rem; border-radius: .75rem; background: #222b3c; }
+.message.user { background: #353451; }
+pre { font: inherit; margin: .35rem 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+#approvals .card { margin: .55rem 0; }
+#approvals pre { max-height: 15rem; overflow: auto; margin-bottom: .6rem; font-family: ui-monospace, monospace; font-size: .85rem; }
+#status.error { color: #ffc2b9; }
+[hidden] { display: none !important; }
+@media (max-width: 650px) {
+  .layout { grid-template-columns: minmax(0,1fr); }
+  #chats { max-height: 25dvh; }
+  #history { max-height: 49dvh; }
+}
+</style>
+<script src="/kai/mobile.js" defer></script>
+</head>
+<body>
+<header>
+  <h1>Kai Remote</h1>
+  <button id="disconnect" hidden>Disconnect</button>
+</header>
+<p id="status" role="status" aria-live="polite"></p>
+<section id="pair" class="card">
+  <h2>Connect to your Mac</h2>
+  <p class="muted">Create a pairing code in Kai’s Remote access settings.</p>
+  <div class="row">
+    <button id="connect-read">Read-only</button>
+    <button id="connect-control" class="primary">Connect with control</button>
+  </div>
+</section>
+<main id="workspace" class="layout" hidden>
+  <section class="card" aria-label="Chat navigation">
+    <label for="projects">Project</label>
+    <select id="projects"></select>
+    <div id="chats"></div>
+    <button id="older-chats" hidden>More chats</button>
+    <button id="new-chat" hidden>New chat</button>
+  </section>
+  <section class="card" aria-labelledby="title">
+    <h2 id="title">Select a chat</h2>
+    <p id="task" class="muted"></p>
+    <div id="approvals"></div>
+    <div class="row">
+      <button id="refresh" hidden>Refresh messages</button>
+      <button id="older" hidden>Older messages</button>
+      <button id="stop" hidden>Stop turn</button>
+    </div>
+    <div id="history" aria-label="Messages"></div>
+    <form id="composer" hidden>
+      <label for="prompt">Message</label>
+      <textarea id="prompt" rows="3" maxlength="64000" required></textarea>
+      <button class="primary" type="submit">Send</button>
+    </form>
+  </section>
+</main>
+</body>
+</html>

@@ -1,16 +1,15 @@
 import AppKit
-import CoreImage
 import WebKit
 
 struct MathExpression {
     let range: NSRange
     let latex: String
     let display: Bool
+    private static let regex = try! NSRegularExpression(pattern: #"(?<!\\)(\$\$)(.+?)(?<!\\)\$\$|(?<!\\)\\\[(.+?)(?<!\\)\\\]|(?<!\\)\\\((.+?)(?<!\\)\\\)|(?<![\\$])\$(?![\s$])(.+?)(?<![\s\\])\$(?!\$)"#, options: [.dotMatchesLineSeparators])
 
     static func find(in text: String) -> [MathExpression] {
         let source = text as NSString
-        let pattern = #"(?<!\\)(\$\$)(.+?)(?<!\\)\$\$|(?<!\\)\\\[(.+?)(?<!\\)\\\]|(?<!\\)\\\((.+?)(?<!\\)\\\)|(?<![\\$])\$(?![\s$])(.+?)(?<![\s\\])\$(?!\$)"#
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]) else { return [] }
+        guard text.contains("$") || text.contains("\\(") || text.contains("\\[") else{return []}
         return regex.matches(in: text, range: NSRange(location: 0, length: source.length)).compactMap { match in
             let group = (2...5).first { match.range(at: $0).location != NSNotFound }
             guard let group else { return nil }
@@ -39,6 +38,11 @@ struct MathExpression {
         }
         return output
     }
+
+    static func containsRenderableMath(_ lines:[KaiLine])->Bool {
+        guard lines.contains(where:{$0.style != "code" && $0.mathEnabled != false && ($0.text.contains("$") || $0.text.contains("\\(") || $0.text.contains("\\["))}) else{return false}
+        return collapsedLines(lines).contains{$0.style != "code" && $0.mathEnabled != false && !find(in:$0.text).isEmpty}
+    }
 }
 
 private final class PassiveMathWebView: WKWebView {
@@ -46,23 +50,37 @@ private final class PassiveMathWebView: WKWebView {
 }
 
 @MainActor final class MathRenderer: NSObject, WKNavigationDelegate {
-    private struct Job { let key: String; let latex: String; let display: Bool; let startColor: String; let endColor: String }
+    private struct Job { let id=UUID();let documentRevision: UInt64;let key: String; let latex: String; let display: Bool; let startColor: String; let endColor: String }
     private var webView: PassiveMathWebView?
     private var ready = false
     private var pending = [Job]()
     private var inFlight: Job?
+    private var jobTimeout:DispatchWorkItem?
     private var requested = Set<String>()
-    private var images = [String: NSImage]()
+    private let images = NSCache<NSString,NSImage>()
     private var failed = Set<String>()
-    private let imageContext = CIContext()
-    var onImageReady: (() -> Void)?
+    private let imagePipeline = MathImagePipeline()
+    private var documentRevision: UInt64 = 0
+    private var rasterizingJob: UUID?
+    #if DEBUG
+    private var diagnosticSnapshotTransportEnabled = false
+    #endif
+    var isInstalled: Bool {
+        #if DEBUG
+        if diagnosticSnapshotTransportEnabled { return true }
+        #endif
+        return webView != nil
+    }
+    var onImageReady: ((String) -> Void)?
 
-    func install(in host: NSView, below sibling: NSView) {
-        guard webView == nil else { return }
+    override init(){super.init();images.countLimit=256;images.totalCostLimit=24*1024*1024}
+
+    @discardableResult func install(in host: NSView, below sibling: NSView)->Bool {
+        guard webView == nil else { return false }
         let root = Bundle.main.resourceURL?.appendingPathComponent("katex")
             ?? URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Resources/katex")
         let page = root.appendingPathComponent("renderer.html")
-        guard FileManager.default.fileExists(atPath: page.path) else { return }
+        guard FileManager.default.fileExists(atPath: page.path) else { return false }
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
         let web = PassiveMathWebView(frame: NSRect(x: 0, y: 0, width: 700, height: 260), configuration: configuration)
@@ -72,9 +90,28 @@ private final class PassiveMathWebView: WKWebView {
         host.addSubview(web, positioned: .below, relativeTo: sibling)
         webView = web
         web.loadFileURL(page, allowingReadAccessTo: root)
+        return true
+    }
+
+    func beginDocument() {
+        documentRevision &+= 1
+        pending.removeAll();requested.removeAll();failed.removeAll()
+        // A WebKit snapshot already in progress drains before changing its DOM.
+        // A captured immutable image can retire immediately without publication.
+        if let job = inFlight, rasterizingJob == job.id {
+            imagePipeline.cancel()
+            complete(job, bitmap: nil, size: .zero)
+        }
     }
 
     func suspend() {
+        #if DEBUG
+        diagnosticSnapshotTransportEnabled = false
+        #endif
+        documentRevision &+= 1
+        imagePipeline.cancel()
+        rasterizingJob = nil
+        jobTimeout?.cancel();jobTimeout=nil
         ready = false
         pending.removeAll()
         requested.removeAll()
@@ -92,31 +129,47 @@ private final class PassiveMathWebView: WKWebView {
         }
         let start=hex(startColor),end=hex(endColor)
         let key = "\(expression.display)\u{0}\(start)\u{0}\(end)\u{0}\(expression.latex)"
-        if let image = images[key] { return image }
-        if !failed.contains(key), requested.insert(key).inserted {
-            pending.append(Job(key: key, latex: expression.latex, display: expression.display, startColor: start, endColor: end))
+        if let image = images.object(forKey:key as NSString) { return image }
+        if isInstalled,pending.count<128,requested.count<512,!failed.contains(key), requested.insert(key).inserted {
+            pending.append(Job(documentRevision: documentRevision, key: key, latex: expression.latex, display: expression.display, startColor: start, endColor: end))
             processNext()
         }
         return nil
     }
 
     nonisolated func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        Task { @MainActor [weak self] in self?.ready = true; self?.processNext() }
+        Task { @MainActor [weak self] in
+            guard let self, self.webView === webView else { return }
+            self.ready = true
+            self.processNext()
+        }
     }
 
     nonisolated func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-        Task { @MainActor [weak self] in self?.ready = false; self?.pending.removeAll() }
+        Task { @MainActor [weak self] in
+            guard let self, self.webView === webView else { return }
+            self.suspend()
+        }
+    }
+
+    nonisolated func webViewWebContentProcessDidTerminate(_ webView:WKWebView) {
+        Task { @MainActor [weak self] in
+            guard let self, self.webView === webView else { return }
+            self.suspend()
+        }
     }
 
     private func processNext() {
         guard ready, inFlight == nil, !pending.isEmpty, let webView else { return }
         let job = pending.removeFirst()
         inFlight = job
+        let timeout=DispatchWorkItem{[weak self] in self?.finish(job,image:nil)}
+        jobTimeout=timeout;DispatchQueue.main.asyncAfter(deadline:.now()+5,execute:timeout)
         // JSON encoding provides a JavaScript string literal without interpolating TeX as code.
         guard let data = try? JSONSerialization.data(withJSONObject: [job.latex, job.display, "#ffffff"], options: [.fragmentsAllowed]),
               let arguments = String(data: data, encoding: .utf8) else { finish(job, image: nil); return }
         webView.evaluateJavaScript("renderMath(...\(arguments))") { [weak self] value, error in
-            guard let self else { return }
+            guard let self,self.inFlight?.id == job.id else { return }
             guard error == nil, value is [String: Any] else {
                 self.finish(job, image: nil); return
             }
@@ -126,7 +179,7 @@ private final class PassiveMathWebView: WKWebView {
 
     private func snapshotWhenReady(_ job: Job, from webView: WKWebView, attempt: Int) {
         webView.evaluateJavaScript("({ready:document.fonts.status==='loaded',...mathSize()})") { [weak self] value, error in
-            guard let self else { return }
+            guard let self,self.inFlight?.id == job.id else { return }
             guard error == nil, let dimensions = value as? [String: Any],
                   let width = dimensions["width"] as? NSNumber, let height = dimensions["height"] as? NSNumber else {
                 self.finish(job, image: nil); return
@@ -141,42 +194,94 @@ private final class PassiveMathWebView: WKWebView {
             let config = WKSnapshotConfiguration()
             config.rect = CGRect(origin: .zero, size: size)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
+                guard let self,self.inFlight?.id == job.id else{return}
                 webView.takeSnapshot(with: config) { [weak self] image, _ in self?.finish(job, image: image) }
             }
         }
     }
 
-    private func finish(_ job: Job, image: NSImage?) {
-        guard inFlight?.key == job.key else { return }
-        if let image,let tinted = tintedImage(image, startColor: job.startColor, endColor: job.endColor) { images[job.key] = tinted; onImageReady?() }
-        else { failed.insert(job.key) }
-        inFlight = nil
-        processNext()
+    /// Capture a pixel representation while the snapshot remains on its owner actor.
+    static func snapshotBitmap(_ image: NSImage) -> CGImage? {
+        let bitmaps = image.representations.compactMap { ($0 as? NSBitmapImageRep)?.cgImage }
+        if let largest = bitmaps.max(by: {
+            UInt64($0.width) * UInt64($0.height) < UInt64($1.width) * UInt64($1.height)
+        }) {
+            return largest
+        }
+        let size = image.size
+        guard size.width.isFinite, size.height.isFinite,
+              size.width > 0, size.height > 0,
+              size.width < CGFloat(Int.max), size.height < CGFloat(Int.max),
+              let context = CGContext(
+                data: nil, width: Int(ceil(size.width)), height: Int(ceil(size.height)),
+                bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+              ) else { return nil }
+        let graphics = NSGraphicsContext(cgContext: context, flipped: false)
+        var rectangle = CGRect(origin: .zero, size: size)
+        return image.cgImage(forProposedRect: &rectangle, context: graphics, hints: nil)
     }
 
-    private func tintedImage(_ image: NSImage, startColor: String, endColor: String) -> NSImage? {
-        guard let data=image.tiffRepresentation,let input=CIImage(data:data),
-              let start=UInt64(startColor.dropFirst(),radix:16),
-              let end=UInt64(endColor.dropFirst(),radix:16),
-              let filter=CIFilter(name:"CIColorMatrix") else{return nil}
-        func color(_ value:UInt64)->CIColor {
-            CIColor(red:CGFloat((value>>16)&255)/255,green:CGFloat((value>>8)&255)/255,blue:CGFloat(value&255)/255)
+    #if DEBUG
+    func diagnosticInstallSnapshotTransport() {
+        diagnosticSnapshotTransportEnabled = true
+    }
+    var diagnosticPendingSnapshotCount: Int { pending.count }
+    var diagnosticInFlightSnapshotID: UUID? { inFlight?.id }
+    var diagnosticRequestedKeyCount: Int { requested.count }
+    /// Replace only WebKit transport in tests. Queue and publication use normal code.
+    func diagnosticBeginNextSnapshot() -> UUID? {
+        guard diagnosticSnapshotTransportEnabled, inFlight == nil, !pending.isEmpty else { return nil }
+        let job = pending.removeFirst()
+        inFlight = job
+        return job.id
+    }
+    func diagnosticDeliverSnapshot(_ id: UUID, image: NSImage?) {
+        guard let job = inFlight, job.id == id else { return }
+        finish(job, image: image)
+    }
+    #endif
+
+    private func finish(_ job: Job, image: NSImage?) {
+        guard inFlight?.id == job.id else { return }
+        guard job.documentRevision == documentRevision else {
+            complete(job, bitmap: nil, size: .zero)
+            return
         }
-        let zero=CIVector(x:0,y:0,z:0,w:0)
-        filter.setValue(input,forKey:kCIInputImageKey)
-        filter.setValue(zero,forKey:"inputRVector")
-        filter.setValue(zero,forKey:"inputGVector")
-        filter.setValue(zero,forKey:"inputBVector")
-        filter.setValue(CIVector(x:1,y:0,z:0,w:0),forKey:"inputAVector")
-        filter.setValue(CIVector(x:1,y:1,z:1,w:0),forKey:"inputBiasVector")
-        guard let mask=filter.outputImage,
-              let gradient=CIFilter(name:"CILinearGradient",parameters:[
-                "inputPoint0":CIVector(x:input.extent.minX,y:input.extent.midY),
-                "inputPoint1":CIVector(x:input.extent.maxX,y:input.extent.midY),
-                "inputColor0":color(start),"inputColor1":color(end)])?.outputImage,
-              let output=CIFilter(name:"CISourceInCompositing",parameters:[
-                kCIInputImageKey:gradient,kCIInputBackgroundImageKey:mask])?.outputImage,
-              let bitmap=imageContext.createCGImage(output,from:input.extent) else{return nil}
-        return NSImage(cgImage:bitmap,size:image.size)
+        // Keep AppKit representation selection on the snapshot owner actor.
+        guard let image,
+              let bitmap = Self.snapshotBitmap(image) else {
+            imagePipeline.cancel()
+            complete(job, bitmap: nil, size: .zero)
+            return
+        }
+        let size = image.size
+        rasterizingJob = job.id
+        imagePipeline.submit(MathImageRequest(
+            image: bitmap, startColor: job.startColor, endColor: job.endColor
+        )) { [weak self] result in
+            guard let self, self.inFlight?.id == job.id else { return }
+            self.complete(job, bitmap: result?.image, size: size)
+        }
+    }
+
+    private func complete(_ job: Job, bitmap: CGImage?, size: CGSize) {
+        guard inFlight?.id == job.id else { return }
+        jobTimeout?.cancel();jobTimeout=nil
+        rasterizingJob = nil
+        if job.documentRevision == documentRevision {
+            // Retain the old request budget so eviction cannot create a render loop.
+            if let bitmap {
+                let image = NSImage(cgImage: bitmap, size: size)
+                let cost = bitmap.bytesPerRow * bitmap.height + job.key.utf8.count
+                images.setObject(image, forKey: job.key as NSString, cost: cost)
+                onImageReady?(job.latex)
+            } else {
+                if failed.count >= 256 { failed.removeAll() }
+                failed.insert(job.key)
+            }
+        }
+        inFlight = nil
+        processNext()
     }
 }

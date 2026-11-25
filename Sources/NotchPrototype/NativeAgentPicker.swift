@@ -1,0 +1,281 @@
+import AppKit
+
+/// A click-open, keyboard-operated picker shared by the notch's composer and
+/// slash commands. It only emits existing owner-validated bridge actions.
+@MainActor final class NativeAgentPicker:NSObject, NSMenuDelegate {
+    enum Scope {case all,providers,models}
+    private(set) var scope:Scope = .all
+    private(set) var column=1
+    private(set) var cursors=[0,0,0]
+    private var state:KaiState?
+    private var sourceProject="",sourceThread:String?,pendingAgent:String?,pendingAgentRequestID:String?
+    private var selectedModel:String?
+    private var panel:NotchPanel?,glass:NSView?,monitor:Any?,globalMonitor:Any?
+    private var columnIDs=[Int]()
+    private var columns=[NSView](),scrolls=[NSScrollView](),buttons=[[NSButton]](),effortRows=[EffortTileRow]()
+    private var previousWindow:NSWindow?,previousResponder:NSResponder?
+    var onNinja:((String,String)->Void)?
+    private var ninjaQuery=""
+    private var ninjaSearch:NSSearchField?
+    private weak var inferenceStatus: NSTextField?
+    private var trackingNinjaMenu = false
+    private var deferredMenuState: KaiState?
+    private weak var downloadLabel: NSTextField?
+    private weak var downloadFill: CALayer?
+    private var deferredSearchState:KaiState?
+    var onAgent:((String,String)->Void)?,onModel:((String)->Void)?,onEffort:((String,String)->Void)?
+    var visible:Bool{panel?.isVisible == true}
+    private var providers:[KaiAgent]{state?.agents?.filter(\.available) ?? []}
+    private var models:[KaiModel]{
+        guard let state else{return []};let catalog=state.models ?? []
+        let id=state.effectiveModel ?? state.providerDefaultModel
+        let resolved=catalog.first{($0.resolvedModel ?? $0.model)==id}
+        let label=(state.threadId == nil ? "Use ":"Continue · ")+(id ?? state.selectedAgent ?? "Agent")
+        if state.selectedAgent=="ninja"{return catalog.filter{model in ninjaQuery.split(whereSeparator: { $0.isWhitespace }).allSatisfy{model.displayName.localizedCaseInsensitiveContains(String($0))}}}
+        return [KaiModel(resolvedModel:id,model:"",displayName:label,supportedReasoningEfforts:resolved?.supportedReasoningEfforts ?? [])]+catalog
+    }
+    private var choice:KaiModel?{models.first{$0.model==selectedModel} ?? models.first{($0.resolvedModel ?? $0.model)==(state?.effectiveModel ?? state?.selectedModel)}}
+    private var levels:[String]{choice?.supportedReasoningEfforts.map(\.reasoningEffort) ?? []}
+    func dismiss(restoreFocus:Bool=false){
+        let old=panel;panel=nil;glass=nil
+        if let monitor{NSEvent.removeMonitor(monitor)};if let globalMonitor{NSEvent.removeMonitor(globalMonitor)};monitor=nil;globalMonitor=nil
+        effortRows.forEach{$0.setPreview(false)};effortRows=[];columns=[];columnIDs=[];scrolls=[];buttons=[]
+        if let old { KaiMotion.dismiss(old) }
+        if (restoreFocus || NSApp.keyWindow === old),let window=previousWindow,window.isVisible{window.makeKey();if let responder=previousResponder{window.makeFirstResponder(responder)}}
+        previousWindow=nil;previousResponder=nil;pendingAgent=nil;pendingAgentRequestID=nil;deferredSearchState=nil
+        trackingNinjaMenu=false;deferredMenuState=nil
+    }
+    func show(scope:Scope,state:KaiState,at anchor:CGPoint){
+        if visible,self.scope==scope{dismiss(restoreFocus:true);return}
+        dismiss();ninjaQuery="";if state.selectedAgent=="ninja"{onNinja?("search","")};self.scope=scope;self.state=state;sourceProject=state.project;sourceThread=state.threadId;selectedModel=state.selectedModel ?? ""
+        column=scope == .providers ? 0:1
+        cursors=[providers.firstIndex{$0.id==state.selectedAgent} ?? 0,models.firstIndex{$0.model==state.selectedModel} ?? 0,levels.firstIndex{$0==(state.reasoningEffort ?? state.effectiveReasoningEffort)} ?? 0]
+        previousWindow=NSApp.keyWindow;previousResponder=previousWindow?.firstResponder
+        let panel=NotchPanel(contentRect:CGRect(x:anchor.x,y:anchor.y-310,width:620,height:310),styleMask:[.borderless,.nonactivatingPanel],backing:.buffered,defer:false)
+        panel.isOpaque=false;panel.backgroundColor = .clear;panel.hasShadow=true;panel.level = .popUpMenu;panel.collectionBehavior=[.canJoinAllSpaces,.fullScreenAuxiliary];panel.isReleasedWhenClosed=false
+        let glass=composerGlass(in:panel,radius:13)
+        self.panel=panel;self.glass=glass
+        rebuild(anchor:anchor);panel.alphaValue=0;panel.makeKeyAndOrderFront(nil)
+        NSAnimationContext.runAnimationGroup{c in  c.duration=NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0:KaiMotion.contentDuration;c.timingFunction=KaiMotion.interactionCurve;panel.animator().alphaValue=1}
+        monitor=NSEvent.addLocalMonitorForEvents(matching:[.keyDown,.leftMouseUp,.rightMouseUp]){[weak self,weak panel] event in
+            guard let self,let panel,self.panel === panel else{return event}
+            if event.type == .keyDown,NSApp.keyWindow === panel,self.handleKey(event.keyCode,modifiers:event.modifierFlags){return nil}
+            if event.type != .keyDown,event.window !== panel,!self.trackingNinjaMenu{DispatchQueue.main.async{[weak self,weak panel] in guard let self,let panel,self.panel === panel else{return};self.dismiss()}}
+            return event
+        }
+        globalMonitor=NSEvent.addGlobalMonitorForEvents(matching:[.leftMouseDown,.rightMouseDown]){[weak self] _ in Task{@MainActor in self?.dismiss()}}
+    }
+    func update(_ state:KaiState){
+        guard visible else{return}
+        if trackingNinjaMenu { deferredMenuState=state; return }
+        guard state.project==sourceProject,state.threadId==sourceThread else{dismiss();return}
+        if self.state?.ownerToken != state.ownerToken,pendingAgent != state.selectedAgent{dismiss();return}
+        if let reply=pendingAgentRequestID.flatMap(state.requestResult),reply.error != nil{dismiss();return}
+        if let editor=ninjaSearch?.currentEditor() as? NSTextView,editor.hasMarkedText(){deferredSearchState=state;return}
+        deferredSearchState=nil
+        var incomingNinja = state.ninja
+        var previousNinja = self.state?.ninja
+        incomingNinja?.downloadStatus = nil; incomingNinja?.downloadFraction = nil
+        previousNinja?.downloadStatus = nil; previousNinja?.downloadFraction = nil
+        incomingNinja?.progress=nil;incomingNinja?.error=nil;incomingNinja?.loading=false
+        previousNinja?.progress=nil;previousNinja?.error=nil;previousNinja?.loading=false
+        inferenceStatus?.stringValue = ninjaStatus(state.ninja)
+        inferenceStatus?.toolTip = inferenceStatus?.stringValue
+        let downloadRowChanged = (state.ninja?.downloadStatus != nil) != (self.state?.ninja?.downloadStatus != nil)
+        let changed=downloadRowChanged || incomingNinja != previousNinja || self.state?.selectedAgent != state.selectedAgent || self.state?.selectedModel != state.selectedModel || self.state?.effectiveModel != state.effectiveModel || self.state?.providerDefaultModel != state.providerDefaultModel || self.state?.reasoningEffort != state.reasoningEffort || self.state?.effectiveReasoningEffort != state.effectiveReasoningEffort || self.state?.horizontalAgentPicker != state.horizontalAgentPicker || self.state?.agents != state.agents || self.state?.models != state.models || (state.ninja == nil && self.state?.modelsLoading != state.modelsLoading)
+        let modelChanged=self.state?.selectedModel != state.selectedModel
+        self.state=state
+        if modelChanged{selectedModel=state.selectedModel ?? "";cursors[1]=models.firstIndex{$0.model==selectedModel} ?? 0}
+        if let pendingAgent,pendingAgent != state.selectedAgent{if changed{rebuild()};return}
+        if pendingAgent != nil{pendingAgent=nil;pendingAgentRequestID=nil;selectedModel=state.selectedModel ?? "";cursors[1]=models.firstIndex{$0.model==selectedModel} ?? 0}
+        if changed{rebuild()}else{updateDownload(state.ninja)}
+    }
+    private func rebuild(anchor:CGPoint?=nil){
+        guard let panel,let glass,let state else{return}
+        downloadLabel = nil; downloadFill = nil
+        let restoreSearch=ninjaSearch?.currentEditor() != nil && panel.firstResponder === ninjaSearch?.currentEditor()
+        let searchSelection=(ninjaSearch?.currentEditor() as? NSTextView)?.selectedRange()
+        effortRows.forEach{$0.setPreview(false)};effortRows=[];glass.subviews.forEach{$0.removeFromSuperview()};columns=[];scrolls=[];buttons=Array(repeating:[],count:3)
+        let screen=NSScreen.screens.first{$0.frame.intersects(panel.frame)}?.visibleFrame ?? NSScreen.main?.visibleFrame ?? CGRect(x:0,y:0,width:1200,height:800)
+        let horizontal=state.horizontalAgentPicker != false && screen.width>=640
+        let ids=scope == .providers ? [0]:scope == .models ? [1,2]:[0,1,2]
+        let visibleIDs=ids.filter{$0 != 2 || !levels.isEmpty};columnIDs=visibleIDs
+        let widths:[CGFloat]=[166,254,170]
+        let baseWidth:CGFloat=horizontal ? visibleIDs.reduce(16){$0+widths[$1]}+CGFloat(max(0,visibleIDs.count-1))*4:280
+        let ninjaSide=state.ninja != nil && scope != .providers && horizontal && screen.width>=baseWidth+244
+        let width=baseWidth+(ninjaSide ? 244:0)
+        let agents=providers,catalog=models,efforts=levels
+        let counts=[agents.count,catalog.count,efforts.count]
+        for id in cursors.indices{cursors[id]=min(max(0,cursors[id]),max(0,counts[id]-1))}
+        if !visibleIDs.contains(column){column=visibleIDs.last ?? 0}
+        let showsDownload = state.ninja?.downloadStatus != nil
+        let desiredHeights=visibleIDs.map{CGFloat(min(counts[$0],8))*34+30+($0 == 1 && showsDownload ? 33 : 0)}
+        let fit=horizontal ? 1:min(1,(screen.height-32)/max(1,desiredHeights.reduce(0,+)))
+        let heights=desiredHeights.map{$0*fit}
+        let ninjaHeight:CGFloat=(state.ninja == nil || scope == .providers || ninjaSide) ? 0:144
+        let height=min(screen.height-16,max(ninjaSide ? 224:0,(horizontal ? (heights.max() ?? 90)+16:heights.reduce(16,+))+ninjaHeight))
+        let top=anchor ?? CGPoint(x:panel.frame.minX+30,y:panel.frame.maxY+4)
+        let frame=CGRect(x:min(max(screen.minX+8,top.x-30),screen.maxX-width-8),y:max(screen.minY+8,min(top.y-height-4,screen.maxY-height-8)),width:width,height:height)
+        panel.setFrame(frame,display:false);glass.frame=CGRect(origin:.zero,size:frame.size)
+        if scope != .providers,let ninja=state.ninja{let extra=NSView(frame:CGRect(x:ninjaSide ? baseWidth:0,y:0,width:ninjaSide ? 244:width,height:ninjaSide ? height:ninjaHeight));glass.addSubview(extra);buildNinja(ninja,in:extra,width:extra.frame.width,top:extra.frame.height-8)}
+        var x:CGFloat=8,y=height-8
+        for (order,id) in visibleIDs.enumerated(){
+            let h=horizontal ? height-16-ninjaHeight:heights[order],w=horizontal ? widths[id]:baseWidth-16
+            let host=NSView(frame:CGRect(x:x,y:y-h,width:w,height:h));glass.addSubview(host);columns.append(host)
+            let title=NSTextField(labelWithString:["Provider","Model","Thinking intensity"][id]);title.font=AppTypography.ui(ofSize:11,weight:.medium);title.textColor=column==id ? .controlAccentColor:.secondaryLabelColor;title.frame=CGRect(x:8,y:h-23,width:w-16,height:18);host.addSubview(title)
+            let downloadHeight: CGFloat = id == 1 && showsDownload ? 33 : 0
+            if downloadHeight > 0 { addDownloadRow(to: host, width: w, y: h - 59, ninja: state.ninja) }
+            let scroll=NSScrollView(frame:CGRect(x:0,y:0,width:w,height:max(0,h-29-downloadHeight)));scroll.drawsBackground=false;scroll.hasVerticalScroller=true;scroll.autohidesScrollers=true;host.addSubview(scroll);scrolls.append(scroll)
+            let document=NSView(frame:CGRect(x:0,y:0,width:w,height:max(scroll.contentSize.height,CGFloat(counts[id])*34)));scroll.documentView=document
+            for i in 0..<counts[id]{
+                let rect=CGRect(x:0,y:document.frame.height-CGFloat(i+1)*34,width:w-3,height:32)
+                if id==2{
+                    let value=efforts[i];let row=EffortTileRow(value:value,title:EffortAppearance.title(value),index:i,count:efforts.count,selected:value==(state.reasoningEffort ?? state.effectiveReasoningEffort));row.frame=rect
+                    row.layoutSubtreeIfNeeded();row.commit={[weak self] value in self?.commitEffort(value)};document.addSubview(row);effortRows.append(row)
+                    row.setPreview(column==2 ? cursors[2]==i:row.selected)
+                    if column==2 && cursors[2]==i{row.layer?.backgroundColor=NSColor.white.withAlphaComponent(0.09).cgColor}
+                }else{
+                    let installed=id==1 && state.selectedAgent=="ninja" && catalog[i].displayName.hasSuffix(" · Installed")
+                    let label=id==0 ? agents[i].name:ModelIdentity.title(state.selectedAgent=="ninja" ? catalog[i].displayName.replacingOccurrences(of:" · Installed",with:""):catalog[i].displayName)
+                    let button=NativePickerRow(title:"",target:self,action:#selector(selectRow(_:)));button.tag=id*10000+i;styleComposerButton(button);button.alignment = .left;button.font=AppTypography.ui(ofSize:12,weight:.medium);button.lineBreakMode = .byTruncatingTail;button.frame=rect;button.wantsLayer=true;button.layer?.cornerRadius=6
+                    let selected=id==0 ? agents[i].id==state.selectedAgent:catalog[i].model==selectedModel
+                    button.layer?.backgroundColor=NSColor.white.withAlphaComponent(column==id && cursors[id]==i ? 0.11:selected ? 0.06:0).cgColor
+                    let glyph=id==0 ? agents[i].id:ModelIdentity.glyph(catalog[i].resolvedModel ?? catalog[i].model)
+                    button.configure(label:label,image:glyph.flatMap{ProviderIcons.mark($0,color:installed ? NativePickerRow.labColor(catalog[i].model):NSColor.white.withAlphaComponent(id==0 ? 1:0.55))})
+                    button.toolTip=installed ? label+" · Installed":label
+                    button.isEnabled=pendingAgent==nil || id==0;button.setAccessibilityLabel(label);document.addSubview(button);buttons[id].append(button)
+                }
+            }
+            let cursor=min(cursors[id],max(0,counts[id]-1));document.scrollToVisible(CGRect(x:0,y:document.frame.height-CGFloat(cursor+1)*34,width:w,height:34))
+            if horizontal{x+=w+4}else{y-=h}
+        }
+        if restoreSearch,let search=ninjaSearch{panel.makeFirstResponder(search);if let selection=searchSelection{(search.currentEditor() as? NSTextView)?.setSelectedRange(selection)}}
+    }
+
+    private func addDownloadRow(to host: NSView, width: CGFloat, y: CGFloat, ninja: KaiNinja?) {
+        let label = NSTextField(labelWithString: "")
+        label.font = AppTypography.ui(ofSize: 10)
+        label.lineBreakMode = .byTruncatingTail
+        label.frame = CGRect(x: 8, y: y + 9, width: width - 16, height: 17)
+        host.addSubview(label)
+        let track = NSView(frame: CGRect(x: 8, y: y + 5, width: width - 16, height: 3))
+        track.wantsLayer = true
+        track.layer?.backgroundColor = NSColor.quaternaryLabelColor.cgColor
+        track.layer?.cornerRadius = 1.5
+        track.layer?.masksToBounds = true
+        let fill = CALayer()
+        fill.backgroundColor = NSColor.controlAccentColor.cgColor
+        fill.cornerRadius = 1.5
+        track.layer?.addSublayer(fill)
+        host.addSubview(track)
+        downloadLabel = label
+        downloadFill = fill
+        updateDownload(ninja)
+    }
+
+    private func updateDownload(_ ninja: KaiNinja?) {
+        guard let label = downloadLabel, let fill = downloadFill, let track = fill.superlayer else { return }
+        label.textColor = ninja?.canCancel == true ? .secondaryLabelColor : .systemOrange
+        if let status = ninja?.downloadStatus, label.stringValue != status {
+            label.stringValue = status
+            label.toolTip = status
+        }
+        let fraction = min(1, max(0, ninja?.downloadFraction ?? 0))
+        let width = track.bounds.width * CGFloat(fraction)
+        guard width != fill.bounds.width else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+        CATransaction.setAnimationDuration(KaiMotion.paneDuration)
+        CATransaction.setAnimationTimingFunction(KaiMotion.interactionCurve)
+        fill.frame = CGRect(x: 0, y: 0, width: width, height: track.bounds.height)
+        CATransaction.commit()
+    }
+
+    private func buildNinja(_ ninja:KaiNinja,in host:NSView,width:CGFloat,top:CGFloat){
+        let logo=NSImageView(frame:CGRect(x:12,y:top-18,width:14,height:14));logo.image=ProviderIcons.mark("tailscale");host.addSubview(logo)
+        let title=NSTextField(labelWithString:"Inference");title.font=AppTypography.ui(ofSize:11,weight:.medium);title.textColor = .secondaryLabelColor;title.frame=CGRect(x:34,y:top-18,width:width-46,height:18);host.addSubview(title)
+        let values:[(String,[(String,String)],String)]=[("machine",ninja.machines.map{($0.id,$0.name+($0.online ? "":" · Offline"))},ninja.selection.machine),("engine",[("ollama","Ollama"),("llama_cpp","llama.cpp")],ninja.selection.engine),("harness",[("codex","Codex"),("claude","Claude Code")],ninja.selection.harness)]
+        let narrow=width<400,extra:CGFloat=width<400 ? 32:0
+        let widths:[CGFloat]=narrow ? [width-20,(width-26)/2,(width-26)/2]:[width-248,100,112];var x:CGFloat=10
+        for (i,entry) in values.enumerated(){if narrow && i==1{x=10}
+            let popup=NSPopUpButton(frame:CGRect(x:x,y:top-49-(narrow && i>0 ? 32:0),width:widths[i],height:26),pullsDown:false);popup.identifier=NSUserInterfaceItemIdentifier(entry.0);popup.target=self;popup.action=#selector(selectNinja(_:));popup.font=AppTypography.ui(ofSize:11);styleComposerButton(popup,borderedFallback:true)
+            for (value,label) in entry.1{popup.addItem(withTitle:label);popup.lastItem?.representedObject=value;if i==0{let name=label.lowercased();let symbol=name.contains("book")||name.contains("laptop") ? "laptopcomputer":name.contains("studio") ? "macstudio":name.contains("mini") ? "macmini":name.contains("mac") ? "desktopcomputer":"server.rack";popup.lastItem?.image=NSImage(systemSymbolName:symbol,accessibilityDescription:label)}else{popup.lastItem?.image=ProviderIcons.mark(value=="ollama" ? "lab-ollama":value=="llama_cpp" ? "engine-llamacpp":value)};popup.lastItem?.image?.size=CGSize(width:14,height:14);if value==entry.2{popup.select(popup.lastItem)}}
+            popup.menu?.delegate=self;host.addSubview(popup);x+=widths[i]+6}
+        let search=ninjaSearch ?? NSSearchField();ninjaSearch=search;search.frame=CGRect(x:12,y:top-80-extra,width:width-24,height:24);search.placeholderString="Search installed models, labs, or Ollama registry";search.stringValue=ninjaQuery;search.target=self;search.action=#selector(searchNinja(_:));search.sendsSearchStringImmediately=true;host.addSubview(search)
+        let status=NSTextField(labelWithString:ninjaStatus(ninja));inferenceStatus=status;status.font=AppTypography.ui(ofSize:10);status.textColor = .secondaryLabelColor;status.lineBreakMode = .byTruncatingTail;status.frame=CGRect(x:12,y:top-102-extra,width:width-(ninja.canCancel == true ? 90:24),height:17);status.toolTip=status.stringValue;host.addSubview(status)
+        if ninja.canCancel == true{let stop=NSButton(title:"Stop",target:self,action:#selector(cancelNinja));styleComposerButton(stop);stop.font=AppTypography.ui(ofSize:11);stop.frame=CGRect(x:width-66,y:top-105-extra,width:54,height:22);host.addSubview(stop)}
+    }
+    private func ninjaStatus(_ ninja: KaiNinja?) -> String {
+        ninja?.progress ?? ninja?.error ?? (ninja?.loading == true ? "Loading model inventory…" : "Installed models first")
+    }
+    func menuWillOpen(_ menu: NSMenu) { trackingNinjaMenu = true }
+    func menuDidClose(_ menu: NSMenu) {
+        trackingNinjaMenu = false
+        guard let pending = deferredMenuState else { return }
+        deferredMenuState = nil
+        DispatchQueue.main.async { [weak self] in self?.update(pending) }
+    }
+    @objc private func selectNinja(_ sender:NSPopUpButton){guard let field=sender.identifier?.rawValue,let value=sender.selectedItem?.representedObject as? String else{return};onNinja?(field,value)}
+    @objc private func searchNinja(_ sender:NSSearchField){
+        ninjaQuery=sender.stringValue;cursors[1]=0
+        guard (sender.currentEditor() as? NSTextView)?.hasMarkedText() != true else{return}
+        if let deferred=deferredSearchState{deferredSearchState=nil;update(deferred)}
+        onNinja?("search",ninjaQuery);rebuild()
+    }
+    @objc private func cancelNinja(){onNinja?("cancel","")}
+    private func updateHighlights(){
+        guard let state else{return}
+        let agents=providers,catalog=models
+        for (order,id) in columnIDs.enumerated(){
+            (columns[order].subviews.first as? NSTextField)?.textColor=column==id ? .controlAccentColor:.secondaryLabelColor
+            if id==2{for(i,row)in effortRows.enumerated(){row.layer?.backgroundColor=NSColor.white.withAlphaComponent(column==id && cursors[id]==i ? 0.11:row.selected ? 0.06:0).cgColor;row.setPreview(column==id ? cursors[id]==i:row.selected)}}
+            else{for(i,button)in buttons[id].enumerated(){let selected=id==0 ? agents[i].id==state.selectedAgent:catalog[i].model==selectedModel;button.layer?.backgroundColor=NSColor.white.withAlphaComponent(column==id && cursors[id]==i ? 0.11:selected ? 0.06:0).cgColor}}
+            if let document=scrolls[order].documentView{document.scrollToVisible(CGRect(x:0,y:document.frame.height-CGFloat(cursors[id]+1)*34,width:document.frame.width,height:34))}
+        }
+    }
+    @objc private func selectRow(_ button:NSButton){column=button.tag/10000;cursors[column]=button.tag%10000;commitColumn()}
+    @discardableResult func handleKey(_ code:UInt16,modifiers:NSEvent.ModifierFlags=[])->Bool{
+        guard visible,modifiers.intersection([.command,.control,.option,.shift]).isEmpty else{return false}
+        if let editor=ninjaSearch?.currentEditor() as? NSTextView,panel?.firstResponder === editor {
+            if editor.hasMarkedText() || code==123 || code==124{return false}
+        }
+        switch code{
+        case 53:dismiss(restoreFocus:true)
+        case 126,125:
+            let count=column==0 ? providers.count:column==1 ? models.count:levels.count
+            cursors[column]=min(max(0,cursors[column]+(code==126 ? -1:1)),max(0,count-1));updateHighlights()
+        case 123:column=column==2 ? 1:scope == .all ? 0:column;updateHighlights()
+        case 124:if column != 2{commitColumn()}
+        case 36,76:commitColumn()
+        default:return false
+        }
+        return true
+    }
+    private func commitColumn(){
+        guard let state else{return}
+        switch column{
+        case 0:
+            guard providers.indices.contains(cursors[0]) else{return}
+            let id=providers[cursors[0]].id
+            if id != state.selectedAgent{ninjaQuery="";pendingAgent=id;let request=UUID().uuidString;pendingAgentRequestID=request;onAgent?(id,request)}
+            if scope == .providers{dismiss(restoreFocus:true)}else{column=1;rebuild()}
+        case 1:
+            guard pendingAgent==nil,models.indices.contains(cursors[1]) else{return}
+            let model=models[cursors[1]];selectedModel=model.model;if state.selectedAgent=="ninja",!model.model.contains(":"){cursors[1]=0;ninjaQuery=model.model+":";onNinja?("search",ninjaQuery)};onModel?(model.model)
+            if model.supportedReasoningEfforts.isEmpty{if state.selectedAgent != "ninja"{dismiss(restoreFocus:true)}}else{column=2;cursors[2]=min(cursors[2],model.supportedReasoningEfforts.count-1);rebuild()}
+        default:guard levels.indices.contains(cursors[2]) else{return};commitEffort(levels[cursors[2]])
+        }
+    }
+    private func commitEffort(_ effort:String){guard pendingAgent==nil,levels.contains(effort),let model=choice else{return};onEffort?(model.model,effort);dismiss(restoreFocus:true)}
+}
+
+@MainActor private final class NativePickerRow:NSButton {
+    private let mark=NSImageView(),caption=NSTextField(labelWithString:"")
+    override init(frame:NSRect){super.init(frame:frame);setup()}
+    required init?(coder:NSCoder){super.init(coder:coder);setup()}
+    private func setup(){caption.font=AppTypography.ui(ofSize:12,weight:.medium);caption.textColor = .labelColor;caption.lineBreakMode = .byTruncatingTail;caption.isSelectable=false;mark.imageScaling = .scaleProportionallyDown;addSubview(mark);addSubview(caption)}
+    func configure(label:String,image:NSImage?){caption.stringValue=label;mark.image=image;mark.isHidden=image==nil;needsLayout=true}
+    override func layout(){super.layout();mark.frame=CGRect(x:9,y:bounds.midY-8,width:16,height:16);let x:CGFloat=mark.isHidden ? 10:33;caption.frame=CGRect(x:x,y:bounds.midY-8,width:max(0,bounds.width-x-9),height:17)}
+    override func hitTest(_ point:NSPoint)->NSView?{super.hitTest(point)==nil ? nil:self}
+    static func labColor(_ model:String)->NSColor{let id=ModelIdentity.glyph(model) ?? "";let rgb:UInt32;switch id{case "lab-qwen":rgb=0x9b87ff;case "lab-google":rgb=0x6da2ff;case "lab-deepseek":rgb=0x5d8dff;case "lab-meta":rgb=0x38a3ff;case "lab-mistral":rgb=0xffa63d;case "lab-nvidia":rgb=0x95d346;case "lab-cohere":rgb=0x70bca5;case "lab-openai":rgb=0xffffff;case "lab-zai":rgb=0xbca5ff;default:rgb=0x89cad9};return NSColor(srgbRed:CGFloat((rgb>>16)&255)/255,green:CGFloat((rgb>>8)&255)/255,blue:CGFloat(rgb&255)/255,alpha:1)}
+}

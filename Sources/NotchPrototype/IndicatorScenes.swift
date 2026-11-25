@@ -198,6 +198,8 @@ enum IndicatorScenes {
         return IndicatorScene(id:"declined", transition:0.66, duration:1.45, tracks:padded(tracks))
     }()
 
+    static let pause=IndicatorScene(id:"pause",transition:0.58,duration:1.2,tracks:padded([p(9,9,3,14,1.5),p(19,9,3,14,1.5)].map{animate($0,scale:1.06,opacity:0.78)}))
+
     static let waiting: IndicatorScene = {
         let caps = [p(14,16,17,1.5,0.75),p(14,2,17,1.5,0.75)]
         let glass = [p(10,9,7,13,3.5,0,1,.hourglassLeft,1.45),p(18,9,7,13,3.5,0,1,.hourglassRight,1.45)]
@@ -236,5 +238,5 @@ enum IndicatorScenes {
     }()
 
     static let cycleIDs = ["thinking","pencil","terminal","git","image","document","code","search","read","files","plan","review","permission","question","success","failure","declined","waiting","tool","agents","compact","warning"]
-    static let all = [thinking,pencil,terminal,git,image,document,code,search,read,files,settings,plan,review,permission,question,success,failure,declined,waiting,tool,agents,compact,warning].reduce(into: [String:IndicatorScene]()) { $0[$1.id] = $1 }
+    static let all = [thinking,pencil,terminal,git,image,document,code,search,read,files,settings,plan,review,permission,question,success,failure,declined,pause,waiting,tool,agents,compact,warning].reduce(into: [String:IndicatorScene]()) { $0[$1.id] = $1 }
 }

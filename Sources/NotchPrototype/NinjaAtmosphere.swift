@@ -1,0 +1,403 @@
+import AppKit
+import QuartzCore
+
+/// A transparent, non-interactive scene. Motion lives on the render server;
+/// no display link, polling, GPU readback, or conversation rerender timer.
+@MainActor final class NinjaAtmosphereView:NSView {
+    enum Phase:String {case idle,working,finished}
+    private let field=CALayer(),grid=CALayer(),hoverTile=CALayer(),actionTile=CALayer(),actor=CALayer(),portrait=CALayer(),caption=CATextLayer()
+    private var tiles=[CALayer](),observers=[NSObjectProtocol]()
+    private var identity="",name="Ninja",style="fire",phase=Phase.idle,motion=true,paused=false
+    private var rasterKey="",sceneKey="",lastPointer:CFTimeInterval=0
+    private static let rasterQueue=DispatchQueue(label:"kai.ninja-grid",qos:.userInitiated)
+    private var rasterCache=[String:CGImage](),rasterCacheOrder=[String]()
+    private(set) var diagnosticRasterCacheBytes=0
+    var diagnosticRasterCacheCount:Int{rasterCache.count}
+    private var rasterInFlight=false
+    private(set) var diagnosticRasterJobsStarted=0
+    var diagnosticRasterPending:Bool{rasterInFlight || rasterRequest != nil}
+    private var rasterRequest:(key:String,size:CGSize,scale:CGFloat,style:String)?
+    private var bottomAnchored=false
+    private var sceneEpoch:CFTimeInterval?
+    private var tracking:NSTrackingArea?
+    private var lastGreeting:CFTimeInterval=0
+    private var actorFrames = NinjaActorFramePipeline()
+    private var actorPlan: NinjaMotionPlan?
+    private var actorWaveStarted: CFTimeInterval?
+    private var actorRevision: UInt64 = 0
+    private var actorFramesSuspended = true
+    override var isFlipped:Bool{true}
+    override func hitTest(_ point:NSPoint)->NSView?{nil}
+    override init(frame:NSRect){
+        super.init(frame:frame);wantsLayer=true;layer?.masksToBounds=true
+        layer?.addSublayer(field);field.addSublayer(grid);field.addSublayer(hoverTile);hoverTile.opacity=0;hoverTile.cornerRadius=0.8;field.addSublayer(actionTile);actionTile.opacity=0;actionTile.cornerRadius=0.8;layer?.addSublayer(actor);actor.addSublayer(portrait);actor.addSublayer(caption)
+        caption.font=NSFont.systemFont(ofSize:10,weight:.medium);caption.fontSize=10;caption.alignmentMode = .center;caption.isWrapped=true;caption.opacity=0
+        for _ in 0..<28 {let tile=CALayer();tile.cornerRadius=0.8;tile.borderWidth=0.5;field.addSublayer(tile);tiles.append(tile)}
+        for name in [NSWindow.didBecomeKeyNotification,NSWindow.didResignKeyNotification,NSWindow.didChangeOcclusionStateNotification,NSApplication.didBecomeActiveNotification,NSApplication.didResignActiveNotification]{
+            observers.append(NotificationCenter.default.addObserver(forName:name,object:nil,queue:.main){[weak self] _ in MainActor.assumeIsolated{self?.updatePlayback()}})
+        }
+    }
+    deinit{observers.forEach{NotificationCenter.default.removeObserver($0)}}
+    convenience init(frame: NSRect, actorExecutor: @escaping NinjaActorFramePipeline.Executor) {
+        self.init(frame: frame)
+        actorFrames = NinjaActorFramePipeline(execute: actorExecutor)
+    }
+    required init?(coder:NSCoder){fatalError("init(coder:) has not been implemented")}
+    override func viewDidMoveToWindow(){super.viewDidMoveToWindow();rasterKey="";sceneKey="";cancelActorFrames();needsLayout=true;updatePlayback()}
+    override func viewDidChangeBackingProperties(){super.viewDidChangeBackingProperties();rasterKey="";sceneKey="";cancelActorFrames();needsLayout=true}
+    override func updateTrackingAreas(){
+        if let tracking{removeTrackingArea(tracking)}
+        let area=NSTrackingArea(rect:bounds,options:[.mouseMoved,.mouseEnteredAndExited,.activeInKeyWindow,.inVisibleRect],owner:self,userInfo:nil);addTrackingArea(area);tracking=area;super.updateTrackingAreas()
+    }
+    nonisolated static func color(_ style:String)->NSColor {
+        let hex:[String:UInt32]=["fire":0xef6758,"lightning":0x619dff,"earth":0xa5acba,"ice":0xc2edf4,"energy":0x74d6a0,"water":0x60ccd7,"stone-fists":0xdedfdd,"ice-shards":0xd8f4ff,"water-swirls":0x93edf9,"lightning-burst":0xf1ee82,"green-spirals":0xd7ef79,"flame-phoenix":0xffa560,"gold-white-knot":0xf0ce27]
+        let c=hex[style] ?? 0xef6758
+        return NSColor(srgbRed:CGFloat((c>>16)&255)/255,green:CGFloat((c>>8)&255)/255,blue:CGFloat(c&255)/255,alpha:1)
+    }
+    func configure(identity:String,name:String="Ninja",style:String,working:Bool,motion:Bool,visible:Bool,bottomAnchored:Bool=false){
+        let actorTrace = NativeFrameTiming.begin(.ninjaConfigure)
+        defer { NativeFrameTiming.end(actorTrace) }
+        if self.bottomAnchored != bottomAnchored{self.bottomAnchored=bottomAnchored;rasterKey="";needsLayout=true}
+        let opening=self.identity != identity || (isHidden && visible)
+        let completed=self.phase == .working && !working && !opening
+        let starting=working && self.phase != .working
+        let changed=self.style != style
+        self.identity=identity;self.name=name;self.style=style;self.motion=motion && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        phase=working ? .working:(completed ? .finished:(opening ? .idle:phase == .finished ? .finished:.idle))
+        isHidden = !visible
+        if changed{rasterKey=""}
+        if !visible{updatePlayback();return}
+        if rasterKey.isEmpty{needsLayout=true};layoutSubtreeIfNeeded()
+        animateScene()
+        if visible && (opening || completed || starting) {say(NinjaQuips.next(completed ? .done:working ? .work:.arrival,name:name),opening:opening)}
+        updatePlayback()
+    }
+    override func layout(){
+        super.layout();guard !isHidden,bounds.width.isFinite,bounds.height.isFinite,bounds.width>0,bounds.height>0 else{return}
+        defer { AdaptiveTextBackdrop.shared.scheduleNativeInkRefresh() }
+        CATransaction.begin();CATransaction.setDisableActions(true)
+        let height=min(210,max(96,bounds.height*0.34));field.transform=CATransform3DIdentity;field.frame=CGRect(x:0,y:bottomAnchored ? bounds.height-height:0,width:bounds.width,height:height)
+        field.transform=bottomAnchored ? CATransform3DMakeScale(1,-1,1):CATransform3DIdentity
+        let scale=window?.backingScaleFactor ?? 2
+        // Validate before converting floating-point geometry to integer pixels.
+        guard let raster=Self.gridRasterGeometry(size:field.bounds.size,scale:scale) else{CATransaction.commit();return}
+        let key="\(raster.width):\(raster.height):\(raster.scale):\(style)"
+        if key != rasterKey {rasterKey=key;grid.frame=field.bounds;grid.contentsScale=scale;requestGrid(key:key,size:field.bounds.size,scale:scale);sceneKey=""}
+        let spriteSize=Self.spriteSize(fieldHeight:height)
+        portrait.frame=CGRect(x:-spriteSize.width/2,y:-spriteSize.height/2,width:spriteSize.width,height:spriteSize.height);portrait.contentsGravity = .resizeAspect;portrait.magnificationFilter = .linear
+        // Keep the last valid portrait until the current immutable frame batch is ready.
+        let captionWidth=min(260,max(96,bounds.width*0.52-16))
+        caption.frame=CGRect(x:-captionWidth/2,y:bottomAnchored ? -hypot(spriteSize.width,spriteSize.height)/2-32:hypot(spriteSize.width,spriteSize.height)/2+4,width:captionWidth,height:28);caption.contentsScale=scale;caption.foregroundColor=Self.color(style).withAlphaComponent(0.8).cgColor
+        for (i,tile) in tiles.enumerated(){
+            let x=CGFloat((i*137+61)%997)/997*max(1,bounds.width-14)+7
+            let y=CGFloat((i*53+19)%173)/173*(height-28)+6
+            tile.frame=CGRect(x:x,y:y,width:i%5==0 ? 5:3,height:i%5==0 ? 5:3)
+            tile.backgroundColor=Self.color(style).withAlphaComponent(0.11).cgColor
+            tile.borderColor=Self.color(style).withAlphaComponent(0.15).cgColor
+            tile.opacity=Float(pow(1-y/height,1.7))*0.7
+        }
+        CATransaction.commit();animateScene()
+    }
+    private func requestGrid(key:String,size:CGSize,scale:CGFloat){
+        if let image=rasterCache[key]{
+            rasterCacheOrder.removeAll{$0==key};rasterCacheOrder.append(key)
+            rasterRequest=nil;grid.contents=image;return
+        }
+        rasterRequest=(key,size,scale,style)
+        startGridRaster()
+    }
+    private func cacheGrid(_ image:CGImage,key:String){
+        if let previous=rasterCache.removeValue(forKey:key){diagnosticRasterCacheBytes-=previous.bytesPerRow*previous.height}
+        rasterCacheOrder.removeAll{$0==key}
+        let cost=image.bytesPerRow*image.height,budget=16*1024*1024
+        guard cost<=budget else{return}
+        while rasterCache.count>=4 || diagnosticRasterCacheBytes+cost>budget{
+            let oldest=rasterCacheOrder.removeFirst()
+            if let removed=rasterCache.removeValue(forKey:oldest){diagnosticRasterCacheBytes-=removed.bytesPerRow*removed.height}
+        }
+        rasterCache[key]=image;rasterCacheOrder.append(key);diagnosticRasterCacheBytes+=cost
+    }
+    private func startGridRaster(){
+        guard !rasterInFlight,let request=rasterRequest else{return}
+        rasterRequest=nil;rasterInFlight=true;diagnosticRasterJobsStarted+=1
+        Self.rasterQueue.async{[weak self] in
+            let image=autoreleasepool{Self.makeGrid(size:request.size,scale:request.scale,style:request.style)}
+            DispatchQueue.main.async{[weak self] in
+                guard let self else{return};self.rasterInFlight=false
+                if let image{
+                    self.cacheGrid(image,key:request.key)
+                    if self.rasterKey==request.key{
+                        CATransaction.begin();CATransaction.setDisableActions(true);self.grid.contents=image;CATransaction.commit()
+                    }
+                }
+                self.startGridRaster()
+            }
+        }
+    }
+    nonisolated static func gridRasterGeometry(size:CGSize,scale:CGFloat)->(width:Int,height:Int,scale:CGFloat)?{
+        guard size.width.isFinite,size.height.isFinite,scale.isFinite,
+              size.width>0,size.height>0,scale>0,size.width<=32768,size.height<=32768 else{return nil}
+        let columns=Int(size.width/7)+1,rows=Int(size.height/7)+1
+        guard columns<=1_000_000/rows else{return nil}
+        // Normal windows retain exact backing resolution. Extreme multi-display
+        // sizes use a smaller raster rather than allocating unbounded bitmaps.
+        let dimensionScale:CGFloat=8192/max(size.width,size.height)
+        let pixelScale:CGFloat=sqrt(CGFloat(4_194_304)/(size.width*size.height))
+        let limited=min(scale,min(dimensionScale,pixelScale))
+        return (max(1,Int(size.width*limited)),max(1,Int(size.height*limited)),limited)
+    }
+    private nonisolated static func makeGrid(size:CGSize,scale:CGFloat,style:String)->CGImage?{
+        guard let raster=gridRasterGeometry(size:size,scale:scale),
+              let c=CGContext(data:nil,width:raster.width,height:raster.height,bitsPerComponent:8,bytesPerRow:raster.width*4,space:CGColorSpaceCreateDeviceRGB(),bitmapInfo:CGImageAlphaInfo.premultipliedLast.rawValue) else{return nil}
+        c.scaleBy(x:raster.scale,y:raster.scale);c.translateBy(x:0,y:size.height);c.scaleBy(x:1,y:-1)
+        let tint=Self.color(style)
+        for row in 0...Int(size.height/7){
+            let fade=pow(max(0,1-CGFloat(row)*7/size.height),2.2)
+            let stroke=tint.withAlphaComponent(0.055*fade).cgColor
+            let bright=tint.withAlphaComponent(0.12*fade).cgColor
+            let faint=tint.withAlphaComponent(0.045*fade).cgColor
+            var outlines=[CGRect](),brightTiles=[CGRect](),faintTiles=[CGRect]()
+            outlines.reserveCapacity(Int(size.width/7)+1)
+            for col in 0...Int(size.width/7){
+                let rect=CGRect(x:CGFloat(col)*7+0.5,y:CGFloat(row)*7+0.5,width:5,height:5)
+                outlines.append(rect)
+                let hash=(col*73+row*137+col*row*19)%101
+                if hash<2{brightTiles.append(rect.insetBy(dx:0.5,dy:0.5))}
+                else if hash<8{faintTiles.append(rect.insetBy(dx:0.5,dy:0.5))}
+            }
+            // Separate cells never overlap. Submit one path per row rather than
+            // thousands of Core Graphics state changes and tiny draw calls.
+            c.setLineWidth(0.45);c.setStrokeColor(stroke);c.addRects(outlines);c.strokePath()
+            c.setFillColor(bright);c.fill(brightTiles)
+            c.setFillColor(faint);c.fill(faintTiles)
+        }
+        return c.makeImage()
+    }
+    private func animateScene(){
+        let actorTrace = NativeFrameTiming.begin(.ninjaAnimate)
+        defer { NativeFrameTiming.end(actorTrace) }
+        guard bounds.width>0 else{return}
+        let key="\(identity)/\(style)/\(phase.rawValue)/\(motion)/\(rasterKey)"
+        guard key != sceneKey else{return};sceneKey=key
+        actorWaveStarted = nil
+        actor.removeAllAnimations();portrait.removeAllAnimations();field.removeAllAnimations();actionTile.removeAllAnimations();tiles.forEach{$0.removeAllAnimations()}
+        let working=phase == .working
+        let plan=NinjaMotionPlan(size:field.bounds.size,working:working,finished:phase == .finished)
+        CATransaction.begin();CATransaction.setDisableActions(true)
+        actionTile.bounds=CGRect(x:0,y:0,width:6,height:6);actionTile.backgroundColor=Self.color(style).cgColor
+        actor.position=scenePoint(plan.samples[0].position);actor.opacity=sceneOpacity(y:plan.samples[0].position.y);field.opacity=1
+        CATransaction.commit()
+        actorPlan = motion ? plan : nil
+        if !motion { actorWaveStarted = nil }
+        if motion && sceneEpoch == nil { sceneEpoch=layer!.convertTime(CACurrentMediaTime(),from:nil) }
+        requestActorFrames()
+        guard motion else{return}
+        let travel=CAKeyframeAnimation(keyPath:"position")
+        travel.values=plan.samples.map{NSValue(point:scenePoint($0.position))};travel.duration=plan.duration;travel.repeatCount = .infinity;travel.calculationMode = .linear;travel.beginTime=sceneEpoch!;actor.addKai(travel,forKey:"footwork")
+        let tumble=CAKeyframeAnimation(keyPath:"transform.rotation.z");tumble.values=plan.samples.map{$0.rotation};tumble.duration=plan.duration;tumble.repeatCount = .infinity;tumble.calculationMode = .linear;tumble.beginTime=sceneEpoch!;portrait.addKai(tumble,forKey:"tumble")
+        let depth=CAKeyframeAnimation(keyPath:"opacity");depth.values=plan.samples.map{sceneOpacity(y:$0.position.y)};depth.duration=plan.duration;depth.repeatCount = .infinity;depth.beginTime=sceneEpoch!;actor.addKai(depth,forKey:"depth")
+        let target=CAKeyframeAnimation(keyPath:"position");target.values=plan.samples.map{let p=fieldPoint($0.position);return NSValue(point:CGPoint(x:floor((p.x+12)/7)*7+3.5,y:floor((p.y+12)/7)*7+3.5))};target.duration=plan.duration;target.repeatCount = .infinity;target.calculationMode = .discrete;target.beginTime=sceneEpoch!;actionTile.addKai(target,forKey:"target")
+        let tap=CAKeyframeAnimation(keyPath:"opacity");tap.values=plan.samples.map{sample -> Float in let contact=sample.action == .inspect || sample.action == .climb;return contact ? sceneOpacity(y:sample.position.y)*(sample.step%4<2 ? 0.8:0.3):0};tap.duration=plan.duration;tap.repeatCount = .infinity;tap.calculationMode = .discrete;tap.beginTime=sceneEpoch!;actionTile.addKai(tap,forKey:"glow")
+        for (i,tile) in tiles.enumerated(){
+            let wave=CAKeyframeAnimation(keyPath:"opacity");let base=tile.opacity
+            wave.values=[base*0.35,base*(working ? 1.9:1.1),base*0.35];wave.duration=working ? 3.6:8.5;wave.beginTime=sceneEpoch!+Double(i%11)*0.19;wave.repeatCount = .infinity;wave.timingFunction=KaiMotion.cycleCurve;tile.addKai(wave,forKey:"glimmer")
+            let drift=CABasicAnimation(keyPath:"transform.translation.y");drift.fromValue=2;drift.toValue = -3;drift.autoreverses=true;drift.duration=Double(4+i%5);drift.repeatCount = .infinity;drift.beginTime=sceneEpoch!;tile.addKai(drift,forKey:"drift")
+        }
+    }
+    private func scenePoint(_ p:CGPoint)->CGPoint{CGPoint(x:p.x,y:bottomAnchored ? bounds.height-Self.dotTravelDepth(fieldHeight:field.bounds.height)+p.y:p.y)}
+    private func fieldPoint(_ p:CGPoint)->CGPoint{CGPoint(x:p.x,y:bottomAnchored ? Self.dotTravelDepth(fieldHeight:field.bounds.height)-p.y:p.y)}
+    private func sceneOpacity(y:CGFloat)->Float{Self.actorOpacity(y:bottomAnchored ? Self.dotTravelDepth(fieldHeight:field.bounds.height)-y:y,height:field.bounds.height)}
+    static func spriteSize(fieldHeight:CGFloat)->CGSize{let height=min(38,fieldHeight/4);return CGSize(width:height*32/38,height:height)}
+    // The lower part of the field is only a feather, not a walking surface.
+    static func dotTravelDepth(fieldHeight:CGFloat)->CGFloat{fieldHeight*0.60}
+    static func actorOpacity(y:CGFloat,height:CGFloat)->Float{Float(0.92*pow(max(0.24,1-y/max(1,height)),1.15))}
+    private func say(_ text:String,opening:Bool){
+        caption.string=text
+        guard motion else{caption.removeAllAnimations();return}
+        let opacity=CAKeyframeAnimation(keyPath:"opacity");opacity.values=[0,0.95,0.95,0];opacity.keyTimes=[0,0.12,0.82,1];opacity.duration=5.2;caption.addKai(opacity,forKey:"moment")
+        if opening && motion{let appear=CABasicAnimation(keyPath:"opacity");appear.fromValue=0;appear.toValue=1;appear.duration=0.9;field.addKai(appear,forKey:"arrival");let enter=CABasicAnimation(keyPath:"opacity");enter.fromValue=0;enter.toValue=actor.opacity;enter.duration=0.8;actor.addKai(enter,forKey:"arrival")}
+    }
+    override func mouseMoved(with event:NSEvent){
+        guard motion,!paused,CACurrentMediaTime()-lastPointer>0.1 else{return};lastPointer=CACurrentMediaTime()
+        let rootPoint=convert(event.locationInWindow,from:nil),p=field.convert(rootPoint,from:layer);guard field.bounds.contains(p) else{return}
+        CATransaction.begin();CATransaction.setAnimationDuration(KaiMotion.controlDuration);CATransaction.setAnimationTimingFunction(KaiMotion.interactionCurve)
+        portrait.transform=CATransform3DMakeRotation(max(-0.10,min(0.10,(p.x-bounds.midX)/max(1,bounds.width)*0.2)),0,0,1)
+        CATransaction.commit()
+        CATransaction.begin();CATransaction.setDisableActions(true)
+        hoverTile.frame=CGRect(x:floor(p.x/7)*7+0.5,y:floor(p.y/7)*7+0.5,width:5,height:5);hoverTile.backgroundColor=Self.color(style).withAlphaComponent(0.4).cgColor
+        CATransaction.commit()
+        let spark=CABasicAnimation(keyPath:"opacity");spark.fromValue=0.8;spark.toValue=0;spark.duration=0.8;hoverTile.addKai(spark,forKey:"pointer")
+        let a=actor.presentation()?.position ?? actor.position
+        if hypot(rootPoint.x-a.x,rootPoint.y-a.y)<48,CACurrentMediaTime()-lastGreeting>30{
+            lastGreeting=CACurrentMediaTime();say(NinjaQuips.next(.nearby,name:name),opening:false)
+            beginActorWave()
+        }
+    }
+    override func mouseExited(with event:NSEvent){CATransaction.begin();CATransaction.setAnimationDuration(KaiMotion.controlDuration);CATransaction.setAnimationTimingFunction(KaiMotion.interactionCurve);portrait.transform=CATransform3DIdentity;CATransaction.commit()}
+    private func updatePlayback(){
+        guard let root=layer else{return}
+        let visible = actorCanRender
+        if visible && actorFramesSuspended { requestActorFrames() }
+        else if !visible && !actorFramesSuspended { cancelActorFrames() }
+        let play = visible && (window?.isKeyWindow == true || window is NSPanel) && motion
+        if !play && !paused{let time=root.convertTime(CACurrentMediaTime(),from:nil);root.speed=0;root.timeOffset=time;paused=true}
+        else if play && paused{let time=root.timeOffset;root.speed=1;root.timeOffset=0;root.beginTime=0;root.beginTime=root.convertTime(CACurrentMediaTime(),from:nil)-time;paused=false}
+    }
+    func beginActorWave() {
+        guard motion, !paused, actorCanRender else { return }
+        actorWaveStarted = portrait.convertTime(CACurrentMediaTime(), from: nil)
+        requestActorFrames()
+    }
+    private var actorCanRender: Bool {
+        !isHiddenOrHasHiddenAncestor && window?.isVisible == true
+            && window?.occlusionState.contains(.visible) == true
+    }
+    private func cancelActorFrames() {
+        actorRevision &+= 1
+        actorFramesSuspended = true
+        actorFrames.cancel()
+    }
+    private func requestActorFrames() {
+        let requestTrace = NativeFrameTiming.begin(.actorRasterRequest)
+        defer { NativeFrameTiming.end(requestTrace) }
+        guard !sceneKey.isEmpty, actorCanRender else { cancelActorFrames(); return }
+        actorFramesSuspended = false
+        actorRevision &+= 1
+        let revision = actorRevision, expectedScene = sceneKey, expectedStyle = style
+        let expectedSize = bounds.size
+        weak var expectedWindow = window
+        let rest = NinjaPixelActor.Key(style: style, action: .rest, step: 0)
+        let plan = actorPlan
+        let gaitKeys = plan?.samples.map {
+            NinjaPixelActor.Key(style: style, action: $0.action, step: $0.step, left: $0.left)
+        } ?? []
+        let waveStart = actorWaveStarted
+        let waveKeys = waveStart == nil ? [] : (0..<16).map {
+            NinjaPixelActor.Key(style: style, action: .wave, step: $0)
+        }
+        let request = NinjaActorFrameRequest(keys: [rest] + gaitKeys + waveKeys,
+            palette: NinjaPixelActor.palette(style: style), diagnostics: NativeFrameTiming.enabled)
+        actorFrames.submit(request) { [weak self, weak expectedWindow] result in
+            guard let self, let result, self.actorRevision == revision,
+                  self.sceneKey == expectedScene, self.style == expectedStyle,
+                  self.bounds.size == expectedSize, self.window === expectedWindow,
+                  self.actorCanRender, let still = result.frames[rest] else { return }
+            let publicationTrace = NativeFrameTiming.begin(.actorBatchPublish)
+            defer { NativeFrameTiming.end(publicationTrace) }
+            if let microseconds = result.rasterMicroseconds {
+                NativeFrameTiming.instant(.actorRasterMicroseconds, value: microseconds)
+                NativeFrameTiming.instant(.actorRasterMisses, value: Int64(result.generated))
+            }
+            CATransaction.begin(); CATransaction.setDisableActions(true)
+            self.portrait.contents = still
+            CATransaction.commit()
+            if let plan, let epoch = self.sceneEpoch {
+                let frames = gaitKeys.compactMap { result.frames[$0] }
+                guard frames.count == gaitKeys.count else { return }
+                let gait = CAKeyframeAnimation(keyPath: "contents")
+                gait.values = frames; gait.duration = plan.duration
+                gait.repeatCount = .infinity; gait.calculationMode = .discrete
+                gait.beginTime = epoch
+                self.portrait.addKai(gait, forKey: "actions")
+            }
+            if let start = waveStart, self.actorWaveStarted == start,
+               self.portrait.convertTime(CACurrentMediaTime(), from: nil) < start + 1.3 {
+                let frames = waveKeys.compactMap { result.frames[$0] }
+                guard frames.count == waveKeys.count else { return }
+                let wave = CAKeyframeAnimation(keyPath: "contents")
+                wave.values = frames; wave.duration = 1.3; wave.calculationMode = .discrete
+                wave.beginTime = start
+                self.portrait.addKai(wave, forKey: "wave")
+            }
+        }
+    }
+    func mount(in host:NSView,frame:NSRect){
+        CATransaction.begin();CATransaction.setDisableActions(true)
+        if superview !== host{removeFromSuperview();host.addSubview(self,positioned:.above,relativeTo:nil)}
+        if self.frame != frame{self.frame=frame}
+        CATransaction.commit()
+    }
+    func suspend(){isHidden=true;cancelActorFrames();updatePlayback()}
+    var diagnosticActorFrame: CGImage? {
+        guard let contents = portrait.contents else { return nil }
+        return contents as! CGImage
+    }
+    var diagnosticActorGait: CAKeyframeAnimation? { portrait.animation(forKey: "actions") as? CAKeyframeAnimation }
+    var diagnosticActorWaveStarted: CFTimeInterval? { actorWaveStarted }
+    var diagnosticActorLocalTime: CFTimeInterval { portrait.convertTime(CACurrentMediaTime(), from: nil) }
+    var diagnosticActorWave: CAKeyframeAnimation? { portrait.animation(forKey: "wave") as? CAKeyframeAnimation }
+    var diagnosticActorFrameActive: Int { actorFrames.activeCount }
+    var diagnosticActorFramePending: Int { actorFrames.pendingCount }
+    var diagnosticModelPosition: CGPoint { actor.position }
+    var diagnosticPosition:CGPoint?{actor.presentation()?.position}
+    var diagnosticEpoch:CFTimeInterval?{sceneEpoch}
+    var diagnosticPlayback:String{"hidden=\(isHidden) motion=\(motion) paused=\(paused) window=\(window?.windowNumber ?? -1) key=\(window?.isKeyWindow ?? false) visible=\(window?.isVisible ?? false) occluded=\(window?.occlusionState.contains(.visible) ?? false)"}
+    var diagnosticAnimationCount:Int{actor.animationKeys()?.count ?? 0}
+}
+
+/// Sample a short action score once, then let the render server play it. Each
+/// jump has a ballistic arc and landing; climbs animate alternating hands/feet.
+@MainActor struct NinjaMotionPlan {
+    struct Sample {let position:CGPoint;let action:NinjaPixelActor.Action;let step:Int;let left:Bool;let rotation:Double}
+    let samples:[Sample],duration:Double
+    init(size:CGSize,working:Bool,finished:Bool){
+        let padding=min(146,max(48,size.width*0.26)),targetLeft=padding,targetRight=max(targetLeft,size.width-padding)
+        let sprite=NinjaAtmosphereView.spriteSize(fieldHeight:size.height)
+        let radius=hypot(sprite.width,sprite.height)/2
+        // Reserve the whole rotated sprite, including a landing/pose margin.
+        let targetTop=radius+6,targetBottom=max(targetTop,NinjaAtmosphereView.dotTravelDepth(fieldHeight:size.height)-radius-2)
+        // One design-space score: resizing changes its coordinates, never its
+        // clock, leg boundaries, jump phase or which side the actor is on.
+        let left:CGFloat=146,right:CGFloat=854,top:CGFloat=56,bottom:CGFloat=182
+        let home=CGPoint(x:left,y:top)
+        let span=right-left,far=home.x<(left+right)/2 ? right:left
+        let low=CGPoint(x:left+span*0.38,y:bottom),ledge=CGPoint(x:far,y:bottom)
+        let roof=CGPoint(x:far,y:top),across=CGPoint(x:far==right ? left:right,y:top+10)
+        let middle=CGPoint(x:left+span*0.65,y:bottom-7)
+        struct Leg {let from:CGPoint,to:CGPoint,action:NinjaPixelActor.Action,seconds:Double,jump:Bool,flip:Bool}
+        var legs=[Leg](),cursor=home
+        func add(_ to:CGPoint,_ action:NinjaPixelActor.Action,_ seconds:Double,jump:Bool=false,flip:Bool=false){legs.append(Leg(from:cursor,to:to,action:action,seconds:seconds,jump:jump,flip:flip));cursor=to}
+        // Route timing is independent of surface size and working/idle state.
+        // This keeps the same normalized position when the live view moves hosts.
+        func stride(_ to:CGPoint)->Double{2.4}
+        add(home,finished ? .bow:.wave,1.2)
+        let floor=CGPoint(x:home.x,y:bottom)
+        add(floor,.leap,0.85,jump:true);add(floor,.inspect,0.22)
+        add(low,working ? .run:.walk,stride(low))
+        add(ledge,.leap,0.95,jump:true);add(ledge,.inspect,0.28)
+        add(ledge,.inspect,1.1)
+        add(roof,.climb,2.4)
+        add(roof,.rest,0.65)
+        add(across,.tuck,1.3,jump:true,flip:true);add(across,.inspect,0.28)
+        add(across,.wave,0.9)
+        add(middle,.leap,1.2,jump:true);add(middle,.inspect,0.28)
+        add(middle,.inspect,1.4)
+        add(home,.tuck,1.2,jump:true,flip:true);add(home,.inspect,0.28)
+        add(home,finished ? .bow:.rest,1.2)
+        let total=legs.reduce(0){$0+$1.seconds},count=Int(ceil(total*24))
+        var frames=[Sample](),legIndex=0,legStart=0.0,completedSpin=0.0
+        for i in 0...count {
+            let time=Double(i)/Double(count)*total
+            while legIndex < legs.count - 1 && time > legStart + legs[legIndex].seconds {
+                let previous = legs[legIndex]
+                if previous.flip {
+                    completedSpin += 2 * .pi * (previous.to.x < previous.from.x ? -1 : 1)
+                }
+                legStart += previous.seconds
+                legIndex += 1
+            }
+            let leg=legs[legIndex],t=min(1,max(0,(time-legStart)/leg.seconds))
+            let arc=leg.jump ? min(32,max(6,Double(min(leg.from.y,leg.to.y)-46)))*4*t*(1-t):0
+            let grip=leg.action == .climb ? sin(t*Double.pi*10)*2:0
+            let point=CGPoint(x:leg.from.x+(leg.to.x-leg.from.x)*t+grip,y:leg.from.y+(leg.to.y-leg.from.y)*t-arc)
+            let direction=leg.to.x<leg.from.x
+            let step=leg.jump ? min(7,Int(t*8)):Int((time-legStart)*(working ? 18:12))%8
+            // Ease into and out of a somersault; end on the exact upright pose.
+            let spin = leg.flip ? (t*t*(3-2*t))*Double.pi*2*(direction ? -1:1)
+                : leg.action == .run || leg.action == .leap ? sin(t * .pi) * (direction ? -0.16 : 0.16) : 0
+            let mapped=CGPoint(x:targetLeft+(point.x-left)/(right-left)*(targetRight-targetLeft),y:targetTop+(point.y-top)/(bottom-top)*(targetBottom-targetTop))
+            frames.append(Sample(position:mapped,action:leg.action,step:step,left:direction,rotation:completedSpin+spin))
+        }
+        samples=frames;duration=total
+    }
+}

@@ -1,0 +1,15 @@
+# Owned native agent services
+
+Codex keeps an owned App Server stdio process; OpenCode keeps an owned authenticated private loopback server and its SSE connection. A subsequent prompt in the same native chat reuses that service. Code does not attach to another application's writer, replay an ambiguous prompt, or weaken provider permissions. Other adapters retain their existing native invocation transports.
+
+Use the **Subagents** toolbar control or `/children` to open the native child inspector. It shows provider identity, genuine lifecycle state, paged output, pending decisions, and Stop. Codex also exposes active-turn steering; OpenCode does not, so that control is hidden. Clicking a child with a pending decision opens its owning chat and exact native request. Approvals and question answers use the provider's opaque request token and original native endpoint. Parent completion does not discard a still-running child's approval.
+
+The inspector stays pinned to its labeled project when the main chat changes. It excludes the Files and Changes inspectors to preserve chat width. Runtime details are collapsed by default. Earlier/Next pages stop output following; Latest explicitly resumes it. Transcript pages are read and parsed on workers in 64 KiB slices and displayed in a virtualized list. Full child text spills through the disk-backed response buffer. Closed child inspectors do not subscribe to text-delta redraws; lifecycle and decision events still update cached status.
+
+Service metadata is bounded to 16 owned services, two retained idle services, and 128 observed children per service. Both transports cap unresolved native requests at 64 total per service. Services without running children or pending decisions unload after 60 seconds. Workers wait for transport/control events or that idle deadline rather than waking on a periodic idle timer. Failed connections are reported and are never silently retried by resending a paid prompt.
+
+The per-turn handle relinquishes process-group ownership before reporting completion, so dropping an old handle cannot kill a newly reused turn. File checkpoint settlement waits for owned background children and outstanding requests. Undo refuses to run while owned children are active. Normal Quit signals owned services and waits for process cleanup; fixture teardown scopes cancellation to its own project roots.
+
+Child transcripts and pending decisions currently belong to the live service. They are not a durable child-history/recovery database after a complete application restart. The feature-family audit tracks that remaining work. Provider models, account credits, external tools and network availability remain external dependencies; genuine provider failures are shown rather than converted into a false success state.
+
+Implementation: `runtime/broker.rs`, `runtime/codex_server.rs`, `runtime/opencode_server.rs`, `broker_ui.rs`, and `native_request_ui.rs`. Disposable protocol fixtures exercise service reuse, completed-parent/live-child approvals, rejected decisions, steering where supported, Stop, settlement and process reaping without authenticated inference.

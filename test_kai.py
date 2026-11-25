@@ -46,6 +46,9 @@ class FakeServer:
             if self.writer_busy:
                 from kai import RPCError
                 raise RPCError("thread/resume: active writer")
+            if params.get("model"):
+                return {"thread":self.rows[0],"model":params["model"],
+                        "reasoningEffort":params.get("config",{}).get("model_reasoning_effort")}
             if self.resume_partial:
                 return {"thread": {**self.rows[0], "turns": [
                     {"id": "old-turn", "status": "completed", "items": [
@@ -134,7 +137,7 @@ class KaiTests(unittest.TestCase):
             def append(index, stamp, payload):
                 with paths[index].open("a") as stream:
                     stream.write(json.dumps({"timestamp": stamp, "type": "event_msg", "payload": payload}) + "\n")
-            monitor = SessionActivityMonitor()
+            monitor = SessionActivityMonitor(clock=lambda: 1790542805)
             append(0, "2026-09-27T21:00:00.000Z", {"type": "task_started", "turn_id": "a"})
             self.assertEqual([t["id"] for t in monitor.poll(rows)["activeTasks"]], ["one"])
             append(1, "2026-09-27T21:00:01.000Z", {"type": "task_started", "turn_id": "b"})
@@ -171,7 +174,7 @@ class KaiTests(unittest.TestCase):
                 stream.write(json.dumps({"timestamp": "2026-09-27T21:00:01.000Z", "payload":
                                          {"type": "custom_tool_call", "name": "exec",
                                           "input": '"type":"task_complete" ' + "x" * 70000}}) + "\n")
-            state = SessionActivityMonitor().poll([{"id": "task", "name": "Task", "path": str(path)}])
+            state = SessionActivityMonitor(clock=lambda: 1790542805).poll([{"id": "task", "name": "Task", "path": str(path)}])
             self.assertEqual(state["focusThreadId"], "task")
 
     def test_session_scanner_recovers_active_turn_larger_than_two_megabytes(self):
@@ -184,7 +187,7 @@ class KaiTests(unittest.TestCase):
                                          {"type": "message", "text": "x" * 2_200_000}}) + "\n")
                 stream.write(json.dumps({"timestamp": "2026-09-27T21:00:02.000Z", "payload":
                                          {"type": "custom_tool_call", "name": "exec", "input": "await tools.exec_command({cmd:\"pwd\"})"}}) + "\n")
-            state = SessionActivityMonitor().poll([{"id": "task", "name": "Task", "path": str(path)}])
+            state = SessionActivityMonitor(clock=lambda: 1790542805).poll([{"id": "task", "name": "Task", "path": str(path)}])
             self.assertEqual(state["focusThreadId"], "task")
             self.assertEqual(state["activeTasks"][0]["text"], "pwd")
 
@@ -195,7 +198,7 @@ class KaiTests(unittest.TestCase):
                 with path.open("a") as stream:
                     stream.write(json.dumps({"timestamp": "2026-09-27T21:00:00.000Z", "payload": payload}) + "\n")
             row = {"id": "task", "name": "Stable chat", "path": str(path)}
-            monitor = SessionActivityMonitor()
+            monitor = SessionActivityMonitor(clock=lambda: 1790542805)
             append({"type": "task_started", "turn_id": "turn"})
             self.assertEqual(monitor.poll([row])["focusThreadId"], "task")
             self.assertEqual(monitor.poll([])["focusThreadId"], "task")
@@ -660,7 +663,9 @@ class KaiTests(unittest.TestCase):
         bridge_apply(self.app, {"action": "files"})
         state = bridge_snapshot(self.app)
         self.assertEqual(state["threadId"], "task-123")
-        self.assertEqual([part["kind"] for part in state["history"]], ["user", "assistant"])
+        self.assertEqual([part["kind"] for part in state["history"]], ["user", "assistant", "activity"])
+        self.assertEqual(state["history"][-1]["lines"][0]["style"], "activity")
+        self.assertIsNone(state["history"][-1]["speechText"])
         self.assertIn(str((self.path / "note.txt").resolve()), [row["path"] for row in state["files"]])
 
         bridge_apply(self.app, {"action": "attachments", "paths": [str(self.path / "pixel.png")]})

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 18" width="112" height="72" role="img" aria-label="thinking indicator">
+  <defs><linearGradient id="paint" x1="0" y1="0" x2="28" y2="18" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#fafafa"/><stop offset="0.5" stop-color="#d5d6d8"/><stop offset="1" stop-color="#8a8d92"/></linearGradient></defs>
+  <rect transform="translate(3.500 9.000) rotate(-0.000) translate(-1.750 -1.750)" width="3.500" height="3.500" rx="1.750" fill="url(#paint)" opacity="0.420"/>
+  <rect transform="translate(10.500 9.000) rotate(-0.000) translate(-2.000 -2.000)" width="4.000" height="4.000" rx="2.000" fill="url(#paint)" opacity="0.420"/>
+  <rect transform="translate(17.500 9.000) rotate(-0.000) translate(-2.250 -2.250)" width="4.500" height="4.500" rx="2.250" fill="url(#paint)" opacity="0.420"/>
+  <rect transform="translate(24.500 9.000) rotate(-0.000) translate(-2.500 -2.500)" width="5.000" height="5.000" rx="2.500" fill="url(#paint)" opacity="0.420"/>
+</svg>

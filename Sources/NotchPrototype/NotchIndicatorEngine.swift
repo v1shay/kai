@@ -3,7 +3,7 @@ import AVFoundation
 
 final class FileGlyphLayer: CAShapeLayer {
     private let glyphSize:CGSize
-    private let curve=CAMediaTimingFunction(controlPoints:0.16,0.7,0.25,1)
+    private let curve=KaiMotion.interactionCurve
 
     init(size:CGSize=CGSize(width:28,height:18)) {
         glyphSize=size;super.init();bounds=CGRect(origin:.zero,size:size);fillColor=nil;strokeColor=NSColor.white.cgColor;lineWidth=size.width/17.5;lineCap = .round;lineJoin = .round;setOpen(false,animated:false)
@@ -15,7 +15,7 @@ final class FileGlyphLayer: CAShapeLayer {
         let target=Self.path(open:open,size:glyphSize),from=presentation()?.path ?? path
         CATransaction.begin();CATransaction.setDisableActions(true);path=target;CATransaction.commit()
         guard animated else{return}
-        let morph=CABasicAnimation(keyPath:"path");morph.fromValue=from;morph.toValue=target;morph.duration=0.42;morph.timingFunction=curve;add(morph,forKey:"fileOpen")
+        let morph=CABasicAnimation(keyPath:"path");morph.fromValue=from;morph.toValue=target;morph.duration=KaiMotion.contentDuration;morph.timingFunction=curve;addKai(morph,forKey:"fileOpen")
     }
 
     private static func path(open:Bool,size:CGSize)->CGPath {
@@ -26,12 +26,21 @@ final class FileGlyphLayer: CAShapeLayer {
     }
 }
 
-struct GradientCatalog: Decodable { let profileByPetID: [String: PetGradientProfile] }
-struct PetGradientProfile: Decodable { let palette: PetPalette; let gradients: PetGradients }
-struct PetPalette: Decodable { let shadow, primary, secondary, accent, highlight, foreground: String }
-struct PetGradients: Decodable { let ambient, thinking, working, success, warning, error: GradientRecipe }
-struct GradientRecipe: Decodable { let angleDegrees: Double, cycleDurationMs: Int, stops: [GradientStop] }
-struct GradientStop: Decodable { let location: Double, color: String }
+struct GradientCatalog: Decodable { var profileByPetID: [String: PetGradientProfile] }
+struct PetGradientProfile: Codable { let palette: PetPalette; let gradients: PetGradients }
+extension PetGradientProfile {
+    @MainActor static func ninja(_ style:String)->PetGradientProfile{
+        let c=NinjaAtmosphereView.color(style)
+        func hex(_ color:NSColor)->String{let v=color.usingColorSpace(.sRGB)!;return String(format:"#%02X%02X%02X",Int(v.redComponent*255),Int(v.greenComponent*255),Int(v.blueComponent*255))}
+        let light=hex(c.blended(withFraction:0.45,of:.white)!),base=hex(c),dark=hex(c.blended(withFraction:0.38,of:.black)!)
+        let recipe=GradientRecipe(angleDegrees:35,cycleDurationMs:4200,stops:[GradientStop(location:0,color:light),GradientStop(location:0.5,color:base),GradientStop(location:1,color:dark)])
+        return PetGradientProfile(palette:PetPalette(shadow:dark,primary:base,secondary:light,accent:base,highlight:light,foreground:light),gradients:PetGradients(ambient:recipe,thinking:recipe,working:recipe,success:recipe,warning:recipe,error:recipe))
+    }
+}
+struct PetPalette: Codable { let shadow, primary, secondary, accent, highlight, foreground: String }
+struct PetGradients: Codable { let ambient, thinking, working, success, warning, error: GradientRecipe }
+struct GradientRecipe: Codable { let angleDegrees: Double, cycleDurationMs: Int, stops: [GradientStop] }
+struct GradientStop: Codable { let location: Double, color: String }
 
 @MainActor final class NotchIndicatorEngine: NSObject {
     enum Mode: String { case off, listening, thinking, demo, scene, transitioning }
@@ -40,18 +49,27 @@ struct GradientStop: Decodable { let location: Double, color: String }
     let layer = CALayer(), fileLayer = CALayer(), accentLayer = CALayer(), leftAccentLayer = CALayer()
     private let content = CALayer(), maskLayer = CALayer(), base = CAGradientLayer(), shine = CAGradientLayer(), fileBase = CAGradientLayer(), fileShine = CAGradientLayer(), fileMask = FileGlyphLayer()
     private let softAccent=CALayer(), softLeftAccent=CALayer(), compactAccent=CALayer(), compactLeftAccent=CALayer(), accentMaskLayer=CAGradientLayer(), leftAccentMaskLayer=CAGradientLayer(), compactMaskLayer=CALayer(), compactLeftMaskLayer=CALayer()
+    private let integrationMask=CALayer()
+    private var retiringMask:CALayer?
     private let primitives = (0..<8).map { _ in CAShapeLayer() }, meter = VoiceMeter()
+    private static var glowMaskImages = [Bool: CGImage]()
     private let centers: [CGFloat] = [3.5, 10.5, 17.5, 24.5]
     private var poses = IndicatorScenes.listening.firstPoses
     private var levels: [CGFloat] = [0.25, 0.3, 0.35, 0.4], profile: PetGradientProfile?
     private var timer: Timer?, demoWork: DispatchWorkItem?
+    private var stopDisplayLink: (() -> Void)?
+    weak var animationWindow: NSWindow?
     private var lastTick = ProcessInfo.processInfo.systemUptime, themeToken = 0, sceneToken = 0
     private var cycleToken = 0, currentSceneID: String?
     private var themeKind: ThemeKind = .ambient
     private var paletteTransitionLayers=[CALayer]()
+    var compactBandHeight:CGFloat=39
     private var fileLoading=false
     private var showLeftAccent = false, showRightAccent = true
     private(set) var mode: Mode = .off
+    #if DEBUG
+    var diagnosticVoiceMeterEngineAllocated: Bool { meter.hasAllocatedEngine }
+    #endif
 
     override init() {
         super.init()
@@ -60,14 +78,15 @@ struct GradientStop: Decodable { let location: Double, color: String }
             mask.type = .radial; mask.colors=[NSColor.white.cgColor,NSColor.white.withAlphaComponent(0.5).cgColor,NSColor.white.withAlphaComponent(0.14).cgColor,NSColor.clear.cgColor]; mask.locations=[0,0.2,0.52,1]
             mask.startPoint=CGPoint(x:left ? 0.04:0.96,y:0.06); mask.endPoint=CGPoint(x:left ? 0.92:0.08,y:0.98)
         }
-        compactMaskLayer.contents=glowMaskImage(); compactLeftMaskLayer.contents=glowMaskImage(mirrored:true)
-        for mask in [compactMaskLayer,compactLeftMaskLayer] { mask.contentsGravity = .resizeAspectFill; mask.contentsScale=NSScreen.main?.backingScaleFactor ?? 2 }
+        compactMaskLayer.contents=Self.glowMaskImage(); compactLeftMaskLayer.contents=Self.glowMaskImage(mirrored:true)
+        for mask in [compactMaskLayer,compactLeftMaskLayer] { mask.contentsGravity = .resize; mask.contentsScale=NSScreen.main?.backingScaleFactor ?? 2 }
         softAccent.mask=accentMaskLayer; softLeftAccent.mask=leftAccentMaskLayer; compactAccent.mask=compactMaskLayer; compactLeftAccent.mask=compactLeftMaskLayer
         accentLayer.addSublayer(softAccent); accentLayer.addSublayer(compactAccent); leftAccentLayer.addSublayer(softLeftAccent); leftAccentLayer.addSublayer(compactLeftAccent)
         softAccent.opacity=0; softLeftAccent.opacity=0
+        base.colors=[NSColor.white.cgColor,NSColor.white.cgColor]
         layer.addSublayer(content); content.addSublayer(base); content.addSublayer(shine); content.mask = maskLayer
         fileLayer.addSublayer(fileBase); fileLayer.addSublayer(fileShine); fileLayer.mask=fileMask
-        primitives.forEach { maskLayer.addSublayer($0) }
+        primitives.forEach { maskLayer.addSublayer($0) };maskLayer.addSublayer(integrationMask);integrationMask.isHidden=true
         for glow in [shine,fileShine] { glow.colors=[NSColor.clear.cgColor,NSColor.white.withAlphaComponent(0.72).cgColor,NSColor.clear.cgColor]; glow.startPoint=CGPoint(x:0,y:0.5); glow.endPoint=CGPoint(x:1,y:0.5) }
         meter.onLevels = { [weak self] values in self?.levels = values }
         layout(); setPoses(poses)
@@ -77,7 +96,7 @@ struct GradientStop: Decodable { let location: Double, color: String }
         content.frame=layer.bounds; maskLayer.frame=layer.bounds; base.frame=layer.bounds; shine.frame=layer.bounds
         fileBase.frame=fileLayer.bounds; fileShine.frame=fileLayer.bounds; fileMask.frame=fileLayer.bounds
         softAccent.frame=accentLayer.bounds; softLeftAccent.frame=leftAccentLayer.bounds; accentMaskLayer.frame=softAccent.bounds; leftAccentMaskLayer.frame=softLeftAccent.bounds
-        compactAccent.frame=CGRect(x:accentLayer.bounds.width-68,y:0,width:68,height:39); compactLeftAccent.frame=CGRect(x:0,y:0,width:68,height:39); compactMaskLayer.frame=compactAccent.bounds; compactLeftMaskLayer.frame=compactLeftAccent.bounds
+        compactAccent.frame=CGRect(x:accentLayer.bounds.width-75,y:0,width:75,height:compactBandHeight); compactLeftAccent.frame=CGRect(x:0,y:0,width:75,height:compactBandHeight); compactMaskLayer.frame=compactAccent.bounds; compactLeftMaskLayer.frame=compactLeftAccent.bounds
     }
 
     func setAccentVisibility(left: Bool, right: Bool) {
@@ -87,9 +106,18 @@ struct GradientStop: Decodable { let location: Double, color: String }
     func setAccentExpanded(_ expanded:Bool,duration:Double) {
         let compact:Float=expanded ? 0:1, soft:Float=expanded ? 1:0
         for (layer,target) in [(compactAccent,compact),(compactLeftAccent,compact),(softAccent,soft),(softLeftAccent,soft)] {
-            let fade=CABasicAnimation(keyPath:"opacity"); fade.fromValue=layer.presentation()?.opacity ?? layer.opacity; fade.toValue=target; fade.duration=duration; fade.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.65,0.25,1)
-            CATransaction.begin(); CATransaction.setDisableActions(true); layer.opacity=target; CATransaction.commit(); if duration > 0 { layer.add(fade,forKey:"sizeBlend") }
+            let fade=CABasicAnimation(keyPath:"opacity"); fade.fromValue=layer.presentation()?.opacity ?? layer.opacity; fade.toValue=target; fade.duration=duration; fade.timingFunction=KaiMotion.interactionCurve
+            CATransaction.begin(); CATransaction.setDisableActions(true); layer.opacity=target; CATransaction.commit(); if duration > 0 { layer.addKai(fade,forKey:"sizeBlend") }
         }
+    }
+
+    func moveAccents(toBottom bottom:CGFloat,expanded:Bool,duration:Double){
+        for accent in [leftAccentLayer,accentLayer]{
+            let target=bottom+accent.bounds.height/2
+            let move=CABasicAnimation(keyPath:"position.y");move.fromValue=accent.presentation()?.position.y ?? accent.position.y;move.toValue=target;move.duration=duration;move.timingFunction=KaiMotion.interactionCurve
+            CATransaction.begin();CATransaction.setDisableActions(true);accent.position.y=target;CATransaction.commit();accent.addKai(move,forKey:"cornerTravel")
+        }
+        setAccentExpanded(expanded,duration:duration)
     }
 
     private func updateAccentOpacity() {
@@ -98,6 +126,7 @@ struct GradientStop: Decodable { let location: Double, color: String }
     }
 
     func setProfile(_ newProfile: PetGradientProfile, wave: Bool) {
+        guard !newProfile.gradients.ambient.stops.isEmpty else{return}
         profile = newProfile
         let recipe = recipe(for:newProfile, kind:themeKind)
         if wave && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion { waveTo(recipe, highlight:newProfile.palette.highlight, duration:0.52) }
@@ -106,9 +135,9 @@ struct GradientStop: Decodable { let location: Double, color: String }
     }
 
     func startListening(useMicrophone: Bool) {
-        cancelCycle(); demoWork?.cancel(); themeKind = .ambient; useMicrophone ? requestMicrophone() : meter.stop(); layer.opacity = 1; updateAccentOpacity()
+        cancelCycle(); demoWork?.cancel(); themeKind = .ambient; meter.stop(); layer.opacity = 1; updateAccentOpacity()
         if let profile { waveTo(profile.gradients.ambient, highlight: profile.palette.highlight, duration: 0.45) }
-        transition(to: IndicatorScenes.listening, finalMode: .listening) { [weak self] in self?.startTimer() }
+        transition(to: IndicatorScenes.listening, finalMode: .listening) { [weak self] in guard let self else{return};if useMicrophone{self.requestMicrophone()};self.startTimer() }
     }
 
     func setExternalLevels(_ values:[CGFloat]) { guard values.count>=4 else{return};levels=Array(values.prefix(4)) }
@@ -131,8 +160,19 @@ struct GradientStop: Decodable { let location: Double, color: String }
 
     func showThinking() { transitionToThinking() }
 
-    func showScene(_ id: String) {
-        cancelCycle(); displayScene(id)
+    func showScene(_ id: String,looping:Bool=true) {
+        cancelCycle()
+        if let image=(id == "codex" ? ProviderIcons.mark("codex-mask") : ProviderIcons.image(id)) ?? IntegrationIcons.image(id) {
+            let old=CALayer()
+            for primitive in primitives where !primitive.isHidden{
+                let source=primitive.presentation() ?? primitive,copy=CAShapeLayer();copy.bounds=source.bounds;copy.position=source.position;copy.path=source.path;copy.fillColor=source.fillColor;copy.strokeColor=source.strokeColor;copy.lineWidth=source.lineWidth;copy.opacity=source.opacity;copy.transform=source.transform;old.addSublayer(copy)
+            }
+            retire(old)
+            displayScene("tool",looping:looping);primitives.forEach{$0.isHidden=true}
+            integrationMask.frame=CGRect(x:5,y:0,width:18,height:18)
+            integrationMask.contents=image.cgImage(forProposedRect:nil,context:nil,hints:nil);integrationMask.isHidden=false
+            let fade=CABasicAnimation(keyPath:"opacity");fade.fromValue=0;fade.toValue=1;fade.duration=KaiMotion.paneDuration;integrationMask.addKai(fade,forKey:"providerIn")
+        }else{displayScene(id,looping:looping)}
     }
 
     func startRandomCycle() {
@@ -149,28 +189,41 @@ struct GradientStop: Decodable { let location: Double, color: String }
         DispatchQueue.main.asyncAfter(deadline: .now()+delay) { [weak self] in self?.runCycle(ids, index:index+1, token:token) }
     }
 
-    private func cancelCycle() { cycleToken += 1 }
+    private func retire(_ previous:CALayer){
+        retiringMask?.removeFromSuperlayer();retiringMask=previous;maskLayer.addSublayer(previous)
+        let fade=CABasicAnimation(keyPath:"opacity");fade.fromValue=1;fade.toValue=0;fade.duration=KaiMotion.paneDuration;fade.fillMode = .forwards;fade.isRemovedOnCompletion=false;previous.addKai(fade,forKey:"providerOut")
+        DispatchQueue.main.asyncAfter(deadline:.now()+0.25){[weak self,weak previous] in previous?.removeFromSuperlayer();if self?.retiringMask === previous{self?.retiringMask=nil}}
+    }
+    private func cancelCycle(){
+        cycleToken += 1
+        if !integrationMask.isHidden,let contents=integrationMask.contents{
+            let previous=CALayer();previous.frame=integrationMask.frame;previous.contents=contents;retire(previous)
+        }
+        integrationMask.isHidden=true;primitives.forEach{$0.isHidden=false}
+    }
 
-    private func displayScene(_ id: String) {
+    private func displayScene(_ id: String,looping:Bool=true) {
         guard let scene = IndicatorScenes.all[id] else { return }
         demoWork?.cancel(); currentSceneID = id
         themeKind = id == "thinking" || id == "waiting" ? .thinking : (id == "success" ? .success : (id == "warning" || id == "permission" || id == "question" ? .warning : (id == "failure" || id == "declined" ? .error : .working)))
         meter.stop(); layer.opacity = 1; updateAccentOpacity()
         if let profile { waveTo(recipe(for:profile, kind:themeKind), highlight:profile.palette.highlight, duration:scene.transition) }
-        transition(to: scene, finalMode: .scene)
+        transition(to: scene, finalMode: .scene,looping:looping)
     }
 
     func hide() {
         cancelCycle(); sceneToken += 1; meter.stop(); demoWork?.cancel(); stopTimer(); primitives.forEach { $0.removeAllAnimations() }
+        shine.removeAllAnimations();fileShine.removeAllAnimations()
         mode = .off; layer.opacity = 0; updateAccentOpacity()
     }
 
     private func requestMicrophone() {
+        let token=sceneToken
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized: try? meter.start()
         case .notDetermined:
             AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
-                DispatchQueue.main.async { if granted { try? self?.meter.start() } }
+                DispatchQueue.main.async {guard let self,granted,self.sceneToken == token else{return};try? self.meter.start()}
             }
         default: break
         }
@@ -178,11 +231,30 @@ struct GradientStop: Decodable { let location: Double, color: String }
 
     private func startTimer() {
         stopTimer(); lastTick = ProcessInfo.processInfo.systemUptime
-        timer = Timer(timeInterval: 1/30, target: self, selector: #selector(timerFired), userInfo: nil, repeats: true)
+        let reduce = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        if #available(macOS 14.0, *), let animationWindow, let screen = animationWindow.screen {
+            let rate = reduce ? Float(30) : Float(max(60, screen.maximumFramesPerSecond))
+            let link = animationWindow.displayLink(target: self, selector: #selector(displayFrame(_:)))
+            link.preferredFrameRateRange = CAFrameRateRange(minimum: rate, maximum: rate, preferred: rate)
+            link.add(to: .main, forMode: .common)
+            stopDisplayLink = { link.invalidate() }
+            return
+        }
+        let rate = reduce ? 30.0 : Double(KaiMotion.displayFrameRate)
+        timer = Timer(timeInterval: 1/rate, target: self, selector: #selector(timerFired), userInfo: nil, repeats: true)
+        timer?.tolerance=0.002
         if let timer {RunLoop.main.add(timer,forMode:.common)}
     }
 
-    private func stopTimer() { timer?.invalidate(); timer = nil }
+    private func stopTimer() {
+        stopDisplayLink?()
+        stopDisplayLink = nil
+        timer?.invalidate()
+        timer = nil
+    }
+
+    @available(macOS 14.0, *)
+    @objc private func displayFrame(_ link: CADisplayLink) { tick() }
 
     @objc private func timerFired() { tick() }
 
@@ -205,11 +277,15 @@ struct GradientStop: Decodable { let location: Double, color: String }
 
     private func updateListening(_ values: [CGFloat], dt: Double) {
         let gains: [CGFloat] = [0.91,0.94,0.97,1]
+        var changed=false
         for i in 0..<4 {
+            let previousHeight=poses[i].height
             let target = 2.5+14.5*min(1, pow(max(0, values[i])*gains[i], 0.55)), rate: CGFloat = target > poses[i].height ? 22:9
             poses[i].height += (target-poses[i].height)*(1-exp(-CGFloat(dt)*rate)); poses[i].x = centers[i]; poses[i].y = 9
             poses[i].width = 3; poses[i].radius = 1.5; poses[i].rotation = 0; poses[i].opacity = 1
+            if abs(poses[i].height-previousHeight)>0.01{changed=true}
         }
+        guard changed else{return}
         for i in 4..<8 { poses[i] = .hidden }
         setPoses(poses)
     }
@@ -252,7 +328,7 @@ struct GradientStop: Decodable { let location: Double, color: String }
         guard fileLoading != loading else{return};fileLoading=loading
         fileShine.removeAnimation(forKey:"shine")
         if loading {
-            let sweep=CABasicAnimation(keyPath:"locations");sweep.fromValue=[-0.35,-0.18,0];sweep.toValue=[1,1.18,1.35];sweep.duration=0.65;sweep.repeatCount = .infinity;sweep.timingFunction=CAMediaTimingFunction(name:.easeInEaseOut);fileShine.add(sweep,forKey:"fileLoading")
+            let sweep=CABasicAnimation(keyPath:"locations");sweep.fromValue=[-0.35,-0.18,0];sweep.toValue=[1,1.18,1.35];sweep.duration=0.65;sweep.repeatCount = .infinity;sweep.timingFunction=KaiMotion.cycleCurve;fileShine.addKai(sweep,forKey:"fileLoading")
         } else {
             fileShine.removeAnimation(forKey:"fileLoading")
             if let profile {configureShine(profile.palette.highlight,duration:mode == .thinking ? 1.4:2.1)}
@@ -270,7 +346,8 @@ struct GradientStop: Decodable { let location: Double, color: String }
         setPoses(poses)
     }
 
-    private func transition(to scene: IndicatorScene, finalMode: Mode, completion: (() -> Void)? = nil) {
+    private func transition(to scene: IndicatorScene, finalMode: Mode,looping:Bool=true, completion: (() -> Void)? = nil) {
+        let duration=NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0.1:min(0.24,scene.transition)
         sceneToken += 1; let token = sceneToken; stopTimer(); capturePresentation(); let from = poses, target = scene.firstPoses
         mode = .transitioning; setPoses(target)
         for i in 0..<8 {
@@ -281,16 +358,16 @@ struct GradientStop: Decodable { let location: Double, color: String }
                 basic("bounds",NSValue(rect:NSRect(x:0,y:0,width:a.width,height:a.height)),NSValue(rect:NSRect(x:0,y:0,width:b.width,height:b.height))),
                 basic("cornerRadius",a.radius,b.radius), basic("transform.rotation.z",a.rotation,b.rotation), basic("opacity",a.opacity,b.opacity)
             ]
-            group.duration = scene.transition; group.timingFunction = CAMediaTimingFunction(controlPoints: 0.2,0.72,0.24,1)
-            primitives[i].add(group, forKey: "sceneTransition")
+            group.duration = duration; group.timingFunction = KaiMotion.interactionCurve
+            primitives[i].addKai(group, forKey: "sceneTransition")
         }
-        DispatchQueue.main.asyncAfter(deadline: .now()+scene.transition) { [weak self] in
-            guard let self, self.sceneToken == token else { return }; self.mode = finalMode; self.installLoop(scene); completion?()
+        DispatchQueue.main.asyncAfter(deadline: .now()+duration) { [weak self] in
+            guard let self, self.sceneToken == token else { return }; self.mode = finalMode; self.installLoop(scene,looping:looping); completion?()
         }
     }
 
-    private func installLoop(_ scene: IndicatorScene) {
-        guard scene.duration > 0 else { return }; let now = CACurrentMediaTime()
+    private func installLoop(_ scene: IndicatorScene,looping:Bool) {
+        guard scene.duration > 0,!NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }; let now = CACurrentMediaTime()
         for (i,track) in scene.tracks.prefix(8).enumerated() {
             let group = CAAnimationGroup()
             func keyframes(_ path: String,_ values: [Any]) -> CAKeyframeAnimation { let x=CAKeyframeAnimation(keyPath:path);x.values=values;x.keyTimes=track.keyTimes;return x }
@@ -300,8 +377,8 @@ struct GradientStop: Decodable { let location: Double, color: String }
                 keyframes("cornerRadius",track.poses.map(\.radius)), keyframes("transform.rotation.z",track.poses.map(\.rotation)), keyframes("opacity",track.poses.map(\.opacity))
             ]
             if track.poses.allSatisfy({ $0.shape != .capsule }) { group.animations?.append(keyframes("path",track.poses.map { shapePath($0) })) }
-            group.duration = scene.duration; group.beginTime = now+track.phase; group.repeatCount = .infinity
-            group.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut); primitives[i].add(group, forKey: "sceneLoop")
+            group.duration = scene.duration; group.beginTime = now+track.phase; group.repeatCount = looping ? .infinity:0
+            group.timingFunction = KaiMotion.cycleCurve; primitives[i].addKai(group, forKey: "sceneLoop")
         }
     }
 
@@ -322,11 +399,15 @@ struct GradientStop: Decodable { let location: Double, color: String }
         }
     }
 
-    private func glowMaskImage(mirrored:Bool=false) -> CGImage? {
+    private static func glowMaskImage(mirrored:Bool=false) -> CGImage? {
+        if let cached = glowMaskImages[mirrored] { return cached }
         let scale=2,width=136,height=78,space=CGColorSpaceCreateDeviceRGB()
         guard let context=CGContext(data:nil,width:width,height:height,bitsPerComponent:8,bytesPerRow:width*4,space:space,bitmapInfo:CGImageAlphaInfo.premultipliedLast.rawValue), let gradient=CGGradient(colorsSpace:space,colors:[NSColor.white.cgColor,NSColor.white.withAlphaComponent(0.32).cgColor,NSColor.clear.cgColor] as CFArray,locations:[0,0.42,1]) else{return nil}
         context.scaleBy(x:CGFloat(scale),y:CGFloat(scale)*0.62); let center=CGPoint(x:mirrored ? 5:63,y:(39*0.22)/0.62)
-        context.drawRadialGradient(gradient,startCenter:center,startRadius:0,endCenter:center,endRadius:66,options:[.drawsAfterEndLocation]); return context.makeImage()
+        context.drawRadialGradient(gradient,startCenter:center,startRadius:0,endCenter:center,endRadius:66,options:[.drawsAfterEndLocation])
+        let image = context.makeImage()
+        if let image { glowMaskImages[mirrored] = image }
+        return image
     }
 
     private func accentColor(_ recipe:GradientRecipe,_ alpha:CGFloat) -> CGColor { color(recipe.stops[min(1,recipe.stops.count-1)].color,alpha) }
@@ -354,7 +435,7 @@ struct GradientStop: Decodable { let location: Double, color: String }
             let target=accentColor(recipe,alpha)
             let start=layer.presentation()?.backgroundColor ?? layer.backgroundColor ?? target; layer.backgroundColor=target
             let flow=CAKeyframeAnimation(keyPath:"backgroundColor"); flow.values=huePath(from:start,to:target); flow.duration=max(0.68,duration)
-            flow.calculationMode = .linear; flow.timingFunction=CAMediaTimingFunction(controlPoints:0.16,0.7,0.25,1); layer.add(flow,forKey:"colorFlow")
+            flow.calculationMode = .linear; flow.timingFunction=KaiMotion.interactionCurve; layer.addKai(flow,forKey:"colorFlow")
         }
         CATransaction.commit()
     }
@@ -372,10 +453,10 @@ struct GradientStop: Decodable { let location: Double, color: String }
         fileIncoming.frame=fileLayer.bounds; commit(recipe,to:fileIncoming); fileReveal.frame=fileLayer.bounds; fileReveal.startPoint=reveal.startPoint; fileReveal.endPoint=reveal.endPoint; fileReveal.colors=reveal.colors; fileReveal.locations=reveal.locations; fileIncoming.mask=fileReveal; fileLayer.insertSublayer(fileIncoming,above:fileBase)
         fileEdge.frame=fileLayer.bounds; fileEdge.startPoint=edge.startPoint; fileEdge.endPoint=edge.endPoint; fileEdge.colors=edge.colors; fileEdge.locations=edge.locations; fileLayer.insertSublayer(fileEdge,above:fileIncoming)
         paletteTransitionLayers=[incoming,edge,fileIncoming,fileEdge]
-        let wipe = CABasicAnimation(keyPath: "locations"); wipe.fromValue = reveal.locations; wipe.toValue = [1,1.1,1.25,1.4]; wipe.duration = duration; wipe.timingFunction = CAMediaTimingFunction(controlPoints: 0.18,0.72,0.24,1)
+        let wipe = CABasicAnimation(keyPath: "locations"); wipe.fromValue = reveal.locations; wipe.toValue = [1,1.1,1.25,1.4]; wipe.duration = duration; wipe.timingFunction = KaiMotion.interactionCurve
         let streak = CABasicAnimation(keyPath: "locations"); streak.fromValue = edge.locations; streak.toValue = [0.85,1,1.15]; streak.duration = duration; streak.timingFunction = wipe.timingFunction
         reveal.locations=[1,1.1,1.25,1.4]; edge.locations=[0.85,1,1.15]; fileReveal.locations=reveal.locations; fileEdge.locations=edge.locations
-        reveal.add(wipe,forKey:"reveal"); edge.add(streak,forKey:"edge"); fileReveal.add(wipe.copy() as! CAAnimation,forKey:"reveal"); fileEdge.add(streak.copy() as! CAAnimation,forKey:"edge")
+        reveal.addKai(wipe,forKey:"reveal"); edge.addKai(streak,forKey:"edge"); fileReveal.addKai(wipe.copy() as! CAAnimation,forKey:"reveal"); fileEdge.addKai(streak.copy() as! CAAnimation,forKey:"edge")
         DispatchQueue.main.asyncAfter(deadline: .now()+duration) { [weak self, weak incoming, weak edge, weak fileIncoming, weak fileEdge] in
             guard let self, self.themeToken == token else { incoming?.removeFromSuperlayer(); edge?.removeFromSuperlayer(); fileIncoming?.removeFromSuperlayer(); fileEdge?.removeFromSuperlayer(); return }
             self.commit(recipe,to:self.base); self.commit(recipe,to:self.fileBase); incoming?.removeFromSuperlayer(); edge?.removeFromSuperlayer(); fileIncoming?.removeFromSuperlayer(); fileEdge?.removeFromSuperlayer()
@@ -384,9 +465,12 @@ struct GradientStop: Decodable { let location: Double, color: String }
 
     private func configureShine(_ hex: String, duration: Double) {
         shine.removeAllAnimations(); fileShine.removeAllAnimations(); shine.colors=[NSColor.clear.cgColor,color(hex,0.65),NSColor.clear.cgColor]; fileShine.colors=shine.colors; shine.locations=[-0.35,-0.18,0]; fileShine.locations=shine.locations
+        guard mode != .off || fileLoading else{return}
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else{return}
         let animation = CABasicAnimation(keyPath: "locations"); animation.fromValue = shine.locations; animation.toValue = [1,1.18,1.35]
-        animation.duration=duration; animation.repeatCount = .infinity; animation.timingFunction=CAMediaTimingFunction(name:.easeInEaseOut); shine.add(animation,forKey:"shine")
-        let fileAnimation=animation.copy() as! CABasicAnimation;fileAnimation.duration=fileLoading ? 0.65:duration;fileShine.add(fileAnimation,forKey:fileLoading ? "fileLoading":"shine")
+        animation.duration=duration; animation.timingFunction=KaiMotion.cycleCurve
+        if mode != .off{shine.addKai(animation,forKey:"shine")}
+        if fileLoading {let fileAnimation=animation.copy() as! CABasicAnimation;fileAnimation.duration=0.65;fileAnimation.repeatCount = .infinity;fileShine.addKai(fileAnimation,forKey:"fileLoading")}
     }
 
     private func endpoints(_ degrees: Double) -> (CGPoint,CGPoint) {
@@ -401,15 +485,22 @@ struct GradientStop: Decodable { let location: Double, color: String }
 }
 
 private final class VoiceMeter {
-    let engine = AVAudioEngine(); var onLevels: (([CGFloat])->Void)?
+    private var engine: AVAudioEngine?
+    var onLevels: (([CGFloat])->Void)?
+    #if DEBUG
+    var hasAllocatedEngine: Bool { engine != nil }
+    #endif
     private var installed = false, noiseFloor: Float = 0.004, peak: Float = 0.04
 
     func start() throws {
-        stop(); let input = engine.inputNode, format = input.outputFormat(forBus: 0)
-        guard format.sampleRate > 0 else { return }
-        input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer,_ in
+        stop()
+        let engine = AVAudioEngine()
+        self.engine = engine
+        let input = engine.inputNode, format = input.inputFormat(forBus: 0)
+        guard format.sampleRate.isFinite,format.sampleRate > 0,format.channelCount > 0 else { return }
+        input.installTap(onBus: 0, bufferSize: 1024, format: nil) { [weak self] buffer,_ in
             guard let self, let samples = buffer.floatChannelData?[0] else { return }
-            let count = Int(buffer.frameLength), rate = Float(format.sampleRate)
+            let count = Int(buffer.frameLength), rate = Float(buffer.format.sampleRate)
             let bands: [[Float]] = [[140,220],[320,520],[750,1100],[1600,2600]]
             var squareSum: Float = 0
             for i in 0..<count { squareSum += samples[i]*samples[i] }
@@ -437,7 +528,8 @@ private final class VoiceMeter {
     }
 
     func stop() {
-        if installed { engine.inputNode.removeTap(onBus: 0); installed = false }
-        engine.stop()
+        if installed { engine?.inputNode.removeTap(onBus: 0); installed = false }
+        engine?.stop()
+        engine = nil
     }
 }
